@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Sign in · JAVBeacon</title>
+  <link rel="icon" href="/assets/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png">
+  <link rel="stylesheet" href="/assets/app.css">
+  <style>
+    body.loginPage { display:grid; grid-template-columns:minmax(0,1fr); place-items:center; width:100%; min-height:100dvh; margin:0; padding:16px; overflow-x:hidden; background:radial-gradient(circle at 50% 0,#351116,#090b10 58%); }
+    .login { width:100%; max-width:390px; padding:32px; border:1px solid #53242b; border-radius:16px; background:#11151ddd; box-shadow:0 30px 90px #000; }
+    .login h1 { margin:4px 0 6px; }
+    .loginBrand { display:flex; align-items:center; gap:8px; }
+    .loginBrand img { width:26px; height:26px; border-radius:7px; box-shadow:0 4px 12px #0008; }
+    .login p { color:#9ba6b6; }
+    .login label { display:block; margin-top:16px; }
+    .login input { display:block; width:100%; max-width:100%; margin-top:6px; }
+    .login button { width:100%; margin-top:24px; }
+    .error { min-height:1.4em; color:#ff8492; }
+    @media (max-width:480px) { .login { padding:24px 20px; } }
+  </style>
+</head>
+<body class="loginPage">
+  <form class="login">
+    <p class="eyebrow loginBrand"><img src="/assets/javbeacon-site-logo-dark.png" alt="JAVBeacon"> JAVBEACON</p>
+    <h1>Welcome back</h1>
+    <p>Sign in to your private release monitor.</p>
+    <label>Username<input name="username" autocomplete="username" required autofocus></label>
+    <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+    <p class="error" aria-live="polite"></p>
+    <button class="primary">Sign in</button>
+  </form>
+  <script>
+    addEventListener('pageshow',()=>fetch('/api/auth/me',{cache:'no-store'}).then(r=>{if(r.ok)location.replace('/')}).catch(()=>{}));
+    document.querySelector('form').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('button'),error=e.target.querySelector('.error');b.disabled=true;error.textContent='';const f=new FormData(e.target);try{const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:f.get('username'),password:f.get('password')})});if(!r.ok)throw Error((await r.json()).error||'Sign in failed');location.href='/'}catch(x){error.textContent=x.message;b.disabled=false}}
+  </script>
+</body>
+</html>

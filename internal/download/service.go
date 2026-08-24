@@ -1,0 +1,1487 @@
+package download
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"encoding/xml"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os/exec"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/Net005/JAVBeacon/internal/domain"
+	"github.com/Net005/JAVBeacon/internal/store"
+)
+
+type Service struct {
+	store  store.Store
+	client *http.Client
+	log    *slog.Logger
+	mu     sync.RWMutex
+	job    domain.DownloadSearchJob
+	// olderJob is the "older releases" monitored-search schedule's own job
+	// status, tracked separately from job (the "recent releases" schedule)
+	// so the two can run independently and be polled/started independently
+	// from the Monitored releases UI - see StartSearch/StartSearchOlder and
+	// SearchSchedule/OlderSearchSchedule.
+	olderJob domain.DownloadSearchJob
+
+	cleanupRetryMu sync.Mutex
+	cleanupRetryAt map[int64]time.Time
+
+	pipelineJobs chan pipelineJob
+}
+
+// pipelineJob is one request to run a func serially through the shared
+// pipeline worker - see runPipelineSerialized.
+type pipelineJob struct {
+	run  func() error
+	done chan error
+}
+
+// cleanupRetryInterval bounds how often a completed torrent whose cleanup
+// previously failed (e.g. a transient qBittorrent API error, or the
+// post-removal pipeline erroring) gets another removal attempt. Without this,
+// a single failure used to permanently strand the torrent in "cleanup_failed"
+// until someone noticed and intervened by hand.
+const cleanupRetryInterval = 5 * time.Minute
+
+// cleanupDue reports whether it's time to retry a previously failed cleanup
+// for this download, and if so reserves the next retry slot so concurrent
+// polls don't hammer qBittorrent with duplicate removal attempts.
+func (s *Service) cleanupDue(downloadID int64) bool {
+	s.cleanupRetryMu.Lock()
+	defer s.cleanupRetryMu.Unlock()
+	if next, ok := s.cleanupRetryAt[downloadID]; ok && time.Now().Before(next) {
+		return false
+	}
+	if s.cleanupRetryAt == nil {
+		s.cleanupRetryAt = map[int64]time.Time{}
+	}
+	s.cleanupRetryAt[downloadID] = time.Now().Add(cleanupRetryInterval)
+	return true
+}
+
+// clearCleanupRetry drops any retry backoff bookkeeping once a download's
+// torrent has been removed (or otherwise no longer needs retrying).
+func (s *Service) clearCleanupRetry(downloadID int64) {
+	s.cleanupRetryMu.Lock()
+	defer s.cleanupRetryMu.Unlock()
+	delete(s.cleanupRetryAt, downloadID)
+}
+
+func New(st store.Store, timeout time.Duration, log *slog.Logger) *Service {
+	s := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, pipelineJobs: make(chan pipelineJob, 64)}
+	go s.runPipelineWorker()
+	return s
+}
+
+// runPipelineWorker is the single goroutine that ever actually executes an
+// ordered event pipeline run. Every trigger (a download completing, a
+// torrent being confirmed removed, ...) funnels through
+// runPipelineSerialized, which enqueues a job here and blocks for its
+// result - so no matter how many triggers fire, or from where, only one
+// pipeline run is ever in flight at a time, and they always run in the
+// order they were triggered rather than being launched concurrently or
+// reordered.
+func (s *Service) runPipelineWorker() {
+	for job := range s.pipelineJobs {
+		job.done <- job.run()
+	}
+}
+
+// runPipelineSerialized enqueues fn to run on the shared pipeline worker and
+// blocks until it has actually run, returning its result. Callers pass a
+// closure rather than calling their work directly so "the order they were
+// triggered" is exactly "the order they run in" - the queue never
+// reorders or parallelizes what's handed to it, it just makes the caller
+// wait its turn.
+func (s *Service) runPipelineSerialized(fn func() error) error {
+	job := pipelineJob{run: fn, done: make(chan error, 1)}
+	s.pipelineJobs <- job
+	return <-job.done
+}
+func (s *Service) provider(ctx context.Context) (SearchProvider, error) {
+	settings, e := s.store.Settings(ctx)
+	if e != nil {
+		return nil, e
+	}
+	patterns := strings.FieldsFunc(settings["accepted_patterns"], func(r rune) bool { return r == '\n' || r == ',' })
+	return &Nyaa{Client: s.client, URLTemplate: settings["search_url_template"], AcceptedPatterns: patterns}, nil
+}
+func (s *Service) Search(ctx context.Context, release domain.Release) ([]domain.SearchResult, error) {
+	return s.search(ctx, release, "Manual Search")
+}
+func (s *Service) search(ctx context.Context, release domain.Release, sourceType string) ([]domain.SearchResult, error) {
+	rows, e := s.searchNative(ctx, release, sourceType)
+	return sortSearchResults(rows), e
+}
+
+// searchNative fetches one release's search results from the configured
+// provider in whatever order the provider itself returned them (typically
+// newest-first for an RSS-based indexer like Nyaa/Sukebei), and records
+// search history for each result (search_accepted/search_rejected, or a
+// single "failed" row if the search itself errored) - exactly what search
+// always did, before it also sorted the results for display. Kept separate
+// from search's sorting so a caller that needs the provider's original
+// order - SearchAndDownloadNow's "most recent" fallback tier, specifically
+// - can see it before sortSearchResults reshuffles a copy for display.
+func (s *Service) searchNative(ctx context.Context, release domain.Release, sourceType string) ([]domain.SearchResult, error) {
+	p, e := s.provider(ctx)
+	if e != nil {
+		return nil, e
+	}
+	rows, e := p.Search(ctx, release.VideoID)
+	history := domain.Download{ReleaseID: release.ID, Provider: p.Name(), SourceType: sourceType, Query: release.VideoID, Status: "searched"}
+	if e != nil {
+		history.Status = "failed"
+		history.Error = e.Error()
+		_, _ = s.store.SaveDownload(ctx, history)
+	} else {
+		for _, result := range rows {
+			item := history
+			item.Name = result.Title
+			item.SourceReference = result.Link
+			item.MatchReason = result.Reason
+			if result.Accepted {
+				item.Status = "search_accepted"
+			} else {
+				item.Status = "search_rejected"
+			}
+			_, _ = s.store.SaveDownload(ctx, item)
+		}
+	}
+	return rows, e
+}
+
+// sortSearchResults returns a new slice - the input is never mutated, so a
+// caller holding the provider's native order (see searchNative) keeps it -
+// with preferred matches (accepted by the configured filename patterns)
+// first, then within each group the torrent most likely to actually
+// finish - the one with more seeders - first. This is only a sensible
+// default ordering: the UI re-groups/re-filters on top of it, but a caller
+// that just takes rows[0] (or displays them unsorted) still gets the best
+// candidate first.
+func sortSearchResults(rows []domain.SearchResult) []domain.SearchResult {
+	sorted := append([]domain.SearchResult{}, rows...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Accepted != sorted[j].Accepted {
+			return sorted[i].Accepted
+		}
+		return sorted[i].Seeds > sorted[j].Seeds
+	})
+	return sorted
+}
+func canonical(raw string) string {
+	return strings.ToUpper(strings.NewReplacer("-", "", "_", "", " ", "").Replace(raw))
+}
+
+const (
+	completedTorrentKeep          = "keep"
+	completedTorrentRemove        = "remove_completed"
+	completedTorrentRemoveAtRatio = "remove_at_ratio"
+	pipelineDownloadCompleted     = "download_completed"
+	pipelineDownloadRemoved       = "download_completed_removed"
+)
+
+// postStatusRemovedManually marks a download whose torrent is no longer
+// present in qBittorrent at all, without this app having removed it - the
+// user (or something else) deleted it directly in qBittorrent. Unlike
+// postStatusCompletedRemoved (this app called qb.Remove(), typically once
+// the configured seed ratio was met) there is nothing left to retry, so a
+// download reaching this state is never re-scheduled for cleanup again.
+const postStatusRemovedManually = "removed_manually"
+
+// postStatusCompletedRemoved marks a download this app itself removed from
+// qBittorrent (rule "remove immediately" or the configured seed ratio being
+// met). Kept as its own named constant alongside postStatusRemovedManually
+// so the two "the torrent is gone" outcomes stay easy to tell apart in code,
+// even though it was already used as a bare string literal below.
+const postStatusCompletedRemoved = "completed_removed"
+
+// downloadGoneFromQBHandled reports whether postStatus already reflects a
+// torrent this app knows is gone from qBittorrent for a good reason (it
+// removed it itself, or a post-removal pipeline step failed after a
+// successful removal) - so pollTorrents's "torrent vanished" detection
+// should not re-flag it as removed_manually just because it no longer
+// appears in qBittorrent's torrent list, which is expected for all of
+// these.
+func downloadGoneFromQBHandled(postStatus string) bool {
+	switch postStatus {
+	case postStatusCompletedRemoved, "removed_pipeline_failed", postStatusRemovedManually:
+		return true
+	default:
+		return false
+	}
+}
+
+// defaultPipelineTimeout bounds how long a single ordered event pipeline
+// run (runPipelineEvent, and a one-off "Test step" run in TestPipelineStep)
+// is allowed to take before it's treated as failed, so a hung shell command
+// or an unresponsive StashApp instance can no longer block download
+// post-processing indefinitely. It only applies to the actual step work
+// (the shell command / StashApp GraphQL call) - not to reading pipeline
+// configuration or persisting run/log rows, so a run that times out is
+// still recorded rather than silently lost. This is only the fallback used
+// when the persisted pipeline_timeout_seconds setting is empty or invalid;
+// see pipelineTimeout.
+const defaultPipelineTimeout = 30 * time.Second
+
+// pipelineKillGrace bounds how much longer a shell step's CombinedOutput()
+// call will wait, once the pipeline timeout has killed the shell, for a
+// straggling grandchild process (one the shell spawned that didn't exit
+// with it, e.g. something the command backgrounded or forked) to release
+// the stdout/stderr pipes it inherited. Without this, os/exec's Wait keeps
+// draining those pipes until every process holding them open exits on its
+// own - which for a genuinely hung grandchild means the configured
+// pipeline timeout would not actually bound anything.
+const pipelineKillGrace = 5 * time.Second
+
+// pipelineTimeout reads the persisted pipeline_timeout_seconds setting,
+// falling back to defaultPipelineTimeout when it is unset, non-numeric, or
+// not a positive number of seconds. This is the DEFAULT step timeout, used
+// by stepTimeout for any step that has not set its own override.
+func (s *Service) pipelineTimeout(ctx context.Context) time.Duration {
+	settings, e := s.store.Settings(ctx)
+	if e != nil {
+		return defaultPipelineTimeout
+	}
+	if secs, err := strconv.Atoi(strings.TrimSpace(settings["pipeline_timeout_seconds"])); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return defaultPipelineTimeout
+}
+
+// stepTimeout resolves the timeout to use for one pipeline step: the
+// step's own TimeoutSeconds if it has set one (a positive value saved to
+// its persisted PipelineStep row - see domain.PipelineStep.TimeoutSeconds),
+// otherwise the settings-wide default from pipelineTimeout. This is what
+// lets each command in the pipeline be tuned individually - a step whose
+// script legitimately takes longer than the rest doesn't require raising
+// every other step's budget too, and a slow step no longer eats into how
+// long later steps that depend on it get to run (each step now gets its
+// own full budget rather than sharing one deadline across the whole run).
+func (s *Service) stepTimeout(ctx context.Context, step domain.PipelineStep) time.Duration {
+	if step.TimeoutSeconds > 0 {
+		return time.Duration(step.TimeoutSeconds) * time.Second
+	}
+	return s.pipelineTimeout(ctx)
+}
+
+// clarifyPipelineTimeout replaces a generic "signal: killed" or "context
+// deadline exceeded" error with an explicit, human-readable one once ctx's
+// deadline has actually elapsed, so pipeline logs and the Settings UI's
+// "Test step" result say what actually happened instead of a cryptic
+// underlying error.
+func clarifyPipelineTimeout(ctx context.Context, e error, timeout time.Duration) error {
+	if e != nil && ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("step timed out after %s (raise this step's Timeout, or the default step timeout in Settings)", timeout)
+	}
+	return e
+}
+
+func completedTorrentRule(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case completedTorrentKeep, completedTorrentRemove, completedTorrentRemoveAtRatio:
+		return strings.TrimSpace(raw)
+	default:
+		// Preserve the behavior used before the cleanup rule became configurable.
+		return completedTorrentRemoveAtRatio
+	}
+}
+
+func completedTorrentReady(rule string, ratio, minimumRatio float64) bool {
+	return rule == completedTorrentRemove || (rule == completedTorrentRemoveAtRatio && ratio >= minimumRatio)
+}
+func hasReleaseSite(release domain.Release, siteID int64) bool {
+	if release.SiteID == siteID {
+		return true
+	}
+	for _, id := range release.SiteIDs {
+		if id == siteID {
+			return true
+		}
+	}
+	return false
+}
+func (s *Service) duplicate(ctx context.Context, r domain.Release, allowLocal bool) (string, int64, bool, error) {
+	if r.Local && !allowLocal {
+		return "release already exists in StashApp", 0, false, nil
+	}
+	downloads, e := s.store.Downloads(ctx, "")
+	if e != nil {
+		return "", 0, false, e
+	}
+	for _, d := range downloads {
+		if d.ReleaseID == r.ID && (d.Status == "downloading" || d.Status == "completed" || d.Status == "processing") {
+			return "release already has download history in state " + d.Status, d.ID, d.Status == "downloading" || d.Status == "processing", nil
+		}
+	}
+	settings, e := s.store.Settings(ctx)
+	if e != nil {
+		return "", 0, false, e
+	}
+	if settings["qb_url"] != "" {
+		torrents, e := NewQB(settings["qb_url"], settings["qb_username"], settings["qb_password"]).Torrents(ctx)
+		if e != nil {
+			return "", 0, false, e
+		}
+		for _, t := range torrents {
+			if strings.Contains(canonical(t.Name), canonical(r.VideoID)) {
+				return "release already exists in qBittorrent", 0, true, nil
+			}
+		}
+	}
+	return "", 0, false, nil
+}
+func (s *Service) Download(ctx context.Context, r domain.Release, result domain.SearchResult, sourceType, sourceRef string) (domain.Download, error) {
+	provider, providerErr := s.provider(ctx)
+	if providerErr != nil {
+		return domain.Download{}, providerErr
+	}
+	forced := result.Forced
+	// excluded marks a result chosen by the Missing Library Files "allow
+	// non-preferred filenames" fallback chain (TODO-2.0 Task A -
+	// fallbackSearchCandidate) rather than a normal accepted-pattern
+	// match. Like forced, it is an explicit, intentional bypass of
+	// automatic filename matching, so it is folded into the same
+	// structured domain.Download.FilenamePatternExcluded flag forced sets
+	// - the Download Activity view filters on that one flag regardless of
+	// which of the two paths produced it.
+	excluded := result.FilenamePatternExcluded
+	result.Accepted = false
+	if !strings.Contains(canonical(result.Title), canonical(r.VideoID)) {
+		result.Reason = "torrent filename did not contain release ID"
+	} else if nyaa, ok := provider.(*Nyaa); ok {
+		result.Accepted, result.Reason = nyaa.acceptFiles(result.Title, result.Files)
+	}
+	matchReason := result.Reason
+	// A forced or fallback-excluded download is an explicit, intentional
+	// override of automatic filename matching (Phase 5B; TODO-2.0 Task A):
+	// the real match/reject outcome is still computed above and kept in
+	// history so it is never confused with a normal accepted match.
+	switch {
+	case forced:
+		matchReason = "manually forced despite automatic match result: " + result.Reason
+	case excluded:
+		matchReason = "non-preferred filename allowed by Missing Library Files fallback search despite automatic match result: " + result.Reason
+	}
+	x := domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: sourceRef, Query: r.VideoID, Name: result.Title, Status: "queued", MatchReason: matchReason, FilenamePatternExcluded: forced || excluded}
+	if !result.Accepted && !forced && !excluded {
+		x.Status = "failed"
+		x.Error = "result rejected by filename rules"
+		return s.store.SaveDownload(ctx, x)
+	}
+	if result.ReplaceExisting {
+		if _, e := s.removeReleaseDownloads(ctx, r.ID, r.VideoID, true); e != nil {
+			x.Status = "failed"
+			x.Error = "existing download could not be deleted before replacement: " + e.Error()
+			x, _ = s.store.SaveDownload(ctx, x)
+			return x, e
+		}
+	}
+	if reason, existingID, replaceable, e := s.duplicate(ctx, r, sourceType == "Manual Search"); e != nil {
+		x.Status = "failed"
+		x.Error = e.Error()
+		x, _ = s.store.SaveDownload(ctx, x)
+		return x, e
+	} else if reason != "" {
+		x.Status = "skipped"
+		x.MatchReason = reason
+		x.CanReplace = replaceable
+		x.ExistingDownloadID = existingID
+		return s.store.SaveDownload(ctx, x)
+	}
+	settings, e := s.store.Settings(ctx)
+	if e != nil {
+		return x, e
+	}
+	qb := NewQB(settings["qb_url"], settings["qb_username"], settings["qb_password"])
+	response, e := qb.Add(ctx, result.Link, settings["qb_category"])
+	x.QBResponse = response
+	if e != nil {
+		x.Status = "failed"
+		x.Error = e.Error()
+		x, _ = s.store.SaveDownload(ctx, x)
+		_, _ = s.store.CreateNotification(ctx, r.ID, "download_failed", e.Error())
+		return x, e
+	}
+	// qBittorrent's /torrents/add replies HTTP 200 "Ok." for a lot of input
+	// it never actually queues - a magnet it can't parse, a .torrent URL it
+	// can't fetch, a category it silently drops the add for - so that
+	// response alone is not proof the torrent exists. Confirm it actually
+	// registered before telling the user (and this app's own history) that
+	// it is downloading; otherwise the record sat at "downloading" forever
+	// with nothing to show for it, which is indistinguishable from "Force
+	// Download did nothing" (the reported bug this guards against).
+	if hash, ok := s.verifyAddedToQBittorrent(ctx, qb, result.Link, r.VideoID); ok {
+		x.TorrentHash = hash
+		x.Status = "downloading"
+		x, _ = s.store.SaveDownload(ctx, x)
+		_, _ = s.store.CreateNotification(ctx, r.ID, "download_started", "Download sent to qBittorrent")
+		return x, nil
+	}
+	x.Status = "failed"
+	x.Error = "qBittorrent accepted the request but the torrent never appeared in its list - check the category, the magnet/torrent link, and qBittorrent's own logs"
+	x, _ = s.store.SaveDownload(ctx, x)
+	_, _ = s.store.CreateNotification(ctx, r.ID, "download_failed", x.Error)
+	return x, nil
+}
+
+// magnetHashPattern pulls the BitTorrent info-hash out of a magnet URI's
+// btih parameter when it's hex-encoded (the form Sukebei/Nyaa and most
+// public trackers use). A base32-encoded hash is left unmatched here - name
+// matching in verifyAddedToQBittorrent below still covers that case.
+var magnetHashPattern = regexp.MustCompile(`(?i)btih:([0-9a-f]{40})`)
+
+func magnetInfoHash(link string) (string, bool) {
+	m := magnetHashPattern.FindStringSubmatch(link)
+	if m == nil {
+		return "", false
+	}
+	return strings.ToLower(m[1]), true
+}
+
+// verifyAddedToQBittorrent confirms a just-submitted torrent actually
+// registered in qBittorrent's own torrent list, matching it the same two
+// ways the periodic reconciliation in pollTorrents does: by info-hash
+// parsed straight out of the magnet link when available, falling back to
+// the torrent's reported name containing the release's video ID. It gives
+// qBittorrent a handful of short retries so a slower non-magnet (.torrent
+// URL) add - which has to be fetched and parsed server-side before it shows
+// up - isn't mistaken for a silent failure.
+func (s *Service) verifyAddedToQBittorrent(ctx context.Context, qb QBittorrent, link, videoID string) (string, bool) {
+	wantHash, _ := magnetInfoHash(link)
+	wantVideo := canonical(videoID)
+	const attempts = 5
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return "", false
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
+		torrents, e := qb.Torrents(ctx)
+		if e != nil {
+			continue
+		}
+		for _, t := range torrents {
+			if (wantHash != "" && strings.EqualFold(t.Hash, wantHash)) || (wantVideo != "" && strings.Contains(canonical(t.Name), wantVideo)) {
+				return t.Hash, true
+			}
+		}
+	}
+	return "", false
+}
+
+func (s *Service) TestQB(ctx context.Context, baseURL, username, password string) (string, []string, error) {
+	qb := NewQB(baseURL, username, password)
+	qb.Client.Timeout = s.client.Timeout
+	version, err := qb.Version(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	categories, err := qb.Categories(ctx)
+	return version, categories, err
+}
+
+func (s *Service) RemoveDownload(ctx context.Context, downloadID int64) (int64, error) {
+	rows, err := s.store.Downloads(ctx, "")
+	if err != nil {
+		return 0, err
+	}
+	var selected *domain.Download
+	for i := range rows {
+		if rows[i].ID == downloadID {
+			selected = &rows[i]
+			break
+		}
+	}
+	if selected == nil {
+		return 0, errors.New("download not found")
+	}
+	return s.removeReleaseDownloads(ctx, selected.ReleaseID, selected.Query, false)
+}
+
+func (s *Service) removeReleaseDownloads(ctx context.Context, releaseID int64, query string, deleteFiles bool) (int64, error) {
+	rows, err := s.store.Downloads(ctx, "")
+	if err != nil {
+		return 0, err
+	}
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if settings["qb_url"] != "" {
+		qb := NewQB(settings["qb_url"], settings["qb_username"], settings["qb_password"])
+		qb.Client.Timeout = s.client.Timeout
+		hashes := map[string]bool{}
+		activeHistory := false
+		for _, row := range rows {
+			if row.ReleaseID != releaseID {
+				continue
+			}
+			if row.TorrentHash != "" {
+				hashes[row.TorrentHash] = true
+			}
+			activeHistory = activeHistory || row.Status == "downloading" || row.Status == "processing"
+		}
+		if torrents, torrentErr := qb.Torrents(ctx); torrentErr != nil {
+			if activeHistory || len(hashes) > 0 {
+				return 0, torrentErr
+			}
+		} else {
+			query := canonical(query)
+			for _, torrent := range torrents {
+				if query != "" && strings.Contains(canonical(torrent.Name), query) {
+					hashes[torrent.Hash] = true
+				}
+			}
+		}
+		for hash := range hashes {
+			var removeErr error
+			if deleteFiles {
+				removeErr = qb.DeleteFiles(ctx, hash)
+			} else {
+				removeErr = qb.Remove(ctx, hash)
+			}
+			if removeErr != nil {
+				return 0, removeErr
+			}
+		}
+	}
+
+	deleted, err := s.store.DeleteDownloadsForRelease(ctx, releaseID)
+	if err == nil {
+		s.log.Info("download removed and history cleared", "release_id", releaseID, "video_id", query, "delete_files", deleteFiles, "history_rows", deleted)
+	}
+	return deleted, err
+}
+
+// StartBulkRemoveAndReplace resolves the selected Download Activity rows now,
+// then performs destructive qBittorrent cleanup and optional replacement
+// searches on a detached background context. Releases are deduplicated so
+// selecting more than one history row for the same release never starts more
+// than one replacement.
+func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []int64, replace bool) (int, error) {
+	rows, err := s.store.Downloads(ctx, "")
+	if err != nil {
+		return 0, err
+	}
+	wanted := make(map[int64]bool, len(downloadIDs))
+	for _, id := range downloadIDs {
+		wanted[id] = true
+	}
+	type selectedRelease struct {
+		id    int64
+		query string
+	}
+	selected := map[int64]selectedRelease{}
+	for _, row := range rows {
+		if wanted[row.ID] && row.ReleaseID != 0 {
+			selected[row.ReleaseID] = selectedRelease{id: row.ReleaseID, query: row.Query}
+		}
+	}
+	if len(selected) == 0 {
+		return 0, errors.New("no matching downloads selected")
+	}
+	go func(items map[int64]selectedRelease) {
+		background := context.Background()
+		for _, item := range items {
+			if _, err := s.removeReleaseDownloads(background, item.id, item.query, true); err != nil {
+				s.log.Error("bulk download removal failed", "release_id", item.id, "video_id", item.query, "error", err)
+				continue
+			}
+			if !replace {
+				continue
+			}
+			release, err := s.store.Release(background, item.id)
+			if err != nil {
+				s.log.Error("bulk replacement release lookup failed", "release_id", item.id, "error", err)
+				continue
+			}
+			started, err := s.SearchAndDownloadNow(background, release, "Download Activity replacement", false)
+			if err != nil || !started {
+				s.log.Warn("bulk replacement search did not start a download", "release_id", item.id, "video_id", item.query, "started", started, "error", err)
+			}
+		}
+	}(selected)
+	return len(selected), nil
+}
+func (s *Service) Auto(ctx context.Context, r domain.Release) {
+	if settings, e := s.store.Settings(ctx); e == nil {
+		if ignored, reason := releaseIgnored(r, domain.ParseIgnoreList(settings["ignore_tags"]), domain.ParseIgnoreList(settings["ignore_titles"])); ignored {
+			s.log.Info("skipping automatic download of ignored release", "release_id", r.ID, "video_id", r.VideoID, "reason", reason)
+			return
+		}
+	}
+	sites, e := s.store.Sites(ctx)
+	if e != nil {
+		return
+	}
+	enabled := false
+	for _, site := range sites {
+		if hasReleaseSite(r, site.ID) {
+			enabled = enabled || site.Download
+			if site.Notify && !r.NotifyOnRelease {
+				v := true
+				_ = s.store.PatchRelease(ctx, r.ID, nil, nil, nil, &v, nil, nil, nil, nil)
+			}
+		}
+	}
+	if !enabled {
+		return
+	}
+	rows, e := s.search(ctx, r, "Automatic Search")
+	if e != nil {
+		return
+	}
+	for _, result := range rows {
+		if result.Accepted {
+			_, _ = s.Download(ctx, r, result, "Automatic Search", "")
+			return
+		}
+	}
+}
+
+// SearchAndDownloadNow searches immediately and downloads a result,
+// bypassing the per-site scheduled-search "Download" gate used by Auto. It
+// exists for hand-picked bulk actions (e.g. TODO-2.0 Phase 2's StashApp
+// missing-library recovery "Monitor + Download + search" action) where the
+// user has explicitly asked, release by release, for search and download
+// right now rather than enrolling the release in the periodic scheduled
+// sweep that Auto governs. It returns whether a download was actually
+// started, so a caller driving a bulk run can tally "found X releases"
+// results for the person without polling download history.
+//
+// allowNonPreferred is TODO-2.0 Task A's "allow non-preferred filenames"
+// toggle: false preserves this function's original behavior exactly -
+// download the best accepted-filename-pattern match, or nothing at all if
+// there isn't one. true additionally applies fallbackSearchCandidate's
+// three-tier fallback chain whenever the best accepted match has no seeds
+// (or there is no accepted match at all): prefer any other result that has
+// seeds, and failing that, the single most recent result. A candidate
+// chosen by that fallback is marked
+// domain.SearchResult.FilenamePatternExcluded so the resulting download's
+// history is never confused with a normal accepted match.
+func (s *Service) SearchAndDownloadNow(ctx context.Context, r domain.Release, trigger string, allowNonPreferred bool) (bool, error) {
+	native, e := s.searchNative(ctx, r, trigger)
+	if e != nil {
+		return false, e
+	}
+	sorted := sortSearchResults(native)
+	candidate, found := fallbackSearchCandidate(sorted, native, allowNonPreferred)
+	if !found {
+		return false, nil
+	}
+	if _, e := s.Download(ctx, r, candidate, trigger, ""); e != nil {
+		return false, e
+	}
+	return true, nil
+}
+
+// fallbackSearchCandidate picks the single search result SearchAndDownloadNow
+// should download, from sorted (see sortSearchResults - accepted matches
+// first, then by seed count) and native (the provider's own original
+// order, used only for the "most recent" fallback tier below).
+//
+// allowNonPreferred false reproduces this selection's original, simpler
+// behavior exactly: the best accepted match if there is one, regardless of
+// its seed count, otherwise nothing.
+//
+// allowNonPreferred true applies TODO-2.0 Task A's three-tier fallback
+// chain instead:
+//  1. the best accepted match, but only if it has at least one seed -
+//     sorted's ordering means sorted[0] is that match whenever one exists;
+//  2. otherwise, whichever result (accepted or not) has the most seeds,
+//     as long as it has at least one;
+//  3. otherwise, the single most recent result - native[0], the provider's
+//     own first-returned result, before display sorting reordered it.
+//
+// The returned bool reports whether any candidate was found at all. Tiers
+// 2 and 3 set the returned SearchResult.FilenamePatternExcluded so callers
+// never confuse that pick with a normal accepted match.
+func fallbackSearchCandidate(sorted, native []domain.SearchResult, allowNonPreferred bool) (domain.SearchResult, bool) {
+	if len(sorted) > 0 && sorted[0].Accepted && (!allowNonPreferred || sorted[0].Seeds > 0) {
+		return sorted[0], true
+	}
+	if !allowNonPreferred {
+		return domain.SearchResult{}, false
+	}
+	var best domain.SearchResult
+	bestFound := false
+	for _, result := range sorted {
+		if result.Seeds > 0 && (!bestFound || result.Seeds > best.Seeds) {
+			best, bestFound = result, true
+		}
+	}
+	if bestFound {
+		best.FilenamePatternExcluded = true
+		return best, true
+	}
+	if len(native) > 0 {
+		candidate := native[0]
+		candidate.FilenamePatternExcluded = true
+		return candidate, true
+	}
+	return domain.SearchResult{}, false
+}
+
+func (s *Service) SearchStatus() domain.DownloadSearchJob {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.job
+}
+
+// SearchStatusOlder is SearchStatus's counterpart for the "older releases"
+// monitored-search schedule (see olderJob's doc comment on Service).
+func (s *Service) SearchStatusOlder() domain.DownloadSearchJob {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.olderJob
+}
+
+// defaultMonitoredRecentDays/defaultMonitoredOlderDays are the "Monitored
+// releases" settings area's fallback day thresholds (task 38's two-schedule
+// split) when monitor_recent_days/monitor_older_days are unset or
+// unparsable. They default to the same value deliberately: with both equal,
+// isRecentRelease/isOlderRelease partition every release with a known
+// release date cleanly in half with no gap - a release older than 30 days
+// falls to the older/infrequent schedule, everything else (including an
+// unknown release date) stays on the recent/frequent one. An operator who
+// then diverges the two values does so knowingly, once each one is exposed
+// as its own field in the Monitored releases UI.
+const defaultMonitoredRecentDays = 30
+const defaultMonitoredOlderDays = 30
+
+func monitoredDaysSetting(settings map[string]string, key string, fallback int) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(settings[key])); err == nil && n >= 0 {
+		return n
+	}
+	return fallback
+}
+
+// releaseAgeDays returns how many whole days old release's ReleaseDate is as
+// of now, and whether that could be determined at all. ReleaseDate uses the
+// scrapers' normalized "YYYY-MM-DD" format (see normalizeDate in
+// internal/scraper); a blank or unparsable value returns ok=false, which
+// isRecentRelease/isOlderRelease each treat differently - see their own doc
+// comments.
+func releaseAgeDays(now time.Time, release domain.Release) (days int, ok bool) {
+	t, err := time.Parse("2006-01-02", strings.TrimSpace(release.ReleaseDate))
+	if err != nil {
+		return 0, false
+	}
+	return int(now.UTC().Truncate(24*time.Hour).Sub(t.UTC().Truncate(24*time.Hour)).Hours() / 24), true
+}
+
+// isRecentRelease reports whether release belongs to the "recent releases"
+// monitored-search schedule's bucket: its release date is recentDays old or
+// newer. A release with no confirmed release date yet always counts as
+// recent, so it keeps getting checked frequently until a date is known
+// rather than falling through to (or being skipped by) the older schedule.
+func isRecentRelease(now time.Time, release domain.Release, recentDays int) bool {
+	days, ok := releaseAgeDays(now, release)
+	if !ok {
+		return true
+	}
+	return days <= recentDays
+}
+
+// isOlderRelease reports whether release belongs to the "older releases"
+// monitored-search schedule's bucket: its release date is known and more
+// than olderDays old. A release with no confirmed release date is never in
+// this bucket (see isRecentRelease) - it is only ever picked up by the
+// recent schedule until its release date is filled in.
+func isOlderRelease(now time.Time, release domain.Release, olderDays int) bool {
+	days, ok := releaseAgeDays(now, release)
+	if !ok {
+		return false
+	}
+	return days > olderDays
+}
+
+func (s *Service) StartSearch(ctx context.Context) error {
+	s.mu.Lock()
+	if s.job.Running {
+		s.mu.Unlock()
+		return errors.New("download search job already running")
+	}
+	s.job = domain.DownloadSearchJob{Running: true, StartedAt: time.Now().UTC()}
+	s.mu.Unlock()
+	go s.runSearch(context.WithoutCancel(ctx))
+	return nil
+}
+
+// StartSearchOlder is StartSearch's counterpart for the "older releases"
+// schedule, so it can also be run on demand from the Monitored releases UI
+// independently of (and even while) the recent schedule is running.
+func (s *Service) StartSearchOlder(ctx context.Context) error {
+	s.mu.Lock()
+	if s.olderJob.Running {
+		s.mu.Unlock()
+		return errors.New("older-release download search job already running")
+	}
+	s.olderJob = domain.DownloadSearchJob{Running: true, StartedAt: time.Now().UTC()}
+	s.mu.Unlock()
+	go s.runSearchOlder(context.WithoutCancel(ctx))
+	return nil
+}
+
+func (s *Service) runSearch(ctx context.Context) {
+	settings, _ := s.store.Settings(ctx)
+	recentDays := monitoredDaysSetting(settings, "monitor_recent_days", defaultMonitoredRecentDays)
+	now := time.Now()
+	s.runMonitoredSearch(ctx, s.SearchStatus, func(j domain.DownloadSearchJob) { s.mu.Lock(); s.job = j; s.mu.Unlock() },
+		func(r domain.Release) bool { return isRecentRelease(now, r, recentDays) }, "Monitored Search", "scheduled download search")
+}
+
+// runSearchOlder is runSearch's counterpart for the "older releases"
+// schedule (task 38): same search/fallback/Download chain, restricted to
+// releases isOlderRelease considers old enough, so a slower, independent
+// schedule can sweep through them without the frequent recent-releases
+// schedule re-searching them (and re-hitting the download provider, e.g.
+// NYAA) every run.
+func (s *Service) runSearchOlder(ctx context.Context) {
+	settings, _ := s.store.Settings(ctx)
+	olderDays := monitoredDaysSetting(settings, "monitor_older_days", defaultMonitoredOlderDays)
+	now := time.Now()
+	s.runMonitoredSearch(ctx, s.SearchStatusOlder, func(j domain.DownloadSearchJob) { s.mu.Lock(); s.olderJob = j; s.mu.Unlock() },
+		func(r domain.Release) bool { return isOlderRelease(now, r, olderDays) }, "Monitored Search (Older)", "scheduled older-release download search")
+}
+
+// runMonitoredSearch is runSearch/runSearchOlder's shared core: fetch every
+// monitored release, keep only the ones the caller's keep bucket-test
+// selects (see isRecentRelease/isOlderRelease), and run each through the
+// same ignore/duplicate/search/fallback/Download chain, publishing live
+// progress via setJob after every step exactly as this loop always has.
+// getJob/setJob read and publish the job status under s.mu rather than
+// through a shared pointer, since domain.DownloadSearchJob is copied by
+// value in and out of the Service struct throughout this package (see
+// SearchStatus/SearchStatusOlder) - job and olderJob must stay independently
+// lockable so the two schedules can run concurrently without racing on each
+// other's progress.
+func (s *Service) runMonitoredSearch(ctx context.Context, getJob func() domain.DownloadSearchJob, setJob func(domain.DownloadSearchJob), keep func(domain.Release) bool, sourceType, logLabel string) {
+	job := getJob()
+	defer func() {
+		job.Running = false
+		job.FinishedAt = time.Now().UTC()
+		setJob(job)
+		s.log.Info(logLabel+" completed", "checked", job.Checked, "downloaded", job.Downloaded, "skipped", job.Skipped, "failed", job.Failed, "error", job.Error)
+	}()
+	rows, e := s.store.Releases(ctx, domain.ReleaseFilter{MonitorDownload: true, Limit: 5000})
+	if e != nil {
+		job.Error = e.Error()
+		return
+	}
+	var ignoreTags, ignoreTitles []string
+	if settings, e := s.store.Settings(ctx); e == nil {
+		ignoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
+		ignoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
+	}
+	s.log.Info(logLabel+" started", "releases", len(rows))
+	for _, release := range rows {
+		if !keep(release) {
+			continue
+		}
+		job.Checked++
+		job.VideoID = release.VideoID
+		setJob(job)
+		if ignored, reason := releaseIgnored(release, ignoreTags, ignoreTitles); ignored {
+			s.log.Info("skipping monitored search of ignored release", "release_id", release.ID, "video_id", release.VideoID, "reason", reason)
+			job.Skipped++
+			continue
+		}
+		if reason, _, _, err := s.duplicate(ctx, release, false); err != nil {
+			job.Failed++
+			job.Error = err.Error()
+			continue
+		} else if reason != "" {
+			job.Skipped++
+			continue
+		}
+		native, err := s.searchNative(ctx, release, sourceType)
+		if err != nil {
+			job.Failed++
+			job.Error = err.Error()
+			continue
+		}
+		sorted := sortSearchResults(native)
+		// release.AllowNonPreferredFilenames is the persisted form of the
+		// Missing Library Files "allow non-preferred filenames" override
+		// (TODO-2.0 Task A): once a release needed the relaxed
+		// fallbackSearchCandidate chain once - whether from that apply flow
+		// or a manual bulk toggle on this same monitored-releases table -
+		// every future scheduled check for it keeps using the relaxed rule
+		// too, instead of only ever accepting a normal filename-pattern
+		// match like every other monitored release.
+		candidate, found := fallbackSearchCandidate(sorted, native, release.AllowNonPreferredFilenames)
+		if !found {
+			job.Skipped++
+			continue
+		}
+		download, err := s.Download(ctx, release, candidate, sourceType, candidate.Link)
+		if err != nil {
+			job.Failed++
+			job.Error = err.Error()
+		} else if download.Status == "downloading" {
+			job.Downloaded++
+		} else {
+			job.Skipped++
+		}
+	}
+}
+
+func (s *Service) SearchSchedule(ctx context.Context) {
+	for {
+		settings, _ := s.store.Settings(ctx)
+		wait := time.Hour
+		if parsed, err := time.ParseDuration(settings["download_search_interval"]); err == nil && parsed >= time.Minute {
+			wait = parsed
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			if settings["download_search_enabled"] == "true" {
+				_ = s.StartSearch(ctx)
+			}
+		}
+	}
+}
+
+// OlderSearchSchedule is SearchSchedule's counterpart for the "older
+// releases" schedule, driven by its own enabled flag/interval settings so it
+// can run far less often (the whole point of the split - task 38 - is to
+// stop re-searching old, unlikely-to-appear releases as often as brand new
+// ones and overloading the download provider, e.g. NYAA).
+func (s *Service) OlderSearchSchedule(ctx context.Context) {
+	for {
+		settings, _ := s.store.Settings(ctx)
+		wait := 24 * time.Hour
+		if parsed, err := time.ParseDuration(settings["download_search_older_interval"]); err == nil && parsed >= time.Minute {
+			wait = parsed
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			if settings["download_search_older_enabled"] == "true" {
+				_ = s.StartSearchOlder(ctx)
+			}
+		}
+	}
+}
+func (s *Service) Schedule(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		s.tick(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+func (s *Service) tick(ctx context.Context) {
+	s.pollTorrents(ctx)
+}
+func (s *Service) NotificationSchedule(ctx context.Context) {
+	for {
+		s.releaseNotifications(ctx)
+		wait := 15 * time.Minute
+		if settings, e := s.store.Settings(ctx); e == nil {
+			if d, e := time.ParseDuration(settings["notification_interval"]); e == nil && d >= time.Minute {
+				wait = d
+			}
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+func (s *Service) RSSSchedule(ctx context.Context) {
+	for {
+		s.pollRSS(ctx)
+		wait := 5 * time.Minute
+		if settings, e := s.store.Settings(ctx); e == nil {
+			if d, e := time.ParseDuration(settings["rss_interval"]); e == nil && d >= time.Minute {
+				wait = d
+			}
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+func (s *Service) releaseNotifications(ctx context.Context) {
+	provider, _ := s.provider(ctx)
+	for offset := 0; ; offset += 500 {
+		rows, e := s.store.Releases(ctx, domain.ReleaseFilter{Limit: 500, Offset: offset})
+		if e != nil {
+			return
+		}
+		for _, r := range rows {
+			if r.NotifyOnRelease && !r.Released && provider != nil {
+				if results, e := provider.Search(ctx, r.VideoID); e == nil {
+					for _, result := range results {
+						if result.Accepted {
+							v := true
+							_ = s.store.PatchRelease(ctx, r.ID, &v, nil, nil, nil, nil, nil, nil, nil)
+							r.Released = true
+							break
+						}
+					}
+				}
+			}
+			if r.NotifyOnRelease && r.Released {
+				_, _ = s.store.CreateNotification(ctx, r.ID, "new_release", "Release date has passed")
+			}
+		}
+		if len(rows) < 500 {
+			return
+		}
+	}
+}
+func (s *Service) pollTorrents(ctx context.Context) {
+	settings, e := s.store.Settings(ctx)
+	if e != nil || settings["qb_url"] == "" {
+		return
+	}
+	qb := NewQB(settings["qb_url"], settings["qb_username"], settings["qb_password"])
+	torrents, e := qb.Torrents(ctx)
+	if e != nil {
+		s.log.Warn("qBittorrent poll failed", "error", e)
+		return
+	}
+	downloads, e := s.store.Downloads(ctx, "downloading")
+	if e != nil {
+		return
+	}
+	completed, e := s.store.Downloads(ctx, "completed")
+	if e != nil {
+		return
+	}
+	downloads = append(downloads, completed...)
+	minRatio, _ := strconv.ParseFloat(settings["minimum_seed_ratio"], 64)
+	rule := completedTorrentRule(settings["qb_completed_action"])
+	for _, d := range downloads {
+		matched := false
+		for _, t := range torrents {
+			if (d.TorrentHash != "" && d.TorrentHash == t.Hash) || strings.Contains(canonical(t.Name), canonical(d.Query)) {
+				matched = true
+				wasCompleted := d.Status == "completed"
+				d.TorrentHash = t.Hash
+				d.Name = t.Name
+				d.SeedRatio = t.Ratio
+				d.Progress = t.Progress
+				d.Seeds = t.Seeds
+				d.Peers = t.Peers
+				d.ETASeconds = t.ETA
+				d.SeenComplete = t.SeenComplete
+				if files, e := qb.Files(ctx, t.Hash); e == nil {
+					if raw, e := json.Marshal(files); e == nil {
+						d.Files = raw
+					}
+				}
+				state := strings.ToLower(t.State)
+				if strings.Contains(state, "upload") || strings.HasSuffix(state, "up") {
+					d.Status = "completed"
+					_, _ = s.store.CreateNotification(ctx, d.ReleaseID, "downloaded", "Download completed")
+					if !wasCompleted {
+						s.log.Info("qBittorrent download completed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "state", t.State, "seed_ratio", t.Ratio, "cleanup_rule", rule)
+					}
+				}
+				if d.Status == "completed" {
+					run, lookupErr := s.store.PipelineRun(ctx, d.ID, pipelineDownloadCompleted)
+					if lookupErr == nil && run.State == "" {
+						// Not yet run for this download - run it now.
+						// runPipelineEvent always executes every enabled step
+						// for this trigger even if an earlier one fails (a
+						// failed step is logged and skipped over, not fatal
+						// to the run - see runPipelineEvent), so the run is
+						// always left in a terminal state afterwards.
+						_ = s.runPipelineSerialized(func() error { return s.runPipelineEvent(ctx, &d, t, pipelineDownloadCompleted) })
+						run, lookupErr = s.store.PipelineRun(ctx, d.ID, pipelineDownloadCompleted)
+					}
+					switch {
+					case lookupErr != nil:
+						d.PostStatus = "pipeline_failed"
+						d.Error = lookupErr.Error()
+					case run.State == "running":
+						// Still executing (e.g. interrupted mid-run by a
+						// restart) - leave the torrent alone until it
+						// reaches a terminal state rather than racing it.
+						d.PostStatus = "pipeline_interrupted"
+						d.Error = "post-processing was interrupted; torrent cleanup was withheld"
+					default:
+						// "completed" or "failed" both mean this trigger's
+						// pipeline has finished running for this download -
+						// a failed step must not block ratio-based cleanup,
+						// only a still-running or never-run pipeline should.
+						// The failure itself remains fully recorded in the
+						// pipeline run/step logs for troubleshooting; the
+						// cleanup-derived status below is more useful to
+						// show here than a stale "pipeline_failed".
+						switch {
+						case rule == completedTorrentKeep:
+							if d.PostStatus != "completed_retained" {
+								s.log.Info("completed qBittorrent torrent retained by cleanup rule", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "pipeline_trigger", pipelineDownloadCompleted, "files_retained", true)
+							}
+							d.PostStatus = "completed_retained"
+						case d.PostStatus == "cleanup_failed":
+							// A previous removal attempt failed. Don't hammer qBittorrent
+							// every poll, but do retry periodically instead of leaving the
+							// torrent stranded forever - the failure may well have been
+							// transient (a dropped qBittorrent session, a flaky pipeline
+							// step, etc).
+							if s.cleanupDue(d.ID) {
+								s.cleanupTorrent(ctx, qb, &d, t, rule)
+							}
+						case !completedTorrentReady(rule, t.Ratio, minRatio):
+							if d.PostStatus != "completed_waiting_ratio" {
+								s.log.Info("completed qBittorrent torrent waiting for seed ratio", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "seed_ratio", t.Ratio, "minimum_seed_ratio", minRatio, "pipeline_trigger", pipelineDownloadCompleted)
+							}
+							d.PostStatus = "completed_waiting_ratio"
+						default:
+							s.cleanupTorrent(ctx, qb, &d, t, rule)
+						}
+					}
+				}
+				_, _ = s.store.SaveDownload(ctx, d)
+				break
+			}
+		}
+		// The torrent this download expects is gone from qBittorrent
+		// entirely - not matched by hash or name against anything currently
+		// listed. Only treat this as a real removal once a hash was
+		// previously confirmed (d.TorrentHash != ""): a brand new download
+		// can briefly show no match while qBittorrent is still resolving
+		// its magnet/metadata, and that transient gap must not be mistaken
+		// for someone deleting it. Skip anything this app already knows is
+		// gone for a good reason (it removed it itself).
+		if !matched && d.TorrentHash != "" && !downloadGoneFromQBHandled(d.PostStatus) {
+			previousPostStatus := d.PostStatus
+			s.clearCleanupRetry(d.ID)
+			d.PostStatus = postStatusRemovedManually
+			d.Error = ""
+			s.log.Info("torrent no longer present in qBittorrent; treating as manually removed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", d.TorrentHash, "previous_post_status", previousPostStatus)
+			_, _ = s.store.SaveDownload(ctx, d)
+		}
+	}
+}
+func (s *Service) runPipelineEvent(ctx context.Context, d *domain.Download, t Torrent, trigger string) error {
+	steps, e := s.store.PipelineSteps(ctx)
+	if e != nil {
+		s.log.Error("pipeline event could not load steps", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "pipeline_trigger", trigger, "error", e)
+		return e
+	}
+	// Each step below gets its own timeout, resolved per-step via
+	// stepTimeout (that step's own TimeoutSeconds if it set one, otherwise
+	// the settings-wide default) - not one timeout shared across the whole
+	// ordered pipeline run. That way a step whose command legitimately runs
+	// long doesn't force every other step's budget to be raised too, and a
+	// slow step no longer eats into how long a later step that depends on
+	// it gets to run. Everything that persists run/log state keeps using
+	// the caller's ctx, so a run that times out is still recorded rather
+	// than left looking like it never happened.
+	run := domain.PipelineRun{DownloadID: d.ID, Trigger: trigger, State: "running", StartedAt: time.Now().UTC()}
+	if e := s.store.SavePipelineRun(ctx, run); e != nil {
+		return e
+	}
+	d.PostStatus = "processing"
+	s.log.Info("pipeline event started", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "pipeline_trigger", trigger)
+	outputs := []string{}
+	enabledSteps := 0
+	failedSteps := 0
+	var lastErr error
+	var lastFailedStep string
+	mappedPath := s.mapPath(ctx, t.ContentPath)
+	for _, step := range steps {
+		if !step.Enabled || step.Trigger != trigger {
+			continue
+		}
+		enabledSteps++
+		var cfg struct {
+			Command    string `json:"command"`
+			Query      string `json:"query"`
+			OutputPath string `json:"output_path"`
+		}
+		_ = json.Unmarshal(step.Config, &cfg)
+		stepLog, _ := s.store.SavePipelineLog(ctx, domain.PipelineLog{DownloadID: d.ID, StepID: step.ID, State: "running", Configuration: step.Config})
+		timeout := s.stepTimeout(ctx, step)
+		runCtx, cancel := context.WithTimeout(ctx, timeout)
+		var output []byte
+		if step.Type == "shell" {
+			targetPath := renderPipelineValueTemplate(cfg.OutputPath, trigger, mappedPath, *d, t)
+			cmd := exec.CommandContext(runCtx, "sh", "-c", cfg.Command)
+			cmd.WaitDelay = pipelineKillGrace
+			cmd.Env = append(cmd.Environ(), "JAVBEACON_PIPELINE_EVENT="+trigger, "JAVBEACON_DOWNLOAD_PATH="+mappedPath, "JAVBEACON_TARGET_PATH="+targetPath, "JAVBEACON_RELEASE_ID="+d.Query, "JAVBEACON_RELEASE_DB_ID="+strconv.FormatInt(d.ReleaseID, 10), "JAVBEACON_TORRENT_HASH="+t.Hash)
+			output, e = cmd.CombinedOutput()
+			e = clarifyPipelineTimeout(runCtx, e, timeout)
+			if e == nil && targetPath != "" {
+				mappedPath = targetPath
+			}
+		} else {
+			output, e = s.stashOperation(runCtx, renderPipelineTemplate(cfg.Query, trigger, mappedPath, *d, t))
+			e = clarifyPipelineTimeout(runCtx, e, timeout)
+		}
+		cancel()
+		outputs = append(outputs, step.Name+": "+string(output))
+		if e != nil {
+			// A single failed step (e.g. a curl call that errors) must not
+			// abort the whole run - the remaining enabled steps for this
+			// trigger still get a chance to execute. The failure is logged
+			// per-step here (and recorded in the overall run below) so it
+			// stays fully visible for troubleshooting; runPipelineEvent's
+			// caller decides separately whether a failed run should still
+			// block anything downstream (pollTorrents's ratio-based
+			// qBittorrent cleanup deliberately does not).
+			stepLog.State = "failed"
+			stepLog.Output = string(output)
+			stepLog.Error = e.Error()
+			_, _ = s.store.SavePipelineLog(ctx, stepLog)
+			failedSteps++
+			lastErr = e
+			lastFailedStep = step.Name
+			s.log.Error("pipeline step failed; continuing with remaining steps", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "pipeline_trigger", trigger, "pipeline_step", step.Name, "pipeline_step_type", step.Type, "pipeline_step_timeout", timeout.String(), "error", e, "output", truncatePipelineOutput(string(output)))
+			continue
+		}
+		stepLog.State = "completed"
+		stepLog.Output = string(output)
+		_, _ = s.store.SavePipelineLog(ctx, stepLog)
+		s.log.Info("pipeline step completed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "pipeline_trigger", trigger, "pipeline_step", step.Name, "pipeline_step_type", step.Type, "pipeline_step_timeout", timeout.String(), "output", truncatePipelineOutput(string(output)))
+	}
+	d.QBResponse = strings.Join(outputs, "\n")
+	if failedSteps > 0 {
+		d.PostStatus = "pipeline_failed"
+		d.Error = fmt.Sprintf("%d of %d pipeline step(s) failed; last failure in %s: %v", failedSteps, enabledSteps, lastFailedStep, lastErr)
+		run.State, run.Error, run.FinishedAt = "failed", d.Error, time.Now().UTC()
+		if e := s.store.SavePipelineRun(ctx, run); e != nil {
+			return e
+		}
+		s.log.Error("pipeline event finished with failures", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "pipeline_trigger", trigger, "pipeline_steps", enabledSteps, "failed_steps", failedSteps)
+		return errors.New(d.Error)
+	}
+	run.State, run.FinishedAt = "completed", time.Now().UTC()
+	if e := s.store.SavePipelineRun(ctx, run); e != nil {
+		return e
+	}
+	d.PostStatus = "pipeline_completed"
+	d.Error = ""
+	s.log.Info("pipeline event completed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "pipeline_trigger", trigger, "pipeline_steps", enabledSteps)
+	return nil
+}
+func (s *Service) cleanupTorrent(ctx context.Context, qb QBittorrent, d *domain.Download, t Torrent, cleanupRule string) {
+	if e := qb.Remove(ctx, t.Hash); e != nil {
+		d.PostStatus = "cleanup_failed"
+		d.Error = "remove completed torrent: " + e.Error()
+		s.log.Error("completed qBittorrent torrent removal failed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "cleanup_rule", cleanupRule, "files_retained", true, "error", e)
+		return
+	}
+	s.clearCleanupRetry(d.ID)
+	d.PostStatus = "completed_removed"
+	s.log.Info("completed qBittorrent torrent removed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "cleanup_rule", cleanupRule, "seed_ratio", t.Ratio, "files_retained", true)
+	if e := s.runPipelineSerialized(func() error { return s.runPipelineEvent(ctx, d, t, pipelineDownloadRemoved) }); e != nil {
+		d.PostStatus = "removed_pipeline_failed"
+		s.log.Error("post-removal pipeline failed after qBittorrent torrent removal", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "cleanup_rule", cleanupRule, "pipeline_trigger", pipelineDownloadRemoved, "files_retained", true, "error", e)
+		return
+	}
+	d.PostStatus = "completed_removed"
+}
+func renderPipelineTemplate(query, trigger, path string, d domain.Download, t Torrent) string {
+	escape := func(value string) string {
+		quoted, _ := json.Marshal(value)
+		if len(quoted) >= 2 {
+			return string(quoted[1 : len(quoted)-1])
+		}
+		return value
+	}
+	return strings.NewReplacer("{{event}}", escape(trigger), "{{download_path}}", escape(path), "{{release_id}}", escape(d.Query), "{{release_db_id}}", strconv.FormatInt(d.ReleaseID, 10), "{{torrent_hash}}", escape(t.Hash)).Replace(query)
+}
+func renderPipelineValueTemplate(value, trigger, path string, d domain.Download, t Torrent) string {
+	return strings.NewReplacer("{{event}}", trigger, "{{download_path}}", path, "{{release_id}}", d.Query, "{{release_db_id}}", strconv.FormatInt(d.ReleaseID, 10), "{{torrent_hash}}", t.Hash).Replace(value)
+}
+func (s *Service) mapPath(ctx context.Context, path string) string {
+	rows, _ := s.store.PathMappings(ctx)
+	for _, m := range rows {
+		if strings.HasPrefix(path, m.DownloadPrefix) {
+			return m.LocalPrefix + strings.TrimPrefix(path, m.DownloadPrefix)
+		}
+	}
+	return path
+}
+func (s *Service) stashOperation(ctx context.Context, query string) ([]byte, error) {
+	settings, e := s.store.Settings(ctx)
+	if e != nil {
+		return nil, e
+	}
+	base := strings.TrimRight(settings["stash_base_url"], "/")
+	if base == "" {
+		return nil, errors.New("StashApp Base URL is not configured")
+	}
+	body, _ := json.Marshal(map[string]string{"query": query})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+"/graphql", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if key := settings["stash_api_key"]; key != "" {
+		req.Header.Set("ApiKey", key)
+	}
+	resp, e := s.client.Do(req)
+	if e != nil {
+		return nil, e
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode/100 != 2 {
+		return out, fmt.Errorf("StashApp returned HTTP %d", resp.StatusCode)
+	}
+	return out, nil
+}
+
+// truncatePipelineOutput bounds step output before it is written to the
+// application log, so a chatty shell command or a large StashApp response
+// cannot flood the Live Application Log.
+func truncatePipelineOutput(output string) string {
+	const max = 2000
+	if len(output) <= max {
+		return output
+	}
+	return output[:max] + fmt.Sprintf("... (truncated, %d bytes total)", len(output))
+}
+
+// TestPipelineStep runs a single Ordered event pipeline step in isolation,
+// using synthetic sample values instead of a real download/torrent, so a
+// user can verify a step (shell or StashApp) from the Settings UI without
+// waiting for a real download event. It reuses the exact same execution
+// path as runPipelineEvent (same env vars / template placeholders) so a
+// passing test is representative of the real run. It does not persist a
+// PipelineRun/PipelineLog row - it is not tied to a real download - but the
+// result is recorded in the application log for troubleshooting, matching
+// runPipelineEvent's logging.
+func (s *Service) TestPipelineStep(ctx context.Context, step domain.PipelineStep) (string, error) {
+	var cfg struct {
+		Command    string `json:"command"`
+		Query      string `json:"query"`
+		OutputPath string `json:"output_path"`
+	}
+	_ = json.Unmarshal(step.Config, &cfg)
+	trigger := step.Trigger
+	if trigger == "" {
+		trigger = pipelineDownloadCompleted
+	}
+	sample := domain.Download{ReleaseID: 0, Query: "TEST-001"}
+	torrent := Torrent{Hash: "0000000000000000000000000000000000000000000000000000000000000000000000000000"}
+	mappedPath := s.mapPath(ctx, "/downloads/TEST-001/TEST-001.mkv")
+	timeout := s.stepTimeout(ctx, step)
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var output []byte
+	var e error
+	switch step.Type {
+	case "shell":
+		if strings.TrimSpace(cfg.Command) == "" {
+			return "", errors.New("this shell step has no command configured")
+		}
+		targetPath := renderPipelineValueTemplate(cfg.OutputPath, trigger, mappedPath, sample, torrent)
+		cmd := exec.CommandContext(runCtx, "sh", "-c", cfg.Command)
+		cmd.WaitDelay = pipelineKillGrace
+		cmd.Env = append(cmd.Environ(), "JAVBEACON_PIPELINE_EVENT="+trigger, "JAVBEACON_DOWNLOAD_PATH="+mappedPath, "JAVBEACON_TARGET_PATH="+targetPath, "JAVBEACON_RELEASE_ID="+sample.Query, "JAVBEACON_RELEASE_DB_ID="+strconv.FormatInt(sample.ReleaseID, 10), "JAVBEACON_TORRENT_HASH="+torrent.Hash)
+		output, e = cmd.CombinedOutput()
+		e = clarifyPipelineTimeout(runCtx, e, timeout)
+	default:
+		if strings.TrimSpace(cfg.Query) == "" {
+			return "", errors.New("this StashApp step has no query configured")
+		}
+		output, e = s.stashOperation(runCtx, renderPipelineTemplate(cfg.Query, trigger, mappedPath, sample, torrent))
+		e = clarifyPipelineTimeout(runCtx, e, timeout)
+	}
+	result := truncatePipelineOutput(string(output))
+	if e != nil {
+		s.log.Error("pipeline step test failed", "pipeline_step", step.Name, "pipeline_step_type", step.Type, "pipeline_trigger", trigger, "error", e, "output", result)
+		return string(output), e
+	}
+	s.log.Info("pipeline step test passed", "pipeline_step", step.Name, "pipeline_step_type", step.Type, "pipeline_trigger", trigger, "output", result)
+	return string(output), nil
+}
+
+func (s *Service) pollRSS(ctx context.Context) {
+	sites, e := s.store.Sites(ctx)
+	if e != nil {
+		return
+	}
+	provider, e := s.provider(ctx)
+	if e != nil {
+		return
+	}
+	nyaa, ok := provider.(*Nyaa)
+	if !ok {
+		return
+	}
+	for _, site := range sites {
+		if !site.Download || site.RSSURL == "" {
+			continue
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, site.RSSURL, nil)
+		resp, e := s.client.Do(req)
+		if e != nil {
+			continue
+		}
+		var feed struct {
+			Items []struct {
+				Title     string `xml:"title"`
+				Link      string `xml:"link"`
+				GUID      string `xml:"guid"`
+				Enclosure struct {
+					URL string `xml:"url,attr"`
+				} `xml:"enclosure"`
+			} `xml:"channel>item"`
+		}
+		e = xml.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&feed)
+		resp.Body.Close()
+		if e != nil {
+			continue
+		}
+		for _, item := range feed.Items {
+			detailURL, directURL := item.GUID, item.Enclosure.URL
+			if directURL == "" {
+				directURL = item.Link
+			}
+			result := nyaa.resolveResult(ctx, item.Title, detailURL, directURL)
+			releases, _ := s.store.Releases(ctx, domain.ReleaseFilter{Search: result.Title, Limit: 20})
+			for _, r := range releases {
+				if !hasReleaseSite(r, site.ID) || !strings.Contains(canonical(result.Title), canonical(r.VideoID)) {
+					continue
+				}
+				if !result.Accepted {
+					s.log.Debug("RSS torrent rejected by filename patterns", "site", site.Title, "video_id", r.VideoID, "filename", result.Title, "reason", result.Reason)
+					continue
+				}
+				_, _ = s.Download(ctx, r, result, "Provider RSS", site.RSSURL)
+			}
+		}
+	}
+}
