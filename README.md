@@ -59,7 +59,7 @@ To upgrade to a newer checked-out release, update `JAVBEACON_VERSION` in
 
 ```bash
 git fetch --tags
-git checkout v1.0.0
+git checkout v1.0.1
 docker compose up -d --build
 ```
 
@@ -68,7 +68,7 @@ docker compose up -d --build
 The equivalent direct Docker workflow is:
 
 ```bash
-docker build --build-arg VERSION=1.0.0 -t javbeacon:1.0.0 .
+docker build --build-arg VERSION=1.0.1 -t javbeacon:1.0.1 .
 docker volume create javbeacon-data
 
 docker run -d \
@@ -78,7 +78,7 @@ docker run -d \
   -v javbeacon-data:/app/data \
   -e JAVBEACON_INITIAL_USERNAME=admin \
   -e JAVBEACON_INITIAL_PASSWORD='replace-with-a-long-password' \
-  javbeacon:1.0.0
+  javbeacon:1.0.1
 ```
 
 If initial credentials are not supplied, JAVBeacon creates `admin` / `changeme123`. Change them immediately.
@@ -186,7 +186,7 @@ The web client is embedded from `internal/web/static` into the Go binary.
 JAVBeacon uses semantic versions. `internal/version/VERSION` is the source of
 truth used by local builds, Docker image metadata, the version API, and the
 frontend. Release tags use the same value with a `v` prefix—for example,
-`VERSION=1.0.0` is released as `v1.0.0`.
+`VERSION=1.0.1` is released as `v1.0.1`.
 
 Pushing a matching `v*` tag runs the GitHub release workflow. It executes the
 test suite, builds Linux, macOS, and Windows binaries, creates checksums, and
