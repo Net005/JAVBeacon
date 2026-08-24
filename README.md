@@ -89,12 +89,12 @@ POSTGRES_DATA_PATH=/srv/javbeacon/postgres
 If `JAVBEACON_DATA_PATH` is omitted, Compose continues to use the existing
 `javbeacon-data` named volume for backward compatibility.
 
-`JAVBEACON_LISTEN`, `JAVBEACON_COVERS`, and
-`JAVBEACON_FLARESOLVERR_URL` are also configurable in `.env`. The covers path
-is inside the container and should normally remain beneath `/app/data` so the
-configured data mount persists it. The included Byparr service uses
-`http://byparr:8191/v1`; when using an external service instead, provide its
-plain reachable URL with the `/v1` path and no Markdown formatting.
+`JAVBEACON_LISTEN` and `JAVBEACON_FLARESOLVERR_URL` are also configurable in
+`.env`. Cover files use `/app/data/covers` by default and are persisted by the
+configured data mount; their location can be changed later under **Settings →
+Storage**. The included Byparr service uses `http://byparr:8191/v1`; when using
+an external service instead, provide its plain reachable URL with the `/v1`
+path and no Markdown formatting.
 
 Compose tracks the latest published JAVBeacon image. Upgrade it without
 changing `.env`:
