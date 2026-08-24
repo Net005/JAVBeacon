@@ -34,6 +34,9 @@ func TestLoadDefaultsToSQLiteEngine(t *testing.T) {
 	if c.PostgresSSLMode != "prefer" {
 		t.Fatalf("PostgresSSLMode default = %q, want %q", c.PostgresSSLMode, "prefer")
 	}
+	if c.FlareSolverrURL != "http://127.0.0.1:8191/v1" {
+		t.Fatalf("FlareSolverrURL default = %q, want local Byparr endpoint", c.FlareSolverrURL)
+	}
 }
 
 func TestLoadRejectsUnknownEngine(t *testing.T) {

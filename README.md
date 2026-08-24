@@ -10,7 +10,7 @@
 
 JAVBeacon watches configured JAV release sources, builds a searchable release library, reconciles releases with your local StashApp collection, finds matching torrents, and manages downloads through qBittorrent.
 
-It is designed as a private, single-user application. Metadata, credentials, automation settings, download history, pipeline state, and notifications are stored in SQLite by default, with PostgreSQL available for larger deployments.
+It is designed as a private, single-user application. The recommended Docker Compose stack stores application data in PostgreSQL; standalone installs can still use SQLite.
 
 > **See what's coming. Get what you want.**
 
@@ -25,15 +25,22 @@ It is designed as a private, single-user application. Metadata, credentials, aut
 - Reconcile releases with StashApp, synchronize Desired tags, and scan the Stash library for missing files.
 - Run ordered post-download and post-removal pipelines, including path mapping, shell commands, moves, and StashApp scans.
 - Cache cover artwork locally and receive live release, job, download, notification, and server-log updates.
-- Use SQLite for a simple deployment or migrate to PostgreSQL through the built-in setup and migration wizards.
+- Run the complete Docker Compose stack with JAVBeacon, optimized PostgreSQL, and Byparr, or use SQLite for a simpler standalone deployment.
 
 ## Quick start with Docker
 
 ### Requirements
 
-- Docker 24 or newer
+- Docker 24 or newer with Docker Compose
 - A private host or trusted network
-- Optional: qBittorrent, StashApp, and FlareSolverr
+- Enough memory for the selected PostgreSQL profile; the supplied Large Library profile assumes roughly 8 GB is available to PostgreSQL
+- Optional integrations: qBittorrent and StashApp
+
+The supplied Compose stack starts three services:
+
+- **JAVBeacon** — the web application
+- **PostgreSQL 18** — persistent storage with the same Large Library / SSD optimizations offered by the built-in Compose generator
+- **Byparr** — the required anti-bot solver for JavLibrary scraping
 
 Clone the repository and create your private environment file:
 
@@ -43,42 +50,90 @@ cd JAVBeacon
 cp .env.example .env
 ```
 
-Edit `.env` and replace `JAVBEACON_INITIAL_PASSWORD` before the first start.
-The `.env` file is intentionally ignored by Git so credentials are not
-committed. Then build and start the Compose stack:
+Edit `.env` and replace both `JAVBEACON_INITIAL_PASSWORD` and
+`POSTGRES_PASSWORD` before the first start. Review the PostgreSQL memory values
+if the host cannot dedicate roughly 8 GB to PostgreSQL. The `.env` file is
+intentionally ignored by Git so credentials are not committed.
+
+The Compose defaults already point JAVBeacon at PostgreSQL through
+`postgres:5432` and Byparr through `http://byparr:8191/v1`; do not replace
+those service hostnames with `localhost`. Validate and start the stack:
 
 ```bash
-docker compose up -d --build
+docker compose config
+docker compose pull
+docker compose up -d
 docker compose ps
 ```
 
-Open [http://localhost:8080](http://localhost:8080), sign in, then configure providers and integrations under **Settings**. The named `javbeacon-data` volume keeps the database and cover cache across upgrades.
+Wait for all three services to report healthy. Byparr's local health endpoint
+and API documentation are available only from the Docker host by default:
+
+```bash
+curl http://127.0.0.1:8191/health
+docker compose logs byparr
+```
+
+Open [http://localhost:8080](http://localhost:8080), sign in, then configure
+providers and integrations under **Settings**. PostgreSQL data is stored under
+`POSTGRES_DATA_PATH` (default `./data/postgres`); the `javbeacon-data` volume
+stores the cover cache and other application files.
 
 To upgrade to a newer checked-out release, update `JAVBEACON_VERSION` in
 `.env`, pull the matching Git tag, and rebuild:
 
 ```bash
 git fetch --tags
-git checkout v1.0.1
-docker compose up -d --build
+git checkout v1.0.2
+docker compose pull
+docker compose up -d
 ```
 
-### Docker without Compose
+### GitHub Container package
 
-The equivalent direct Docker workflow is:
+Each version tag publishes a public, multi-architecture container package for
+Linux AMD64 and ARM64. Compose uses the version selected by
+`JAVBEACON_VERSION`; images can also be pulled directly:
 
 ```bash
-docker build --build-arg VERSION=1.0.1 -t javbeacon:1.0.1 .
+docker pull ghcr.io/net005/javbeacon:1.0.2
+docker pull ghcr.io/net005/javbeacon:latest
+```
+
+Published tags include `v1.0.2`, `1.0.2`, `1.0`, and `latest`. See the
+[JAVBeacon GitHub package](https://github.com/Net005/JAVBeacon/pkgs/container/javbeacon)
+for available versions and digests. To build the application image locally
+instead, keep the repository checkout and run `docker compose up -d --build`.
+
+### Standalone Docker with SQLite
+
+The full Compose stack is recommended. If you deliberately run JAVBeacon with
+SQLite instead, Byparr must still share a Docker network with it for
+JavLibrary scraping:
+
+```bash
+docker network create javbeacon
+docker run -d \
+  --name javbeacon-byparr \
+  --network javbeacon \
+  --restart unless-stopped \
+  -p 127.0.0.1:8191:8191 \
+  --shm-size 512m \
+  ghcr.io/thephaseless/byparr:latest
+
+docker build --build-arg VERSION=1.0.2 -t javbeacon:1.0.2 .
 docker volume create javbeacon-data
 
 docker run -d \
   --name javbeacon \
+  --network javbeacon \
   --restart unless-stopped \
   -p 8080:8080 \
   -v javbeacon-data:/app/data \
   -e JAVBEACON_INITIAL_USERNAME=admin \
   -e JAVBEACON_INITIAL_PASSWORD='replace-with-a-long-password' \
-  javbeacon:1.0.1
+  -e JAVBEACON_FLARESOLVERR_URL='http://javbeacon-byparr:8191/v1' \
+  javbeacon:1.0.2
 ```
 
 If initial credentials are not supplied, JAVBeacon creates `admin` / `changeme123`. Change them immediately.
@@ -98,6 +153,24 @@ go run ./cmd/javbeacon
 
 JAVBeacon listens on [http://localhost:8080](http://localhost:8080) and stores its SQLite database at `data/javbeacon.db` by default.
 
+JavLibrary scraping also requires Byparr when running from source. Start the
+official image and point JAVBeacon at the host-published endpoint:
+
+```bash
+docker run -d \
+  --name javbeacon-byparr \
+  --restart unless-stopped \
+  -p 127.0.0.1:8191:8191 \
+  --shm-size 512m \
+  ghcr.io/thephaseless/byparr:latest
+
+export JAVBEACON_FLARESOLVERR_URL=http://127.0.0.1:8191/v1
+go run ./cmd/javbeacon
+```
+
+Byparr listens on port `8191`; `/v1` is its FlareSolverr-compatible request
+endpoint. See the [official Byparr documentation](https://github.com/ThePhaseless/Byparr#readme) for proxy, locale, and troubleshooting options. Challenge bypass is best-effort and can still depend on the host's network reputation.
+
 Build a standalone binary with:
 
 ```bash
@@ -111,8 +184,8 @@ version is shown at the bottom of the web sidebar near **Sign out**.
 ## First-time setup
 
 1. Sign in and replace the default credentials.
-2. Open **Settings → Scraping** and configure FlareSolverr if a source requires Cloudflare challenge handling.
-3. Add monitoring sources under **Sites** and choose whether each source should notify, mark releases as Desired, or automate searches.
+2. Confirm **Settings → Scraping → Byparr / FlareSolverr** shows `http://byparr:8191/v1` for Compose, or the reachable `/v1` endpoint you configured for a standalone install. Byparr (or a compatible FlareSolverr service) is required for JavLibrary scraping.
+3. Add monitoring sources under **Sites** and choose whether each source should notify, mark releases as Desired, or automate searches. JavLibrary URLs must include `&mode=2` to include future releases.
 4. Open **Settings → Downloads** and configure the search URL template, accepted filename patterns, and qBittorrent connection.
 5. Optionally configure **Settings → StashApp** for local-library synchronization, Desired-tag synchronization, missing-file scans, and path remapping.
 6. Review automation schedules before enabling unattended scraping or downloading.
@@ -129,7 +202,7 @@ Most configuration is stored in the active database and managed from the web int
 | `JAVBEACON_INITIAL_USERNAME` | Username created on the first start | `admin` |
 | `JAVBEACON_INITIAL_PASSWORD` | Password created on the first start | `changeme123` |
 | `JAVBEACON_API_KEY` | Optional API compatibility key | unset |
-| `JAVBEACON_FLARESOLVERR_URL` | Initial FlareSolverr endpoint | application default |
+| `JAVBEACON_FLARESOLVERR_URL` | Initial Byparr or FlareSolverr-compatible `/v1` endpoint (legacy variable name) | `http://127.0.0.1:8191/v1`; Compose uses `http://byparr:8191/v1` |
 | `JAVBEACON_PAGE_LIMIT` | Initial scrape page limit | `5` |
 | `JAVBEACON_DB_ENGINE` | `sqlite` or `postgres` | `sqlite` |
 | `JAVBEACON_DB_HOST` | PostgreSQL host | `127.0.0.1` |
@@ -143,7 +216,7 @@ Settings, credentials, sessions, schedules, release state, download history, not
 
 ## PostgreSQL
 
-SQLite is the simplest option and remains the default. For larger libraries, open **Settings → Database** to generate a PostgreSQL stack or migrate an existing SQLite database with validation.
+The official Compose stack uses optimized PostgreSQL 18 by default. A standalone JAVBeacon process still defaults to SQLite. For an existing SQLite installation, open **Settings → Database** to generate a tailored PostgreSQL stack or migrate with validation.
 
 To start directly against PostgreSQL, provide the required environment variables before launching JAVBeacon:
 
@@ -186,12 +259,13 @@ The web client is embedded from `internal/web/static` into the Go binary.
 JAVBeacon uses semantic versions. `internal/version/VERSION` is the source of
 truth used by local builds, Docker image metadata, the version API, and the
 frontend. Release tags use the same value with a `v` prefix—for example,
-`VERSION=1.0.1` is released as `v1.0.1`.
+`VERSION=1.0.2` is released as `v1.0.2`.
 
 Pushing a matching `v*` tag runs the GitHub release workflow. It executes the
-test suite, builds Linux, macOS, and Windows binaries, creates checksums, and
-publishes the release as the latest GitHub release. A tag that does not match
-the checked-in version is rejected.
+test suite, validates the Compose stack, builds Linux, macOS, and Windows
+binaries, creates checksums, publishes a multi-architecture GHCR container
+package with provenance, and publishes the release as the latest GitHub
+release. A tag that does not match the checked-in version is rejected.
 
 ### Project layout
 

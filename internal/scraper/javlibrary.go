@@ -103,12 +103,12 @@ func (j *JavLibrary) documentOnce(ctx context.Context, raw, kind string, stage .
 		body, e := j.direct(ctx, raw)
 		if e != nil {
 			j.log.Info("scrape response rejected", "provider", "JavLibrary", "kind", kind, "url", raw, "status", string(ScrapeError), "reason", e.Error(), "via", "direct")
-			return nil, statusErrorf(ScrapeError, "JavLibrary returned a Cloudflare challenge or unexpected page; configure flaresolverr_url (%s)", e.Error())
+			return nil, statusErrorf(ScrapeError, "JavLibrary requires Byparr (or a compatible FlareSolverr service); configure the solver URL in Settings > Scraping (%s)", e.Error())
 		}
 		doc, parseErr := html.Parse(bytes.NewReader(body))
 		if parseErr != nil {
 			j.log.Info("scrape response rejected", "provider", "JavLibrary", "kind", kind, "url", raw, "status", string(ScrapeError), "reason", parseErr.Error(), "via", "direct")
-			return nil, statusErrorf(ScrapeError, "JavLibrary returned a Cloudflare challenge or unexpected page; configure flaresolverr_url (%s)", parseErr.Error())
+			return nil, statusErrorf(ScrapeError, "JavLibrary requires Byparr (or a compatible FlareSolverr service); configure the solver URL in Settings > Scraping (%s)", parseErr.Error())
 		}
 		status, reason := validatePage("JavLibrary", kind, doc)
 		if status == ScrapeValid {
@@ -119,11 +119,11 @@ func (j *JavLibrary) documentOnce(ctx context.Context, raw, kind string, stage .
 		if status == ScrapeBlocked || status == ScrapeInvalid {
 			return nil, statusErrorf(status, "JavLibrary response %s: %s", status, reason)
 		}
-		return nil, statusErrorf(ScrapeError, "JavLibrary returned a Cloudflare challenge or unexpected page; configure flaresolverr_url (%s)", reason)
+		return nil, statusErrorf(ScrapeError, "JavLibrary requires Byparr (or a compatible FlareSolverr service); configure the solver URL in Settings > Scraping (%s)", reason)
 	}
 
 	report(stage, StageConnectingFlareSolverr)
-	j.log.Info("using FlareSolverr", "provider", "JavLibrary", "kind", kind, "url", raw, "solver", solver, "cooldown", cooldown)
+	j.log.Info("using anti-bot solver", "provider", "JavLibrary", "kind", kind, "url", raw, "solver", solver, "cooldown", cooldown)
 	body, e := j.flare(ctx, raw, solver, cooldown)
 	if e != nil {
 		j.log.Info("scrape response rejected", "provider", "JavLibrary", "kind", kind, "url", raw, "status", string(ScrapeError), "reason", e.Error(), "via", "flaresolverr")
@@ -176,7 +176,7 @@ func (j *JavLibrary) flare(ctx context.Context, raw, solver string, cooldown tim
 	req.Header.Set("Content-Type", "application/json")
 	resp, e := j.client.Do(req)
 	if e != nil {
-		return nil, fmt.Errorf("FlareSolverr: %w", e)
+		return nil, fmt.Errorf("Byparr/FlareSolverr solver: %w", e)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
@@ -185,7 +185,7 @@ func (j *JavLibrary) flare(ctx context.Context, raw, solver string, cooldown tim
 		if message == "" {
 			message = http.StatusText(resp.StatusCode)
 		}
-		return nil, fmt.Errorf("FlareSolverr returned HTTP %d: %s", resp.StatusCode, message)
+		return nil, fmt.Errorf("Byparr/FlareSolverr solver returned HTTP %d: %s", resp.StatusCode, message)
 	}
 	var result struct {
 		Status   string `json:"status"`
@@ -195,10 +195,10 @@ func (j *JavLibrary) flare(ctx context.Context, raw, solver string, cooldown tim
 		} `json:"solution"`
 	}
 	if e = json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(&result); e != nil {
-		return nil, fmt.Errorf("FlareSolverr returned invalid JSON: %w", e)
+		return nil, fmt.Errorf("Byparr/FlareSolverr solver returned invalid JSON: %w", e)
 	}
 	if result.Status != "ok" || result.Solution.Response == "" {
-		return nil, fmt.Errorf("FlareSolverr: %s", result.Message)
+		return nil, fmt.Errorf("Byparr/FlareSolverr solver: %s", result.Message)
 	}
 	return []byte(result.Solution.Response), nil
 }

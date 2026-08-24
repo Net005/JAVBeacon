@@ -25,6 +25,7 @@ ARG VERSION
 
 LABEL org.opencontainers.image.title="JAVBeacon" \
       org.opencontainers.image.source="https://github.com/Net005/JAVBeacon" \
+      org.opencontainers.image.description="Private, self-hosted JAV release monitoring and acquisition management" \
       org.opencontainers.image.version="${VERSION}"
 
 RUN apk add --no-cache \
