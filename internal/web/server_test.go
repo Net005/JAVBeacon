@@ -23,6 +23,19 @@ import (
 	"github.com/Net005/JAVBeacon/internal/store"
 )
 
+func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
+	s := &Server{mux: http.NewServeMux()}
+	s.routes()
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"version":"v1.0.0"`) {
+		t.Fatalf("response = %s, want v1.0.0", rec.Body.String())
+	}
+}
+
 func TestCoverCacheJobCachesMissingAndSkipsExistingCovers(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "covers.db"))
@@ -60,6 +73,41 @@ func TestCoverCacheJobCachesMissingAndSkipsExistingCovers(t *testing.T) {
 	second := waitForCoverJob(t, s)
 	if second.Checked != 1 || second.Cached != 0 || second.Skipped != 1 || second.Failed != 0 {
 		t.Fatalf("second cover job: %+v", second)
+	}
+}
+
+func TestCoverEndpointServesBrandedPlaceholderWhenArtworkIsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "placeholder.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "PENDING-1", Title: "Pending", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "PENDING-1"})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release lookup: items=%d err=%v", len(releases), err)
+	}
+
+	s := &Server{store: st, log: slog.Default()}
+	req := httptest.NewRequest(http.MethodGet, "/covers/1", nil)
+	req.SetPathValue("id", strconv.FormatInt(releases[0].ID, 10))
+	rec := httptest.NewRecorder()
+	s.cover(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if contentType := rec.Header().Get("Content-Type"); !strings.Contains(contentType, "image/svg+xml") {
+		t.Fatalf("content type = %q, want SVG", contentType)
+	}
+	if !strings.Contains(rec.Body.String(), "Cover not yet available") || !strings.Contains(rec.Body.String(), "JAVBEACON") {
+		t.Fatal("response did not contain the branded unavailable-cover artwork")
 	}
 }
 

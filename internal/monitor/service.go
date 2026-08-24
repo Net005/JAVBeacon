@@ -495,13 +495,27 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 				if existsErr != nil {
 					job.Error = existsErr.Error()
 				} else if exists {
+					if r.ImageURL != "" {
+						if _, changed, coverErr := s.covers.Refresh(ctx, r.VideoID, r.ImageURL); coverErr != nil {
+							s.log.Warn("release cover refresh failed", "site", site.Title, "provider", site.Name, "video_id", r.VideoID, "image_url", r.ImageURL, "error", coverErr)
+						} else if changed {
+							s.log.Info("existing release cover updated", "site", site.Title, "provider", site.Name, "mode", options.Mode, "video_id", r.VideoID)
+						}
+					}
 					job.Skipped++
-					s.log.Info("quick refresh skipped existing release", "site", site.Title, "provider", site.Name, "video_id", r.VideoID)
+					s.log.Info("quick refresh skipped existing release metadata", "site", site.Title, "provider", site.Name, "video_id", r.VideoID)
 					continue
 				}
 			}
 			if r.ImageURL != "" {
-				if _, cached, coverErr := s.covers.Ensure(ctx, r.VideoID, r.ImageURL); coverErr != nil {
+				var cached bool
+				var coverErr error
+				if options.Mode == "full" || options.Mode == "quick" {
+					_, cached, coverErr = s.covers.Refresh(ctx, r.VideoID, r.ImageURL)
+				} else {
+					_, cached, coverErr = s.covers.Ensure(ctx, r.VideoID, r.ImageURL)
+				}
+				if coverErr != nil {
 					s.log.Warn("cover cache failed", "site", site.Title, "provider", site.Name, "video_id", r.VideoID, "image_url", r.ImageURL, "error", coverErr)
 				} else if cached {
 					s.log.Debug("release cover downloaded", "site", site.Title, "video_id", r.VideoID)
@@ -611,7 +625,7 @@ func (s *Service) refreshRelease(ctx context.Context, id int64, job *domain.Job)
 	}
 	stage("comparing")
 	if updated.ImageURL != "" {
-		if _, _, coverErr := s.covers.Ensure(ctx, updated.VideoID, updated.ImageURL); coverErr != nil {
+		if _, _, coverErr := s.covers.Refresh(ctx, updated.VideoID, updated.ImageURL); coverErr != nil {
 			s.log.Warn("release cover refresh failed", "release_id", id, "video_id", existing.VideoID, "error", coverErr)
 		}
 	}

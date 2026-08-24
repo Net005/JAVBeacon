@@ -1,5 +1,7 @@
 FROM golang:1.25-alpine AS build
 
+ARG VERSION
+
 RUN apk add --no-cache ca-certificates
 
 WORKDIR /src
@@ -12,12 +14,18 @@ COPY internal ./internal
 
 RUN CGO_ENABLED=0 go build \
     -trimpath \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X github.com/Net005/JAVBeacon/internal/version.Value=${VERSION}" \
     -o /javbeacon \
     ./cmd/javbeacon
 
 
 FROM alpine:3.22
+
+ARG VERSION
+
+LABEL org.opencontainers.image.title="JAVBeacon" \
+      org.opencontainers.image.source="https://github.com/Net005/JAVBeacon" \
+      org.opencontainers.image.version="${VERSION}"
 
 RUN apk add --no-cache \
     bash \

@@ -277,7 +277,7 @@ func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int,
 			}
 			img := first(container, func(x *html.Node) bool { return x.Data == "img" })
 			image := ""
-			if img != nil {
+			if img != nil && !isNowPrintingImage(img) {
 				image = resolve(u.String(), attr(img, "src"))
 				image = strings.Replace(image, "ps.jpg", "pl.jpg", 1)
 			}
@@ -337,7 +337,7 @@ func parseJavLibraryDetail(doc *html.Node, raw string) domain.Release {
 	if n := first(doc, func(n *html.Node) bool { return n.Data == "title" }); n != nil {
 		r.Title = strings.TrimSpace(strings.TrimSuffix(nodeText(n), "- JAVLibrary"))
 	}
-	if n := first(doc, func(n *html.Node) bool { return attr(n, "id") == "video_jacket_img" }); n != nil {
+	if n := first(doc, func(n *html.Node) bool { return attr(n, "id") == "video_jacket_img" }); n != nil && !isNowPrintingImage(n) {
 		r.ImageURL = resolve(raw, attr(n, "src"))
 	}
 	for _, h := range findAll(doc, func(n *html.Node) bool { return n.Data == "td" && hasClass(n, "header") }) {
@@ -394,6 +394,16 @@ func parseJavLibraryDetail(doc *html.Node, raw string) domain.Release {
 	}
 	r.Released = isReleased(r.ReleaseDate, "")
 	return r
+}
+
+func isNowPrintingImage(n *html.Node) bool {
+	for _, value := range []string{attr(n, "alt"), attr(n, "title"), attr(n, "src")} {
+		normalized := strings.NewReplacer("_", " ", "-", " ").Replace(strings.ToLower(value))
+		if strings.Contains(normalized, "now printing") {
+			return true
+		}
+	}
+	return false
 }
 
 func javLibraryCastNames(root *html.Node) []string {

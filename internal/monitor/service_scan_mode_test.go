@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -36,6 +37,10 @@ func newSiteScanTestService(t *testing.T, detailHandler http.HandlerFunc) (*Serv
 		_, _ = w.Write([]byte(`<div class="video"><a href="/javabc123.html" title="Listing title"><img src="/coverps.jpg"></a><div class="id">ABC-123</div></div>`))
 	})
 	mux.HandleFunc("/javabc123.html", detailHandler)
+	mux.HandleFunc("/cover.jpg", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("finished release cover"))
+	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -141,6 +146,37 @@ func TestQuickModeSkipsExistingReleaseEvenWithoutAScrapedReleaseDate(t *testing.
 	}
 	if stored.Title != "Old Title" || stored.ReleaseDate != "2024-01-01" {
 		t.Fatalf("Quick refresh must not touch an existing release just because the scraped page had no release date, got %+v", stored)
+	}
+}
+
+func TestQuickModeRefreshesArtworkForAnExistingRelease(t *testing.T) {
+	service, site, release := newSiteScanTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(javLibraryDetailFixture("New Title From Site", "2024-06-06")))
+	})
+	coverPath := service.covers.Path(release.VideoID)
+	if err := os.WriteFile(coverPath, []byte("now printing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.StartOptions(context.Background(), RefreshOptions{SiteID: site.ID, Mode: "quick", Scheduled: true}); err != nil {
+		t.Fatal(err)
+	}
+	job := waitForSiteJob(t, service)
+	if job.Updated != 0 || job.Skipped != 1 {
+		t.Fatalf("job=%+v, want metadata skipped while artwork is checked", job)
+	}
+	got, err := os.ReadFile(coverPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "finished release cover" {
+		t.Fatalf("cached cover = %q, want refreshed artwork", got)
+	}
+	stored, err := service.store.Release(context.Background(), release.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Title != "Old Title" || stored.ReleaseDate != "2024-01-01" {
+		t.Fatalf("Quick refresh changed metadata while refreshing artwork: %+v", stored)
 	}
 }
 
