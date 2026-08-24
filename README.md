@@ -35,17 +35,40 @@ It is designed as a private, single-user application. Metadata, credentials, aut
 - A private host or trusted network
 - Optional: qBittorrent, StashApp, and FlareSolverr
 
-Clone and build the image:
+Clone the repository and create your private environment file:
 
 ```bash
 git clone https://github.com/Net005/JAVBeacon.git
 cd JAVBeacon
-docker build -t javbeacon .
+cp .env.example .env
 ```
 
-Create persistent storage and start the container:
+Edit `.env` and replace `JAVBEACON_INITIAL_PASSWORD` before the first start.
+The `.env` file is intentionally ignored by Git so credentials are not
+committed. Then build and start the Compose stack:
 
 ```bash
+docker compose up -d --build
+docker compose ps
+```
+
+Open [http://localhost:8080](http://localhost:8080), sign in, then configure providers and integrations under **Settings**. The named `javbeacon-data` volume keeps the database and cover cache across upgrades.
+
+To upgrade to a newer checked-out release, update `JAVBEACON_VERSION` in
+`.env`, pull the matching Git tag, and rebuild:
+
+```bash
+git fetch --tags
+git checkout v1.0.0
+docker compose up -d --build
+```
+
+### Docker without Compose
+
+The equivalent direct Docker workflow is:
+
+```bash
+docker build --build-arg VERSION=1.0.0 -t javbeacon:1.0.0 .
 docker volume create javbeacon-data
 
 docker run -d \
@@ -55,10 +78,8 @@ docker run -d \
   -v javbeacon-data:/app/data \
   -e JAVBEACON_INITIAL_USERNAME=admin \
   -e JAVBEACON_INITIAL_PASSWORD='replace-with-a-long-password' \
-  javbeacon
+  javbeacon:1.0.0
 ```
-
-Open [http://localhost:8080](http://localhost:8080), sign in, then configure providers and integrations under **Settings**.
 
 If initial credentials are not supplied, JAVBeacon creates `admin` / `changeme123`. Change them immediately.
 
@@ -83,6 +104,9 @@ Build a standalone binary with:
 go build -o javbeacon ./cmd/javbeacon
 ./javbeacon
 ```
+
+Print the running binary's version with `./javbeacon -version`. The same
+version is shown at the bottom of the web sidebar near **Sign out**.
 
 ## First-time setup
 
@@ -156,6 +180,18 @@ go build -o javbeacon ./cmd/javbeacon
 ```
 
 The web client is embedded from `internal/web/static` into the Go binary.
+
+### Versioning and releases
+
+JAVBeacon uses semantic versions. `internal/version/VERSION` is the source of
+truth used by local builds, Docker image metadata, the version API, and the
+frontend. Release tags use the same value with a `v` prefix—for example,
+`VERSION=1.0.0` is released as `v1.0.0`.
+
+Pushing a matching `v*` tag runs the GitHub release workflow. It executes the
+test suite, builds Linux, macOS, and Windows binaries, creates checksums, and
+publishes the release as the latest GitHub release. A tag that does not match
+the checked-in version is rejected.
 
 ### Project layout
 

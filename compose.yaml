@@ -1,0 +1,28 @@
+services:
+  javbeacon:
+    build:
+      context: .
+      args:
+        VERSION: ${JAVBEACON_VERSION:-1.0.0}
+    image: javbeacon:${JAVBEACON_VERSION:-1.0.0}
+    container_name: javbeacon
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      JAVBEACON_LISTEN: :8080
+      JAVBEACON_DB: /app/data/javbeacon.db
+      JAVBEACON_COVERS: /app/data/covers
+    ports:
+      - "${JAVBEACON_PORT:-8080}:8080"
+    volumes:
+      - javbeacon-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/login"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  javbeacon-data:

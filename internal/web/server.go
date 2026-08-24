@@ -24,6 +24,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/monitor"
 	"github.com/Net005/JAVBeacon/internal/stash"
 	"github.com/Net005/JAVBeacon/internal/store"
+	buildversion "github.com/Net005/JAVBeacon/internal/version"
 	"golang.org/x/net/websocket"
 )
 
@@ -100,6 +101,9 @@ func (s *Server) routes() {
 			return
 		}
 		s.json(w, 200, map[string]any{"id": u.ID, "username": u.Username})
+	})
+	s.mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
+		s.json(w, http.StatusOK, map[string]string{"version": buildversion.Current()})
 	})
 	s.mux.Handle("GET /api/ws", websocket.Handler(s.releaseStream))
 	s.mux.HandleFunc("GET /covers/{id}", s.cover)
@@ -576,10 +580,18 @@ func (s *Server) cover(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cover unavailable", http.StatusInternalServerError)
 		return
 	}
+	if strings.TrimSpace(release.ImageURL) == "" {
+		s.serveUnavailableCover(w, r)
+		return
+	}
 	path, _, err := s.covers.Ensure(r.Context(), release.VideoID, release.ImageURL)
 	if err != nil {
 		s.log.Warn("local cover unavailable", "release_id", n, "video_id", release.VideoID, "image_url", release.ImageURL, "error", err)
-		http.NotFound(w, r)
+		s.serveUnavailableCover(w, r)
+		return
+	}
+	if s.covers.Unavailable(path) {
+		s.serveUnavailableCover(w, r)
 		return
 	}
 	f, err := os.Open(path)
@@ -597,9 +609,15 @@ func (s *Server) cover(w http.ResponseWriter, r *http.Request) {
 	nRead, _ := f.Read(buf)
 	_, _ = f.Seek(0, 0)
 	w.Header().Set("Content-Type", http.DetectContentType(buf[:nRead]))
-	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Cache-Control", "public, max-age=300, must-revalidate")
 	http.ServeContent(w, r, release.VideoID, info.ModTime(), f)
 }
+
+func (s *Server) serveUnavailableCover(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeFileFS(w, r, assets, "static/cover-unavailable.svg")
+}
+
 func (s *Server) security(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")

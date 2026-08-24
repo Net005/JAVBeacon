@@ -11,12 +11,18 @@ import (
 
 	"github.com/Net005/JAVBeacon/internal/app"
 	"github.com/Net005/JAVBeacon/internal/logging"
+	buildversion "github.com/Net005/JAVBeacon/internal/version"
 )
 
 func main() {
 	resetUsername := flag.String("reset-username", "", "reset the single-user login name")
 	resetPassword := flag.String("reset-password", "", "reset the single-user password (minimum 8 characters)")
+	showVersion := flag.Bool("version", false, "print the JAVBeacon version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(buildversion.Current())
+		return
+	}
 	if *resetUsername != "" || *resetPassword != "" {
 		if err := app.ResetCredentials(*resetUsername, *resetPassword); err != nil {
 			fmt.Fprintln(os.Stderr, "credential reset failed:", err)
@@ -27,6 +33,7 @@ func main() {
 	}
 	ring := logging.NewRing(slog.NewTextHandler(os.Stdout, nil), logging.DefaultCapacity)
 	logger := slog.New(ring)
+	logger.Info("JAVBeacon starting", "version", buildversion.Current())
 	application, err := app.New(logger, ring)
 	if err != nil {
 		logger.Error("startup failed", "error", err)

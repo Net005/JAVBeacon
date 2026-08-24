@@ -94,6 +94,8 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
   .releaseInfo{overflow-y:auto;overflow-x:hidden;padding-bottom:24px;overscroll-behavior:contain}
 }
 
+.sidebarFooter{margin-top:auto;min-width:0}.sidebarFooter #appVersion{display:block;padding:0 10px 3px;color:#686f7c;font:600 9px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.3px}.sidebarFooter #logout{margin-top:0}.navCollapsed .sidebarFooter #appVersion,.navCollapsedInitial .sidebarFooter #appVersion{display:none}@media(max-width:650px){.sidebarFooter{display:none}}
+
 /* Release detail Source/StashApp row fix: don't let horizontal overflow create
    an implicit vertical clipping container around the taller link button. */
 .detailMeta dd.sourceLinkCell{

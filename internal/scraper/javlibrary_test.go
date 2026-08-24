@@ -206,6 +206,16 @@ func TestJavLibraryAddByURLFallsBackToProvidedVideoID(t *testing.T) {
 	}
 }
 
+func TestParseJavLibraryDetailIgnoresNowPrintingPlaceholder(t *testing.T) {
+	doc, err := html.Parse(strings.NewReader(`<html><title>Pending - JAVLibrary</title><img id="video_jacket_img" src="/now_printing.jpg" alt="Now Printing"></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parseJavLibraryDetail(doc, "https://www.javlibrary.com/en/javtest.html").ImageURL; got != "" {
+		t.Fatalf("placeholder image URL = %q, want it ignored", got)
+	}
+}
+
 func TestJavLibraryLiveMultiActressAndTags(t *testing.T) {
 	if os.Getenv("JAVBEACON_LIVE_JAVLIBRARY_TEST") != "1" {
 		t.Skip("set JAVBEACON_LIVE_JAVLIBRARY_TEST=1")
