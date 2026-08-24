@@ -76,15 +76,30 @@ docker compose logs byparr
 
 Open [http://localhost:8080](http://localhost:8080), sign in, then configure
 providers and integrations under **Settings**. PostgreSQL data is stored under
-`POSTGRES_DATA_PATH` (default `./data/postgres`); the `javbeacon-data` volume
-stores the cover cache and other application files.
+`POSTGRES_DATA_PATH` (default `./data/postgres`). JAVBeacon's cover cache and
+other application files are stored under `JAVBEACON_DATA_PATH` (the provided
+`.env.example` uses `./data/javbeacon`). Both paths may be relative to the
+Compose project or absolute host paths, for example:
 
-To upgrade to a newer checked-out release, update `JAVBEACON_VERSION` in
-`.env`, pull the matching Git tag, and rebuild:
+```dotenv
+JAVBEACON_DATA_PATH=/srv/javbeacon/data
+POSTGRES_DATA_PATH=/srv/javbeacon/postgres
+```
+
+If `JAVBEACON_DATA_PATH` is omitted, Compose continues to use the existing
+`javbeacon-data` named volume for backward compatibility.
+
+`JAVBEACON_LISTEN`, `JAVBEACON_COVERS`, and
+`JAVBEACON_FLARESOLVERR_URL` are also configurable in `.env`. The covers path
+is inside the container and should normally remain beneath `/app/data` so the
+configured data mount persists it. The included Byparr service uses
+`http://byparr:8191/v1`; when using an external service instead, provide its
+plain reachable URL with the `/v1` path and no Markdown formatting.
+
+Compose tracks the latest published JAVBeacon image. Upgrade it without
+changing `.env`:
 
 ```bash
-git fetch --tags
-git checkout v1.0.2
 docker compose pull
 docker compose up -d
 ```
@@ -92,8 +107,9 @@ docker compose up -d
 ### GitHub Container package
 
 Each version tag publishes a public, multi-architecture container package for
-Linux AMD64 and ARM64. Compose uses the version selected by
-`JAVBEACON_VERSION`; images can also be pulled directly:
+Linux AMD64 and ARM64. Compose uses `latest` by default; versioned images can
+also be pulled directly for deployments that deliberately require a fixed
+release:
 
 ```bash
 docker pull ghcr.io/net005/javbeacon:1.0.2

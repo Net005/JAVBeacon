@@ -2,14 +2,12 @@ services:
   javbeacon:
     build:
       context: .
-      args:
-        VERSION: ${JAVBEACON_VERSION:-1.0.2}
-    image: ghcr.io/net005/javbeacon:${JAVBEACON_VERSION:-1.0.2}
+    image: ghcr.io/net005/javbeacon:latest
     container_name: javbeacon
     restart: unless-stopped
     environment:
-      JAVBEACON_LISTEN: :8080
-      JAVBEACON_COVERS: /app/data/covers
+      JAVBEACON_LISTEN: "${JAVBEACON_LISTEN:-:8080}"
+      JAVBEACON_COVERS: "${JAVBEACON_COVERS:-/app/data/covers}"
       JAVBEACON_INITIAL_USERNAME: ${JAVBEACON_INITIAL_USERNAME:-admin}
       JAVBEACON_INITIAL_PASSWORD: ${JAVBEACON_INITIAL_PASSWORD:?JAVBEACON_INITIAL_PASSWORD must be set in .env}
       JAVBEACON_API_KEY: ${JAVBEACON_API_KEY:-}
@@ -23,7 +21,7 @@ services:
       JAVBEACON_DB_SSLMODE: disable
       # The setting keeps its historical FlareSolverr name, but Byparr is the
       # included and recommended compatible solver.
-      JAVBEACON_FLARESOLVERR_URL: http://byparr:8191/v1
+      JAVBEACON_FLARESOLVERR_URL: "${JAVBEACON_FLARESOLVERR_URL:-http://byparr:8191/v1}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -32,7 +30,9 @@ services:
     ports:
       - "${JAVBEACON_PORT:-8080}:8080"
     volumes:
-      - javbeacon-data:/app/data
+      # Set JAVBEACON_DATA_PATH to a relative or absolute host folder. The
+      # existing named volume remains the fallback for backward compatibility.
+      - ${JAVBEACON_DATA_PATH:-javbeacon-data}:/app/data
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/login"]
       interval: 30s
