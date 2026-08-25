@@ -142,6 +142,55 @@ func TestLocalSyncDoesNotRunDesiredTagSync(t *testing.T) {
 	}
 }
 
+func TestFirstLocalSyncStoresPlaybackStatsForReleaseConditions(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "stash-first-sync.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": "https://stash.example"}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "SYNC-100", Title: "First sync", Source: "JavLibrary"})
+
+	s := New(st, time.Second, slog.Default(), nil, nil)
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		response := `{"data":{"findScenes":{"scenes":[{"id":"scene-100","title":"SYNC-100","code":"SYNC-100"}]}}}`
+		if strings.Contains(string(body), "JAVBeaconPlaybackStats") {
+			response = `{"data":{"findScenes":{"scenes":[{"id":"scene-100","o_counter":3,"play_count":5,"last_played_at":"2024-05-10T12:00:00Z","o_history":["2024-04-01T12:00:00Z","2024-05-09T12:00:00Z"]}]}}}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
+	})
+	s.run(ctx)
+
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "SYNC-100", Limit: 10})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release lookup: releases=%+v err=%v", releases, err)
+	}
+	got := releases[0]
+	if !got.Local || got.StashSceneID != "scene-100" || got.OCounter != 3 || got.PlayCount != 5 || got.LastPlayedAt != "2024-05-10T12:00:00Z" || got.LastOCountAt != "2024-05-09T12:00:00Z" {
+		t.Fatalf("first sync did not persist local state and playback stats together: %+v", got)
+	}
+
+	conditions := []string{
+		`{"field":"local","value":"true"}`,
+		`{"field":"o_count","op":"gte","value":"3"}`,
+		`{"field":"play_count","op":"gte","value":"5"}`,
+		`{"field":"last_played","op":"before","value":"2024-05-11"}`,
+		`{"field":"last_o_count","op":"after","value":"2024-05-01"}`,
+	}
+	for _, condition := range conditions {
+		expression := `{"logic":"and","conditions":[` + condition + `]}`
+		matches, filterErr := st.Releases(ctx, domain.ReleaseFilter{SearchExpression: expression, Limit: 10})
+		if filterErr != nil || len(matches) != 1 || matches[0].VideoID != "SYNC-100" {
+			t.Fatalf("condition %s: matches=%+v err=%v", condition, matches, filterErr)
+		}
+	}
+}
+
 // TestLocalSyncStoresStashReleaseDate covers TODO-2.0's "Missing released
 // status display": a local-library sync should carry each matched scene's
 // `date` field into the release's StashReleaseDate, and a later sync must
