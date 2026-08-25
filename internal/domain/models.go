@@ -318,6 +318,26 @@ type Job struct {
 	Outcome string `json:"outcome,omitempty"`
 }
 
+// JobHistoryEntry is one row in the unified Jobs activity timeline. Scrape
+// jobs and downloads have different source tables, but share the timestamps
+// and display fields needed by the paginated history view.
+type JobHistoryEntry struct {
+	ID         int64     `json:"id"`
+	Category   string    `json:"category"`
+	Kind       string    `json:"kind"`
+	State      string    `json:"state"`
+	Mode       string    `json:"mode,omitempty"`
+	Title      string    `json:"title,omitempty"`
+	Provider   string    `json:"provider,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
+	Added      int       `json:"added"`
+	Updated    int       `json:"updated"`
+	Skipped    int       `json:"skipped"`
+	Error      string    `json:"error,omitempty"`
+	Details    string    `json:"details,omitempty"`
+}
+
 type User struct {
 	ID           int64
 	Username     string

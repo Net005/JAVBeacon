@@ -78,6 +78,8 @@ func TestNormalizeJavLibraryURL(t *testing.T) {
 	cases := map[string]string{
 		"http://www.javlibrary.com/en/vl_maker.php?m=aqkq": "https://www.javlibrary.com/en/vl_maker.php?m=aqkq",
 		"http://javlibrary.com/en/vl_maker.php?m=aqkq":     "https://www.javlibrary.com/en/vl_maker.php?m=aqkq",
+		"http://WWW.JAVLIBRARY.COM:80/en/javabc.html":      "https://www.javlibrary.com/en/javabc.html",
+		"http://www.javlibrary.com./en/javabc.html":        "https://www.javlibrary.com/en/javabc.html",
 		"https://javlibrary.com/en/javabc.html":            "https://www.javlibrary.com/en/javabc.html",
 		"https://www.javlibrary.com/en/javabc.html":        "https://www.javlibrary.com/en/javabc.html",
 		"http://example.com/list":                          "http://example.com/list",
@@ -87,6 +89,29 @@ func TestNormalizeJavLibraryURL(t *testing.T) {
 		if got := normalizeJavLibraryURL(input); got != want {
 			t.Errorf("normalizeJavLibraryURL(%q)=%q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestJavLibrarySolverBoundaryAlwaysReceivesHTTPS(t *testing.T) {
+	var target string
+	solver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		target = payload.URL
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "solution": map[string]any{"response": "<html></html>"}})
+	}))
+	defer solver.Close()
+
+	j := NewJavLibrary(2*time.Second, solver.URL, 0, nil)
+	if _, err := j.flare(context.Background(), "http://www.javlibrary.com/en/javme3rf2u.html", solver.URL, 0); err != nil {
+		t.Fatal(err)
+	}
+	if target != "https://www.javlibrary.com/en/javme3rf2u.html" {
+		t.Fatalf("solver target=%q, want canonical HTTPS JavLibrary URL", target)
 	}
 }
 

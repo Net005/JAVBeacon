@@ -6,8 +6,8 @@ func TestCurrentUsesEmbeddedReleaseVersion(t *testing.T) {
 	previous := Value
 	Value = ""
 	t.Cleanup(func() { Value = previous })
-	if got := Current(); got != "v1.0.6" {
-		t.Fatalf("Current() = %q, want v1.0.6", got)
+	if got := Current(); got != "v1.0.7" {
+		t.Fatalf("Current() = %q, want v1.0.7", got)
 	}
 }
 
