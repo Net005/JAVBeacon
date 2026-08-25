@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/scraper"
 	"github.com/Net005/JAVBeacon/internal/stash"
 	"github.com/Net005/JAVBeacon/internal/store"
+	buildversion "github.com/Net005/JAVBeacon/internal/version"
 	webapp "github.com/Net005/JAVBeacon/internal/web"
 )
 
@@ -143,6 +145,16 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 	if err != nil {
 		st.Close()
 		return nil, err
+	}
+	_, userErr := st.User(context.Background())
+	freshInstall := errors.Is(userErr, sql.ErrNoRows)
+	if userErr != nil && !freshInstall {
+		st.Close()
+		return nil, fmt.Errorf("check existing installation: %w", userErr)
+	}
+	if err := buildversion.InitializeTracking(context.Background(), st, freshInstall); err != nil {
+		st.Close()
+		return nil, fmt.Errorf("initialize version tracking: %w", err)
 	}
 	if len(settings) == 0 {
 		_ = st.SaveSettings(context.Background(), map[string]string{"page_limit": fmt.Sprint(cfg.PageLimit), "refresh_interval": cfg.RefreshText, "recent_limit": "200", "hide_local": "false", "sort": "release", "view": "grid", "notification_sort": "added", "flaresolverr_url": cfg.FlareSolverrURL, "flaresolverr_cooldown": fmt.Sprint(cfg.FlareSolverrCooldown), "cover_directory": cfg.CoverDirectory, "session_lifetime": "720h", "notification_interval": "15m", "rss_interval": "5m", "search_url_template": "https://sukebei.nyaa.si/?page=rss&f=0&c=2_0&q=<release_id>", "accepted_patterns": "4k688.com@\nhhd800.com@", "minimum_seed_ratio": "1.0", "qb_completed_action": "remove_at_ratio"})

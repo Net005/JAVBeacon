@@ -31,8 +31,45 @@ func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"version":"v1.0.7"`) {
-		t.Fatalf("response = %s, want v1.0.7", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"version":"v1.0.8"`) {
+		t.Fatalf("response = %s, want v1.0.8", rec.Body.String())
+	}
+}
+
+func TestPendingChangelogEndpointIsAcknowledgedOnce(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "changelog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{
+		"app_installed_version":      "1.0.7",
+		"app_changelog_pending_from": "1.0.5",
+		"app_changelog_pending_to":   "1.0.7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, mux: http.NewServeMux()}
+	s.routes()
+
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/changelog/pending", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"available":true`) || !strings.Contains(rec.Body.String(), `"version":"1.0.6"`) {
+		t.Fatalf("pending response: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	body := strings.NewReader(`{"from":"v1.0.5","to":"v1.0.7"}`)
+	rec = httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/changelog/acknowledge", body))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"acknowledged":true`) {
+		t.Fatalf("acknowledge response: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/changelog/pending", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"available":false`) {
+		t.Fatalf("second pending response: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

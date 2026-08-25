@@ -771,6 +771,41 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .actionConfirmMessage{white-space:pre-line;color:var(--muted);line-height:1.65}
 .actionConfirmDialog .dialogActions button{min-width:120px}
 
+/* One-time release notes shown after an installation moves to a new version. */
+.upgradeChangelogDialog{width:min(94vw,780px);max-height:min(92vh,900px);z-index:10002;padding:0;overflow:auto;border-color:#72404a;background:radial-gradient(circle at 80% -10%,#432029 0,transparent 32%),linear-gradient(180deg,#18151b 0,#101319 240px);box-shadow:0 35px 110px #000,0 0 55px #8f172526}
+.upgradeChangelogDialog::backdrop{background:#030407e8;backdrop-filter:blur(8px)}
+.upgradeChangelogDialog>.close{position:sticky;z-index:3;top:14px;float:right;margin:14px 16px -54px 0;width:36px;height:36px;padding:0;border:1px solid #ffffff17;border-radius:50%;background:#090b10b8;color:#d4d7de;backdrop-filter:blur(10px)}
+.upgradeChangelogHero{display:flex;align-items:center;gap:18px;margin:0;padding:32px 58px 22px 30px;border-bottom:1px solid #ffffff0d;background:linear-gradient(120deg,#451d26a8,transparent 58%)}
+.upgradeChangelogHero img{width:64px;height:64px;flex:none;border-radius:17px;box-shadow:0 12px 30px #0009,0 0 0 1px #ffffff14}
+.upgradeChangelogHero .eyebrow{margin-bottom:5px;color:#f18b98;font-size:10px;letter-spacing:2px}
+.upgradeChangelogHero h2{margin:0;color:#fff;font-size:26px;line-height:1.2}
+.upgradeChangelogHero p:last-child{margin:7px 0 0;color:#aeb4c0;font-size:12px}
+.upgradeChangelogIntro{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 30px;color:var(--muted);font-size:11px}
+.upgradeChangelogRoute{padding:5px 10px;border:1px solid #713541;border-radius:999px;background:#28161b;color:#f0b2ba;font-family:ui-monospace,SFMono-Regular,monospace;font-weight:750;letter-spacing:.2px}
+.upgradeChangelogCount{font-weight:650}
+.upgradeChangelogReleases{display:grid;gap:16px;padding:4px 30px 8px}
+.upgradeRelease{position:relative;overflow:hidden;border:1px solid #343b47;border-radius:13px;background:#0c0f15c9;box-shadow:0 15px 36px #0006}
+.upgradeRelease:first-child{border-color:#75414b;box-shadow:0 16px 42px #0008,0 0 0 1px #8f17251f}
+.upgradeRelease>header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0;padding:14px 17px;border-bottom:1px solid #292f39;background:linear-gradient(90deg,#25161b,#13171e)}
+.upgradeRelease>header>div{display:flex;align-items:center;gap:11px}
+.upgradeReleaseMarker{display:grid;place-items:center;width:29px;height:29px;border:1px solid #6f3944;border-radius:9px;background:#351820;color:#f2919e;font-size:11px;box-shadow:inset 0 0 12px #8f172533}
+.upgradeReleaseLabel{display:block;margin-bottom:1px;color:#858d9a;font-size:8px;font-weight:850;letter-spacing:1.2px;text-transform:uppercase}
+.upgradeRelease>header h3{margin:0;color:#fff;font-size:17px;line-height:1.1}
+.upgradeRelease>header time{padding:4px 8px;border-radius:6px;background:#ffffff08;color:#9199a6;font-size:10px;white-space:nowrap}
+.upgradeReleaseGroups{display:grid;gap:1px;background:#282e37}
+.upgradeChangeGroup{display:grid;grid-template-columns:118px minmax(0,1fr);gap:14px;padding:14px 17px;background:#10141b}
+.upgradeChangeGroup h4{display:flex;align-items:center;align-self:start;gap:7px;margin:0;padding-top:1px;color:#d7dbe2;font-size:10px;letter-spacing:.7px;text-transform:uppercase}
+.upgradeChangeGroup h4 small{display:grid;place-items:center;min-width:18px;height:18px;margin-left:auto;border-radius:999px;background:#ffffff0b;color:#89919e;font-size:9px;letter-spacing:0}
+.upgradeChangeIcon{display:grid;place-items:center;width:23px;height:23px;border-radius:7px;background:#ffffff08;font-size:12px;letter-spacing:0}
+.upgradeChangeGroup.added .upgradeChangeIcon{background:#193425;color:#7de4a5}.upgradeChangeGroup.changed .upgradeChangeIcon{background:#1a2d40;color:#7bc5ff}.upgradeChangeGroup.fixed .upgradeChangeIcon{background:#3d2d18;color:#f5c36b}.upgradeChangeGroup.security .upgradeChangeIcon{background:#242442;color:#b8adff}.upgradeChangeGroup.removed .upgradeChangeIcon,.upgradeChangeGroup.deprecated .upgradeChangeIcon{background:#3d2024;color:#ef929d}
+.upgradeChangeGroup ul{display:grid;gap:9px;margin:0;padding:0;list-style:none;color:#c5cad3;font-size:12px;line-height:1.55}
+.upgradeChangeGroup li{display:grid;grid-template-columns:12px minmax(0,1fr);gap:5px}
+.upgradeChangeBullet{color:#a95562;font-weight:900}
+.upgradeChangelogFooter{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:20px;padding:18px 30px;border-top:1px solid #292f39;background:#0c0f14}
+.upgradeChangelogFooter p{margin:0;color:#858d99;font-size:11px}
+.upgradeChangelogFooter button{min-width:205px;box-shadow:0 8px 24px #8f17253d}
+@media(max-width:600px){.upgradeChangelogHero{padding:26px 46px 19px 20px}.upgradeChangelogHero img{width:52px;height:52px}.upgradeChangelogHero h2{font-size:21px}.upgradeChangelogIntro{align-items:flex-start;flex-direction:column;padding:13px 20px}.upgradeChangelogReleases{padding:3px 14px 6px}.upgradeChangeGroup{grid-template-columns:1fr;gap:9px;padding:13px}.upgradeChangeGroup h4 small{margin-left:0}.upgradeChangelogFooter{align-items:stretch;flex-direction:column;padding:17px 20px}.upgradeChangelogFooter button{width:100%}}
+
 /* Compact refresh-mode guidance and the unified, paginated job audit. */
 .refreshModeInfo{position:relative;display:inline-flex;align-items:center;gap:7px;margin:2px 0 12px;color:var(--muted);font-size:11px;font-weight:700}
 .infoIcon{display:grid;place-items:center;width:22px;min-width:22px;height:22px;min-height:22px;padding:0;border-radius:50%;border-color:#596273;background:#161b23;color:#dce4ef;font:800 12px/1 ui-serif,serif}
