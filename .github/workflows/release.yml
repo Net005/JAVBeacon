@@ -44,6 +44,10 @@ jobs:
             echo "CHANGELOG.md has no dated section for $version" >&2
             exit 1
           }
+          cmp CHANGELOG.md internal/version/CHANGELOG.md || {
+            echo "Embedded changelog is stale; run: go generate -mod=mod ./internal/version" >&2
+            exit 1
+          }
 
       - name: Test
         run: go test -mod=mod ./...

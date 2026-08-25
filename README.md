@@ -114,11 +114,11 @@ also be pulled directly for deployments that deliberately require a fixed
 release:
 
 ```bash
-docker pull ghcr.io/net005/javbeacon:1.0.7
+docker pull ghcr.io/net005/javbeacon:1.0.8
 docker pull ghcr.io/net005/javbeacon:latest
 ```
 
-Published tags include `v1.0.7`, `1.0.7`, `1.0`, and `latest`. See the
+Published tags include `v1.0.8`, `1.0.8`, `1.0`, and `latest`. See the
 [JAVBeacon GitHub package](https://github.com/Net005/JAVBeacon/pkgs/container/javbeacon)
 for available versions and digests. To build the application image locally
 instead, keep the repository checkout and run `docker compose up -d --build`.
@@ -139,7 +139,7 @@ docker run -d \
   --shm-size 512m \
   ghcr.io/thephaseless/byparr:latest
 
-docker build --build-arg VERSION=1.0.7 -t javbeacon:1.0.7 .
+docker build --build-arg VERSION=1.0.8 -t javbeacon:1.0.8 .
 docker volume create javbeacon-data
 
 docker run -d \
@@ -151,7 +151,7 @@ docker run -d \
   -e JAVBEACON_INITIAL_USERNAME=admin \
   -e JAVBEACON_INITIAL_PASSWORD='replace-with-a-long-password' \
   -e JAVBEACON_FLARESOLVERR_URL='http://javbeacon-byparr:8191/v1' \
-  javbeacon:1.0.7
+  javbeacon:1.0.8
 ```
 
 If initial credentials are not supplied, JAVBeacon creates `admin` / `changeme123`. Change them immediately.
@@ -277,7 +277,7 @@ The web client is embedded from `internal/web/static` into the Go binary.
 JAVBeacon uses semantic versions. `internal/version/VERSION` is the source of
 truth used by local builds, Docker image metadata, the version API, and the
 frontend. Release tags use the same value with a `v` prefix—for example,
-`VERSION=1.0.7` is released as `v1.0.7`.
+`VERSION=1.0.8` is released as `v1.0.8`.
 
 Pushing a matching `v*` tag runs the GitHub release workflow. It executes the
 test suite, validates the Compose stack, builds Linux, macOS, and Windows
@@ -289,7 +289,9 @@ Every release must also have a dated `## [x.y.z] - YYYY-MM-DD` entry in
 `CHANGELOG.md`. Add changes to its `Unreleased` section as work lands; during a
 version bump, rename those notes to the release version and date and create a
 new empty `Unreleased` section. The release workflow rejects tags without a
-matching changelog entry.
+matching changelog entry. Run `go generate -mod=mod ./internal/version` after
+editing the changelog so packaged binaries include the same release notes; CI
+rejects a stale embedded copy.
 
 ### Project layout
 

@@ -105,6 +105,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		s.json(w, http.StatusOK, map[string]string{"version": buildversion.Current()})
 	})
+	s.mux.HandleFunc("GET /api/changelog/pending", s.pendingChangelog)
+	s.mux.HandleFunc("POST /api/changelog/acknowledge", s.acknowledgeChangelog)
 	s.mux.Handle("GET /api/ws", websocket.Handler(s.releaseStream))
 	s.mux.HandleFunc("GET /covers/{id}", s.cover)
 	s.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +286,32 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/jobs/stash-missing-apply", s.stashMissingApplyJob)
 	s.mux.HandleFunc("POST /api/jobs/stash-missing-apply", s.stashMissingApplyJob)
 	s.mux.HandleFunc("GET /api/system/browse-dir", s.browseDir)
+}
+
+func (s *Server) pendingChangelog(w http.ResponseWriter, r *http.Request) {
+	change, err := buildversion.PendingChange(r.Context(), s.store)
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, change)
+}
+
+func (s *Server) acknowledgeChangelog(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		s.problem(w, http.StatusBadRequest, "invalid changelog acknowledgement")
+		return
+	}
+	acknowledged, err := buildversion.AcknowledgeChange(r.Context(), s.store, request.From, request.To)
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, map[string]bool{"acknowledged": acknowledged})
 }
 
 func (s *Server) coverCacheStatus() coverCacheStatus {
