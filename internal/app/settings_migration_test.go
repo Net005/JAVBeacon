@@ -92,4 +92,16 @@ func TestFinishStartupDefaultsMissingPathRemapsToEmptyListWhenNothingConfigured(
 	if len(remaps) != 0 {
 		t.Fatalf("expected no remaps for a fresh install, got %+v", remaps)
 	}
+	for key, want := range map[string]string{
+		"new_release_refresh_enabled":  "true",
+		"quick_refresh_enabled":        "true",
+		"full_refresh_enabled":         "false",
+		"job_priority_scheduled_new":   "15",
+		"job_priority_scheduled_quick": "16",
+		"job_priority_scheduled_full":  "17",
+	} {
+		if got := settings[key]; got != want {
+			t.Errorf("%s=%q, want %q", key, got, want)
+		}
+	}
 }

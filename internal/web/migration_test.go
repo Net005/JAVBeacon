@@ -269,7 +269,7 @@ type migrationTestIDs struct {
 }
 
 // buildTestMigrationSource populates a fresh SQLite database touching every
-// one of the 18 tables migrationTables copies (sites, releases and their
+// one of the tables migrationTables copies (sites, releases and their
 // actress/tag/site relationships, settings, users, sessions, preferences,
 // filter presets, job history, downloads, path mappings, pipeline
 // steps/runs/logs, notifications, desired sync), mirroring
@@ -412,7 +412,7 @@ func resetMigrationTarget(t *testing.T, cfg store.PostgresConfig) {
 		t.Fatalf("preparing target schema for test reset: %v", e)
 	}
 	defer st.Close()
-	if _, e := st.DB().ExecContext(ctx, `TRUNCATE sites, releases, settings, users, sessions, user_preferences, filter_presets, job_history, downloads, path_mappings, pipeline_steps, pipeline_logs, notifications, desired_sync, release_actresses, release_tags, release_sites, pipeline_runs RESTART IDENTITY CASCADE`); e != nil {
+	if _, e := st.DB().ExecContext(ctx, `TRUNCATE sites, releases, settings, users, sessions, user_preferences, filter_presets, job_history, download_search_runs, downloads, path_mappings, pipeline_steps, pipeline_logs, notifications, desired_sync, release_actresses, release_tags, release_sites, pipeline_runs RESTART IDENTITY CASCADE`); e != nil {
 		t.Fatalf("truncating target for test reset: %v", e)
 	}
 }

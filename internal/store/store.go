@@ -53,6 +53,8 @@ type Store interface {
 	DeleteFilterPreset(context.Context, int64) error
 	SaveJob(context.Context, domain.Job) (int64, error)
 	Jobs(context.Context, int) ([]domain.Job, error)
+	SaveDownloadSearchRun(context.Context, domain.DownloadSearchRun) (domain.DownloadSearchRun, error)
+	DownloadSearchRuns(context.Context, string, int) ([]domain.DownloadSearchRun, error)
 	SaveDownload(context.Context, domain.Download) (domain.Download, error)
 	Downloads(context.Context, string) ([]domain.Download, error)
 	DownloadActivity(context.Context, domain.DownloadFilter) ([]domain.Download, int, error)
@@ -131,6 +133,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
 CREATE TABLE IF NOT EXISTS user_preferences (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, state TEXT NOT NULL DEFAULT '{}', updated_at DATETIME NOT NULL);
 CREATE TABLE IF NOT EXISTS filter_presets (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, state TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(user_id,name));
 CREATE TABLE IF NOT EXISTS job_history (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, mode TEXT NOT NULL DEFAULT '', site_title TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', started_at DATETIME, finished_at DATETIME, added INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS download_search_runs (id INTEGER PRIMARY KEY, schedule TEXT NOT NULL, started_at DATETIME NOT NULL, finished_at DATETIME NOT NULL, checked INTEGER NOT NULL DEFAULT 0, found INTEGER NOT NULL DEFAULT 0, downloaded INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS idx_download_search_runs_schedule_finished ON download_search_runs(schedule,finished_at DESC);
 CREATE TABLE IF NOT EXISTS downloads (id INTEGER PRIMARY KEY, release_id INTEGER REFERENCES releases(id) ON DELETE SET NULL, provider TEXT NOT NULL DEFAULT '', source_type TEXT NOT NULL DEFAULT '', source_reference TEXT NOT NULL DEFAULT '', query TEXT NOT NULL DEFAULT '', torrent_hash TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL, match_reason TEXT NOT NULL DEFAULT '', qb_response TEXT NOT NULL DEFAULT '', post_status TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', seed_ratio REAL NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, seeds INTEGER NOT NULL DEFAULT 0, peers INTEGER NOT NULL DEFAULT 0, eta_seconds INTEGER NOT NULL DEFAULT 0, seen_complete INTEGER NOT NULL DEFAULT 0, filename_pattern_excluded INTEGER NOT NULL DEFAULT 0, added_at DATETIME NOT NULL, updated_at DATETIME NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_downloads_status ON downloads(status);
 CREATE INDEX IF NOT EXISTS idx_downloads_release ON downloads(release_id);
@@ -1712,6 +1716,46 @@ func (s *SQLite) Jobs(ctx context.Context, limit int) ([]domain.Job, error) {
 	return out, rows.Err()
 }
 
+func (s *SQLite) SaveDownloadSearchRun(ctx context.Context, x domain.DownloadSearchRun) (domain.DownloadSearchRun, error) {
+	if x.Schedule != "recent" && x.Schedule != "older" {
+		return x, errors.New("download search run schedule must be recent or older")
+	}
+	id, err := s.dialect.InsertReturningID(ctx, s.db, `INSERT INTO download_search_runs(schedule,started_at,finished_at,checked,found,downloaded,skipped,failed,error) VALUES(?,?,?,?,?,?,?,?,?)`, x.Schedule, x.StartedAt, x.FinishedAt, x.Checked, x.Found, x.Downloaded, x.Skipped, x.Failed, x.Error)
+	if err != nil {
+		return x, err
+	}
+	x.ID = id
+	return x, nil
+}
+
+func (s *SQLite) DownloadSearchRuns(ctx context.Context, schedule string, limit int) ([]domain.DownloadSearchRun, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 25
+	}
+	query := `SELECT id,schedule,started_at,finished_at,checked,found,downloaded,skipped,failed,error FROM download_search_runs`
+	args := []any{}
+	if schedule != "" {
+		query += ` WHERE schedule=?`
+		args = append(args, schedule)
+	}
+	query += ` ORDER BY finished_at DESC,id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.DownloadSearchRun{}
+	for rows.Next() {
+		var x domain.DownloadSearchRun
+		if err := rows.Scan(&x.ID, &x.Schedule, &x.StartedAt, &x.FinishedAt, &x.Checked, &x.Found, &x.Downloaded, &x.Skipped, &x.Failed, &x.Error); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
 func (s *SQLite) SaveDownload(ctx context.Context, x domain.Download) (domain.Download, error) {
 	now := time.Now().UTC()
 	if len(x.Files) == 0 {
@@ -1790,12 +1834,21 @@ func (s *SQLite) DownloadActivity(ctx context.Context, f domain.DownloadFilter) 
 		where += ` AND d.filename_pattern_excluded=1`
 	}
 	if f.Stalled {
-		days := f.StalledDays
-		if days <= 0 {
-			days = 7
+		where += ` AND d.seeds=0`
+	}
+	switch f.SeenComplete {
+	case "never":
+		where += ` AND d.seen_complete=0`
+	case "before":
+		if f.SeenCompleteDate > 0 {
+			where += ` AND d.seen_complete>0 AND d.seen_complete<?`
+			a = append(a, f.SeenCompleteDate)
 		}
-		where += ` AND d.seeds=0 AND (d.seen_complete=0 OR d.seen_complete<?)`
-		a = append(a, time.Now().Add(-time.Duration(days)*24*time.Hour).Unix())
+	case "after":
+		if f.SeenCompleteDate > 0 {
+			where += ` AND d.seen_complete>=?`
+			a = append(a, f.SeenCompleteDate)
+		}
 	}
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM downloads d LEFT JOIN releases r ON r.id=d.release_id`+where, a...).Scan(&total); err != nil {

@@ -350,7 +350,7 @@ func TestAwaitRecoveryTransitionsToNormalOperationOnSuccessfulRetry(t *testing.T
 			return
 		}
 		defer db.Close()
-		if _, e := db.ExecContext(context.Background(), `TRUNCATE sites, releases, settings, users, sessions, user_preferences, filter_presets, job_history, downloads, path_mappings, pipeline_steps, pipeline_logs, notifications, desired_sync, release_actresses, release_tags, release_sites, pipeline_runs RESTART IDENTITY CASCADE`); e != nil {
+		if _, e := db.ExecContext(context.Background(), `TRUNCATE sites, releases, settings, users, sessions, user_preferences, filter_presets, job_history, download_search_runs, downloads, path_mappings, pipeline_steps, pipeline_logs, notifications, desired_sync, release_actresses, release_tags, release_sites, pipeline_runs RESTART IDENTITY CASCADE`); e != nil {
 			t.Logf("cleanup: truncate failed: %v", e)
 		}
 	})

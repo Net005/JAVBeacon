@@ -44,6 +44,35 @@ func TestSQLiteReleaseLifecycle(t *testing.T) {
 	}
 }
 
+func TestDownloadSearchRunsPersistAndFilter(t *testing.T) {
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "download-search-runs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, run := range []domain.DownloadSearchRun{
+		{Schedule: "recent", StartedAt: now.Add(-time.Minute), FinishedAt: now, Checked: 12, Found: 4, Downloaded: 2, Skipped: 9, Failed: 1, Error: "one failure"},
+		{Schedule: "older", StartedAt: now.Add(time.Minute), FinishedAt: now.Add(2 * time.Minute), Checked: 20, Found: 3, Downloaded: 1, Skipped: 19},
+	} {
+		if _, err := s.SaveDownloadSearchRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.DownloadSearchRuns(ctx, "recent", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Checked != 12 || rows[0].Found != 4 || rows[0].Downloaded != 2 || rows[0].Failed != 1 {
+		t.Fatalf("recent history=%+v", rows)
+	}
+	all, err := s.DownloadSearchRuns(ctx, "", 10)
+	if err != nil || len(all) != 2 || all[0].Schedule != "older" {
+		t.Fatalf("all history=%+v err=%v", all, err)
+	}
+}
+
 func TestSQLiteDurationConditionsParseLeadingMinutes(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "duration-filter.db"))
@@ -1444,19 +1473,32 @@ func TestDownloadActivitySeenCompleteStalledFilterAndSwarmSort(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	stalled, total, err := s.DownloadActivity(ctx, domain.DownloadFilter{Status: "downloading", Stalled: true, StalledDays: 7, Limit: 10})
+	stalled, total, err := s.DownloadActivity(ctx, domain.DownloadFilter{Status: "downloading", Stalled: true, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 2 || len(stalled) != 2 {
-		t.Fatalf("stalled rows=%+v total=%d, want NEVER and OLD", stalled, total)
+	if total != 3 || len(stalled) != 3 {
+		t.Fatalf("stalled rows=%+v total=%d, want every zero-seed download", stalled, total)
 	}
 	seen := map[string]bool{}
 	for _, row := range stalled {
 		seen[row.Query] = true
 	}
-	if !seen["NEVER"] || !seen["OLD"] {
-		t.Fatalf("stalled rows=%+v, want NEVER and OLD", stalled)
+	if !seen["NEVER"] || !seen["OLD"] || !seen["RECENT"] {
+		t.Fatalf("stalled rows=%+v, want NEVER, OLD, and RECENT", stalled)
+	}
+	never, total, err := s.DownloadActivity(ctx, domain.DownloadFilter{SeenComplete: "never", Limit: 10})
+	if err != nil || total != 1 || len(never) != 1 || never[0].Query != "NEVER" {
+		t.Fatalf("never-seen-complete rows=%+v total=%d err=%v", never, total, err)
+	}
+	cutoff := now.Add(-7 * 24 * time.Hour).Unix()
+	older, total, err := s.DownloadActivity(ctx, domain.DownloadFilter{SeenComplete: "before", SeenCompleteDate: cutoff, Limit: 10})
+	if err != nil || total != 2 || len(older) != 2 {
+		t.Fatalf("before-date rows=%+v total=%d err=%v, want OLD and SEEDED", older, total, err)
+	}
+	newer, total, err := s.DownloadActivity(ctx, domain.DownloadFilter{SeenComplete: "after", SeenCompleteDate: cutoff, Limit: 10})
+	if err != nil || total != 1 || len(newer) != 1 || newer[0].Query != "RECENT" {
+		t.Fatalf("after-date rows=%+v total=%d err=%v, want RECENT", newer, total, err)
 	}
 	sorted, _, err := s.DownloadActivity(ctx, domain.DownloadFilter{Status: "downloading", Sort: "seeds", Direction: "desc", Limit: 10})
 	if err != nil || len(sorted) != 4 || sorted[0].Query != "SEEDED" || sorted[0].SeenComplete == 0 {

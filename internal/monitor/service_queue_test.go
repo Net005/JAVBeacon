@@ -12,7 +12,7 @@ import (
 )
 
 // TestRefreshQueueOrdersPriorityAndPreservesFIFO exercises enqueueRefresh in
-// isolation: higher Priority values run first (Phase 3), and jobs sharing a
+// isolation: lower Priority values run first, and jobs sharing a
 // priority keep FIFO order among themselves. Priority is set explicitly here
 // as StartOptions (via resolvePriority) would have already resolved it
 // before a job reaches the queue.
@@ -32,11 +32,11 @@ func TestRefreshQueueOrdersPriorityAndPreservesFIFO(t *testing.T) {
 		releaseID int64
 		siteID    int64
 	}{
-		{15, 0, 30},
-		{8, 0, 20},
-		{8, 0, 21},
 		{5, 10, 0},
 		{5, 11, 0},
+		{8, 0, 20},
+		{8, 0, 21},
+		{15, 0, 30},
 	}
 	if len(queue) != len(want) {
 		t.Fatalf("queue length=%d, want %d", len(queue), len(want))
@@ -76,7 +76,7 @@ func TestScheduledScrapeCoordinatorQueuesDueScansByConfiguredPriority(t *testing
 	for i, want := range []struct {
 		mode     string
 		priority int
-	}{{"new", 40}, {"quick", 30}, {"full", 20}} {
+	}{{"full", 20}, {"quick", 30}, {"new", 40}} {
 		if got := service.queue[i]; got.Mode != want.mode || got.Priority != want.priority {
 			t.Fatalf("queue[%d] = %+v, want mode=%s priority=%d", i, got, want.mode, want.priority)
 		}
@@ -111,6 +111,34 @@ func TestResolvePriorityUsesOverrideThenSettingThenBuiltinDefault(t *testing.T) 
 	if got := service.resolvePriority(ctx, PriorityKindStartSource, 7); got != 7 {
 		t.Fatalf("explicit override still wins over configured default = %d, want 7", got)
 	}
+	if err := st.SaveSettings(ctx, map[string]string{JobPrioritySettingKey(PriorityKindStartSource): "1000"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := service.resolvePriority(ctx, PriorityKindStartSource, 0); got != 10 {
+		t.Fatalf("out-of-range configured priority = %d, want built-in default 10", got)
+	}
+}
+
+func TestStartOptionsAcceptsPriorityRangeAndRejectsValuesOutsideIt(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "priority-range.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	service := &Service{store: st, log: slog.Default(), worker: true}
+	for _, priority := range []int{1, 999} {
+		if err := service.StartOptions(context.Background(), RefreshOptions{Priority: priority}); err != nil {
+			t.Fatalf("priority %d rejected: %v", priority, err)
+		}
+	}
+	for _, priority := range []int{-1, 1000} {
+		if err := service.StartOptions(context.Background(), RefreshOptions{Priority: priority}); err == nil {
+			t.Fatalf("priority %d was accepted", priority)
+		}
+	}
+	if got := service.queue; len(got) != 2 || got[0].Priority != 1 || got[1].Priority != 999 {
+		t.Fatalf("queue = %+v, want priority 1 before priority 999", got)
+	}
 }
 
 // TestStartOptionsAllPagesPromotesStartSourceToManualFull covers the Phase 3
@@ -123,7 +151,7 @@ func TestStartOptionsAllPagesPromotesStartSourceToManualFull(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	service := &Service{store: st, log: slog.Default(), worker: true, queue: []RefreshOptions{{SiteID: 999, Priority: 5}}}
+	service := &Service{store: st, log: slog.Default(), worker: true, queue: []RefreshOptions{{SiteID: 999, Priority: 50}}}
 	ctx := context.Background()
 
 	if e := service.StartOptions(ctx, RefreshOptions{SiteID: 1, AllPages: true}); e != nil {
@@ -136,8 +164,8 @@ func TestStartOptionsAllPagesPromotesStartSourceToManualFull(t *testing.T) {
 	if e := service.StartOptions(ctx, RefreshOptions{SiteID: 2, AllPages: true, Priority: 77}); e != nil {
 		t.Fatal(e)
 	}
-	if service.queue[0].Priority != 77 {
-		t.Fatalf("explicit override = %d, want 77 to win over the manual_full default", service.queue[0].Priority)
+	if got := service.queue[len(service.queue)-1]; got.SiteID != 2 || got.Priority != 77 {
+		t.Fatalf("explicit override = %+v, want site 2 to retain priority 77", got)
 	}
 }
 
