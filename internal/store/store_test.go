@@ -130,7 +130,7 @@ func TestReleaseConditionsSupportMetadataDatesNumbersAndStates(t *testing.T) {
 		t.Fatalf("release lookup: rows=%v err=%v", rows, err)
 	}
 	id := rows[0].ID
-	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET is_local=1,o_counter=7,last_o_count_at='2024-04-20',last_played_at='2024-04-25',added_at='2024-01-15',updated_at='2024-06-15' WHERE id=?`, id); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET is_local=1,o_counter=7,play_count=11,last_o_count_at='2024-04-20',last_played_at='2024-04-25',added_at='2024-01-15',updated_at='2024-06-15' WHERE id=?`, id); err != nil {
 		t.Fatal(err)
 	}
 	for _, status := range []string{"completed", "failed"} {
@@ -144,6 +144,7 @@ func TestReleaseConditionsSupportMetadataDatesNumbersAndStates(t *testing.T) {
 		"label partial case insensitive":  `{"field":"label","value":"CRYSTAL"}`,
 		"duration minimum":                `{"field":"duration","op":"gte","value":"120"}`,
 		"o count minimum":                 `{"field":"o_count","op":"gte","value":"7"}`,
+		"play count minimum":              `{"field":"play_count","op":"gte","value":"11"}`,
 		"last o count after":              `{"field":"last_o_count","op":"after","value":"2024-04-01"}`,
 		"last played before":              `{"field":"last_played","op":"before","value":"2024-05-01"}`,
 		"date added before":               `{"field":"added_at","op":"before","value":"2025-01-01"}`,

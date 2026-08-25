@@ -94,7 +94,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
   .releaseInfo{overflow-y:auto;overflow-x:hidden;padding-bottom:24px;overscroll-behavior:contain}
 }
 
-.sidebarFooter{margin-top:auto;min-width:0}.sidebarFooter #appVersion{display:block;padding:0 10px 3px;color:#686f7c;font:600 9px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.3px}.sidebarFooter #logout{margin-top:0}.navCollapsed .sidebarFooter #appVersion,.navCollapsedInitial .sidebarFooter #appVersion{display:none}@media(max-width:650px){.sidebarFooter{display:none}}
+.sidebarFooter{display:flex;align-items:center;gap:6px;margin-top:auto;min-width:0;padding-top:8px;border-top:1px solid #252a33}.sidebarFooter #logout{order:1;flex:1;width:auto;margin-top:0;padding:8px}.sidebarFooter #appVersion{order:2;display:block;flex:none;padding:3px 7px;border:1px solid #303643;border-radius:999px;background:#12161e;color:#9ba3b2;font:700 10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.25px}.navCollapsed .sidebarFooter #appVersion,.navCollapsedInitial .sidebarFooter #appVersion{display:none}@media(max-width:650px){.sidebarFooter{display:none}}
 
 /* Release detail Source/StashApp row fix: don't let horizontal overflow create
    an implicit vertical clipping container around the taller link button. */

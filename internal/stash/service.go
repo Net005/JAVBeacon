@@ -189,12 +189,14 @@ func (s *Service) run(ctx context.Context) {
 					result.Error = e.Error()
 				}
 			}
-			// Playback stats are matched directly by StashSceneID (unlike
-			// ids/dates above, which match by canonical title/code text
-			// because a release doesn't have one yet) - only meaningful once
-			// a release actually has a matched scene.
-			if stats != nil && release.StashSceneID != "" {
-				if st, ok := stats[release.StashSceneID]; ok {
+			// Playback stats use the scene ID found in this sync, not the ID
+			// from the release snapshot loaded before SetStashState above. On a
+			// release's first match that snapshot is still blank; using it made
+			// O Count, Play Count, Last Played, and Last O Count remain empty
+			// until a second sync. Only current local matches are eligible, so a
+			// scene removed from Stash cannot refresh stale playback values.
+			if stats != nil && local && sceneID != "" {
+				if st, ok := stats[sceneID]; ok {
 					lastOCountAt := st.LastOCountAt
 					if lastOCountAt == "" {
 						// This round's query couldn't determine it (basic-tier

@@ -633,8 +633,8 @@ const releaseFrom = ` FROM releases r JOIN sites s ON s.id=r.site_id`
 // dialog: match a field against a value, either exactly or as a
 // substring/wildcard search. Op is an optional numeric/date comparison
 // operator (mirroring stashMissingFilterCondition in stash_missing.go -
-// "gte" default, "lte", "eq", "gt", "lt" for the numeric fields "duration"
-// and "o_count"; "before"/"after" (default) for the date fields
+// "gte" default, "lte", "eq", "gt", "lt" for the numeric fields "duration",
+// "o_count", and "play_count"; "before"/"after" (default) for the date fields
 // "last_o_count", "last_played", "added_at", "updated_at", "release_date")
 // that the original text-only fields (title/tag/actress/description) and
 // the newer text fields (studio/label) have no use for.
@@ -726,7 +726,7 @@ func releaseConditionGroupClause(d Dialect, conditions []releaseFilterCondition,
 			}
 			continue
 		}
-		if field == "duration" || field == "o_count" {
+		if field == "duration" || field == "o_count" || field == "play_count" {
 			if value == "" {
 				continue
 			}
@@ -742,7 +742,11 @@ func releaseConditionGroupClause(d Dialect, conditions []releaseFilterCondition,
 				if convErr != nil {
 					continue
 				}
-				parts = append(parts, "r.o_counter "+numericConditionOp(condition.Op)+" ?")
+				column := "r.o_counter"
+				if field == "play_count" {
+					column = "r.play_count"
+				}
+				parts = append(parts, column+" "+numericConditionOp(condition.Op)+" ?")
 				a = append(a, n)
 			}
 			continue
