@@ -52,7 +52,7 @@ type RefreshOptions struct {
 	Priority int
 }
 
-// Job priority kinds. Higher priority values run before lower ones (see
+// Job priority kinds. Lower priority values run before higher ones (see
 // enqueueRefresh); each has a built-in default that a matching
 // "job_priority_<kind>" setting can override.
 const (
@@ -70,15 +70,15 @@ var priorityKindDefaults = map[string]int{
 	PriorityKindManualFull:     20,
 	PriorityKindScheduled:      15,
 	PriorityKindScheduledFull:  17,
-	PriorityKindScheduledNew:   16,
-	PriorityKindScheduledQuick: 15,
+	PriorityKindScheduledNew:   15,
+	PriorityKindScheduledQuick: 16,
 	PriorityKindStartSource:    10,
 	PriorityKindSiteRefresh:    8,
 	PriorityKindUpdateDetails:  5,
 }
 
-// JobPriorityKinds lists the known priority kinds in default-priority order
-// (highest first), for building the Settings UI and validating requests.
+// JobPriorityKinds lists the known priority kinds for building the Settings UI
+// and validating requests.
 var JobPriorityKinds = []string{PriorityKindManualFull, PriorityKindScheduledFull, PriorityKindScheduledNew, PriorityKindScheduledQuick, PriorityKindStartSource, PriorityKindSiteRefresh, PriorityKindUpdateDetails}
 
 // JobPrioritySettingKey returns the settings key holding the configured
@@ -113,7 +113,7 @@ func (s *Service) resolvePriority(ctx context.Context, kind string, override int
 		return def
 	}
 	v, e := strconv.Atoi(strings.TrimSpace(raw))
-	if e != nil {
+	if e != nil || v < 1 || v > 999 {
 		return def
 	}
 	return v
@@ -183,6 +183,9 @@ func (s *Service) Start(ctx context.Context, siteID int64) error {
 	return s.StartOptions(ctx, RefreshOptions{SiteID: siteID, Mode: "quick"})
 }
 func (s *Service) StartOptions(ctx context.Context, options RefreshOptions) error {
+	if options.Priority < 0 || options.Priority > 999 {
+		return errors.New("priority must be between 1 and 999, or 0 to use the configured default")
+	}
 	if options.Mode == "" {
 		options.Mode = "quick"
 	}
@@ -241,7 +244,7 @@ func (s *Service) StartOptions(ctx context.Context, options RefreshOptions) erro
 		}
 		position := len(s.queue) + 1
 		for index, queued := range s.queue {
-			if refreshPriority(options) > refreshPriority(queued) {
+			if queuePriority(options) > queuePriority(queued) {
 				position = index + 1
 				break
 			}
@@ -283,16 +286,22 @@ func (s *Service) Stop() (int, bool) {
 
 // refreshPriority returns options' effective queue priority. StartOptions
 // resolves this (via resolvePriority) before a job is enqueued or run, so
-// this is normally just an accessor; higher values run before lower ones.
+// this is normally just an accessor.
 func refreshPriority(options RefreshOptions) int {
 	return options.Priority
 }
 
+// queuePriority gives every scrape entry point the same lower-number-first
+// ordering shown in Settings (including manual jobs and scheduled scans).
+func queuePriority(options RefreshOptions) int {
+	return -refreshPriority(options)
+}
+
 func enqueueRefresh(queue []RefreshOptions, options RefreshOptions) []RefreshOptions {
-	priority := refreshPriority(options)
+	priority := queuePriority(options)
 	index := len(queue)
 	for i, queued := range queue {
-		if priority > refreshPriority(queued) {
+		if priority > queuePriority(queued) {
 			index = i
 			break
 		}
@@ -715,6 +724,9 @@ type scrapeSchedule struct {
 	title          string
 	enabledKey     string
 	intervalKey    string
+	startTimeKey   string
+	weekdaysKey    string
+	cronKey        string
 	pagesKey       string
 	priorityKind   string
 	fallback       time.Duration
@@ -728,11 +740,12 @@ type dueScrape struct {
 
 // runScrapeSchedules is the one coordinator for scheduled scrape scans. A
 // single loop is important here: when multiple schedules become due together,
-// it resolves all priorities first and enqueues them highest-first. The
+// it resolves all priorities first and enqueues them lowest-number-first. The
 // Service's existing single refresh worker then guarantees they execute one at
 // a time, in queue order, rather than three timer goroutines racing to start.
 func (s *Service) runScrapeSchedules(ctx context.Context, schedules []scrapeSchedule) {
 	lastAttempt := make(map[string]time.Time, len(schedules))
+	lastCalendarMinute := make(map[string]string, len(schedules))
 	started := time.Now()
 	for _, schedule := range schedules {
 		lastAttempt[schedule.mode] = started
@@ -743,6 +756,30 @@ func (s *Service) runScrapeSchedules(ctx context.Context, schedules []scrapeSche
 		due := make([]dueScrape, 0, len(schedules))
 		nextSleep := scheduleMaxSleepChunk
 		for _, schedule := range schedules {
+			enabled := schedule.defaultEnabled
+			if raw, ok := settings[schedule.enabledKey]; ok {
+				enabled = raw == "true"
+			}
+			calendarConfigured := strings.TrimSpace(settings[schedule.cronKey]) != "" || strings.TrimSpace(settings[schedule.startTimeKey]) != ""
+			if calendarConfigured {
+				minuteKey := now.Format("200601021504")
+				matches, err := calendarScheduleMatches(now, settings[schedule.startTimeKey], settings[schedule.weekdaysKey], settings[schedule.cronKey])
+				if err != nil {
+					s.log.Error("invalid scheduled scrape timing", "mode", schedule.mode, "error", err)
+				} else if enabled && matches && lastCalendarMinute[schedule.mode] != minuteKey {
+					lastCalendarMinute[schedule.mode] = minuteKey
+					pages := 0
+					if schedule.pagesKey != "" {
+						pages, _ = strconv.Atoi(settings[schedule.pagesKey])
+						if pages <= 0 {
+							pages = s.pages
+						}
+					}
+					priority := s.resolvePriority(ctx, schedule.priorityKind, 0)
+					due = append(due, dueScrape{priority: priority, options: RefreshOptions{Mode: schedule.mode, Title: schedule.title, Pages: pages, Scheduled: true, Kind: schedule.priorityKind, Priority: priority}})
+				}
+				continue
+			}
 			interval := schedule.fallback
 			if parsed, err := time.ParseDuration(settings[schedule.intervalKey]); err == nil && parsed >= time.Minute {
 				interval = parsed
@@ -754,10 +791,6 @@ func (s *Service) runScrapeSchedules(ctx context.Context, schedules []scrapeSche
 			remaining := interval - elapsed
 			if remaining <= 0 {
 				lastAttempt[schedule.mode] = now
-				enabled := schedule.defaultEnabled
-				if raw, ok := settings[schedule.enabledKey]; ok {
-					enabled = raw == "true"
-				}
 				if enabled {
 					pages := 0
 					if schedule.pagesKey != "" {
@@ -766,10 +799,7 @@ func (s *Service) runScrapeSchedules(ctx context.Context, schedules []scrapeSche
 							pages = s.pages
 						}
 					}
-					priority := jobPriorityDefault(schedule.priorityKind)
-					if configured, err := strconv.Atoi(strings.TrimSpace(settings[JobPrioritySettingKey(schedule.priorityKind)])); err == nil {
-						priority = configured
-					}
+					priority := s.resolvePriority(ctx, schedule.priorityKind, 0)
 					due = append(due, dueScrape{priority: priority, options: RefreshOptions{Mode: schedule.mode, Title: schedule.title, Pages: pages, Scheduled: true, Kind: schedule.priorityKind, Priority: priority}})
 				}
 				remaining = interval
@@ -780,9 +810,9 @@ func (s *Service) runScrapeSchedules(ctx context.Context, schedules []scrapeSche
 		}
 		slices.SortStableFunc(due, func(a, b dueScrape) int {
 			switch {
-			case a.priority > b.priority:
-				return -1
 			case a.priority < b.priority:
+				return -1
+			case a.priority > b.priority:
 				return 1
 			default:
 				return 0
@@ -818,7 +848,7 @@ func (s *Service) Schedule(ctx context.Context, every time.Duration) {
 	if every <= 0 {
 		return
 	}
-	s.runScrapeSchedules(ctx, []scrapeSchedule{{mode: "quick", title: "Quick refresh · all enabled sites", enabledKey: "quick_refresh_enabled", intervalKey: "refresh_interval", priorityKind: PriorityKindScheduledQuick, fallback: every, defaultEnabled: true}})
+	s.runScrapeSchedules(ctx, []scrapeSchedule{{mode: "quick", title: "Quick refresh · all enabled sites", enabledKey: "quick_refresh_enabled", intervalKey: "refresh_interval", startTimeKey: "quick_refresh_start_time", weekdaysKey: "quick_refresh_weekdays", cronKey: "quick_refresh_cron", priorityKind: PriorityKindScheduledQuick, fallback: every, defaultEnabled: true}})
 }
 
 // ScheduleFull runs the Full refresh scheduled scan: a second, independent
@@ -836,14 +866,14 @@ func (s *Service) ScheduleFull(ctx context.Context, every time.Duration) {
 	if every <= 0 {
 		return
 	}
-	s.runScrapeSchedules(ctx, []scrapeSchedule{{mode: "full", title: "Full refresh · all enabled sites", enabledKey: "full_refresh_enabled", intervalKey: "full_refresh_interval", pagesKey: "full_refresh_page_limit", priorityKind: PriorityKindScheduledFull, fallback: every}})
+	s.runScrapeSchedules(ctx, []scrapeSchedule{{mode: "full", title: "Full refresh · all enabled sites", enabledKey: "full_refresh_enabled", intervalKey: "full_refresh_interval", startTimeKey: "full_refresh_start_time", weekdaysKey: "full_refresh_weekdays", cronKey: "full_refresh_cron", pagesKey: "full_refresh_page_limit", priorityKind: PriorityKindScheduledFull, fallback: every}})
 }
 
 func (s *Service) ScheduleNew(ctx context.Context, every time.Duration) {
 	if every <= 0 {
 		return
 	}
-	s.runScrapeSchedules(ctx, []scrapeSchedule{{mode: "new", title: "New releases only · all enabled sites", enabledKey: "new_release_refresh_enabled", intervalKey: "new_release_refresh_interval", pagesKey: "new_release_refresh_page_limit", priorityKind: PriorityKindScheduledNew, fallback: every}})
+	s.runScrapeSchedules(ctx, []scrapeSchedule{{mode: "new", title: "New releases only · all enabled sites", enabledKey: "new_release_refresh_enabled", intervalKey: "new_release_refresh_interval", startTimeKey: "new_release_refresh_start_time", weekdaysKey: "new_release_refresh_weekdays", cronKey: "new_release_refresh_cron", pagesKey: "new_release_refresh_page_limit", priorityKind: PriorityKindScheduledNew, fallback: every, defaultEnabled: true}})
 }
 
 // ScheduleScrapes runs all three configurable scrape schedules through one
@@ -854,8 +884,8 @@ func (s *Service) ScheduleScrapes(ctx context.Context, quickEvery time.Duration)
 		return
 	}
 	s.runScrapeSchedules(ctx, []scrapeSchedule{
-		{mode: "full", title: "Full refresh · all enabled sites", enabledKey: "full_refresh_enabled", intervalKey: "full_refresh_interval", pagesKey: "full_refresh_page_limit", priorityKind: PriorityKindScheduledFull, fallback: 24 * time.Hour},
-		{mode: "new", title: "New releases only · all enabled sites", enabledKey: "new_release_refresh_enabled", intervalKey: "new_release_refresh_interval", pagesKey: "new_release_refresh_page_limit", priorityKind: PriorityKindScheduledNew, fallback: quickEvery},
-		{mode: "quick", title: "Quick refresh · all enabled sites", enabledKey: "quick_refresh_enabled", intervalKey: "refresh_interval", priorityKind: PriorityKindScheduledQuick, fallback: quickEvery, defaultEnabled: true},
+		{mode: "full", title: "Full refresh · all enabled sites", enabledKey: "full_refresh_enabled", intervalKey: "full_refresh_interval", startTimeKey: "full_refresh_start_time", weekdaysKey: "full_refresh_weekdays", cronKey: "full_refresh_cron", pagesKey: "full_refresh_page_limit", priorityKind: PriorityKindScheduledFull, fallback: 24 * time.Hour},
+		{mode: "new", title: "New releases only · all enabled sites", enabledKey: "new_release_refresh_enabled", intervalKey: "new_release_refresh_interval", startTimeKey: "new_release_refresh_start_time", weekdaysKey: "new_release_refresh_weekdays", cronKey: "new_release_refresh_cron", pagesKey: "new_release_refresh_page_limit", priorityKind: PriorityKindScheduledNew, fallback: quickEvery, defaultEnabled: true},
+		{mode: "quick", title: "Quick refresh · all enabled sites", enabledKey: "quick_refresh_enabled", intervalKey: "refresh_interval", startTimeKey: "quick_refresh_start_time", weekdaysKey: "quick_refresh_weekdays", cronKey: "quick_refresh_cron", priorityKind: PriorityKindScheduledQuick, fallback: quickEvery, defaultEnabled: true},
 	})
 }

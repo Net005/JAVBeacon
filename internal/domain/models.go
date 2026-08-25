@@ -199,7 +199,8 @@ type DownloadFilter struct {
 	// false means "don't filter on this" rather than "must be false".
 	FilenamePatternExcluded bool
 	Stalled                 bool
-	StalledDays             int
+	SeenComplete            string
+	SeenCompleteDate        int64
 }
 
 // StashMissingScene is one StashApp scene whose file(s) could not be found
@@ -420,10 +421,45 @@ type DownloadSearchJob struct {
 	StartedAt  time.Time `json:"started_at,omitempty"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
 	Checked    int       `json:"checked"`
+	Found      int       `json:"found"`
 	Downloaded int       `json:"downloaded"`
 	Skipped    int       `json:"skipped"`
 	Failed     int       `json:"failed"`
 	VideoID    string    `json:"video_id,omitempty"`
+	Error      string    `json:"error,omitempty"`
+}
+
+// DownloadReplacementJob tracks one bulk Download Activity cleanup and its
+// optional best-seeded replacement searches.
+type DownloadReplacementJob struct {
+	Running      bool      `json:"running"`
+	Replace      bool      `json:"replace"`
+	NonPreferred bool      `json:"non_preferred"`
+	StartedAt    time.Time `json:"started_at,omitempty"`
+	FinishedAt   time.Time `json:"finished_at,omitempty"`
+	Total        int       `json:"total"`
+	Processed    int       `json:"processed"`
+	Removed      int       `json:"removed"`
+	Downloaded   int       `json:"downloaded"`
+	NotFound     int       `json:"not_found"`
+	Failed       int       `json:"failed"`
+	CurrentItem  string    `json:"current_item,omitempty"`
+	LastError    string    `json:"last_error,omitempty"`
+}
+
+// DownloadSearchRun is the persisted result of one recent- or older-release
+// monitoring pass. It restores "last run" after restart and backs the run
+// history shown in Download Monitoring.
+type DownloadSearchRun struct {
+	ID         int64     `json:"id"`
+	Schedule   string    `json:"schedule"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at"`
+	Checked    int       `json:"checked"`
+	Found      int       `json:"found"`
+	Downloaded int       `json:"downloaded"`
+	Skipped    int       `json:"skipped"`
+	Failed     int       `json:"failed"`
 	Error      string    `json:"error,omitempty"`
 }
 

@@ -34,6 +34,9 @@ type Service struct {
 	// from the Monitored releases UI - see StartSearch/StartSearchOlder and
 	// SearchSchedule/OlderSearchSchedule.
 	olderJob domain.DownloadSearchJob
+	// replacementJob is the current or most recently completed bulk
+	// Download Activity delete/replacement operation.
+	replacementJob domain.DownloadReplacementJob
 
 	cleanupRetryMu sync.Mutex
 	cleanupRetryAt map[int64]time.Time
@@ -81,8 +84,18 @@ func (s *Service) clearCleanupRetry(downloadID int64) {
 
 func New(st store.Store, timeout time.Duration, log *slog.Logger) *Service {
 	s := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, pipelineJobs: make(chan pipelineJob, 64)}
+	if rows, err := st.DownloadSearchRuns(context.Background(), "recent", 1); err == nil && len(rows) > 0 {
+		s.job = searchJobFromRun(rows[0])
+	}
+	if rows, err := st.DownloadSearchRuns(context.Background(), "older", 1); err == nil && len(rows) > 0 {
+		s.olderJob = searchJobFromRun(rows[0])
+	}
 	go s.runPipelineWorker()
 	return s
+}
+
+func searchJobFromRun(run domain.DownloadSearchRun) domain.DownloadSearchJob {
+	return domain.DownloadSearchJob{StartedAt: run.StartedAt, FinishedAt: run.FinishedAt, Checked: run.Checked, Found: run.Found, Downloaded: run.Downloaded, Skipped: run.Skipped, Failed: run.Failed, Error: run.Error}
 }
 
 // runPipelineWorker is the single goroutine that ever actually executes an
@@ -573,10 +586,55 @@ func (s *Service) removeReleaseDownloads(ctx context.Context, releaseID int64, q
 // searches on a detached background context. Releases are deduplicated so
 // selecting more than one history row for the same release never starts more
 // than one replacement.
-func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []int64, replace bool) (int, error) {
+func (s *Service) ReplacementStatus() domain.DownloadReplacementJob {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.replacementJob
+}
+
+func (s *Service) setReplacementJob(job domain.DownloadReplacementJob) {
+	s.mu.Lock()
+	s.replacementJob = job
+	s.mu.Unlock()
+}
+
+func (s *Service) searchAndDownloadBestSeeded(ctx context.Context, release domain.Release, trigger string, allowNonPreferred bool) (bool, error) {
+	results, err := s.searchNative(ctx, release, trigger)
+	if err != nil {
+		return false, err
+	}
+	candidate, found := bestSeededCandidate(results, allowNonPreferred)
+	if !found {
+		return false, nil
+	}
+	downloaded, err := s.Download(ctx, release, candidate, trigger, candidate.Link)
+	return err == nil && downloaded.Status == "downloading", err
+}
+
+func bestSeededCandidate(results []domain.SearchResult, allowNonPreferred bool) (domain.SearchResult, bool) {
+	var candidate domain.SearchResult
+	found := false
+	for _, result := range results {
+		if !allowNonPreferred && !result.Accepted {
+			continue
+		}
+		if !found || result.Seeds > candidate.Seeds {
+			candidate, found = result, true
+		}
+	}
+	if !found {
+		return domain.SearchResult{}, false
+	}
+	if !candidate.Accepted {
+		candidate.FilenamePatternExcluded = true
+	}
+	return candidate, true
+}
+
+func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []int64, replace, allowNonPreferred bool) (domain.DownloadReplacementJob, error) {
 	rows, err := s.store.Downloads(ctx, "")
 	if err != nil {
-		return 0, err
+		return domain.DownloadReplacementJob{}, err
 	}
 	wanted := make(map[int64]bool, len(downloadIDs))
 	for _, id := range downloadIDs {
@@ -593,30 +651,69 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 		}
 	}
 	if len(selected) == 0 {
-		return 0, errors.New("no matching downloads selected")
+		return domain.DownloadReplacementJob{}, errors.New("no matching downloads selected")
 	}
+	job := domain.DownloadReplacementJob{Running: true, Replace: replace, NonPreferred: allowNonPreferred, StartedAt: time.Now().UTC(), Total: len(selected)}
+	s.mu.Lock()
+	if s.replacementJob.Running {
+		existing := s.replacementJob
+		s.mu.Unlock()
+		return existing, errors.New("a bulk download replacement job is already running")
+	}
+	s.replacementJob = job
+	s.mu.Unlock()
 	go func(items map[int64]selectedRelease) {
 		background := context.Background()
+		defer func() {
+			job.Running = false
+			job.CurrentItem = ""
+			job.FinishedAt = time.Now().UTC()
+			s.setReplacementJob(job)
+			s.log.Info("bulk download cleanup completed", "removed", job.Removed, "downloaded", job.Downloaded, "not_found", job.NotFound, "failed", job.Failed)
+		}()
 		for _, item := range items {
+			job.CurrentItem = item.query
+			s.setReplacementJob(job)
 			if _, err := s.removeReleaseDownloads(background, item.id, item.query, true); err != nil {
 				s.log.Error("bulk download removal failed", "release_id", item.id, "video_id", item.query, "error", err)
+				job.Failed++
+				job.LastError = err.Error()
+				job.Processed++
+				s.setReplacementJob(job)
 				continue
 			}
+			job.Removed++
 			if !replace {
+				job.Processed++
+				s.setReplacementJob(job)
 				continue
 			}
 			release, err := s.store.Release(background, item.id)
 			if err != nil {
 				s.log.Error("bulk replacement release lookup failed", "release_id", item.id, "error", err)
+				job.Failed++
+				job.LastError = err.Error()
+				job.Processed++
+				s.setReplacementJob(job)
 				continue
 			}
-			started, err := s.SearchAndDownloadNow(background, release, "Download Activity replacement", false)
+			started, err := s.searchAndDownloadBestSeeded(background, release, "Download Activity replacement", allowNonPreferred)
 			if err != nil || !started {
 				s.log.Warn("bulk replacement search did not start a download", "release_id", item.id, "video_id", item.query, "started", started, "error", err)
+				if err != nil {
+					job.Failed++
+					job.LastError = err.Error()
+				} else {
+					job.NotFound++
+				}
+			} else {
+				job.Downloaded++
 			}
+			job.Processed++
+			s.setReplacementJob(job)
 		}
 	}(selected)
-	return len(selected), nil
+	return job, nil
 }
 func (s *Service) Auto(ctx context.Context, r domain.Release) {
 	if settings, e := s.store.Settings(ctx); e == nil {
@@ -842,7 +939,7 @@ func (s *Service) runSearch(ctx context.Context) {
 	settings, _ := s.store.Settings(ctx)
 	recentDays := monitoredDaysSetting(settings, "monitor_recent_days", defaultMonitoredRecentDays)
 	now := time.Now()
-	s.runMonitoredSearch(ctx, s.SearchStatus, func(j domain.DownloadSearchJob) { s.mu.Lock(); s.job = j; s.mu.Unlock() },
+	s.runMonitoredSearch(ctx, "recent", s.SearchStatus, func(j domain.DownloadSearchJob) { s.mu.Lock(); s.job = j; s.mu.Unlock() },
 		func(r domain.Release) bool { return isRecentRelease(now, r, recentDays) }, "Monitored Search", "scheduled download search")
 }
 
@@ -856,7 +953,7 @@ func (s *Service) runSearchOlder(ctx context.Context) {
 	settings, _ := s.store.Settings(ctx)
 	olderDays := monitoredDaysSetting(settings, "monitor_older_days", defaultMonitoredOlderDays)
 	now := time.Now()
-	s.runMonitoredSearch(ctx, s.SearchStatusOlder, func(j domain.DownloadSearchJob) { s.mu.Lock(); s.olderJob = j; s.mu.Unlock() },
+	s.runMonitoredSearch(ctx, "older", s.SearchStatusOlder, func(j domain.DownloadSearchJob) { s.mu.Lock(); s.olderJob = j; s.mu.Unlock() },
 		func(r domain.Release) bool { return isOlderRelease(now, r, olderDays) }, "Monitored Search (Older)", "scheduled older-release download search")
 }
 
@@ -871,13 +968,17 @@ func (s *Service) runSearchOlder(ctx context.Context) {
 // SearchStatus/SearchStatusOlder) - job and olderJob must stay independently
 // lockable so the two schedules can run concurrently without racing on each
 // other's progress.
-func (s *Service) runMonitoredSearch(ctx context.Context, getJob func() domain.DownloadSearchJob, setJob func(domain.DownloadSearchJob), keep func(domain.Release) bool, sourceType, logLabel string) {
+func (s *Service) runMonitoredSearch(ctx context.Context, schedule string, getJob func() domain.DownloadSearchJob, setJob func(domain.DownloadSearchJob), keep func(domain.Release) bool, sourceType, logLabel string) {
 	job := getJob()
 	defer func() {
 		job.Running = false
 		job.FinishedAt = time.Now().UTC()
 		setJob(job)
-		s.log.Info(logLabel+" completed", "checked", job.Checked, "downloaded", job.Downloaded, "skipped", job.Skipped, "failed", job.Failed, "error", job.Error)
+		_, saveErr := s.store.SaveDownloadSearchRun(context.WithoutCancel(ctx), domain.DownloadSearchRun{Schedule: schedule, StartedAt: job.StartedAt, FinishedAt: job.FinishedAt, Checked: job.Checked, Found: job.Found, Downloaded: job.Downloaded, Skipped: job.Skipped, Failed: job.Failed, Error: job.Error})
+		if saveErr != nil {
+			s.log.Error("could not persist download search run", "schedule", schedule, "error", saveErr)
+		}
+		s.log.Info(logLabel+" completed", "checked", job.Checked, "found", job.Found, "downloaded", job.Downloaded, "skipped", job.Skipped, "failed", job.Failed, "error", job.Error)
 	}()
 	rows, e := s.store.Releases(ctx, domain.ReleaseFilter{MonitorDownload: true, Limit: 5000})
 	if e != nil {
@@ -917,6 +1018,9 @@ func (s *Service) runMonitoredSearch(ctx context.Context, getJob func() domain.D
 			continue
 		}
 		sorted := sortSearchResults(native)
+		if len(native) > 0 {
+			job.Found++
+		}
 		// release.AllowNonPreferredFilenames is the persisted form of the
 		// Missing Library Files "allow non-preferred filenames" override
 		// (TODO-2.0 Task A): once a release needed the relaxed

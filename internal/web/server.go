@@ -171,6 +171,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/downloads", s.downloadList)
 	s.mux.HandleFunc("DELETE /api/downloads/{id}", s.removeDownload)
 	s.mux.HandleFunc("POST /api/downloads/bulk-remove", s.bulkRemoveDownloads)
+	s.mux.HandleFunc("GET /api/jobs/download-replacements", func(w http.ResponseWriter, r *http.Request) {
+		s.json(w, http.StatusOK, s.downloads.ReplacementStatus())
+	})
 	s.mux.HandleFunc("GET /api/jobs/download-search", func(w http.ResponseWriter, r *http.Request) { s.json(w, 200, s.downloads.SearchStatus()) })
 	s.mux.HandleFunc("POST /api/jobs/download-search", func(w http.ResponseWriter, r *http.Request) {
 		if e := s.downloads.StartSearch(r.Context()); e != nil {
@@ -191,6 +194,15 @@ func (s *Server) routes() {
 			return
 		}
 		s.json(w, http.StatusAccepted, s.downloads.SearchStatusOlder())
+	})
+	s.mux.HandleFunc("GET /api/jobs/download-search-history", func(w http.ResponseWriter, r *http.Request) {
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		rows, err := s.store.DownloadSearchRuns(r.Context(), r.URL.Query().Get("schedule"), limit)
+		if err != nil {
+			s.problem(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.json(w, http.StatusOK, rows)
 	})
 	s.mux.HandleFunc("GET /api/jobs/covers", func(w http.ResponseWriter, r *http.Request) { s.json(w, 200, s.coverCacheStatus()) })
 	s.mux.HandleFunc("POST /api/jobs/covers", func(w http.ResponseWriter, r *http.Request) {
@@ -427,8 +439,28 @@ func (s *Server) downloadList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
-	stalledDays, _ := strconv.Atoi(q.Get("stalled_days"))
-	rows, total, e := s.store.DownloadActivity(r.Context(), domain.DownloadFilter{Status: q.Get("status"), Search: q.Get("search"), Source: q.Get("source"), Sort: q.Get("sort"), Direction: q.Get("direction"), FilenamePatternExcluded: q.Get("filename_pattern_excluded") == "true", Stalled: q.Get("stalled") == "true", StalledDays: stalledDays, Limit: limit, Offset: offset})
+	seenComplete := q.Get("seen_complete")
+	if seenComplete != "" && seenComplete != "never" && seenComplete != "before" && seenComplete != "after" {
+		s.problem(w, http.StatusUnprocessableEntity, "last seen complete filter must be never, before, or after")
+		return
+	}
+	var seenCompleteDate int64
+	if raw := q.Get("seen_complete_date"); raw != "" {
+		date, err := time.Parse("2006-01-02", raw)
+		if err != nil {
+			s.problem(w, http.StatusUnprocessableEntity, "last seen complete date must use YYYY-MM-DD")
+			return
+		}
+		seenCompleteDate = date.UTC().Unix()
+		if seenComplete == "before" {
+			seenCompleteDate = date.UTC().Add(24 * time.Hour).Unix()
+		}
+	}
+	if (seenComplete == "before" || seenComplete == "after") && seenCompleteDate == 0 {
+		s.problem(w, http.StatusUnprocessableEntity, "last seen complete date is required for this filter")
+		return
+	}
+	rows, total, e := s.store.DownloadActivity(r.Context(), domain.DownloadFilter{Status: q.Get("status"), Search: q.Get("search"), Source: q.Get("source"), Sort: q.Get("sort"), Direction: q.Get("direction"), FilenamePatternExcluded: q.Get("filename_pattern_excluded") == "true", Stalled: q.Get("stalled") == "true", SeenComplete: seenComplete, SeenCompleteDate: seenCompleteDate, Limit: limit, Offset: offset})
 	if e != nil {
 		s.problem(w, 500, e.Error())
 		return
@@ -454,18 +486,19 @@ func (s *Server) removeDownload(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) bulkRemoveDownloads(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		IDs     []int64 `json:"ids"`
-		Replace bool    `json:"replace"`
+		IDs                       []int64 `json:"ids"`
+		Replace                   bool    `json:"replace"`
+		AllowNonPreferredFilename bool    `json:"allow_non_preferred_filename"`
 	}
 	if !s.decode(w, r, &payload) {
 		return
 	}
-	queued, err := s.downloads.StartBulkRemoveAndReplace(r.Context(), payload.IDs, payload.Replace)
+	job, err := s.downloads.StartBulkRemoveAndReplace(r.Context(), payload.IDs, payload.Replace, payload.AllowNonPreferredFilename)
 	if err != nil {
 		s.problem(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	s.json(w, http.StatusAccepted, map[string]any{"queued": queued, "replace": payload.Replace})
+	s.json(w, http.StatusAccepted, job)
 }
 func (s *Server) pathMappings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -791,9 +824,19 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &x) {
 		return
 	}
-	allowed := map[string]bool{"page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "full_refresh_enabled": true, "full_refresh_interval": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_interval": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "stash_desired_tag_id": true, "stash_desired_sync_enabled": true, "stash_desired_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true}
+	allowed := map[string]bool{"page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "stash_desired_tag_id": true, "stash_desired_sync_enabled": true, "stash_desired_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true}
 	for _, kind := range monitor.JobPriorityKinds {
 		allowed[monitor.JobPrioritySettingKey(kind)] = true
+	}
+	for _, prefix := range []string{"quick_refresh", "full_refresh", "new_release_refresh"} {
+		if err := monitor.ValidateCalendarSchedule(x[prefix+"_start_time"], x[prefix+"_weekdays"]); err != nil {
+			s.problem(w, http.StatusUnprocessableEntity, prefix+": "+err.Error())
+			return
+		}
+		if err := monitor.ValidateCronSchedule(x[prefix+"_cron"]); err != nil {
+			s.problem(w, http.StatusUnprocessableEntity, prefix+": "+err.Error())
+			return
+		}
 	}
 	for k := range x {
 		if !allowed[k] {
@@ -804,8 +847,8 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	for _, kind := range monitor.JobPriorityKinds {
 		key := monitor.JobPrioritySettingKey(kind)
 		if raw, ok := x[key]; ok && strings.TrimSpace(raw) != "" {
-			if _, e := strconv.Atoi(strings.TrimSpace(raw)); e != nil {
-				s.problem(w, http.StatusUnprocessableEntity, "job priority for "+kind+" must be a whole number")
+			if priority, e := strconv.Atoi(strings.TrimSpace(raw)); e != nil || priority < 1 || priority > 999 {
+				s.problem(w, http.StatusUnprocessableEntity, "job priority for "+kind+" must be a whole number from 1 to 999")
 				return
 			}
 		}

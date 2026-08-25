@@ -131,3 +131,22 @@ func TestManualReplacementDeletesFilesClearsHistoryAndStartsFreshDownload(t *tes
 		t.Fatalf("replacement history was not clean: rows=%+v err=%v", rows, err)
 	}
 }
+
+func TestBestSeededCandidateCanIgnoreFilenamePreference(t *testing.T) {
+	results := []domain.SearchResult{
+		{Title: "accepted-low", Accepted: true, Seeds: 4},
+		{Title: "rejected-high", Accepted: false, Seeds: 25},
+		{Title: "accepted-mid", Accepted: true, Seeds: 12},
+	}
+	preferred, found := bestSeededCandidate(results, false)
+	if !found || preferred.Title != "accepted-mid" || preferred.FilenamePatternExcluded {
+		t.Fatalf("preferred candidate = %+v found=%v", preferred, found)
+	}
+	nonPreferred, found := bestSeededCandidate(results, true)
+	if !found || nonPreferred.Title != "rejected-high" || !nonPreferred.FilenamePatternExcluded {
+		t.Fatalf("non-preferred candidate = %+v found=%v", nonPreferred, found)
+	}
+	if _, found := bestSeededCandidate([]domain.SearchResult{{Accepted: false, Seeds: 99}}, false); found {
+		t.Fatal("rejected-only results should not be selected without the non-preferred option")
+	}
+}
