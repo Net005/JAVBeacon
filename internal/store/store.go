@@ -53,6 +53,7 @@ type Store interface {
 	DeleteFilterPreset(context.Context, int64) error
 	SaveJob(context.Context, domain.Job) (int64, error)
 	Jobs(context.Context, int) ([]domain.Job, error)
+	JobHistory(context.Context, int, int) ([]domain.JobHistoryEntry, int, error)
 	SaveDownloadSearchRun(context.Context, domain.DownloadSearchRun) (domain.DownloadSearchRun, error)
 	DownloadSearchRuns(context.Context, string, int) ([]domain.DownloadSearchRun, error)
 	SaveDownload(context.Context, domain.Download) (domain.Download, error)
@@ -277,6 +278,17 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 	if err == nil {
 		err = s.normalizeJavLibraryURLs()
 	}
+	if err == nil {
+		err = s.normalizeReleaseTimestamps(context.Background())
+	}
+	return err
+}
+
+// normalizeReleaseTimestamps repairs legacy or imported rows whose update
+// timestamp predates their insertion timestamp. It is intentionally
+// idempotent and runs at startup for both database engines.
+func (s *SQLite) normalizeReleaseTimestamps(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE releases SET updated_at=added_at WHERE updated_at<added_at`)
 	return err
 }
 
@@ -542,6 +554,7 @@ func (s *SQLite) RecordSiteScrape(ctx context.Context, siteID int64, finishedAt 
 	return nil
 }
 func (s *SQLite) SaveSite(ctx context.Context, x domain.Site) (domain.Site, error) {
+	x.URL = domain.NormalizeJavLibraryURL(x.URL)
 	if x.DownloadMode == "" && x.Download {
 		x.DownloadMode = "future"
 	}
@@ -1145,10 +1158,11 @@ func (s *SQLite) UpsertRelease(ctx context.Context, x domain.Release) (bool, err
 	x.ReleaseDate = cleanText(x.ReleaseDate)
 	x.Source = cleanText(x.Source)
 	x.ImageURL = cleanText(x.ImageURL)
-	x.ProductURL = cleanText(x.ProductURL)
+	x.ProductURL = domain.NormalizeJavLibraryURL(cleanText(x.ProductURL))
 	x.Actress = normalizeActressList(x.Actress)
 	x.Director = cleanText(x.Director)
 	x.Studio = cleanText(x.Studio)
+	x.Label = cleanText(x.Label)
 	x.Duration = cleanText(x.Duration)
 	x.Story = cleanText(x.Story)
 	x.Genres = uniqueMetadataValues(x.Genres)
@@ -1184,6 +1198,42 @@ func (s *SQLite) UpsertRelease(ctx context.Context, x domain.Release) (bool, err
 		return false, e
 	}
 	if !created {
+		// A release's AddedAt is its immutable insertion time. UpdatedAt tracks
+		// changes to scraped release metadata, not the fact that a scheduled
+		// scrape happened to see the same row again.
+		var current struct {
+			scraperID, title, releaseDate, source, imageURL, productURL string
+			actress, director, studio, label, genres, duration, story   string
+			screenshots                                                 string
+			released                                                    bool
+			addedAt, updatedAt                                          time.Time
+		}
+		if e = tx.QueryRowContext(ctx, `SELECT scraper_id,title,release_date,source,image_url,product_url,actress,director,studio,label,genres,duration,story,screenshots,released,added_at,updated_at FROM releases WHERE id=?`, id).Scan(
+			&current.scraperID, &current.title, &current.releaseDate, &current.source, &current.imageURL, &current.productURL,
+			&current.actress, &current.director, &current.studio, &current.label, &current.genres, &current.duration,
+			&current.story, &current.screenshots, &current.released, &current.addedAt, &current.updatedAt,
+		); e != nil {
+			return false, e
+		}
+		changedText := func(incoming, stored string) bool { return incoming != "" && incoming != stored }
+		metadataChanged := changedText(x.ScraperID, current.scraperID) || changedText(x.Title, current.title) ||
+			changedText(x.ReleaseDate, current.releaseDate) || changedText(x.Source, current.source) ||
+			changedText(x.ImageURL, current.imageURL) || changedText(x.ProductURL, current.productURL) ||
+			changedText(x.Actress, current.actress) || changedText(x.Director, current.director) ||
+			changedText(x.Studio, current.studio) || changedText(x.Label, current.label) ||
+			(string(genres) != "[]" && string(genres) != "null" && string(genres) != current.genres) ||
+			changedText(x.Duration, current.duration) || changedText(x.Story, current.story) ||
+			(string(shots) != "[]" && string(shots) != "null" && string(shots) != current.screenshots) ||
+			(x.Released && !current.released)
+		updatedAt := current.updatedAt
+		if metadataChanged {
+			updatedAt = now
+		}
+		// Repair an invalid historical ordering while touching the row, and
+		// keep the invariant even if an imported AddedAt lies in the future.
+		if updatedAt.Before(current.addedAt) {
+			updatedAt = current.addedAt
+		}
 		// released/notify_on_release/desired/monitor_download use
 		// Dialect.Greatest rather than a literal "MAX(x,?)": SQLite
 		// overloads MAX() to also mean the scalar "greater of these two
@@ -1212,7 +1262,7 @@ func (s *SQLite) UpsertRelease(ctx context.Context, x domain.Release) (bool, err
 			string(genres), string(genres), string(genres), string(genres),
 			x.Duration, x.Story,
 			string(shots), string(shots), string(shots), string(shots),
-			x.Released, x.NotifyOnRelease, x.Desired, x.MonitorDownload, now, id)
+			x.Released, x.NotifyOnRelease, x.Desired, x.MonitorDownload, updatedAt, id)
 		if e != nil {
 			return false, e
 		}
@@ -1714,6 +1764,75 @@ func (s *SQLite) Jobs(ctx context.Context, limit int) ([]domain.Job, error) {
 		out = append(out, x)
 	}
 	return out, rows.Err()
+}
+
+// JobHistory returns a single newest-first timeline across scrape jobs and
+// download activity. Combining the tables in SQL keeps pagination stable:
+// fetching page two cannot repeat or omit rows merely because one category
+// happened to have more recent activity than the other.
+func (s *SQLite) JobHistory(ctx context.Context, limit, offset int) ([]domain.JobHistoryEntry, int, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM job_history)+(SELECT COUNT(*) FROM downloads)`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,category,kind,state,mode,title,provider,started_at,finished_at,added,updated,skipped,error,details FROM (
+		SELECT id,
+			CASE WHEN kind='scrape' THEN 'Scraping' WHEN kind LIKE '%download%' THEN 'Downloading' WHEN kind LIKE '%stash%' THEN 'StashApp' ELSE 'System' END AS category,
+			kind,state,mode,site_title AS title,provider,started_at,finished_at,added,updated,skipped,error,'' AS details
+		FROM job_history
+		UNION ALL
+		SELECT d.id,'Downloading' AS category,'download' AS kind,d.status AS state,d.source_type AS mode,
+			COALESCE(NULLIF(r.video_id,''),NULLIF(d.query,''),NULLIF(d.name,''),'Download') AS title,
+			d.provider,d.added_at AS started_at,
+			CASE WHEN d.status IN ('completed','failed','cancelled','skipped','removed') THEN d.updated_at ELSE NULL END AS finished_at,
+			0 AS added,0 AS updated,0 AS skipped,d.error,
+			COALESCE(NULLIF(d.match_reason,''),NULLIF(d.qb_response,''),NULLIF(d.name,''),'') AS details
+		FROM downloads d LEFT JOIN releases r ON r.id=d.release_id
+	) activity ORDER BY started_at DESC,id DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []domain.JobHistoryEntry{}
+	for rows.Next() {
+		var x domain.JobHistoryEntry
+		var started, finished any
+		if err := rows.Scan(&x.ID, &x.Category, &x.Kind, &x.State, &x.Mode, &x.Title, &x.Provider, &started, &finished, &x.Added, &x.Updated, &x.Skipped, &x.Error, &x.Details); err != nil {
+			return nil, 0, err
+		}
+		parseTime := func(value any) (time.Time, error) {
+			if value == nil {
+				return time.Time{}, nil
+			}
+			if parsed, ok := value.(time.Time); ok {
+				return parsed, nil
+			}
+			raw := fmt.Sprint(value)
+			for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999999 -0700 MST", "2006-01-02 15:04:05 -0700 MST", "2006-01-02 15:04:05.999999999Z07:00", "2006-01-02 15:04:05"} {
+				if parsed, err := time.Parse(layout, raw); err == nil {
+					return parsed, nil
+				}
+			}
+			return time.Time{}, fmt.Errorf("invalid job history timestamp %q", raw)
+		}
+		if x.StartedAt, err = parseTime(started); err != nil {
+			return nil, 0, err
+		}
+		if x.FinishedAt, err = parseTime(finished); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, x)
+	}
+	return out, total, rows.Err()
 }
 
 func (s *SQLite) SaveDownloadSearchRun(ctx context.Context, x domain.DownloadSearchRun) (domain.DownloadSearchRun, error) {

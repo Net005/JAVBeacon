@@ -441,7 +441,10 @@ func (s *SQLite) migratePostgres(ctx context.Context) error {
 	if err := s.backfillLocalAvailableNotifications(ctx); err != nil {
 		return err
 	}
-	return s.normalizeJavLibraryURLs()
+	if err := s.normalizeJavLibraryURLs(); err != nil {
+		return err
+	}
+	return s.normalizeReleaseTimestamps(ctx)
 }
 
 // OpenPostgresStore opens a fully migrated PostgreSQL-backed Store: it

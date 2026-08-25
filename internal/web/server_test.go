@@ -31,8 +31,8 @@ func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"version":"v1.0.6"`) {
-		t.Fatalf("response = %s, want v1.0.6", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"version":"v1.0.7"`) {
+		t.Fatalf("response = %s, want v1.0.7", rec.Body.String())
 	}
 }
 
@@ -473,4 +473,20 @@ func waitForCoverJob(t *testing.T, s *Server) coverCacheStatus {
 	}
 	t.Fatal("cover cache job did not finish")
 	return coverCacheStatus{}
+}
+
+func TestNotificationSortOptionsAndTabDefaults(t *testing.T) {
+	raw, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	wantOptions := "notificationSortOptions=[['downloaded','Download date'],['download_started','Download started'],['local_available','Locally available'],['notification','Notification date'],['release','Release date']]"
+	if !strings.Contains(script, wantOptions) {
+		t.Fatal("notification sort options are missing or not alphabetized")
+	}
+	wantDefaults := "notificationDefaultSort={new_release:'release',local_available:'local_available',downloaded:'downloaded',download_started:'download_started',download_failed:'notification'}"
+	if !strings.Contains(script, wantDefaults) {
+		t.Fatal("notification tabs do not have the requested event-date defaults")
+	}
 }

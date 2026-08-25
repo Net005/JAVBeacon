@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,77 @@ func TestSQLiteReleaseLifecycle(t *testing.T) {
 	}
 }
 
+func TestReleaseTimestampsTrackMetadataChangesAndRepairInvalidOrder(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "release-timestamps.db")
+	s, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := s.SaveSite(ctx, domain.Site{Title: "Timestamps", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := domain.Release{SiteID: site.ID, VideoID: "TIME-1", Title: "Original title", Source: "JavLibrary", Released: true}
+	if created, err := s.UpsertRelease(ctx, input); err != nil || !created {
+		t.Fatalf("initial upsert: created=%v err=%v", created, err)
+	}
+	item, err := s.Releases(ctx, domain.ReleaseFilter{Search: "TIME-1", Limit: 1})
+	if err != nil || len(item) != 1 {
+		t.Fatalf("release lookup: items=%d err=%v", len(item), err)
+	}
+	id := item[0].ID
+	added := time.Now().UTC().Add(-4 * time.Hour).Truncate(time.Microsecond)
+	unchangedUpdated := added.Add(time.Hour)
+	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET added_at=?,updated_at=? WHERE id=?`, added, unchangedUpdated, id); err != nil {
+		t.Fatal(err)
+	}
+	if created, err := s.UpsertRelease(ctx, input); err != nil || created {
+		t.Fatalf("unchanged upsert: created=%v err=%v", created, err)
+	}
+	got, err := s.Release(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.UpdatedAt.Equal(unchangedUpdated) {
+		t.Fatalf("unchanged scrape advanced updated_at: got=%v want=%v", got.UpdatedAt, unchangedUpdated)
+	}
+
+	input.Title = "New metadata title"
+	if _, err := s.UpsertRelease(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.Release(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.UpdatedAt.After(unchangedUpdated) || got.UpdatedAt.Before(got.AddedAt) {
+		t.Fatalf("metadata update timestamp invalid: added=%v updated=%v", got.AddedAt, got.UpdatedAt)
+	}
+
+	// Simulate an invalid legacy/imported row and verify the next startup
+	// repairs it for display even if that release is never scraped again.
+	futureAdded := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Microsecond)
+	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET added_at=?,updated_at=? WHERE id=?`, futureAdded, futureAdded.Add(-time.Hour), id); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got, err = s.Release(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.UpdatedAt.Equal(got.AddedAt) {
+		t.Fatalf("startup did not repair timestamp ordering: added=%v updated=%v", got.AddedAt, got.UpdatedAt)
+	}
+}
+
 func TestDownloadSearchRunsPersistAndFilter(t *testing.T) {
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "download-search-runs.db"))
 	if err != nil {
@@ -70,6 +142,48 @@ func TestDownloadSearchRunsPersistAndFilter(t *testing.T) {
 	all, err := s.DownloadSearchRuns(ctx, "", 10)
 	if err != nil || len(all) != 2 || all[0].Schedule != "older" {
 		t.Fatalf("all history=%+v err=%v", all, err)
+	}
+}
+
+func TestJobHistoryCombinesCategoriesAndPaginatesChronologically(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "job-history.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	started := time.Now().UTC().Add(-2 * time.Hour)
+	finished := started.Add(15 * time.Minute)
+	if _, err := s.SaveJob(ctx, domain.Job{Kind: "scrape", State: "completed", Mode: "quick", SiteTitle: "JavLibrary", StartedAt: started, FinishedAt: finished, Added: 3, Skipped: 20}); err != nil {
+		t.Fatal(err)
+	}
+	site, err := s.SaveSite(ctx, domain.Site{Title: "Download site", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "HIST-1", Title: "History", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := s.Releases(ctx, domain.ReleaseFilter{Search: "HIST-1", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release lookup: rows=%d err=%v", len(releases), err)
+	}
+	if _, err := s.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Provider: "Sukebei", SourceType: "torrent", Query: "HIST-1", Status: "completed", MatchReason: "accepted filename", Files: json.RawMessage(`[]`)}); err != nil {
+		t.Fatal(err)
+	}
+	first, total, err := s.JobHistory(ctx, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(first) != 1 || first[0].Category != "Downloading" || first[0].Title != "HIST-1" || first[0].FinishedAt.IsZero() {
+		t.Fatalf("first page=%+v total=%d", first, total)
+	}
+	second, total, err := s.JobHistory(ctx, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(second) != 1 || second[0].Category != "Scraping" || second[0].Mode != "quick" || !second[0].StartedAt.Equal(started) || !second[0].FinishedAt.Equal(finished) {
+		t.Fatalf("second page=%+v total=%d", second, total)
 	}
 }
 
@@ -1256,6 +1370,32 @@ func TestJavLibraryURLsAreNormalizedToHTTPSOnStartup(t *testing.T) {
 	}
 	if productURL2 != "https://www.javlibrary.com/en/javdef.html" {
 		t.Fatalf("release 2 product_url=%q, want normalized to https://www.javlibrary.com", productURL2)
+	}
+}
+
+func TestJavLibraryURLsAreNormalizedWhenSaved(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "javlibrary-save-https.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "HTTP input", Type: "Site", Name: "JavLibrary", URL: "http://www.javlibrary.com/en/vl_star.php?&mode=2&s=abc", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if site.URL != "https://www.javlibrary.com/en/vl_star.php?&mode=2&s=abc" {
+		t.Fatalf("saved site URL=%q", site.URL)
+	}
+	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "HTTPS-1", Title: "HTTPS", Source: "JavLibrary", ProductURL: "http://www.javlibrary.com/en/javme3rf2u.html"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := s.Releases(ctx, domain.ReleaseFilter{Search: "HTTPS-1", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release lookup: rows=%d err=%v", len(releases), err)
+	}
+	if releases[0].ProductURL != "https://www.javlibrary.com/en/javme3rf2u.html" {
+		t.Fatalf("saved product URL=%q", releases[0].ProductURL)
 	}
 }
 

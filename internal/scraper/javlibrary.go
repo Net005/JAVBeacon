@@ -54,18 +54,7 @@ func (j *JavLibrary) Configure(raw string, cooldown float64) {
 // mid-navigation http->https redirects that break FlareSolverr. URLs for any
 // other host pass through unchanged.
 func normalizeJavLibraryURL(raw string) string {
-	u, e := url.Parse(raw)
-	if e != nil {
-		return raw
-	}
-	switch strings.ToLower(u.Host) {
-	case "javlibrary.com", "www.javlibrary.com":
-	default:
-		return raw
-	}
-	u.Scheme = "https"
-	u.Host = "www.javlibrary.com"
-	return u.String()
+	return domain.NormalizeJavLibraryURL(raw)
 }
 
 // document fetches and parses one page and validates it before returning it,
@@ -142,6 +131,7 @@ func (j *JavLibrary) documentOnce(ctx context.Context, raw, kind string, stage .
 	return doc, nil
 }
 func (j *JavLibrary) direct(ctx context.Context, raw string) ([]byte, error) {
+	raw = normalizeJavLibraryURL(raw)
 	req, e := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if e != nil {
 		return nil, e
@@ -159,6 +149,10 @@ func (j *JavLibrary) direct(ctx context.Context, raw string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 }
 func (j *JavLibrary) flare(ctx context.Context, raw, solver string, cooldown time.Duration) ([]byte, error) {
+	// This is the last boundary before a URL leaves JAVBeacon. Normalize here
+	// even though documentOnce already does so, preventing a future or legacy
+	// caller from sending redirect-prone plain HTTP to the solver.
+	raw = normalizeJavLibraryURL(raw)
 	if cooldown > 0 {
 		select {
 		case <-ctx.Done():

@@ -148,12 +148,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/filter-presets/{id}", s.filterPresets)
 	s.mux.HandleFunc("DELETE /api/filter-presets/{id}", s.filterPresets)
 	s.mux.HandleFunc("GET /api/jobs/history", func(w http.ResponseWriter, r *http.Request) {
-		x, e := s.store.Jobs(r.Context(), 100)
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		x, total, e := s.store.JobHistory(r.Context(), limit, offset)
 		if e != nil {
 			s.problem(w, 500, e.Error())
 			return
 		}
-		s.json(w, 200, x)
+		s.json(w, 200, map[string]any{"items": x, "total": total})
 	})
 	s.mux.HandleFunc("GET /api/logs", s.logEntries)
 	s.mux.HandleFunc("GET /api/sites", s.sites)
