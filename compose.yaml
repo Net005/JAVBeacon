@@ -45,12 +45,19 @@ services:
     restart: unless-stopped
     shm_size: "1gb"
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-javbeacon}
-      POSTGRES_USER: ${POSTGRES_USER:-javbeacon}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      # Keep the container-side cluster location stable across PostgreSQL
+      # image versions. POSTGRES_DATA_PATH controls only the host location.
+      PGDATA: /pgdata
+      POSTGRES_DB: "${POSTGRES_DB:-javbeacon}"
+      POSTGRES_USER: "${POSTGRES_USER:-javbeacon}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}"
       POSTGRES_INITDB_ARGS: "--data-checksums --encoding=UTF8"
     volumes:
-      - ${POSTGRES_DATA_PATH:-./data/postgres}:/var/lib/postgresql
+      # POSTGRES_DATA_PATH is the cluster directory itself: it contains
+      # PG_VERSION, base/, global/, pg_wal/, and the other PostgreSQL files.
+      - type: bind
+        source: "${POSTGRES_DATA_PATH:?POSTGRES_DATA_PATH must be set in .env}"
+        target: /pgdata
     command:
       - postgres
       - -c
