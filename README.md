@@ -14,6 +14,8 @@ It is designed as a private, single-user application. The recommended Docker Com
 
 > **See what's coming. Get what you want.**
 
+See [CHANGELOG.md](CHANGELOG.md) for the complete version history.
+
 ## Highlights
 
 - Monitor GIGA/Akiba and JavLibrary sources for new and updated releases.
@@ -282,6 +284,12 @@ test suite, validates the Compose stack, builds Linux, macOS, and Windows
 binaries, creates checksums, publishes a multi-architecture GHCR container
 package with provenance, and publishes the release as the latest GitHub
 release. A tag that does not match the checked-in version is rejected.
+
+Every release must also have a dated `## [x.y.z] - YYYY-MM-DD` entry in
+`CHANGELOG.md`. Add changes to its `Unreleased` section as work lands; during a
+version bump, rename those notes to the release version and date and create a
+new empty `Unreleased` section. The release workflow rejects tags without a
+matching changelog entry.
 
 ### Project layout
 
