@@ -7,6 +7,41 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.13] - 2026-08-26
+
+### Added
+
+- Added a compact, collapsed-by-default "Scheduled runs" panel to Download
+  monitoring showing each configurable background schedule's enabled state
+  and next 3 predicted run times, covering Monitored releases search
+  (recent and older), Quick/Full/New scheduled scrapes, and StashApp local
+  library and Desired-tag sync.
+- Job progress now shows a "Site X of Y monitoring sites" progress bar while
+  a scheduled or manual all-sites scrape works through the enabled site
+  list, instead of only ever showing progress within whichever single site
+  happens to be scraping at the moment.
+
+### Fixed
+
+- Download Activity's qBittorrent reconciliation now matches a download to
+  its torrent by hash alone once one is known, instead of falling back to a
+  loose name-text match that could silently re-point a download at a
+  different, unrelated torrent and keep showing its stale progress.
+- A download whose torrent has vanished from qBittorrent for a reason
+  JAVBeacon doesn't know about now drops out of Download Activity entirely
+  and is recorded as removed (unknown reason), instead of staying stuck
+  forever under its last known status and blocking that release from being
+  searched/downloaded again.
+- Monitored releases search, StashApp sync, and notification/RSS schedules
+  now pick up an interval or enabled/disabled change within 30 seconds
+  instead of only on the next already-in-flight wait, matching how
+  scheduled scrapes already behaved.
+
+### Changed
+
+- Replaced the "Stalled · no seeds" checkbox in Download Activity with a
+  dedicated Stalled tab between Completed and Failed.
+
 ## [1.0.12] - 2026-08-26
 
 ### Added
@@ -15,6 +50,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   middle-button drag scrolling, plus a centered fullscreen screenshot viewer
   with a blurred backdrop, navigable thumbnail strip, current-image highlight,
   keyboard navigation, and click-outside dismissal.
+
+### Fixed
+
+- Centered and correctly scaled the fullscreen screenshot viewer instead of
+  anchoring its image at the top-left.
+- Prevented the Release Details screenshot rail from being clipped along its
+  bottom edge in fullscreen mode.
+- Failed cover-hover screenshot requests are no longer cached for the entire
+  session, allowing a later hover to retry normally.
 
 ## [1.0.11] - 2026-08-26
 
@@ -204,7 +248,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.12...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.13...HEAD
+[1.0.13]: https://github.com/Net005/JAVBeacon/compare/v1.0.12...v1.0.13
 [1.0.12]: https://github.com/Net005/JAVBeacon/compare/v1.0.11...v1.0.12
 [1.0.11]: https://github.com/Net005/JAVBeacon/compare/v1.0.10...v1.0.11
 [1.0.10]: https://github.com/Net005/JAVBeacon/compare/v1.0.9...v1.0.10

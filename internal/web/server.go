@@ -315,6 +315,24 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/jobs/stash-missing-apply", s.stashMissingApplyJob)
 	s.mux.HandleFunc("POST /api/jobs/stash-missing-apply", s.stashMissingApplyJob)
 	s.mux.HandleFunc("GET /api/system/browse-dir", s.browseDir)
+	s.mux.HandleFunc("GET /api/jobs/schedule-forecast", s.scheduleForecast)
+}
+
+// scheduleForecast aggregates every user-configurable background schedule's
+// live enabled/interval state and next few predicted run times across the
+// monitor (Scheduled scrapes), download (Monitored releases search), and
+// stash (StashApp sync) services into one compact response for the
+// Monitoring view's schedule summary widget. Deliberately excludes the
+// qBittorrent reconciliation poll (Schedule/tick in internal/download) -
+// it's a fixed, non-configurable 1-minute ticker with no meaningful "next
+// run" beyond "within a minute" - and the notification/RSS intervals, which
+// have settings keys but no exposed UI control to change them.
+func (s *Server) scheduleForecast(w http.ResponseWriter, r *http.Request) {
+	forecasts := make([]domain.ScheduleForecast, 0, 8)
+	forecasts = append(forecasts, s.monitor.ScheduleForecast(r.Context())...)
+	forecasts = append(forecasts, s.downloads.SearchScheduleForecast(r.Context())...)
+	forecasts = append(forecasts, s.stash.ScheduleForecast(r.Context())...)
+	s.json(w, 200, forecasts)
 }
 
 func (s *Server) pendingChangelog(w http.ResponseWriter, r *http.Request) {
@@ -1063,6 +1081,24 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		if err := monitor.ValidateCronSchedule(x[prefix+"_cron"]); err != nil {
 			s.problem(w, http.StatusUnprocessableEntity, prefix+": "+err.Error())
 			return
+		}
+	}
+	// download_search_interval/download_search_older_interval (Monitored
+	// releases) and stash_sync_interval/stash_desired_sync_interval
+	// (StashApp) are plain "Run every" duration strings, same shape as
+	// refresh_interval/full_refresh_interval above but without a
+	// corresponding calendar/cron override - validated the same way (only
+	// when submitted and non-blank, so a save of other settings never fails
+	// because one of these was left at its default) so a typo is rejected
+	// up front instead of silently falling back to that schedule's default
+	// interval downstream, which used to look exactly like the schedule
+	// hadn't picked up the change at all.
+	for _, key := range []string{"download_search_interval", "download_search_older_interval", "stash_sync_interval", "stash_desired_sync_interval"} {
+		if raw, ok := x[key]; ok && strings.TrimSpace(raw) != "" {
+			if parsed, err := time.ParseDuration(strings.TrimSpace(raw)); err != nil || parsed < time.Minute {
+				s.problem(w, http.StatusUnprocessableEntity, key+": schedule must be a valid duration of at least 1 minute (e.g. \"1h\", \"30m\")")
+				return
+			}
 		}
 	}
 	for k := range x {

@@ -154,6 +154,40 @@ func ValidateCronSchedule(raw string) error {
 	return err
 }
 
+// calendarForecastHorizon bounds how far into the future nextCalendarRuns
+// simulates before giving up on finding enough matches - a var (not a
+// const) purely so tests can shrink it instead of running a slow ~1.4M
+// minute-by-minute scan for edge-case schedules (e.g. weekday+time
+// combinations that only occur a handful of times a year).
+var calendarForecastHorizon = 400 * 24 * time.Hour
+
+// nextCalendarRuns simulates a calendar-mode schedule (cron expression, or
+// start-time/weekdays) forward minute by minute from now and returns up to
+// count future match times within calendarForecastHorizon. It returns fewer
+// than count (possibly none) if the schedule is invalid or the horizon is
+// exhausted before enough matches are found - callers should treat a short
+// or empty result as "no upcoming run currently predictable" rather than an
+// error.
+func nextCalendarRuns(now time.Time, startTime, weekdays, cronText string, count int) []time.Time {
+	if count <= 0 {
+		return nil
+	}
+	runs := make([]time.Time, 0, count)
+	cursor := now.Truncate(time.Minute).Add(time.Minute)
+	deadline := now.Add(calendarForecastHorizon)
+	for cursor.Before(deadline) && len(runs) < count {
+		matches, err := calendarScheduleMatches(cursor, startTime, weekdays, cronText)
+		if err != nil {
+			return runs
+		}
+		if matches {
+			runs = append(runs, cursor)
+		}
+		cursor = cursor.Add(time.Minute)
+	}
+	return runs
+}
+
 func calendarScheduleMatches(now time.Time, startTime, weekdays, cronText string) (bool, error) {
 	if strings.TrimSpace(cronText) != "" {
 		cron, err := parseCron(cronText)

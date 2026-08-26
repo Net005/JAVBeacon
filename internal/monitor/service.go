@@ -33,6 +33,16 @@ type Service struct {
 	cancel      context.CancelFunc
 	details     map[int64]domain.Job
 	listeners   []func(domain.Release)
+	// scheduleNextAttempt tracks, per interval-configured scrapeSchedule.mode,
+	// the wall-clock time runScrapeSchedules's loop will next actually check
+	// whether that schedule is due - kept live (updated every loop iteration,
+	// not just when a scan fires) so ScheduleForecast can report an accurate
+	// "next run" without re-deriving the scheduler's own phase/anchor
+	// separately, which could drift out of sync with the real running loop.
+	// Calendar-configured schedules (a start_time/weekdays or cron override
+	// set) are not tracked here - ScheduleForecast simulates those directly
+	// with calendarScheduleMatches instead, which needs no running-loop state.
+	scheduleNextAttempt map[string]time.Time
 }
 
 type RefreshOptions struct {
@@ -136,7 +146,7 @@ func releaseHasSite(release domain.Release, siteID int64) bool {
 }
 
 func New(s store.Store, a *scraper.Akiba, j *scraper.JavLibrary, covers *covers.Cache, pages int, l *slog.Logger, screenshotCaches ...*screenshots.Cache) *Service {
-	service := &Service{store: s, akiba: a, javlibrary: j, covers: covers, pages: pages, log: l, details: map[int64]domain.Job{}}
+	service := &Service{store: s, akiba: a, javlibrary: j, covers: covers, pages: pages, log: l, details: map[int64]domain.Job{}, scheduleNextAttempt: map[string]time.Time{}}
 	if len(screenshotCaches) > 0 {
 		service.screenshots = screenshotCaches[0]
 	}
@@ -400,13 +410,31 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 		cooldown, _ := strconv.ParseFloat(settings["flaresolverr_cooldown"], 64)
 		s.javlibrary.Configure(settings["flaresolverr_url"], cooldown)
 	}
-	s.log.Info("refresh job started", "site_id", options.SiteID, "sites_available", len(sites), "page_limit", pages, "mode", options.Mode)
+	// scanSites is the ordered subset of sites this job actually scans -
+	// resolved once, up front, so job.SiteCount (and each site's
+	// job.SiteIndex, set below) reports a real "site N of total" figure for
+	// the whole job's remaining work instead of an estimate that could
+	// drift if a site's enabled flag changed mid-run. Left unset (both stay
+	// zero) for a single-site job (options.SiteID != 0, e.g. a manual
+	// per-site refresh or a release-scoped job never reaches here) - see
+	// domain.Job.SiteCount's doc comment.
+	scanSites := make([]domain.Site, 0, len(sites))
 	for _, site := range sites {
 		if !site.Enabled || (options.SiteID != 0 && site.ID != options.SiteID) {
 			continue
 		}
+		scanSites = append(scanSites, site)
+	}
+	if options.SiteID == 0 {
+		job.SiteCount = len(scanSites)
+	}
+	s.log.Info("refresh job started", "site_id", options.SiteID, "sites_available", len(scanSites), "page_limit", pages, "mode", options.Mode)
+	for i, site := range scanSites {
 		siteStarted := time.Now()
 		s.log.Info("site scrape started", "site", site.Title, "site_id", site.ID, "type", site.Type, "provider", site.Name, "url", site.URL, "page_limit", pages)
+		if options.SiteID == 0 {
+			job.SiteIndex = i + 1
+		}
 		job.SiteTitle, job.Provider = site.Title, site.Name
 		job.Page, job.PageLimit, job.Item, job.PageItems, job.Remaining, job.VideoID, job.Error = 0, pages, 0, 0, 0, "", ""
 		sitePages, siteAdded, siteUpdated := 0, 0, 0
@@ -763,6 +791,22 @@ type dueScrape struct {
 	priority int
 }
 
+// quickScrapeSchedule, fullScrapeSchedule, and newReleaseScrapeSchedule are
+// the single source of truth for each configurable scrape schedule's
+// settings keys - shared by Schedule/ScheduleFull/ScheduleNew/
+// ScheduleScrapes (which actually run them) and ScheduleForecast (which
+// predicts their next run times), so the two can never disagree about which
+// setting keys or defaults a given schedule uses.
+func quickScrapeSchedule(fallback time.Duration) scrapeSchedule {
+	return scrapeSchedule{mode: "quick", title: "Quick refresh · all enabled sites", enabledKey: "quick_refresh_enabled", intervalKey: "refresh_interval", startTimeKey: "quick_refresh_start_time", weekdaysKey: "quick_refresh_weekdays", cronKey: "quick_refresh_cron", priorityKind: PriorityKindScheduledQuick, fallback: fallback, defaultEnabled: true}
+}
+func fullScrapeSchedule(fallback time.Duration) scrapeSchedule {
+	return scrapeSchedule{mode: "full", title: "Full refresh · all enabled sites", enabledKey: "full_refresh_enabled", intervalKey: "full_refresh_interval", startTimeKey: "full_refresh_start_time", weekdaysKey: "full_refresh_weekdays", cronKey: "full_refresh_cron", pagesKey: "full_refresh_page_limit", priorityKind: PriorityKindScheduledFull, fallback: fallback}
+}
+func newReleaseScrapeSchedule(fallback time.Duration) scrapeSchedule {
+	return scrapeSchedule{mode: "new", title: "New releases only · all enabled sites", enabledKey: "new_release_refresh_enabled", intervalKey: "new_release_refresh_interval", startTimeKey: "new_release_refresh_start_time", weekdaysKey: "new_release_refresh_weekdays", cronKey: "new_release_refresh_cron", pagesKey: "new_release_refresh_page_limit", priorityKind: PriorityKindScheduledNew, fallback: fallback, defaultEnabled: true}
+}
+
 // runScrapeSchedules is the one coordinator for scheduled scrape scans. A
 // single loop is important here: when multiple schedules become due together,
 // it resolves all priorities first and enqueues them lowest-number-first. The
@@ -829,6 +873,12 @@ func (s *Service) runScrapeSchedules(ctx context.Context, schedules []scrapeSche
 				}
 				remaining = interval
 			}
+			s.mu.Lock()
+			if s.scheduleNextAttempt == nil {
+				s.scheduleNextAttempt = map[string]time.Time{}
+			}
+			s.scheduleNextAttempt[schedule.mode] = now.Add(remaining)
+			s.mu.Unlock()
 			if remaining < nextSleep {
 				nextSleep = remaining
 			}
@@ -873,7 +923,7 @@ func (s *Service) Schedule(ctx context.Context, every time.Duration) {
 	if every <= 0 {
 		return
 	}
-	s.runScrapeSchedules(ctx, []scrapeSchedule{{mode: "quick", title: "Quick refresh · all enabled sites", enabledKey: "quick_refresh_enabled", intervalKey: "refresh_interval", startTimeKey: "quick_refresh_start_time", weekdaysKey: "quick_refresh_weekdays", cronKey: "quick_refresh_cron", priorityKind: PriorityKindScheduledQuick, fallback: every, defaultEnabled: true}})
+	s.runScrapeSchedules(ctx, []scrapeSchedule{quickScrapeSchedule(every)})
 }
 
 // ScheduleFull runs the Full refresh scheduled scan: a second, independent
@@ -891,14 +941,14 @@ func (s *Service) ScheduleFull(ctx context.Context, every time.Duration) {
 	if every <= 0 {
 		return
 	}
-	s.runScrapeSchedules(ctx, []scrapeSchedule{{mode: "full", title: "Full refresh · all enabled sites", enabledKey: "full_refresh_enabled", intervalKey: "full_refresh_interval", startTimeKey: "full_refresh_start_time", weekdaysKey: "full_refresh_weekdays", cronKey: "full_refresh_cron", pagesKey: "full_refresh_page_limit", priorityKind: PriorityKindScheduledFull, fallback: every}})
+	s.runScrapeSchedules(ctx, []scrapeSchedule{fullScrapeSchedule(every)})
 }
 
 func (s *Service) ScheduleNew(ctx context.Context, every time.Duration) {
 	if every <= 0 {
 		return
 	}
-	s.runScrapeSchedules(ctx, []scrapeSchedule{{mode: "new", title: "New releases only · all enabled sites", enabledKey: "new_release_refresh_enabled", intervalKey: "new_release_refresh_interval", startTimeKey: "new_release_refresh_start_time", weekdaysKey: "new_release_refresh_weekdays", cronKey: "new_release_refresh_cron", pagesKey: "new_release_refresh_page_limit", priorityKind: PriorityKindScheduledNew, fallback: every, defaultEnabled: true}})
+	s.runScrapeSchedules(ctx, []scrapeSchedule{newReleaseScrapeSchedule(every)})
 }
 
 // ScheduleScrapes runs all three configurable scrape schedules through one
@@ -909,8 +959,74 @@ func (s *Service) ScheduleScrapes(ctx context.Context, quickEvery time.Duration)
 		return
 	}
 	s.runScrapeSchedules(ctx, []scrapeSchedule{
-		{mode: "full", title: "Full refresh · all enabled sites", enabledKey: "full_refresh_enabled", intervalKey: "full_refresh_interval", startTimeKey: "full_refresh_start_time", weekdaysKey: "full_refresh_weekdays", cronKey: "full_refresh_cron", pagesKey: "full_refresh_page_limit", priorityKind: PriorityKindScheduledFull, fallback: 24 * time.Hour},
-		{mode: "new", title: "New releases only · all enabled sites", enabledKey: "new_release_refresh_enabled", intervalKey: "new_release_refresh_interval", startTimeKey: "new_release_refresh_start_time", weekdaysKey: "new_release_refresh_weekdays", cronKey: "new_release_refresh_cron", pagesKey: "new_release_refresh_page_limit", priorityKind: PriorityKindScheduledNew, fallback: quickEvery, defaultEnabled: true},
-		{mode: "quick", title: "Quick refresh · all enabled sites", enabledKey: "quick_refresh_enabled", intervalKey: "refresh_interval", startTimeKey: "quick_refresh_start_time", weekdaysKey: "quick_refresh_weekdays", cronKey: "quick_refresh_cron", priorityKind: PriorityKindScheduledQuick, fallback: quickEvery, defaultEnabled: true},
+		fullScrapeSchedule(24 * time.Hour),
+		newReleaseScrapeSchedule(quickEvery),
+		quickScrapeSchedule(quickEvery),
 	})
+}
+
+// scheduleForecastRunCount is how many upcoming run times ScheduleForecast
+// predicts per schedule.
+const scheduleForecastRunCount = 3
+
+// ScheduleForecast reports each configurable scrape schedule's current
+// enabled/interval state plus its next scheduleForecastRunCount predicted
+// run times. Interval-mode schedules read the live scheduleNextAttempt time
+// the running scheduler loop last computed (so it can never drift from what
+// the loop will actually do) and extrapolate the remaining runs by adding
+// the interval repeatedly; calendar-mode schedules (a cron expression or a
+// start-time/weekdays override configured) are simulated directly with
+// nextCalendarRuns instead, since the running loop doesn't track those with
+// scheduleNextAttempt. A disabled schedule is reported with an empty
+// NextRuns, even though the loop may still be internally tracking a next
+// check time for it.
+func (s *Service) ScheduleForecast(ctx context.Context) []domain.ScheduleForecast {
+	settings, _ := s.store.Settings(ctx)
+	now := time.Now()
+	schedules := []scrapeSchedule{
+		quickScrapeSchedule(0),
+		newReleaseScrapeSchedule(0),
+		fullScrapeSchedule(0),
+	}
+	forecasts := make([]domain.ScheduleForecast, 0, len(schedules))
+	for _, schedule := range schedules {
+		enabled := schedule.defaultEnabled
+		if raw, ok := settings[schedule.enabledKey]; ok {
+			enabled = raw == "true"
+		}
+		forecast := domain.ScheduleForecast{Group: "Scheduled scrapes", Name: schedule.title, Enabled: enabled}
+		calendarConfigured := strings.TrimSpace(settings[schedule.cronKey]) != "" || strings.TrimSpace(settings[schedule.startTimeKey]) != ""
+		if calendarConfigured {
+			if strings.TrimSpace(settings[schedule.cronKey]) != "" {
+				forecast.Interval = "cron: " + strings.TrimSpace(settings[schedule.cronKey])
+			} else {
+				forecast.Interval = "calendar: " + strings.TrimSpace(settings[schedule.startTimeKey])
+			}
+			if enabled {
+				forecast.NextRuns = nextCalendarRuns(now, settings[schedule.startTimeKey], settings[schedule.weekdaysKey], settings[schedule.cronKey], scheduleForecastRunCount)
+			}
+			forecasts = append(forecasts, forecast)
+			continue
+		}
+		interval := time.Duration(0)
+		if parsed, err := time.ParseDuration(settings[schedule.intervalKey]); err == nil && parsed >= time.Minute {
+			interval = parsed
+		}
+		forecast.Interval = interval.String()
+		if enabled && interval > 0 {
+			s.mu.RLock()
+			next, tracked := s.scheduleNextAttempt[schedule.mode]
+			s.mu.RUnlock()
+			if tracked {
+				runs := make([]time.Time, 0, scheduleForecastRunCount)
+				for len(runs) < scheduleForecastRunCount {
+					runs = append(runs, next)
+					next = next.Add(interval)
+				}
+				forecast.NextRuns = runs
+			}
+		}
+		forecasts = append(forecasts, forecast)
+	}
+	return forecasts
 }

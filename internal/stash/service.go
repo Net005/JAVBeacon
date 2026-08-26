@@ -97,10 +97,28 @@ type Service struct {
 
 	applyMu     sync.RWMutex
 	applyStatus ApplyStatus
+
+	// scheduleNextAttempt tracks, per schedule loop below ("sync",
+	// "desired_sync"), the wall-clock time that loop will next actually
+	// check whether it's due to run - kept live (updated every loop
+	// iteration, not just when the schedule fires) so ScheduleForecast can
+	// report an accurate "next run" without re-deriving the loop's own
+	// timing separately. Guarded by mu like the rest of this struct's
+	// mutable fields.
+	scheduleNextAttempt map[string]time.Time
 }
 
+// scheduleMaxSleepChunk bounds how long Schedule/DesiredSchedule ever sleep
+// in one time.NewTimer wait, so a settings change (interval edited, or a
+// schedule enabled/disabled) is picked up within this long at worst instead
+// of only after whatever stale interval the loop last computed - mirrors
+// monitor.scheduleMaxSleepChunk and download.scheduleMaxSleepChunk, which
+// document the same "otherwise a changed schedule is indistinguishable from
+// requires a restart" problem.
+var scheduleMaxSleepChunk = 30 * time.Second
+
 func New(st store.Store, timeout time.Duration, log *slog.Logger, jav *scraper.JavLibrary, downloads *download.Service) *Service {
-	return &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, jav: jav, downloads: downloads}
+	return &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, jav: jav, downloads: downloads, scheduleNextAttempt: map[string]time.Time{}}
 }
 
 func (s *Service) Status() Status { s.mu.RLock(); defer s.mu.RUnlock(); return s.status }
@@ -510,47 +528,128 @@ func canonical(raw string) string {
 }
 
 func (s *Service) Schedule(ctx context.Context) {
+	lastAttempt := time.Now()
 	for {
 		settings, _ := s.store.Settings(ctx)
 		interval, err := time.ParseDuration(settings["stash_sync_interval"])
 		if err != nil || interval < time.Minute {
 			interval = 6 * time.Hour
 		}
-		t := time.NewTimer(interval)
+		now := time.Now()
+		remaining := interval - now.Sub(lastAttempt)
+		if remaining <= 0 {
+			lastAttempt = now
+			if settings["stash_local_sync_enabled"] == "true" && settings["stash_base_url"] != "" {
+				_ = s.Start(ctx)
+			}
+			remaining = interval
+		}
+		s.mu.Lock()
+		if s.scheduleNextAttempt == nil {
+			s.scheduleNextAttempt = map[string]time.Time{}
+		}
+		s.scheduleNextAttempt["sync"] = now.Add(remaining)
+		s.mu.Unlock()
+		sleep := remaining
+		if sleep <= 0 || sleep > scheduleMaxSleepChunk {
+			sleep = scheduleMaxSleepChunk
+		}
+		t := time.NewTimer(sleep)
 		select {
 		case <-ctx.Done():
 			t.Stop()
 			return
 		case <-t.C:
-			if settings["stash_local_sync_enabled"] == "true" && settings["stash_base_url"] != "" {
-				_ = s.Start(ctx)
-			}
 		}
 	}
 }
 
 func (s *Service) DesiredSchedule(ctx context.Context) {
+	lastAttempt := time.Now()
 	for {
 		settings, _ := s.store.Settings(ctx)
 		interval, err := time.ParseDuration(settings["stash_desired_sync_interval"])
 		if err != nil || interval < time.Minute {
 			interval = 6 * time.Hour
 		}
-		t := time.NewTimer(interval)
+		now := time.Now()
+		remaining := interval - now.Sub(lastAttempt)
+		if remaining <= 0 {
+			lastAttempt = now
+			if settings["stash_desired_sync_enabled"] == "true" && strings.TrimSpace(settings["stash_desired_tag_id"]) != "" {
+				result, syncErr := s.SyncDesired(ctx)
+				if syncErr != nil {
+					s.log.Error("scheduled Stash Desired sync failed", "error", syncErr)
+				} else {
+					s.log.Info("scheduled Stash Desired sync completed", "checked", result.Checked, "updated", result.Updated, "skipped", result.Skipped)
+				}
+			}
+			remaining = interval
+		}
+		s.mu.Lock()
+		if s.scheduleNextAttempt == nil {
+			s.scheduleNextAttempt = map[string]time.Time{}
+		}
+		s.scheduleNextAttempt["desired_sync"] = now.Add(remaining)
+		s.mu.Unlock()
+		sleep := remaining
+		if sleep <= 0 || sleep > scheduleMaxSleepChunk {
+			sleep = scheduleMaxSleepChunk
+		}
+		t := time.NewTimer(sleep)
 		select {
 		case <-ctx.Done():
 			t.Stop()
 			return
 		case <-t.C:
-			if settings["stash_desired_sync_enabled"] != "true" || strings.TrimSpace(settings["stash_desired_tag_id"]) == "" {
-				continue
-			}
-			result, syncErr := s.SyncDesired(ctx)
-			if syncErr != nil {
-				s.log.Error("scheduled Stash Desired sync failed", "error", syncErr)
-				continue
-			}
-			s.log.Info("scheduled Stash Desired sync completed", "checked", result.Checked, "updated", result.Updated, "skipped", result.Skipped)
 		}
 	}
+}
+
+// scheduleForecastRunCount is how many upcoming run times ScheduleForecast
+// predicts per schedule - matches monitor.scheduleForecastRunCount and
+// download.scheduleForecastRunCount so every panel shows the same count.
+const scheduleForecastRunCount = 3
+
+// ScheduleForecast reports the StashApp local-library and Desired-tag sync
+// schedules' current enabled/interval state plus their next
+// scheduleForecastRunCount predicted run times, reading the live
+// scheduleNextAttempt time Schedule/DesiredSchedule last computed so it can
+// never drift from what those loops will actually do next.
+func (s *Service) ScheduleForecast(ctx context.Context) []domain.ScheduleForecast {
+	settings, _ := s.store.Settings(ctx)
+	syncEnabled := settings["stash_local_sync_enabled"] == "true" && settings["stash_base_url"] != ""
+	desiredEnabled := settings["stash_desired_sync_enabled"] == "true" && strings.TrimSpace(settings["stash_desired_tag_id"]) != ""
+	return []domain.ScheduleForecast{
+		s.intervalScheduleForecast("sync", "Local library sync", syncEnabled, settings["stash_sync_interval"]),
+		s.intervalScheduleForecast("desired_sync", "Desired-tag sync", desiredEnabled, settings["stash_desired_sync_interval"]),
+	}
+}
+
+// intervalScheduleForecast builds one ScheduleForecast entry for a
+// live-tracked schedule loop keyed by mode in s.scheduleNextAttempt,
+// extrapolating scheduleForecastRunCount future runs by repeatedly adding
+// its interval to the loop's live next-check time.
+func (s *Service) intervalScheduleForecast(mode, name string, enabled bool, rawInterval string) domain.ScheduleForecast {
+	interval, err := time.ParseDuration(rawInterval)
+	if err != nil || interval < time.Minute {
+		interval = 6 * time.Hour
+	}
+	forecast := domain.ScheduleForecast{Group: "StashApp sync", Name: name, Enabled: enabled, Interval: interval.String()}
+	if !enabled {
+		return forecast
+	}
+	s.mu.RLock()
+	next, tracked := s.scheduleNextAttempt[mode]
+	s.mu.RUnlock()
+	if !tracked {
+		return forecast
+	}
+	runs := make([]time.Time, 0, scheduleForecastRunCount)
+	for len(runs) < scheduleForecastRunCount {
+		runs = append(runs, next)
+		next = next.Add(interval)
+	}
+	forecast.NextRuns = runs
+	return forecast
 }

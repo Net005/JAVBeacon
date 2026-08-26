@@ -32,8 +32,8 @@ func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"version":"v1.0.12"`) {
-		t.Fatalf("response = %s, want v1.0.12", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"version":"v1.0.13"`) {
+		t.Fatalf("response = %s, want v1.0.13", rec.Body.String())
 	}
 }
 

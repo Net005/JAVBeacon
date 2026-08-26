@@ -41,8 +41,25 @@ type Service struct {
 	cleanupRetryMu sync.Mutex
 	cleanupRetryAt map[int64]time.Time
 
+	// scheduleNextAttempt tracks, per schedule loop below ("search",
+	// "older_search", "notification", "rss"), the wall-clock time that
+	// loop will next actually check whether it's due to run - kept live
+	// (updated every loop iteration, not just when the schedule fires) so
+	// SearchScheduleForecast can report an accurate "next run" without
+	// re-deriving the loop's own timing separately. Guarded by mu like the
+	// rest of this struct's mutable fields.
+	scheduleNextAttempt map[string]time.Time
+
 	pipelineJobs chan pipelineJob
 }
+
+// scheduleMaxSleepChunk bounds how long any schedule loop below ever sleeps
+// in one time.NewTimer wait, so a settings change (interval edited, or a
+// schedule enabled/disabled) is picked up within this long at worst instead
+// of only after whatever stale interval the loop last computed - mirrors
+// monitor.scheduleMaxSleepChunk, which documents the same "otherwise a
+// changed schedule is indistinguishable from requires a restart" problem.
+var scheduleMaxSleepChunk = 30 * time.Second
 
 // pipelineJob is one request to run a func serially through the shared
 // pipeline worker - see runPipelineSerialized.
@@ -83,7 +100,7 @@ func (s *Service) clearCleanupRetry(downloadID int64) {
 }
 
 func New(st store.Store, timeout time.Duration, log *slog.Logger) *Service {
-	s := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, pipelineJobs: make(chan pipelineJob, 64)}
+	s := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, pipelineJobs: make(chan pipelineJob, 64), scheduleNextAttempt: map[string]time.Time{}}
 	if rows, err := st.DownloadSearchRuns(context.Background(), "recent", 1); err == nil && len(rows) > 0 {
 		s.job = searchJobFromRun(rows[0])
 	}
@@ -209,18 +226,35 @@ const (
 	pipelineDownloadRemoved       = "download_completed_removed"
 )
 
-// postStatusRemovedManually marks a download whose torrent is no longer
-// present in qBittorrent at all, without this app having removed it - the
-// user (or something else) deleted it directly in qBittorrent. Unlike
-// postStatusCompletedRemoved (this app called qb.Remove(), typically once
-// the configured seed ratio was met) there is nothing left to retry, so a
-// download reaching this state is never re-scheduled for cleanup again.
-const postStatusRemovedManually = "removed_manually"
+// statusRemoved is the terminal Download.Status a download is moved to once
+// pollTorrents discovers its torrent is gone from qBittorrent for a reason
+// this app doesn't know about (see postStatusRemovedUnknown). Every Download
+// Activity tab filters on d.status ("downloading"/"completed"/"failed", plus
+// the Stalled tab's downloading+seeds=0), and none of them query "removed",
+// so flipping Status here - not just PostStatus - is what actually removes
+// the row from Download Activity, instead of leaving it stuck forever
+// showing stale progress under its last known status. It also matters for
+// duplicate() (the duplicate-download guard above), which only treats
+// "downloading"/"completed"/"processing" as an active/finished download for
+// a release - once a row is statusRemoved, that release becomes eligible to
+// be searched/downloaded again instead of being silently blocked forever.
+const statusRemoved = "removed"
+
+// postStatusRemovedUnknown marks a download whose torrent is no longer
+// present in qBittorrent at all, without this app having removed it itself -
+// deleted directly in qBittorrent, evicted by qBittorrent, or any other
+// reason this app has no visibility into ("removed - unknown reason"). Unlike
+// postStatusCompletedRemoved (this app called qb.Remove() itself, typically
+// once the configured seed ratio was met) there is nothing left to retry, so
+// a download reaching this state is never re-scheduled for cleanup again,
+// and - unlike that case - Status is also moved to statusRemoved so the row
+// stops showing in Download Activity entirely; see statusRemoved.
+const postStatusRemovedUnknown = "removed_unknown_reason"
 
 // postStatusCompletedRemoved marks a download this app itself removed from
 // qBittorrent (rule "remove immediately" or the configured seed ratio being
-// met). Kept as its own named constant alongside postStatusRemovedManually
-// so the two "the torrent is gone" outcomes stay easy to tell apart in code,
+// met). Kept as its own named constant alongside postStatusRemovedUnknown so
+// the two "the torrent is gone" outcomes stay easy to tell apart in code,
 // even though it was already used as a bare string literal below.
 const postStatusCompletedRemoved = "completed_removed"
 
@@ -228,12 +262,15 @@ const postStatusCompletedRemoved = "completed_removed"
 // torrent this app knows is gone from qBittorrent for a good reason (it
 // removed it itself, or a post-removal pipeline step failed after a
 // successful removal) - so pollTorrents's "torrent vanished" detection
-// should not re-flag it as removed_manually just because it no longer
-// appears in qBittorrent's torrent list, which is expected for all of
-// these.
+// should not re-flag it as postStatusRemovedUnknown just because it no
+// longer appears in qBittorrent's torrent list, which is expected for all of
+// these. A row already at postStatusRemovedUnknown also short-circuits here,
+// though in practice its Status is no longer "downloading"/"completed" by
+// then so pollTorrents won't fetch it again anyway - kept as a defensive
+// fallback.
 func downloadGoneFromQBHandled(postStatus string) bool {
 	switch postStatus {
-	case postStatusCompletedRemoved, "removed_pipeline_failed", postStatusRemovedManually:
+	case postStatusCompletedRemoved, "removed_pipeline_failed", postStatusRemovedUnknown:
 		return true
 	default:
 		return false
@@ -1055,21 +1092,38 @@ func (s *Service) runMonitoredSearch(ctx context.Context, schedule string, getJo
 }
 
 func (s *Service) SearchSchedule(ctx context.Context) {
+	lastAttempt := time.Now()
 	for {
 		settings, _ := s.store.Settings(ctx)
 		wait := time.Hour
 		if parsed, err := time.ParseDuration(settings["download_search_interval"]); err == nil && parsed >= time.Minute {
 			wait = parsed
 		}
-		timer := time.NewTimer(wait)
+		now := time.Now()
+		remaining := wait - now.Sub(lastAttempt)
+		if remaining <= 0 {
+			lastAttempt = now
+			if settings["download_search_enabled"] == "true" {
+				_ = s.StartSearch(ctx)
+			}
+			remaining = wait
+		}
+		s.mu.Lock()
+		if s.scheduleNextAttempt == nil {
+			s.scheduleNextAttempt = map[string]time.Time{}
+		}
+		s.scheduleNextAttempt["search"] = now.Add(remaining)
+		s.mu.Unlock()
+		sleep := remaining
+		if sleep <= 0 || sleep > scheduleMaxSleepChunk {
+			sleep = scheduleMaxSleepChunk
+		}
+		timer := time.NewTimer(sleep)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
-			if settings["download_search_enabled"] == "true" {
-				_ = s.StartSearch(ctx)
-			}
 		}
 	}
 }
@@ -1080,21 +1134,38 @@ func (s *Service) SearchSchedule(ctx context.Context) {
 // stop re-searching old, unlikely-to-appear releases as often as brand new
 // ones and overloading the download provider, e.g. NYAA).
 func (s *Service) OlderSearchSchedule(ctx context.Context) {
+	lastAttempt := time.Now()
 	for {
 		settings, _ := s.store.Settings(ctx)
 		wait := 24 * time.Hour
 		if parsed, err := time.ParseDuration(settings["download_search_older_interval"]); err == nil && parsed >= time.Minute {
 			wait = parsed
 		}
-		timer := time.NewTimer(wait)
+		now := time.Now()
+		remaining := wait - now.Sub(lastAttempt)
+		if remaining <= 0 {
+			lastAttempt = now
+			if settings["download_search_older_enabled"] == "true" {
+				_ = s.StartSearchOlder(ctx)
+			}
+			remaining = wait
+		}
+		s.mu.Lock()
+		if s.scheduleNextAttempt == nil {
+			s.scheduleNextAttempt = map[string]time.Time{}
+		}
+		s.scheduleNextAttempt["older_search"] = now.Add(remaining)
+		s.mu.Unlock()
+		sleep := remaining
+		if sleep <= 0 || sleep > scheduleMaxSleepChunk {
+			sleep = scheduleMaxSleepChunk
+		}
+		timer := time.NewTimer(sleep)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
-			if settings["download_search_older_enabled"] == "true" {
-				_ = s.StartSearchOlder(ctx)
-			}
 		}
 	}
 }
@@ -1114,15 +1185,32 @@ func (s *Service) tick(ctx context.Context) {
 	s.pollTorrents(ctx)
 }
 func (s *Service) NotificationSchedule(ctx context.Context) {
+	lastAttempt := time.Now()
+	s.releaseNotifications(ctx)
 	for {
-		s.releaseNotifications(ctx)
 		wait := 15 * time.Minute
-		if settings, e := s.store.Settings(ctx); e == nil {
-			if d, e := time.ParseDuration(settings["notification_interval"]); e == nil && d >= time.Minute {
-				wait = d
-			}
+		settings, _ := s.store.Settings(ctx)
+		if d, e := time.ParseDuration(settings["notification_interval"]); e == nil && d >= time.Minute {
+			wait = d
 		}
-		timer := time.NewTimer(wait)
+		now := time.Now()
+		remaining := wait - now.Sub(lastAttempt)
+		if remaining <= 0 {
+			lastAttempt = now
+			s.releaseNotifications(ctx)
+			remaining = wait
+		}
+		s.mu.Lock()
+		if s.scheduleNextAttempt == nil {
+			s.scheduleNextAttempt = map[string]time.Time{}
+		}
+		s.scheduleNextAttempt["notification"] = now.Add(remaining)
+		s.mu.Unlock()
+		sleep := remaining
+		if sleep <= 0 || sleep > scheduleMaxSleepChunk {
+			sleep = scheduleMaxSleepChunk
+		}
+		timer := time.NewTimer(sleep)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -1132,15 +1220,32 @@ func (s *Service) NotificationSchedule(ctx context.Context) {
 	}
 }
 func (s *Service) RSSSchedule(ctx context.Context) {
+	lastAttempt := time.Now()
+	s.pollRSS(ctx)
 	for {
-		s.pollRSS(ctx)
 		wait := 5 * time.Minute
-		if settings, e := s.store.Settings(ctx); e == nil {
-			if d, e := time.ParseDuration(settings["rss_interval"]); e == nil && d >= time.Minute {
-				wait = d
-			}
+		settings, _ := s.store.Settings(ctx)
+		if d, e := time.ParseDuration(settings["rss_interval"]); e == nil && d >= time.Minute {
+			wait = d
 		}
-		timer := time.NewTimer(wait)
+		now := time.Now()
+		remaining := wait - now.Sub(lastAttempt)
+		if remaining <= 0 {
+			lastAttempt = now
+			s.pollRSS(ctx)
+			remaining = wait
+		}
+		s.mu.Lock()
+		if s.scheduleNextAttempt == nil {
+			s.scheduleNextAttempt = map[string]time.Time{}
+		}
+		s.scheduleNextAttempt["rss"] = now.Add(remaining)
+		s.mu.Unlock()
+		sleep := remaining
+		if sleep <= 0 || sleep > scheduleMaxSleepChunk {
+			sleep = scheduleMaxSleepChunk
+		}
+		timer := time.NewTimer(sleep)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -1148,6 +1253,53 @@ func (s *Service) RSSSchedule(ctx context.Context) {
 		case <-timer.C:
 		}
 	}
+}
+
+// scheduleForecastRunCount is how many upcoming run times
+// SearchScheduleForecast predicts per schedule - matches
+// monitor.scheduleForecastRunCount so every panel shows the same count.
+const scheduleForecastRunCount = 3
+
+// SearchScheduleForecast reports the Download monitoring recent- and
+// older-releases search schedules' current enabled/interval state plus
+// their next scheduleForecastRunCount predicted run times, reading the live
+// scheduleNextAttempt time SearchSchedule/OlderSearchSchedule last computed
+// so it can never drift from what those loops will actually do next.
+func (s *Service) SearchScheduleForecast(ctx context.Context) []domain.ScheduleForecast {
+	settings, _ := s.store.Settings(ctx)
+	forecasts := []domain.ScheduleForecast{
+		s.intervalScheduleForecast("search", "Monitored releases · recent", settings["download_search_enabled"] == "true", settings["download_search_interval"], time.Hour),
+		s.intervalScheduleForecast("older_search", "Monitored releases · older", settings["download_search_older_enabled"] == "true", settings["download_search_older_interval"], 24*time.Hour),
+	}
+	return forecasts
+}
+
+// intervalScheduleForecast builds one ScheduleForecast entry for a
+// live-tracked, plain-interval (non-calendar) schedule loop keyed by mode in
+// s.scheduleNextAttempt, extrapolating scheduleForecastRunCount future runs
+// by repeatedly adding its interval to the loop's live next-check time.
+func (s *Service) intervalScheduleForecast(mode, name string, enabled bool, rawInterval string, fallback time.Duration) domain.ScheduleForecast {
+	interval := fallback
+	if parsed, err := time.ParseDuration(rawInterval); err == nil && parsed >= time.Minute {
+		interval = parsed
+	}
+	forecast := domain.ScheduleForecast{Group: "Download monitoring", Name: name, Enabled: enabled, Interval: interval.String()}
+	if !enabled {
+		return forecast
+	}
+	s.mu.RLock()
+	next, tracked := s.scheduleNextAttempt[mode]
+	s.mu.RUnlock()
+	if !tracked {
+		return forecast
+	}
+	runs := make([]time.Time, 0, scheduleForecastRunCount)
+	for len(runs) < scheduleForecastRunCount {
+		runs = append(runs, next)
+		next = next.Add(interval)
+	}
+	forecast.NextRuns = runs
+	return forecast
 }
 func (s *Service) releaseNotifications(ctx context.Context) {
 	provider, _ := s.provider(ctx)
@@ -1203,89 +1355,110 @@ func (s *Service) pollTorrents(ctx context.Context) {
 	for _, d := range downloads {
 		matched := false
 		for _, t := range torrents {
-			if (d.TorrentHash != "" && d.TorrentHash == t.Hash) || strings.Contains(canonical(t.Name), canonical(d.Query)) {
-				matched = true
-				wasCompleted := d.Status == "completed"
-				d.TorrentHash = t.Hash
-				d.Name = t.Name
-				d.SeedRatio = t.Ratio
-				d.Progress = t.Progress
-				d.Seeds = t.Seeds
-				d.Peers = t.Peers
-				d.ETASeconds = t.ETA
-				d.SeenComplete = t.SeenComplete
-				if files, e := qb.Files(ctx, t.Hash); e == nil {
-					if raw, e := json.Marshal(files); e == nil {
-						d.Files = raw
-					}
+			// A download's torrent hash is qBittorrent's own unique ID for
+			// that torrent (its info-hash) - Download() always records it
+			// (via verifyAddedToQBittorrent) before a row's Status ever
+			// becomes "downloading" or "completed", so every row this loop
+			// sees normally already has one. Once a hash is known, matching
+			// MUST be by that hash alone: falling back to a name-substring
+			// match even when the hash disagreed used to let this download
+			// get silently re-pointed at a completely different torrent
+			// whose name happened to contain the same query text (e.g. a
+			// different release sharing part of a video ID) - the actual
+			// torrent could have been removed from qBittorrent while this
+			// row kept "monitoring" whatever unrelated torrent matched by
+			// name, showing its stale/unrelated progress forever. The
+			// name-substring fallback is now used only for the one
+			// legitimate case where no hash has been recorded yet (a
+			// brand-new row - see the comment below the loop).
+			if d.TorrentHash != "" {
+				if d.TorrentHash != t.Hash {
+					continue
 				}
-				state := strings.ToLower(t.State)
-				if strings.Contains(state, "upload") || strings.HasSuffix(state, "up") {
-					d.Status = "completed"
-					_, _ = s.store.CreateNotification(ctx, d.ReleaseID, "downloaded", "Download completed")
-					if !wasCompleted {
-						s.log.Info("qBittorrent download completed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "state", t.State, "seed_ratio", t.Ratio, "cleanup_rule", rule)
-					}
+			} else if !strings.Contains(canonical(t.Name), canonical(d.Query)) {
+				continue
+			}
+			matched = true
+			wasCompleted := d.Status == "completed"
+			d.TorrentHash = t.Hash
+			d.Name = t.Name
+			d.SeedRatio = t.Ratio
+			d.Progress = t.Progress
+			d.Seeds = t.Seeds
+			d.Peers = t.Peers
+			d.ETASeconds = t.ETA
+			d.SeenComplete = t.SeenComplete
+			if files, e := qb.Files(ctx, t.Hash); e == nil {
+				if raw, e := json.Marshal(files); e == nil {
+					d.Files = raw
 				}
-				if d.Status == "completed" {
-					run, lookupErr := s.store.PipelineRun(ctx, d.ID, pipelineDownloadCompleted)
-					if lookupErr == nil && run.State == "" {
-						// Not yet run for this download - run it now.
-						// runPipelineEvent always executes every enabled step
-						// for this trigger even if an earlier one fails (a
-						// failed step is logged and skipped over, not fatal
-						// to the run - see runPipelineEvent), so the run is
-						// always left in a terminal state afterwards.
-						_ = s.runPipelineSerialized(func() error { return s.runPipelineEvent(ctx, &d, t, pipelineDownloadCompleted) })
-						run, lookupErr = s.store.PipelineRun(ctx, d.ID, pipelineDownloadCompleted)
-					}
+			}
+			state := strings.ToLower(t.State)
+			if strings.Contains(state, "upload") || strings.HasSuffix(state, "up") {
+				d.Status = "completed"
+				_, _ = s.store.CreateNotification(ctx, d.ReleaseID, "downloaded", "Download completed")
+				if !wasCompleted {
+					s.log.Info("qBittorrent download completed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "state", t.State, "seed_ratio", t.Ratio, "cleanup_rule", rule)
+				}
+			}
+			if d.Status == "completed" {
+				run, lookupErr := s.store.PipelineRun(ctx, d.ID, pipelineDownloadCompleted)
+				if lookupErr == nil && run.State == "" {
+					// Not yet run for this download - run it now.
+					// runPipelineEvent always executes every enabled step
+					// for this trigger even if an earlier one fails (a
+					// failed step is logged and skipped over, not fatal
+					// to the run - see runPipelineEvent), so the run is
+					// always left in a terminal state afterwards.
+					_ = s.runPipelineSerialized(func() error { return s.runPipelineEvent(ctx, &d, t, pipelineDownloadCompleted) })
+					run, lookupErr = s.store.PipelineRun(ctx, d.ID, pipelineDownloadCompleted)
+				}
+				switch {
+				case lookupErr != nil:
+					d.PostStatus = "pipeline_failed"
+					d.Error = lookupErr.Error()
+				case run.State == "running":
+					// Still executing (e.g. interrupted mid-run by a
+					// restart) - leave the torrent alone until it
+					// reaches a terminal state rather than racing it.
+					d.PostStatus = "pipeline_interrupted"
+					d.Error = "post-processing was interrupted; torrent cleanup was withheld"
+				default:
+					// "completed" or "failed" both mean this trigger's
+					// pipeline has finished running for this download -
+					// a failed step must not block ratio-based cleanup,
+					// only a still-running or never-run pipeline should.
+					// The failure itself remains fully recorded in the
+					// pipeline run/step logs for troubleshooting; the
+					// cleanup-derived status below is more useful to
+					// show here than a stale "pipeline_failed".
 					switch {
-					case lookupErr != nil:
-						d.PostStatus = "pipeline_failed"
-						d.Error = lookupErr.Error()
-					case run.State == "running":
-						// Still executing (e.g. interrupted mid-run by a
-						// restart) - leave the torrent alone until it
-						// reaches a terminal state rather than racing it.
-						d.PostStatus = "pipeline_interrupted"
-						d.Error = "post-processing was interrupted; torrent cleanup was withheld"
-					default:
-						// "completed" or "failed" both mean this trigger's
-						// pipeline has finished running for this download -
-						// a failed step must not block ratio-based cleanup,
-						// only a still-running or never-run pipeline should.
-						// The failure itself remains fully recorded in the
-						// pipeline run/step logs for troubleshooting; the
-						// cleanup-derived status below is more useful to
-						// show here than a stale "pipeline_failed".
-						switch {
-						case rule == completedTorrentKeep:
-							if d.PostStatus != "completed_retained" {
-								s.log.Info("completed qBittorrent torrent retained by cleanup rule", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "pipeline_trigger", pipelineDownloadCompleted, "files_retained", true)
-							}
-							d.PostStatus = "completed_retained"
-						case d.PostStatus == "cleanup_failed":
-							// A previous removal attempt failed. Don't hammer qBittorrent
-							// every poll, but do retry periodically instead of leaving the
-							// torrent stranded forever - the failure may well have been
-							// transient (a dropped qBittorrent session, a flaky pipeline
-							// step, etc).
-							if s.cleanupDue(d.ID) {
-								s.cleanupTorrent(ctx, qb, &d, t, rule)
-							}
-						case !completedTorrentReady(rule, t.Ratio, minRatio):
-							if d.PostStatus != "completed_waiting_ratio" {
-								s.log.Info("completed qBittorrent torrent waiting for seed ratio", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "seed_ratio", t.Ratio, "minimum_seed_ratio", minRatio, "pipeline_trigger", pipelineDownloadCompleted)
-							}
-							d.PostStatus = "completed_waiting_ratio"
-						default:
+					case rule == completedTorrentKeep:
+						if d.PostStatus != "completed_retained" {
+							s.log.Info("completed qBittorrent torrent retained by cleanup rule", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "pipeline_trigger", pipelineDownloadCompleted, "files_retained", true)
+						}
+						d.PostStatus = "completed_retained"
+					case d.PostStatus == "cleanup_failed":
+						// A previous removal attempt failed. Don't hammer qBittorrent
+						// every poll, but do retry periodically instead of leaving the
+						// torrent stranded forever - the failure may well have been
+						// transient (a dropped qBittorrent session, a flaky pipeline
+						// step, etc).
+						if s.cleanupDue(d.ID) {
 							s.cleanupTorrent(ctx, qb, &d, t, rule)
 						}
+					case !completedTorrentReady(rule, t.Ratio, minRatio):
+						if d.PostStatus != "completed_waiting_ratio" {
+							s.log.Info("completed qBittorrent torrent waiting for seed ratio", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "seed_ratio", t.Ratio, "minimum_seed_ratio", minRatio, "pipeline_trigger", pipelineDownloadCompleted)
+						}
+						d.PostStatus = "completed_waiting_ratio"
+					default:
+						s.cleanupTorrent(ctx, qb, &d, t, rule)
 					}
 				}
-				_, _ = s.store.SaveDownload(ctx, d)
-				break
 			}
+			_, _ = s.store.SaveDownload(ctx, d)
+			break
 		}
 		// The torrent this download expects is gone from qBittorrent
 		// entirely - not matched by hash or name against anything currently
@@ -1296,11 +1469,12 @@ func (s *Service) pollTorrents(ctx context.Context) {
 		// for someone deleting it. Skip anything this app already knows is
 		// gone for a good reason (it removed it itself).
 		if !matched && d.TorrentHash != "" && !downloadGoneFromQBHandled(d.PostStatus) {
-			previousPostStatus := d.PostStatus
+			previousStatus, previousPostStatus := d.Status, d.PostStatus
 			s.clearCleanupRetry(d.ID)
-			d.PostStatus = postStatusRemovedManually
+			d.Status = statusRemoved
+			d.PostStatus = postStatusRemovedUnknown
 			d.Error = ""
-			s.log.Info("torrent no longer present in qBittorrent; treating as manually removed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", d.TorrentHash, "previous_post_status", previousPostStatus)
+			s.log.Info("torrent no longer present in qBittorrent; removing from Download Activity as removed (unknown reason)", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", d.TorrentHash, "previous_status", previousStatus, "previous_post_status", previousPostStatus)
 			_, _ = s.store.SaveDownload(ctx, d)
 		}
 	}

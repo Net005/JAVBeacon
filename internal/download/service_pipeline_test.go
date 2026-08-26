@@ -608,16 +608,19 @@ func TestPollTorrentsRemovesByRatioDespiteFailedCompletionPipelineStep(t *testin
 	}
 }
 
-// TestPollTorrentsMarksRemovedManuallyWhenTorrentDisappears covers "if
-// release is no longer available in QBittorrent (manually removed for
-// instance) do not re-schedule, mark it as removed from QBittorrent
-// (manually)": once a torrent this app previously confirmed (by hash) is no
-// longer present in qBittorrent's own torrent list, and this app did not
-// remove it itself, the download must be marked removed_manually rather
-// than left stuck (or endlessly retried).
-func TestPollTorrentsMarksRemovedManuallyWhenTorrentDisappears(t *testing.T) {
+// TestPollTorrentsRemovesFromActivityWhenTorrentDisappearsForUnknownReason
+// covers "if release is no longer available in QBittorrent (manually
+// removed for instance) do not re-schedule, remove it from Download
+// Activity and register it as state (removed - unknown reason)": once a
+// torrent this app previously confirmed (by hash) is no longer present in
+// qBittorrent's own torrent list, and this app did not remove it itself,
+// the download must move to the terminal statusRemoved/
+// postStatusRemovedUnknown state - which drops it out of every Download
+// Activity tab (none of which query status "removed") - rather than being
+// left stuck forever under its last known status (or endlessly retried).
+func TestPollTorrentsRemovesFromActivityWhenTorrentDisappearsForUnknownReason(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "poll-removed-manually.db"))
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "poll-removed-unknown.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,30 +652,37 @@ func TestPollTorrentsMarksRemovedManuallyWhenTorrentDisappears(t *testing.T) {
 	service := New(st, 2*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	service.pollTorrents(ctx)
 
-	row, err := st.Downloads(ctx, "completed")
+	// The row must no longer show up under any Download Activity tab status.
+	if row, err := st.Downloads(ctx, "completed"); err != nil || len(row) != 0 {
+		t.Fatalf("rows=%+v err=%v, want the row gone from the completed tab", row, err)
+	}
+	row, err := st.Downloads(ctx, "removed")
 	if err != nil || len(row) != 1 {
 		t.Fatalf("rows=%+v err=%v", row, err)
 	}
-	if row[0].PostStatus != "removed_manually" {
-		t.Fatalf("post_status=%q, want removed_manually", row[0].PostStatus)
+	if row[0].Status != "removed" {
+		t.Fatalf("status=%q, want removed", row[0].Status)
+	}
+	if row[0].PostStatus != "removed_unknown_reason" {
+		t.Fatalf("post_status=%q, want removed_unknown_reason", row[0].PostStatus)
 	}
 
 	// A further poll must not "rediscover" or re-flag anything - it's a
 	// terminal state, not a retryable failure.
 	service.pollTorrents(ctx)
-	row, err = st.Downloads(ctx, "completed")
-	if err != nil || len(row) != 1 || row[0].PostStatus != "removed_manually" {
-		t.Fatalf("rows=%+v err=%v, want removed_manually to remain stable across polls", row, err)
+	row, err = st.Downloads(ctx, "removed")
+	if err != nil || len(row) != 1 || row[0].Status != "removed" || row[0].PostStatus != "removed_unknown_reason" {
+		t.Fatalf("rows=%+v err=%v, want the removed state to remain stable across polls", row, err)
 	}
 	_ = download
 }
 
-// TestPollTorrentsDoesNotFlagFreshDownloadAsRemovedManually guards against a
-// false positive: a brand new download that has never yet been matched to a
-// live torrent (TorrentHash still empty, e.g. qBittorrent hasn't resolved
-// the magnet/metadata yet) must not be mistaken for a manual removal just
-// because it doesn't match anything on its first poll.
-func TestPollTorrentsDoesNotFlagFreshDownloadAsRemovedManually(t *testing.T) {
+// TestPollTorrentsDoesNotFlagFreshDownloadAsRemoved guards against a false
+// positive: a brand new download that has never yet been matched to a live
+// torrent (TorrentHash still empty, e.g. qBittorrent hasn't resolved the
+// magnet/metadata yet) must not be mistaken for a removal just because it
+// doesn't match anything on its first poll.
+func TestPollTorrentsDoesNotFlagFreshDownloadAsRemoved(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "poll-fresh-download.db"))
 	if err != nil {
@@ -707,7 +717,70 @@ func TestPollTorrentsDoesNotFlagFreshDownloadAsRemovedManually(t *testing.T) {
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("rows=%+v err=%v", rows, err)
 	}
-	if rows[0].PostStatus == "removed_manually" {
-		t.Fatalf("a never-matched fresh download must not be flagged removed_manually: %+v", rows[0])
+	if rows[0].PostStatus == "removed_unknown_reason" {
+		t.Fatalf("a never-matched fresh download must not be flagged removed: %+v", rows[0])
+	}
+}
+
+// TestPollTorrentsIgnoresNameCollisionOnceHashIsKnown is the core regression
+// test for "monitoring the wrong download": once a download's torrent hash
+// is known, a *different* torrent that happens to share matching text in its
+// name (e.g. a different release whose video ID is a substring/superset of
+// this one's) must never be treated as a match - even though the old
+// name-substring fallback used to do exactly that, silently re-pointing this
+// download at the unrelated torrent's live progress and hash. With the real
+// torrent (hash-real) gone and only the unrelated look-alike torrent left,
+// the download must be recognized as truly gone, not "matched" to the
+// look-alike.
+func TestPollTorrentsIgnoresNameCollisionOnceHashIsKnown(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "poll-name-collision.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	server, fake := newFakeQBittorrentServer(t)
+	// A different torrent, for a different release, whose name happens to
+	// contain this download's query text as a substring - e.g. ABC-100 vs
+	// ABC-1. It is NOT the torrent this download was matched to.
+	fake.torrents = []Torrent{{Hash: "hash-lookalike", Name: "Unrelated.Release.ABC-100.1080p", State: "downloading", Progress: 0.42, Seeds: 5}}
+
+	if err := st.SaveSettings(ctx, map[string]string{"qb_url": server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Pipeline", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "ABC-1", Title: "Real release", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "ABC-1", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("releases=%+v err=%v", releases, err)
+	}
+	// This download's own torrent (hash-real) has already been removed from
+	// qBittorrent by the time this poll runs - only the look-alike remains.
+	if _, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, Status: "downloading", TorrentHash: "hash-real", Progress: 0.9, Seeds: 3}); err != nil {
+		t.Fatal(err)
+	}
+
+	service := New(st, 2*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	service.pollTorrents(ctx)
+
+	// Must NOT still show as "downloading" with the look-alike's live
+	// progress/hash grafted on - it must be recognized as removed instead.
+	if row, err := st.Downloads(ctx, "downloading"); err != nil || len(row) != 0 {
+		t.Fatalf("rows=%+v err=%v, want no row left under downloading (must not adopt the look-alike torrent)", row, err)
+	}
+	row, err := st.Downloads(ctx, "removed")
+	if err != nil || len(row) != 1 {
+		t.Fatalf("rows=%+v err=%v", row, err)
+	}
+	if row[0].TorrentHash != "hash-real" {
+		t.Fatalf("torrent_hash=%q, want the original hash-real left untouched (not overwritten with the look-alike's hash)", row[0].TorrentHash)
+	}
+	if row[0].PostStatus != "removed_unknown_reason" {
+		t.Fatalf("post_status=%q, want removed_unknown_reason", row[0].PostStatus)
 	}
 }
