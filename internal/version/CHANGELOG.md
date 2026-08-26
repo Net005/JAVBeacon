@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.12] - 2026-08-26
+
+### Added
+
+- Added a taller Release Details screenshot rail with inline navigation and
+  middle-button drag scrolling, plus a centered fullscreen screenshot viewer
+  with a blurred backdrop, navigable thumbnail strip, current-image highlight,
+  keyboard navigation, and click-outside dismissal.
+
 ## [1.0.11] - 2026-08-26
 
 ### Fixed
@@ -195,7 +204,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.11...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.12...HEAD
+[1.0.12]: https://github.com/Net005/JAVBeacon/compare/v1.0.11...v1.0.12
 [1.0.11]: https://github.com/Net005/JAVBeacon/compare/v1.0.10...v1.0.11
 [1.0.10]: https://github.com/Net005/JAVBeacon/compare/v1.0.9...v1.0.10
 [1.0.9]: https://github.com/Net005/JAVBeacon/compare/v1.0.8...v1.0.9

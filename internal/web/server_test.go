@@ -32,8 +32,8 @@ func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"version":"v1.0.11"`) {
-		t.Fatalf("response = %s, want v1.0.11", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"version":"v1.0.12"`) {
+		t.Fatalf("response = %s, want v1.0.12", rec.Body.String())
 	}
 }
 
@@ -50,8 +50,11 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`const screenshotLightbox=$('#screenshotLightbox')`,
 		`screenshotLightboxPrev=screenshotLightbox.querySelector('.screenshotLightboxPrev')`,
 		`screenshotLightboxNext=screenshotLightbox.querySelector('.screenshotLightboxNext')`,
+		`class="detailScreenshotNav prev"`,
+		`e.button!==1`,
+		`screenshotLightboxStrip.innerHTML=`,
+		`e.target===screenshotLightboxInner||e.target===screenshotLightboxStage`,
 		`shortcutMatches('nextItem',e.key)`,
-		`screenshotLightboxImage.addEventListener('mouseleave'`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("embedded app.js is missing %q", marker)
@@ -61,10 +64,17 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`.detailScreenshotRail{`, `.screenshotLightbox img{`, `width:auto;height:auto;max-width:`} {
+	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:103px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("embedded app.css is missing %q", marker)
 		}
+	}
+	markup, err := assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(markup), `aria-label="Fullscreen screenshot view"`) {
+		t.Fatal("embedded index.html is missing the fullscreen screenshot view")
 	}
 }
 
