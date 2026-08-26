@@ -7,6 +7,20 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.19] - 2026-08-27
+
+### Changed
+
+- Fresh installs now use a 2.5-second Release Library cover screenshot
+  slideshow interval by default. Existing saved interval preferences remain
+  unchanged.
+
+### Fixed
+
+- Release Library cover screenshot slideshows now track the pointer session
+  directly, avoiding a fragile asynchronous hover-state check that could
+  prevent the slideshow from starting in Firefox.
+
 ## [1.0.18] - 2026-08-27
 
 ### Fixed
@@ -336,7 +350,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.18...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.19...HEAD
+[1.0.19]: https://github.com/Net005/JAVBeacon/compare/v1.0.18...v1.0.19
 [1.0.18]: https://github.com/Net005/JAVBeacon/compare/v1.0.17...v1.0.18
 [1.0.17]: https://github.com/Net005/JAVBeacon/compare/v1.0.16...v1.0.17
 [1.0.16]: https://github.com/Net005/JAVBeacon/compare/v1.0.15...v1.0.16

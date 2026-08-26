@@ -32,8 +32,8 @@ func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"version":"v1.0.18"`) {
-		t.Fatalf("response = %s, want v1.0.18", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"version":"v1.0.19"`) {
+		t.Fatalf("response = %s, want v1.0.19", rec.Body.String())
 	}
 }
 
@@ -46,6 +46,8 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`Zoom level<select id="uiZoom">`,
 		`root.zoom=uiScale===100?'':String(uiScale/100)`,
 		`prefs.uiZoom=Number(uiZoom.value)||100`,
+		`screenshotSlideSeconds:2.5`,
+		`Number(prefs.screenshotSlideSeconds)||2.5`,
 		`/releases/${release.id}/screenshots`,
 		`const screenshotLightbox=$('#screenshotLightbox')`,
 		`screenshotLightboxPrev=screenshotLightbox.querySelector('.screenshotLightboxPrev')`,
@@ -57,6 +59,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`shortcutMatches('nextItem',e.key)`,
 		`safe=(v='')=>{v=String(v||'').trim();if(!v)return'';`,
 		`x.download_source_reference||''`,
+		`cardScreenshotTimers.get(cover)!==state||!state.indexes.length`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("embedded app.js is missing %q", marker)
