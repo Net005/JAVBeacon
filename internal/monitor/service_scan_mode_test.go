@@ -221,3 +221,42 @@ func TestScheduleFullOnlyStartsAScanWhenEnabled(t *testing.T) {
 		t.Fatalf("expected no scan to have started while full_refresh_enabled is unset, got job=%+v", job)
 	}
 }
+
+// TestMultiSiteScanTracksSiteIndexAndCount is the regression test for the
+// scrape job progress bar feature request ("Job progress needs to display
+// all the remaining monitoring sites it still has to scrape"): a job that
+// scans every enabled site (RefreshOptions.SiteID == 0) must report
+// job.SiteCount as the number of sites it resolved to scan up front, and
+// job.SiteIndex as the 1-based position of the site currently (or, once the
+// job has finished, most recently) being processed - so by the time the job
+// completes, SiteIndex must equal SiteCount. A single-site job (SiteID
+// explicitly set) must leave both at zero, since "1 of 1" isn't useful
+// progress information and would just clutter a per-site manual refresh.
+func TestMultiSiteScanTracksSiteIndexAndCount(t *testing.T) {
+	service, site, _ := newSiteScanTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(javLibraryDetailFixture("New Title From Site", "2024-06-06")))
+	})
+	ctx := context.Background()
+	if _, err := service.store.SaveSite(ctx, domain.Site{Title: "Second Site", Type: "Site", Name: "JavLibrary", Enabled: true, URL: site.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.StartOptions(ctx, RefreshOptions{Mode: "quick", Scheduled: true}); err != nil {
+		t.Fatal(err)
+	}
+	job := waitForSiteJob(t, service)
+	if job.SiteCount != 2 {
+		t.Fatalf("job.SiteCount = %d, want 2 (both sites enabled)", job.SiteCount)
+	}
+	if job.SiteIndex != 2 {
+		t.Fatalf("job.SiteIndex = %d, want 2 (the last site processed, once the job has finished)", job.SiteIndex)
+	}
+
+	// A single-site job must not populate the multi-site progress fields.
+	if err := service.StartOptions(ctx, RefreshOptions{SiteID: site.ID, Mode: "quick", Scheduled: true}); err != nil {
+		t.Fatal(err)
+	}
+	single := waitForSiteJob(t, service)
+	if single.SiteCount != 0 || single.SiteIndex != 0 {
+		t.Fatalf("single-site job=%+v, want SiteCount=0 and SiteIndex=0", single)
+	}
+}

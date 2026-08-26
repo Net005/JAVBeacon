@@ -281,31 +281,41 @@ type QueuedJob struct {
 	Scheduled bool   `json:"scheduled,omitempty"`
 }
 type Job struct {
-	ID              int64       `json:"id,omitempty"`
-	Kind            string      `json:"kind,omitempty"`
-	State           string      `json:"state"`
-	Mode            string      `json:"mode,omitempty"`
-	Running         bool        `json:"running"`
-	StartedAt       time.Time   `json:"started_at,omitempty"`
-	FinishedAt      time.Time   `json:"finished_at,omitempty"`
-	Added           int         `json:"added"`
-	Updated         int         `json:"updated"`
-	Skipped         int         `json:"skipped"`
-	SiteTitle       string      `json:"site_title,omitempty"`
-	Provider        string      `json:"provider,omitempty"`
-	Page            int         `json:"page,omitempty"`
-	PageLimit       int         `json:"page_limit,omitempty"`
-	PageLimitSource string      `json:"page_limit_source,omitempty"`
-	AllPages        bool        `json:"all_pages,omitempty"`
-	Priority        int         `json:"priority,omitempty"`
-	QueueDepth      int         `json:"queue_depth,omitempty"`
-	QueuedJobs      []QueuedJob `json:"queued_jobs,omitempty"`
-	ReleaseID       int64       `json:"release_id,omitempty"`
-	Item            int         `json:"item,omitempty"`
-	PageItems       int         `json:"page_items,omitempty"`
-	Remaining       int         `json:"remaining,omitempty"`
-	VideoID         string      `json:"video_id,omitempty"`
-	Error           string      `json:"error,omitempty"`
+	ID              int64     `json:"id,omitempty"`
+	Kind            string    `json:"kind,omitempty"`
+	State           string    `json:"state"`
+	Mode            string    `json:"mode,omitempty"`
+	Running         bool      `json:"running"`
+	StartedAt       time.Time `json:"started_at,omitempty"`
+	FinishedAt      time.Time `json:"finished_at,omitempty"`
+	Added           int       `json:"added"`
+	Updated         int       `json:"updated"`
+	Skipped         int       `json:"skipped"`
+	SiteTitle       string    `json:"site_title,omitempty"`
+	Provider        string    `json:"provider,omitempty"`
+	Page            int       `json:"page,omitempty"`
+	PageLimit       int       `json:"page_limit,omitempty"`
+	PageLimitSource string    `json:"page_limit_source,omitempty"`
+	AllPages        bool      `json:"all_pages,omitempty"`
+	// SiteIndex and SiteCount report a scrape job's progress across the
+	// enabled monitoring sites it's working through - SiteIndex is the
+	// 1-based position of SiteTitle within this job's site list, SiteCount
+	// the total sites the job resolved to scan when it started. Both are
+	// only set for a job scanning every enabled site (RefreshOptions.SiteID
+	// == 0, i.e. any scheduled Quick/Full/New refresh or a manual "all
+	// sites" run) - a single-site job leaves them zero, since "1 of 1" adds
+	// nothing a progress bar needs.
+	SiteIndex  int         `json:"site_index,omitempty"`
+	SiteCount  int         `json:"site_count,omitempty"`
+	Priority   int         `json:"priority,omitempty"`
+	QueueDepth int         `json:"queue_depth,omitempty"`
+	QueuedJobs []QueuedJob `json:"queued_jobs,omitempty"`
+	ReleaseID  int64       `json:"release_id,omitempty"`
+	Item       int         `json:"item,omitempty"`
+	PageItems  int         `json:"page_items,omitempty"`
+	Remaining  int         `json:"remaining,omitempty"`
+	VideoID    string      `json:"video_id,omitempty"`
+	Error      string      `json:"error,omitempty"`
 	// Stage is a Phase 12 live-progress label for a single-release "Update
 	// details" job while it is running: one of "connecting",
 	// "connecting_flaresolverr", "parsing", "comparing", "updating", or
@@ -532,4 +542,19 @@ type Notification struct {
 	Message   string    `json:"message"`
 	CreatedAt time.Time `json:"created_at"`
 	Release   *Release  `json:"release,omitempty"`
+}
+
+// ScheduleForecast is one background scheduled job's live enabled/interval
+// state plus its next few predicted run times. Group loosely names which
+// settings-panel category the schedule belongs to (e.g. "Download
+// monitoring", "Scheduled scrapes", "StashApp sync") purely for display
+// grouping - it carries no other meaning. NextRuns is empty when the
+// schedule is disabled, has no valid interval/calendar configuration yet,
+// or (calendar mode only) no match was found within the forecast horizon.
+type ScheduleForecast struct {
+	Group    string      `json:"group"`
+	Name     string      `json:"name"`
+	Enabled  bool        `json:"enabled"`
+	Interval string      `json:"interval,omitempty"`
+	NextRuns []time.Time `json:"next_runs,omitempty"`
 }
