@@ -62,6 +62,10 @@ type Release struct {
 	// exists for this release, "completed" when the most recent finished
 	// download for it succeeded, or "" when there is none (Phase 6A).
 	DownloadStatus string `json:"download_status,omitempty"`
+	// DownloadSourceReference is the torrent detail-page URL belonging to the
+	// same download row selected for DownloadStatus. It lets every status pill
+	// open the exact external result that is downloading or was downloaded.
+	DownloadSourceReference string `json:"download_source_reference,omitempty"`
 	// DownloadedAt is computed, mirroring DownloadStatus: the completion
 	// timestamp of the most recent successful download, or the zero value
 	// when this release has never finished downloading (TODO-2.0 card/detail
