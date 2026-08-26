@@ -7,6 +7,20 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.14] - 2026-08-26
+
+### Added
+
+- Site monitor scrape jobs can now be preempted by a higher-priority job
+  queued while they're running: a long multi-site or multi-page scan pauses
+  itself as soon as it finishes whichever release's detail page it's
+  currently updating, lets every queued job that outranks it (e.g. a single
+  release's "Update details" or a "new releases only" scan) run to
+  completion first, then resumes exactly where it left off. Jobs' current
+  page/item, added/updated/skipped counts and site progress are unaffected -
+  nothing is lost or redone. The Jobs panel and header widget now show a
+  "Paused" state naming the job it's waiting on.
+
 ## [1.0.13] - 2026-08-26
 
 ### Added
@@ -248,7 +262,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.13...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.14...HEAD
+[1.0.14]: https://github.com/Net005/JAVBeacon/compare/v1.0.13...v1.0.14
 [1.0.13]: https://github.com/Net005/JAVBeacon/compare/v1.0.12...v1.0.13
 [1.0.12]: https://github.com/Net005/JAVBeacon/compare/v1.0.11...v1.0.12
 [1.0.11]: https://github.com/Net005/JAVBeacon/compare/v1.0.10...v1.0.11
