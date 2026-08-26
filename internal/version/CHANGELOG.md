@@ -7,6 +7,14 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.15] - 2026-08-26
+
+### Changed
+
+- The cover hover slideshow's "Cover screenshot interval (seconds)" setting
+  now accepts fractional seconds down to 0.1 (100ms), instead of only whole
+  seconds, for a faster slideshow.
+
 ## [1.0.14] - 2026-08-26
 
 ### Added
@@ -262,7 +270,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.14...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.15...HEAD
+[1.0.15]: https://github.com/Net005/JAVBeacon/compare/v1.0.14...v1.0.15
 [1.0.14]: https://github.com/Net005/JAVBeacon/compare/v1.0.13...v1.0.14
 [1.0.13]: https://github.com/Net005/JAVBeacon/compare/v1.0.12...v1.0.13
 [1.0.12]: https://github.com/Net005/JAVBeacon/compare/v1.0.11...v1.0.12
