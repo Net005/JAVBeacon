@@ -32,8 +32,8 @@ func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"version":"v1.0.17"`) {
-		t.Fatalf("response = %s, want v1.0.17", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"version":"v1.0.18"`) {
+		t.Fatalf("response = %s, want v1.0.18", rec.Body.String())
 	}
 }
 
@@ -55,6 +55,8 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`screenshotLightboxStrip.innerHTML=`,
 		`e.target===screenshotLightboxInner||e.target===screenshotLightboxStage`,
 		`shortcutMatches('nextItem',e.key)`,
+		`safe=(v='')=>{v=String(v||'').trim();if(!v)return'';`,
+		`x.download_source_reference||''`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("embedded app.js is missing %q", marker)

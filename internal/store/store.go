@@ -615,22 +615,18 @@ func releaseSelect(d Dialect) string {
 	siteIDs := d.JSONArrayAgg("site_id", "SELECT site_id FROM release_sites WHERE release_id=r.id ORDER BY site_id")
 	siteTitles := d.JSONArrayAgg("title", "SELECT s2.title FROM release_sites rs2 JOIN sites s2 ON s2.id=rs2.site_id WHERE rs2.release_id=r.id ORDER BY "+d.CaseInsensitiveOrderBy("s2.title"))
 	actresses := d.JSONArrayAgg("name", "SELECT name FROM release_actresses WHERE release_id=r.id ORDER BY position")
-	// The two trailing correlated subqueries are additive (TODO-2.0's card/
-	// detail "Downloaded (with date)" and "Added to StashApp (with date)"
-	// status): download_status already existed; the new one reuses the same
-	// downloads table but is scoped to status='completed' only (unlike
-	// download_status, it should stay NULL while a torrent is still actively
-	// downloading, and reflect the most recent successful completion once
-	// one exists) so it can serve as that download's completion timestamp
-	// without a schema change of its own.
-	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,` + actresses + `,r.director,r.studio,r.label,r.genres,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.desired,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_release_date,r.allow_non_preferred_filenames,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	// The trailing correlated subqueries expose the selected download's state
+	// and source detail-page URL together, plus the latest successful download
+	// completion time. Active downloads take precedence over completed ones so
+	// the status pill and its URL always describe the same download row.
+	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,` + actresses + `,r.director,r.studio,r.label,r.genres,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.desired,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_release_date,r.allow_non_preferred_filenames,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 func scanRelease(scanner interface{ Scan(...any) error }) (domain.Release, error) {
 	var x domain.Release
 	var siteIDs, siteTitles, actresses, genres, shots string
 	var stashAddedAt, downloadedAt sql.NullTime
-	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &x.Actress, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Desired, &x.MonitorDownload, &x.SiteMonitorDownload, &x.StashSceneID, &stashAddedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &downloadedAt)
+	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &x.Actress, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Desired, &x.MonitorDownload, &x.SiteMonitorDownload, &x.StashSceneID, &stashAddedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &downloadedAt)
 	if err == nil {
 		_ = json.Unmarshal([]byte(siteIDs), &x.SiteIDs)
 		_ = json.Unmarshal([]byte(siteTitles), &x.SiteTitles)

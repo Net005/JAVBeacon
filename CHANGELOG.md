@@ -7,6 +7,14 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.18] - 2026-08-27
+
+### Fixed
+
+- Downloading and Downloaded pills now open the exact external torrent
+  detail page stored for that download. A missing source URL no longer turns
+  into a misleading link back to the current JAVBeacon page.
+
 ## [1.0.17] - 2026-08-27
 
 ### Added
@@ -328,7 +336,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.17...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.18...HEAD
+[1.0.18]: https://github.com/Net005/JAVBeacon/compare/v1.0.17...v1.0.18
 [1.0.17]: https://github.com/Net005/JAVBeacon/compare/v1.0.16...v1.0.17
 [1.0.16]: https://github.com/Net005/JAVBeacon/compare/v1.0.15...v1.0.16
 [1.0.15]: https://github.com/Net005/JAVBeacon/compare/v1.0.14...v1.0.15

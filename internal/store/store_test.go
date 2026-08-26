@@ -617,18 +617,19 @@ func TestReleaseLabelAndDownloadStatus(t *testing.T) {
 		t.Fatalf("partial rescrape erased label: %+v", got)
 	}
 
-	dl, err := s.SaveDownload(ctx, domain.Download{ReleaseID: got.ID, Provider: "Sukebei", Query: "LBL-1", Status: "downloading"})
+	torrentPage := "https://sukebei.nyaa.si/view/4544529"
+	dl, err := s.SaveDownload(ctx, domain.Download{ReleaseID: got.ID, Provider: "Sukebei", SourceReference: torrentPage, Query: "LBL-1", Status: "downloading"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fetch(); got.DownloadStatus != "downloading" {
+	if got := fetch(); got.DownloadStatus != "downloading" || got.DownloadSourceReference != torrentPage {
 		t.Fatalf("expected downloading status: %+v", got)
 	}
 	dl.Status = "completed"
 	if _, err := s.SaveDownload(ctx, dl); err != nil {
 		t.Fatal(err)
 	}
-	if got := fetch(); got.DownloadStatus != "completed" {
+	if got := fetch(); got.DownloadStatus != "completed" || got.DownloadSourceReference != torrentPage {
 		t.Fatalf("expected completed status: %+v", got)
 	}
 
