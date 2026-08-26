@@ -32,8 +32,8 @@ func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"version":"v1.0.10"`) {
-		t.Fatalf("response = %s, want v1.0.10", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"version":"v1.0.11"`) {
+		t.Fatalf("response = %s, want v1.0.11", rec.Body.String())
 	}
 }
 
@@ -47,6 +47,9 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`root.zoom=uiScale===100?'':String(uiScale/100)`,
 		`prefs.uiZoom=Number(uiZoom.value)||100`,
 		`/releases/${release.id}/screenshots`,
+		`const screenshotLightbox=$('#screenshotLightbox')`,
+		`screenshotLightboxPrev=screenshotLightbox.querySelector('.screenshotLightboxPrev')`,
+		`screenshotLightboxNext=screenshotLightbox.querySelector('.screenshotLightboxNext')`,
 		`shortcutMatches('nextItem',e.key)`,
 		`screenshotLightboxImage.addEventListener('mouseleave'`,
 	} {
