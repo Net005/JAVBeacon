@@ -829,13 +829,15 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .detailScreenshotNav{flex:0 0 auto;display:grid;place-items:center;width:32px;height:32px;padding:0;border:1px solid #687283;border-radius:50%;background:#111720e8;color:#fff;font-size:18px;box-shadow:0 6px 16px #000b}
 .detailScreenshotNav:hover{border-color:var(--accent)}
 .detailScreenshotNav:disabled{opacity:.35;cursor:not-allowed}
-.screenshotLightbox{position:fixed;inset:0;width:100vw;height:100vh;max-width:none;max-height:none;margin:0;padding:0;overflow:hidden;border:0;background:transparent;box-shadow:none}
+.screenshotLightbox{position:fixed;inset:0;zoom:1;max-width:none;max-height:none;margin:0;padding:0;overflow:hidden;border:0;background:transparent;box-shadow:none}
 .screenshotLightbox::backdrop{background:#020305f2;backdrop-filter:blur(10px)}
 .screenshotLightboxInner{display:grid;grid-template-rows:minmax(0,1fr) auto;width:100%;height:100%;gap:16px;padding:32px;cursor:pointer}
 .screenshotLightboxStage{position:relative;display:grid;place-items:center;min-width:0;min-height:0;cursor:default}
 #screenshotLightboxImage{display:block;width:auto;height:auto;max-width:100%;max-height:100%;object-fit:contain;border:1px solid #596171;border-radius:10px;background:#050609;box-shadow:0 30px 100px #000;cursor:default}
-.screenshotLightboxClose,.screenshotLightboxPrev,.screenshotLightboxNext{position:absolute;z-index:2;display:grid;place-items:center;width:42px;height:42px;padding:0;border:1px solid #687283;border-radius:50%;background:#111720e8;color:white;font-size:24px;box-shadow:0 8px 28px #000b;cursor:pointer}
-.screenshotLightboxClose{top:0;right:0;font-size:18px}.screenshotLightboxPrev{left:0;top:calc(50% - 21px)}.screenshotLightboxNext{right:0;top:calc(50% - 21px)}
+.screenshotLightboxClose,.screenshotLightboxPrev,.screenshotLightboxNext{position:absolute;z-index:2;display:grid;place-items:center;width:46px;height:46px;padding:0;border:1px solid #687283;border-radius:50%;background:#111720e8;color:white;font-size:24px;box-shadow:0 8px 28px #000b;cursor:pointer;transition:background .15s,border-color .15s,opacity .15s}
+.screenshotLightboxClose:hover,.screenshotLightboxPrev:hover:not(:disabled),.screenshotLightboxNext:hover:not(:disabled){background:#1b232fef;border-color:var(--accent)}
+.screenshotLightboxPrev:disabled,.screenshotLightboxNext:disabled{opacity:.3;cursor:not-allowed}
+.screenshotLightboxClose{top:16px;right:16px;font-size:18px}.screenshotLightboxPrev{left:16px;top:calc(50% - 23px)}.screenshotLightboxNext{right:16px;top:calc(50% - 23px)}
 #screenshotLightboxCount{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);margin:0;padding:5px 10px;border-radius:999px;background:#111720e8;color:#dce1ea;font-size:11px;font-weight:800;cursor:default}
 .screenshotLightboxStrip{display:flex;justify-content:center;gap:8px;min-height:0;overflow-x:auto;scrollbar-width:none;padding:2px;cursor:default}
 .screenshotLightboxStrip:empty{display:none}
@@ -846,7 +848,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .screenshotLightboxStrip img{display:block;width:100%;height:100%;object-fit:cover}
 .screenshotBackfillPanel progress{width:100%;height:12px;margin:8px 0 4px;accent-color:var(--accent)}.screenshotBackfillPanel button{width:100%}
 .downloadSourceLink{display:inline-flex;width:max-content;align-items:center;gap:4px;margin-top:3px;color:#d98d99;font-size:11px;font-weight:750;text-decoration:none}.downloadSourceLink:hover{color:#fff;text-decoration:underline}
-@media(max-width:650px){.releaseVisual{display:contents}.detailScreenshotCarousel{order:1}.releaseArt{order:2}.releaseInfo{order:3}.screenshotLightboxInner{padding:14px;gap:8px}.screenshotLightboxPrev{left:0}.screenshotLightboxNext{right:0}.screenshotLightboxStrip button{flex-basis:52px;height:48px}}
+@media(max-width:650px){.releaseVisual{display:contents}.detailScreenshotCarousel{order:1}.releaseArt{order:2}.releaseInfo{order:3}.screenshotLightboxInner{padding:14px;gap:8px}.screenshotLightboxPrev{left:6px}.screenshotLightboxNext{right:6px}.screenshotLightboxStrip button{flex-basis:52px;height:48px}}
 .refreshModeTooltip{display:none;position:absolute;z-index:40;top:calc(100% + 8px);left:0;width:min(500px,calc(100vw - 70px));padding:6px;border:1px solid #596273;border-radius:10px;background:#11151df8;box-shadow:0 18px 45px #000d;color:var(--text);font-weight:400}
 .refreshModeInfo:hover .refreshModeTooltip,.refreshModeInfo:focus-within .refreshModeTooltip{display:block}
 .refreshModeTooltip section{padding:10px 11px}

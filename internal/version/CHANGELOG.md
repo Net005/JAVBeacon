@@ -7,6 +7,27 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.16] - 2026-08-26
+
+### Fixed
+
+- Fixed the fullscreen screenshot viewer rendering oversized and overflowing
+  the browser window at interface zoom levels above 100%, which could push
+  its Next button entirely outside the clickable area. The viewer's own
+  frame, and portrait screenshots within it, now stay correctly contained
+  at any zoom level.
+- The fullscreen screenshot viewer now stops at the last screenshot instead
+  of wrapping back to the first when clicking Next, and stops at the first
+  instead of wrapping to the last when clicking Prev; the Prev/Next buttons
+  disable at those ends.
+
+### Changed
+
+- Redesigned the fullscreen screenshot viewer's Prev/Next navigation as
+  circular buttons anchored to the image area's edges, replacing an
+  undersized, awkwardly placed control, and kept their position consistent
+  regardless of the displayed screenshot's size or aspect ratio.
+
 ## [1.0.15] - 2026-08-26
 
 ### Changed
@@ -270,7 +291,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.15...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.16...HEAD
+[1.0.16]: https://github.com/Net005/JAVBeacon/compare/v1.0.15...v1.0.16
 [1.0.15]: https://github.com/Net005/JAVBeacon/compare/v1.0.14...v1.0.15
 [1.0.14]: https://github.com/Net005/JAVBeacon/compare/v1.0.13...v1.0.14
 [1.0.13]: https://github.com/Net005/JAVBeacon/compare/v1.0.12...v1.0.13
