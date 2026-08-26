@@ -316,6 +316,15 @@ type Job struct {
 	Remaining  int         `json:"remaining,omitempty"`
 	VideoID    string      `json:"video_id,omitempty"`
 	Error      string      `json:"error,omitempty"`
+	// Paused reports that this job has voluntarily yielded the worker to a
+	// higher-priority job queued while it was running (see
+	// Service.checkpoint) - it is still Running, just not currently making
+	// progress. PausedFor names the job it is waiting on (its Title), for
+	// display. Both clear back to false/"" once the higher-priority work
+	// (and anything else that outranks this job) has drained and this job
+	// resumes exactly where it left off.
+	Paused    bool   `json:"paused,omitempty"`
+	PausedFor string `json:"paused_for,omitempty"`
 	// Stage is a Phase 12 live-progress label for a single-release "Update
 	// details" job while it is running: one of "connecting",
 	// "connecting_flaresolverr", "parsing", "comparing", "updating", or

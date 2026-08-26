@@ -361,6 +361,56 @@ func (s *Service) runQueue(ctx context.Context, options RefreshOptions) {
 	}
 }
 
+// checkpoint is called from run() at points where pausing is safe - between
+// one release's detail-page fetch finishing and the next one starting, and
+// between sites in a multi-site scan - to let a higher-priority job that was
+// queued while this one was running go ahead of it. Site-monitor jobs can
+// touch many pages/releases and run for a while, so without this a job like
+// "update this one release's details" or "new releases only" queued behind
+// a long-running full scan would otherwise have to wait for the whole scan
+// to finish first.
+//
+// It runs synchronously on the same goroutine as the paused job: as long as
+// the queue's head outranks myPriority, it pops that entry and runs it via
+// run() itself (so a preempting job can in turn be preempted by an even
+// higher-priority job through its own nested checkpoint call), then loops
+// to re-check. Because nothing else touches s.queue's head or calls run()
+// concurrently, only one job is ever actually scraping at a time; the
+// caller's job/options/ctx (including whatever the scraper was mid-fetch
+// of) simply sit parked on this call stack until checkpoint returns, so
+// resuming continues exactly where the caller left off - no restart, no
+// lost progress. job.Paused/PausedFor are set for the duration so the UI
+// can show the pause; they're always cleared again before returning.
+func (s *Service) checkpoint(ctx context.Context, job *domain.Job, myPriority int) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		s.mu.Lock()
+		if len(s.queue) == 0 || refreshPriority(s.queue[0]) >= myPriority {
+			s.mu.Unlock()
+			return
+		}
+		next := s.queue[0]
+		s.queue = s.queue[1:]
+		s.mu.Unlock()
+
+		pausedFor := next.Title
+		if pausedFor == "" {
+			pausedFor = next.Mode
+		}
+		job.Paused, job.PausedFor = true, pausedFor
+		s.setJob(*job)
+		s.log.Info("scrape job paused for higher-priority job", "priority", myPriority, "paused_for", pausedFor, "preempting_priority", refreshPriority(next))
+
+		s.run(ctx, next)
+
+		job.Paused, job.PausedFor = false, ""
+		s.setJob(*job)
+		s.log.Info("scrape job resumed", "priority", myPriority)
+	}
+}
+
 func (s *Service) run(ctx context.Context, options RefreshOptions) {
 	jobStarted := time.Now()
 	job := s.Status()
@@ -430,6 +480,10 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 	}
 	s.log.Info("refresh job started", "site_id", options.SiteID, "sites_available", len(scanSites), "page_limit", pages, "mode", options.Mode)
 	for i, site := range scanSites {
+		s.checkpoint(ctx, &job, options.Priority)
+		if ctx.Err() != nil {
+			return
+		}
 		siteStarted := time.Now()
 		s.log.Info("site scrape started", "site", site.Title, "site_id", site.ID, "type", site.Type, "provider", site.Name, "url", site.URL, "page_limit", pages)
 		if options.SiteID == 0 {
@@ -450,6 +504,14 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 		}
 		s.setJob(job)
 		progress := func(page, pageLimit, item, pageItems int, videoID string) {
+			// item is 1-based and this fires just before that item's detail
+			// page is fetched (see scrapeFiltered in the scraper package), so
+			// item > 0 here means the previous item's (item-1's) detail page
+			// finished. That's the checkpoint: pause here, before starting
+			// the next detail fetch, never mid-fetch.
+			if item > 0 {
+				s.checkpoint(ctx, &job, options.Priority)
+			}
 			job.Page, job.PageLimit, job.Item, job.PageItems = page, pageLimit, item, pageItems
 			sitePages = max(sitePages, page)
 			job.Remaining, job.VideoID = max(pageItems-item, 0), videoID
