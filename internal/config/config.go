@@ -18,6 +18,7 @@ type Config struct {
 	ListenAddress        string        `json:"listen_address"`
 	DatabasePath         string        `json:"database_path"`
 	CoverDirectory       string        `json:"cover_directory"`
+	ScreenshotDirectory  string        `json:"screenshot_directory"`
 	APIKey               string        `json:"api_key"`
 	AkibaBaseURL         string        `json:"akiba_base_url"`
 	AkibaPath            string        `json:"akiba_releases_path"`
@@ -63,11 +64,12 @@ func (c Config) Redacted() Config {
 
 func Load() (Config, error) {
 	c := Config{
-		ListenAddress:  ":8080",
-		DatabasePath:   "data/javbeacon.db",
-		CoverDirectory: "data/covers",
-		AkibaBaseURL:   "https://www.akiba-web.com",
-		AkibaPath:      "/search/index.php?count=1&year=&month=&day=&narrow=&salesform_id=&tag_id=&actor_id=&series_id=&label_id=&sort=1&s_type=&keyword=",
+		ListenAddress:       ":8080",
+		DatabasePath:        "data/javbeacon.db",
+		CoverDirectory:      "data/covers",
+		ScreenshotDirectory: "data/screenshots",
+		AkibaBaseURL:        "https://www.akiba-web.com",
+		AkibaPath:           "/search/index.php?count=1&year=&month=&day=&narrow=&salesform_id=&tag_id=&actor_id=&series_id=&label_id=&sort=1&s_type=&keyword=",
 		// Byparr is the recommended FlareSolverr-compatible solver. Compose
 		// overrides this loopback address with its internal service hostname.
 		FlareSolverrURL:      "http://127.0.0.1:8191/v1",
@@ -90,6 +92,9 @@ func Load() (Config, error) {
 	}
 	if v := os.Getenv("JAVBEACON_COVERS"); v != "" {
 		c.CoverDirectory = v
+	}
+	if v := os.Getenv("JAVBEACON_SCREENSHOTS"); v != "" {
+		c.ScreenshotDirectory = v
 	}
 	if v := os.Getenv("JAVBEACON_API_KEY"); v != "" {
 		c.APIKey = v

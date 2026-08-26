@@ -807,8 +807,31 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 @media(max-width:600px){.upgradeChangelogHero{padding:26px 46px 19px 20px}.upgradeChangelogHero img{width:52px;height:52px}.upgradeChangelogHero h2{font-size:21px}.upgradeChangelogIntro{align-items:flex-start;flex-direction:column;padding:13px 20px}.upgradeChangelogReleases{padding:3px 14px 6px}.upgradeChangeGroup{grid-template-columns:1fr;gap:9px;padding:13px}.upgradeChangeGroup h4 small{margin-left:0}.upgradeChangelogFooter{align-items:stretch;flex-direction:column;padding:17px 20px}.upgradeChangelogFooter button{width:100%}}
 
 /* Compact refresh-mode guidance and the unified, paginated job audit. */
-.refreshModeInfo{position:relative;display:inline-flex;align-items:center;gap:7px;margin:2px 0 12px;color:var(--muted);font-size:11px;font-weight:700}
-.infoIcon{display:grid;place-items:center;width:22px;min-width:22px;height:22px;min-height:22px;padding:0;border-radius:50%;border-color:#596273;background:#161b23;color:#dce4ef;font:800 12px/1 ui-serif,serif}
+.refreshModeInfo{position:relative;display:inline-flex;align-items:center;gap:5px;width:max-content;margin:2px 0 12px;color:var(--muted);font-size:11px;font-weight:700;line-height:1}
+.refreshModeInfo>span{white-space:nowrap}
+.jobsGrid form button.infoIcon{display:grid;place-items:center;flex:0 0 22px;width:22px;min-width:22px;height:22px;min-height:22px;padding:0;border:0;border-radius:50%;background:transparent;color:#8f98a8;box-shadow:none;transition:color .15s,background .15s,transform .15s}
+.jobsGrid form button.infoIcon:hover,.jobsGrid form button.infoIcon:focus-visible{background:#252b35;color:#eef2f7;transform:translateY(-1px)}
+.infoIcon svg{display:block;width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+
+/* Release screenshot previews */
+.cover.showingScreenshots .coverImage{animation:screenshotReveal .3s ease both}
+.cover.showingScreenshots::after{content:'PREVIEW';position:absolute;right:var(--cover-pill-inset);bottom:var(--cover-pill-inset);z-index:3;padding:4px 7px;border:1px solid #ffffff38;border-radius:999px;background:#080b10d9;color:#f3d7dc;font-size:9px;font-weight:850;letter-spacing:.8px;pointer-events:none}
+@keyframes screenshotReveal{from{opacity:.25;transform:scale(1.015)}to{opacity:1;transform:none}}
+.releaseVisual{display:grid;grid-template-rows:minmax(0,1fr) auto;gap:10px;min-width:0;min-height:0}
+.detailScreenshotCarousel{min-width:0;padding:7px;border:1px solid #343945;border-radius:10px;background:#080a0ecc;box-shadow:0 10px 28px #0007}
+.detailScreenshotRail{display:flex;gap:8px;overflow-x:auto;scroll-snap-type:x proximity;scrollbar-color:#5d4550 transparent;padding-bottom:2px}
+.detailScreenshotRail button{flex:0 0 clamp(110px,18%,190px);height:82px;padding:0;overflow:hidden;border:1px solid #3b414d;border-radius:7px;background:#050609;scroll-snap-align:start}
+.detailScreenshotRail button:hover,.detailScreenshotRail button:focus-visible{border-color:var(--accent);box-shadow:0 0 0 1px #e44b5966}
+.detailScreenshotRail img{display:block;width:100%;height:100%;object-fit:cover}
+.screenshotLightbox{width:auto;max-width:100vw;height:auto;max-height:100vh;padding:0;overflow:visible;border:0;background:transparent;box-shadow:none}
+.screenshotLightbox::backdrop{background:#020305ed;backdrop-filter:blur(8px)}
+.screenshotLightbox img{display:block;width:auto;height:auto;max-width:calc(100vw - 96px);max-height:calc(100vh - 96px);object-fit:contain;border:1px solid #596171;border-radius:10px;background:#050609;box-shadow:0 30px 100px #000}
+.screenshotLightboxClose,.screenshotLightboxPrev,.screenshotLightboxNext{position:absolute;z-index:2;display:grid;place-items:center;width:38px;height:38px;padding:0;border:1px solid #687283;border-radius:50%;background:#111720e8;color:white;font-size:24px;box-shadow:0 8px 28px #000b}
+.screenshotLightboxClose{top:-16px;right:-16px;font-size:18px}.screenshotLightboxPrev{left:-54px;top:calc(50% - 19px)}.screenshotLightboxNext{right:-54px;top:calc(50% - 19px)}
+#screenshotLightboxCount{position:absolute;left:50%;bottom:-34px;transform:translateX(-50%);margin:0;padding:5px 10px;border-radius:999px;background:#111720e8;color:#dce1ea;font-size:11px;font-weight:800}
+.screenshotBackfillPanel progress{width:100%;height:12px;margin:8px 0 4px;accent-color:var(--accent)}.screenshotBackfillPanel button{width:100%}
+.downloadSourceLink{display:inline-flex;width:max-content;align-items:center;gap:4px;margin-top:3px;color:#d98d99;font-size:11px;font-weight:750;text-decoration:none}.downloadSourceLink:hover{color:#fff;text-decoration:underline}
+@media(max-width:650px){.releaseVisual{display:contents}.detailScreenshotCarousel{order:1}.releaseArt{order:2}.releaseInfo{order:3}.screenshotLightboxPrev{left:6px}.screenshotLightboxNext{right:6px}.screenshotLightboxClose{top:6px;right:6px}.screenshotLightbox img{max-width:100vw;max-height:100vh}}
 .refreshModeTooltip{display:none;position:absolute;z-index:40;top:calc(100% + 8px);left:0;width:min(500px,calc(100vw - 70px));padding:6px;border:1px solid #596273;border-radius:10px;background:#11151df8;box-shadow:0 18px 45px #000d;color:var(--text);font-weight:400}
 .refreshModeInfo:hover .refreshModeTooltip,.refreshModeInfo:focus-within .refreshModeTooltip{display:block}
 .refreshModeTooltip section{padding:10px 11px}

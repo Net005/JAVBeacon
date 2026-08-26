@@ -45,6 +45,30 @@ func TestSQLiteReleaseLifecycle(t *testing.T) {
 	}
 }
 
+func TestScreenshotBackfillCompletionPersists(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "screenshots.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, _ := s.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "SHOT-1", Title: "Screenshot test", Source: "JavLibrary"})
+	rows, _ := s.Releases(ctx, domain.ReleaseFilter{Search: "SHOT-1", Limit: 1})
+	if len(rows) != 1 {
+		t.Fatal("release setup failed")
+	}
+	if completed, err := s.ScreenshotBackfillCompleted(ctx, rows[0].ID); err != nil || completed {
+		t.Fatalf("initial completion=%v err=%v", completed, err)
+	}
+	if err := s.MarkScreenshotBackfillCompleted(ctx, rows[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if completed, err := s.ScreenshotBackfillCompleted(ctx, rows[0].ID); err != nil || !completed {
+		t.Fatalf("persisted completion=%v err=%v", completed, err)
+	}
+}
+
 func TestReleaseTimestampsTrackMetadataChangesAndRepairInvalidOrder(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "release-timestamps.db")

@@ -14,23 +14,25 @@ import (
 	"github.com/Net005/JAVBeacon/internal/covers"
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"github.com/Net005/JAVBeacon/internal/scraper"
+	"github.com/Net005/JAVBeacon/internal/screenshots"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
 
 type Service struct {
-	store      store.Store
-	akiba      *scraper.Akiba
-	javlibrary *scraper.JavLibrary
-	covers     *covers.Cache
-	pages      int
-	log        *slog.Logger
-	mu         sync.RWMutex
-	job        domain.Job
-	queue      []RefreshOptions
-	worker     bool
-	cancel     context.CancelFunc
-	details    map[int64]domain.Job
-	listeners  []func(domain.Release)
+	store       store.Store
+	akiba       *scraper.Akiba
+	javlibrary  *scraper.JavLibrary
+	covers      *covers.Cache
+	screenshots *screenshots.Cache
+	pages       int
+	log         *slog.Logger
+	mu          sync.RWMutex
+	job         domain.Job
+	queue       []RefreshOptions
+	worker      bool
+	cancel      context.CancelFunc
+	details     map[int64]domain.Job
+	listeners   []func(domain.Release)
 }
 
 type RefreshOptions struct {
@@ -41,7 +43,7 @@ type RefreshOptions struct {
 	Pages     int
 	AllPages  bool
 	Scheduled bool
-	// Kind identifies which of the five configurable scrape-job operations
+	// Kind identifies which configurable scrape-job operation
 	// this request represents, for priority-default lookup. Left empty, it
 	// is inferred from the other fields (see StartOptions) so existing
 	// callers keep working without change.
@@ -56,30 +58,32 @@ type RefreshOptions struct {
 // enqueueRefresh); each has a built-in default that a matching
 // "job_priority_<kind>" setting can override.
 const (
-	PriorityKindManualFull     = "manual_full"
-	PriorityKindScheduled      = "scheduled"
-	PriorityKindScheduledFull  = "scheduled_full"
-	PriorityKindScheduledNew   = "scheduled_new"
-	PriorityKindScheduledQuick = "scheduled_quick"
-	PriorityKindStartSource    = "start_source"
-	PriorityKindSiteRefresh    = "site_refresh"
-	PriorityKindUpdateDetails  = "update_details"
+	PriorityKindManualFull         = "manual_full"
+	PriorityKindScheduled          = "scheduled"
+	PriorityKindScheduledFull      = "scheduled_full"
+	PriorityKindScheduledNew       = "scheduled_new"
+	PriorityKindScheduledQuick     = "scheduled_quick"
+	PriorityKindStartSource        = "start_source"
+	PriorityKindSiteRefresh        = "site_refresh"
+	PriorityKindUpdateDetails      = "update_details"
+	PriorityKindScreenshotBackfill = "screenshot_backfill"
 )
 
 var priorityKindDefaults = map[string]int{
-	PriorityKindManualFull:     20,
-	PriorityKindScheduled:      15,
-	PriorityKindScheduledFull:  17,
-	PriorityKindScheduledNew:   15,
-	PriorityKindScheduledQuick: 16,
-	PriorityKindStartSource:    10,
-	PriorityKindSiteRefresh:    8,
-	PriorityKindUpdateDetails:  5,
+	PriorityKindManualFull:         20,
+	PriorityKindScheduled:          15,
+	PriorityKindScheduledFull:      17,
+	PriorityKindScheduledNew:       15,
+	PriorityKindScheduledQuick:     16,
+	PriorityKindStartSource:        10,
+	PriorityKindSiteRefresh:        8,
+	PriorityKindUpdateDetails:      5,
+	PriorityKindScreenshotBackfill: 75,
 }
 
 // JobPriorityKinds lists the known priority kinds for building the Settings UI
 // and validating requests.
-var JobPriorityKinds = []string{PriorityKindManualFull, PriorityKindScheduledFull, PriorityKindScheduledNew, PriorityKindScheduledQuick, PriorityKindStartSource, PriorityKindSiteRefresh, PriorityKindUpdateDetails}
+var JobPriorityKinds = []string{PriorityKindManualFull, PriorityKindScheduledFull, PriorityKindScheduledNew, PriorityKindScheduledQuick, PriorityKindStartSource, PriorityKindSiteRefresh, PriorityKindUpdateDetails, PriorityKindScreenshotBackfill}
 
 // JobPrioritySettingKey returns the settings key holding the configured
 // default priority for kind, e.g. "job_priority_manual_full".
@@ -131,8 +135,12 @@ func releaseHasSite(release domain.Release, siteID int64) bool {
 	return false
 }
 
-func New(s store.Store, a *scraper.Akiba, j *scraper.JavLibrary, covers *covers.Cache, pages int, l *slog.Logger) *Service {
-	return &Service{store: s, akiba: a, javlibrary: j, covers: covers, pages: pages, log: l, details: map[int64]domain.Job{}}
+func New(s store.Store, a *scraper.Akiba, j *scraper.JavLibrary, covers *covers.Cache, pages int, l *slog.Logger, screenshotCaches ...*screenshots.Cache) *Service {
+	service := &Service{store: s, akiba: a, javlibrary: j, covers: covers, pages: pages, log: l, details: map[int64]domain.Job{}}
+	if len(screenshotCaches) > 0 {
+		service.screenshots = screenshotCaches[0]
+	}
+	return service
 }
 func (s *Service) Status() domain.Job {
 	s.mu.RLock()
@@ -530,6 +538,12 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 					s.log.Debug("release cover downloaded", "site", site.Title, "video_id", r.VideoID)
 				}
 			}
+			if s.screenshots != nil && len(r.Screenshots) > 0 {
+				_, _, failed, screenshotErr := s.screenshots.EnsureAll(ctx, r.VideoID, r.Screenshots)
+				if screenshotErr != nil {
+					s.log.Warn("release screenshot cache incomplete", "site", site.Title, "video_id", r.VideoID, "failed", failed, "error", screenshotErr)
+				}
+			}
 			created, e := s.store.UpsertRelease(ctx, r)
 			if e != nil {
 				job.Error = e.Error()
@@ -636,6 +650,17 @@ func (s *Service) refreshRelease(ctx context.Context, id int64, job *domain.Job)
 	if updated.ImageURL != "" {
 		if _, _, coverErr := s.covers.Refresh(ctx, updated.VideoID, updated.ImageURL); coverErr != nil {
 			s.log.Warn("release cover refresh failed", "release_id", id, "video_id", existing.VideoID, "error", coverErr)
+		}
+	}
+	if s.screenshots != nil && len(updated.Screenshots) > 0 {
+		_, _, failed, screenshotErr := s.screenshots.EnsureAll(ctx, updated.VideoID, updated.Screenshots)
+		if screenshotErr != nil {
+			s.log.Warn("release screenshot cache incomplete", "release_id", id, "video_id", existing.VideoID, "failed", failed, "error", screenshotErr)
+			if job.Mode == "screenshots" {
+				job.Error = screenshotErr.Error()
+				job.Outcome = "failed"
+				return
+			}
 		}
 	}
 	stage("updating")

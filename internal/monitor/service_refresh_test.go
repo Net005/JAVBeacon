@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/covers"
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"github.com/Net005/JAVBeacon/internal/scraper"
+	"github.com/Net005/JAVBeacon/internal/screenshots"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
 
@@ -70,8 +72,41 @@ func newRefreshTestService(t *testing.T, mux *http.ServeMux) (*Service, domain.R
 	}
 	javlib := scraper.NewJavLibrary(2*time.Second, "", 0, slog.Default())
 	akiba := scraper.NewAkiba("", "", 2*time.Second, slog.Default())
-	service := New(st, akiba, javlib, coverCache, 1, slog.Default())
+	screenshotCache, err := screenshots.New(t.TempDir(), 2*time.Second, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, akiba, javlib, coverCache, 1, slog.Default(), screenshotCache)
 	return service, items[0]
+}
+
+func TestRegularJavLibraryDetailRefreshCachesScreenshots(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/detail.html", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(javLibraryDetailFixture("Screenshot Title", "2024-02-03") + `<div class="previewthumbs"><a href="/full-shot.jpg"><img src="/thumb-shot.jpg"></a></div>`))
+	})
+	mux.HandleFunc("/full-shot.jpg", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("full-size-screenshot"))
+	})
+	service, release := newRefreshTestService(t, mux)
+
+	if err := service.StartOptions(context.Background(), RefreshOptions{ReleaseID: release.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if job := waitForReleaseJob(t, service, release.ID); job.Error != "" {
+		t.Fatalf("refresh failed: %+v", job)
+	}
+	stored, err := service.store.Release(context.Background(), release.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Screenshots) != 1 {
+		t.Fatalf("stored screenshots=%v, want one full-size screenshot", stored.Screenshots)
+	}
+	if info, err := os.Stat(service.screenshots.Path(release.VideoID, 0)); err != nil || info.Size() == 0 {
+		t.Fatalf("regular detail refresh did not cache screenshot: info=%v err=%v", info, err)
+	}
 }
 
 // waitForReleaseJob polls StatusForRelease until the job is no longer

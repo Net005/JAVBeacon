@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS releases (
 	duration TEXT NOT NULL DEFAULT '',
 	story TEXT NOT NULL DEFAULT '',
 	screenshots TEXT NOT NULL DEFAULT '[]',
+	screenshots_checked_at TIMESTAMPTZ,
 	released INTEGER NOT NULL DEFAULT 0,
 	is_local INTEGER NOT NULL DEFAULT 0,
 	notified INTEGER NOT NULL DEFAULT 0,
@@ -418,6 +419,7 @@ func (s *SQLite) migratePostgres(ctx context.Context) error {
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS play_count INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS last_played_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS last_o_count_at TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS screenshots_checked_at TIMESTAMPTZ`,
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err

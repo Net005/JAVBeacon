@@ -40,6 +40,8 @@ type Store interface {
 	Stats(context.Context) (domain.Stats, error)
 	Settings(context.Context) (map[string]string, error)
 	SaveSettings(context.Context, map[string]string) error
+	ScreenshotBackfillCompleted(context.Context, int64) (bool, error)
+	MarkScreenshotBackfillCompleted(context.Context, int64) error
 	User(context.Context) (domain.User, error)
 	SaveUser(context.Context, string, string) error
 	CreateSession(context.Context, domain.Session) error
@@ -121,7 +123,7 @@ func (s *SQLite) DB() *sql.DB { return s.db }
 func (s *SQLite) migrate() error {
 	_, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY, title TEXT NOT NULL UNIQUE, type TEXT NOT NULL DEFAULT 'Site', name TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', notify INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL);
-CREATE TABLE IF NOT EXISTS releases (id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, video_id TEXT NOT NULL, scraper_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, release_date TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, image_url TEXT NOT NULL DEFAULT '', product_url TEXT NOT NULL DEFAULT '', actress TEXT NOT NULL DEFAULT '', director TEXT NOT NULL DEFAULT '', studio TEXT NOT NULL DEFAULT '', genres TEXT NOT NULL DEFAULT '[]', duration TEXT NOT NULL DEFAULT '', story TEXT NOT NULL DEFAULT '', screenshots TEXT NOT NULL DEFAULT '[]', released INTEGER NOT NULL DEFAULT 0, is_local INTEGER NOT NULL DEFAULT 0, notified INTEGER NOT NULL DEFAULT 0, added_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(site_id, video_id));
+CREATE TABLE IF NOT EXISTS releases (id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, video_id TEXT NOT NULL, scraper_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, release_date TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, image_url TEXT NOT NULL DEFAULT '', product_url TEXT NOT NULL DEFAULT '', actress TEXT NOT NULL DEFAULT '', director TEXT NOT NULL DEFAULT '', studio TEXT NOT NULL DEFAULT '', genres TEXT NOT NULL DEFAULT '[]', duration TEXT NOT NULL DEFAULT '', story TEXT NOT NULL DEFAULT '', screenshots TEXT NOT NULL DEFAULT '[]', screenshots_checked_at DATETIME, released INTEGER NOT NULL DEFAULT 0, is_local INTEGER NOT NULL DEFAULT 0, notified INTEGER NOT NULL DEFAULT 0, added_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(site_id, video_id));
 	CREATE INDEX IF NOT EXISTS idx_releases_date ON releases(release_date); CREATE INDEX IF NOT EXISTS idx_releases_added ON releases(added_at); CREATE INDEX IF NOT EXISTS idx_releases_site ON releases(site_id);`)
 	if err == nil {
 		_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME NOT NULL)`)
@@ -193,6 +195,7 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 			`ALTER TABLE releases ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE releases ADD COLUMN last_played_at TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE releases ADD COLUMN last_o_count_at TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE releases ADD COLUMN screenshots_checked_at DATETIME`,
 		} {
 			if _, alterErr := s.db.Exec(statement); alterErr != nil && !strings.Contains(strings.ToLower(alterErr.Error()), "duplicate column") {
 				return alterErr
@@ -1628,6 +1631,17 @@ func (s *SQLite) SaveSettings(ctx context.Context, values map[string]string) err
 		}
 	}
 	return tx.Commit()
+}
+
+func (s *SQLite) ScreenshotBackfillCompleted(ctx context.Context, releaseID int64) (bool, error) {
+	var completed bool
+	err := s.db.QueryRowContext(ctx, `SELECT screenshots_checked_at IS NOT NULL FROM releases WHERE id=?`, releaseID).Scan(&completed)
+	return completed, err
+}
+
+func (s *SQLite) MarkScreenshotBackfillCompleted(ctx context.Context, releaseID int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE releases SET screenshots_checked_at=? WHERE id=?`, time.Now().UTC(), releaseID)
+	return err
 }
 
 func (s *SQLite) User(ctx context.Context) (domain.User, error) {

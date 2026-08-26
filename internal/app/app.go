@@ -20,6 +20,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/logging"
 	"github.com/Net005/JAVBeacon/internal/monitor"
 	"github.com/Net005/JAVBeacon/internal/scraper"
+	"github.com/Net005/JAVBeacon/internal/screenshots"
 	"github.com/Net005/JAVBeacon/internal/stash"
 	"github.com/Net005/JAVBeacon/internal/store"
 	buildversion "github.com/Net005/JAVBeacon/internal/version"
@@ -160,6 +161,12 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		_ = st.SaveSettings(context.Background(), map[string]string{"page_limit": fmt.Sprint(cfg.PageLimit), "refresh_interval": cfg.RefreshText, "recent_limit": "200", "hide_local": "false", "sort": "release", "view": "grid", "notification_sort": "added", "flaresolverr_url": cfg.FlareSolverrURL, "flaresolverr_cooldown": fmt.Sprint(cfg.FlareSolverrCooldown), "cover_directory": cfg.CoverDirectory, "session_lifetime": "720h", "notification_interval": "15m", "rss_interval": "5m", "search_url_template": "https://sukebei.nyaa.si/?page=rss&f=0&c=2_0&q=<release_id>", "accepted_patterns": "4k688.com@\nhhd800.com@", "minimum_seed_ratio": "1.0", "qb_completed_action": "remove_at_ratio"})
 	}
 	missing := map[string]string{}
+	if settings["screenshot_directory"] == "" {
+		missing["screenshot_directory"] = cfg.ScreenshotDirectory
+	}
+	if settings["job_priority_screenshot_backfill"] == "" {
+		missing["job_priority_screenshot_backfill"] = "75"
+	}
 	for k, v := range map[string]string{"cover_directory": cfg.CoverDirectory, "session_lifetime": "720h", "notification_interval": "15m", "rss_interval": "5m", "download_search_interval": "1h", "download_search_enabled": "false", "stash_local_sync_enabled": "true", "stash_sync_interval": "6h", "stash_desired_sync_enabled": "false", "stash_desired_sync_interval": "6h", "search_url_template": "https://sukebei.nyaa.si/?page=rss&f=0&c=2_0&q=<release_id>", "accepted_patterns": "4k688.com@\nhhd800.com@", "qb_category": "", "minimum_seed_ratio": "1.0", "qb_completed_action": "remove_at_ratio", "quick_refresh_enabled": "true", "quick_refresh_start_time": "", "quick_refresh_weekdays": "", "quick_refresh_cron": "", "full_refresh_enabled": "false", "full_refresh_interval": "24h", "full_refresh_start_time": "", "full_refresh_weekdays": "", "full_refresh_cron": "", "full_refresh_page_limit": fmt.Sprint(cfg.PageLimit), "new_release_refresh_enabled": "true", "new_release_refresh_interval": cfg.RefreshText, "new_release_refresh_start_time": "", "new_release_refresh_weekdays": "", "new_release_refresh_cron": "", "new_release_refresh_page_limit": fmt.Sprint(cfg.PageLimit), "job_priority_scheduled_full": "17", "job_priority_scheduled_new": "15", "job_priority_scheduled_quick": "16", "stash_missing_graphql_query": stash.DefaultMissingQuery, "stash_missing_path_from": "", "stash_missing_path_to": "", "stash_missing_path_remaps": "[]", "stash_missing_folder_scope": ""} {
 		if settings[k] == "" {
 			missing[k] = v
@@ -206,7 +213,12 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		st.Close()
 		return nil, err
 	}
-	mon := monitor.New(st, akiba, javlibrary, coverCache, cfg.PageLimit, log)
+	screenshotCache, err := screenshots.New(settings["screenshot_directory"], cfg.RequestTimeout, log)
+	if err != nil {
+		st.Close()
+		return nil, err
+	}
+	mon := monitor.New(st, akiba, javlibrary, coverCache, cfg.PageLimit, log, screenshotCache)
 	downloadService := download.New(st, cfg.RequestTimeout, log)
 	stashSync := stash.New(st, cfg.RequestTimeout, log, javlibrary, downloadService)
 	mon.OnRelease(func(r domain.Release) { downloadService.Auto(context.Background(), r) })
@@ -222,7 +234,7 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		st.Close()
 		return nil, err
 	}
-	handler := webapp.New(st, authService, mon, stashSync, downloadService, coverCache, cfg.APIKey, cfg.DatabaseEngine, cfg.DatabasePath, log, logs)
+	handler := webapp.New(st, authService, mon, stashSync, downloadService, coverCache, cfg.APIKey, cfg.DatabaseEngine, cfg.DatabasePath, log, logs, screenshotCache)
 	return &App{cfg: cfg, log: log, store: st, monitor: mon, stash: stashSync, downloads: downloadService, server: &http.Server{Addr: cfg.ListenAddress, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}}, nil
 }
 

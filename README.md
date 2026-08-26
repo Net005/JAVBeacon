@@ -26,7 +26,10 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete version history.
 - Use per-site RSS monitoring, duplicate prevention, torrent progress, seed/peer status, and download history.
 - Reconcile releases with StashApp, synchronize Desired tags, and scan the Stash library for missing files.
 - Run ordered post-download and post-removal pipelines, including path mapping, shell commands, moves, and StashApp scans.
-- Cache cover artwork locally and receive live release, job, download, notification, and server-log updates.
+- Cache cover artwork and JavLibrary screenshots locally, preview screenshots
+  as card slideshows, and browse them from Release Details.
+- Scale the full interface from the in-app user settings and receive live
+  release, job, download, notification, and server-log updates.
 - Run the complete Docker Compose stack with JAVBeacon, optimized PostgreSQL, and Byparr, or use SQLite for a simpler standalone deployment.
 
 ## Quick start with Docker
@@ -91,12 +94,15 @@ POSTGRES_DATA_PATH=/srv/javbeacon/postgres
 If `JAVBEACON_DATA_PATH` is omitted, Compose continues to use the existing
 `javbeacon-data` named volume for backward compatibility.
 
-`JAVBEACON_LISTEN` and `JAVBEACON_FLARESOLVERR_URL` are also configurable in
-`.env`. Cover files use `/app/data/covers` by default and are persisted by the
-configured data mount; their location can be changed later under **Settings →
-Storage**. The included Byparr service uses `http://byparr:8191/v1`; when using
-an external service instead, provide its plain reachable URL with the `/v1`
-path and no Markdown formatting.
+`JAVBEACON_LISTEN`, `JAVBEACON_SCREENSHOTS`, and
+`JAVBEACON_FLARESOLVERR_URL` are also configurable in `.env`. Cover files use
+`/app/data/covers`; screenshot previews use the distinct
+`/app/data/screenshots` cache. Both are persisted by the configured data mount.
+Historical screenshot maintenance is available under **Settings → Storage**;
+it works newest-first at a low priority and remembers completed releases so it
+can be safely resumed. The included Byparr service uses
+`http://byparr:8191/v1`; when using an external service instead, provide its
+plain reachable URL with the `/v1` path and no Markdown formatting.
 
 Compose tracks the latest published JAVBeacon image. Upgrade it without
 changing `.env`:
@@ -114,11 +120,11 @@ also be pulled directly for deployments that deliberately require a fixed
 release:
 
 ```bash
-docker pull ghcr.io/net005/javbeacon:1.0.8
+docker pull ghcr.io/net005/javbeacon:1.0.9
 docker pull ghcr.io/net005/javbeacon:latest
 ```
 
-Published tags include `v1.0.8`, `1.0.8`, `1.0`, and `latest`. See the
+Published tags include `v1.0.9`, `1.0.9`, `1.0`, and `latest`. See the
 [JAVBeacon GitHub package](https://github.com/Net005/JAVBeacon/pkgs/container/javbeacon)
 for available versions and digests. To build the application image locally
 instead, keep the repository checkout and run `docker compose up -d --build`.
@@ -139,7 +145,7 @@ docker run -d \
   --shm-size 512m \
   ghcr.io/thephaseless/byparr:latest
 
-docker build --build-arg VERSION=1.0.8 -t javbeacon:1.0.8 .
+docker build --build-arg VERSION=1.0.9 -t javbeacon:1.0.9 .
 docker volume create javbeacon-data
 
 docker run -d \
@@ -151,7 +157,7 @@ docker run -d \
   -e JAVBEACON_INITIAL_USERNAME=admin \
   -e JAVBEACON_INITIAL_PASSWORD='replace-with-a-long-password' \
   -e JAVBEACON_FLARESOLVERR_URL='http://javbeacon-byparr:8191/v1' \
-  javbeacon:1.0.8
+  javbeacon:1.0.9
 ```
 
 If initial credentials are not supplied, JAVBeacon creates `admin` / `changeme123`. Change them immediately.
@@ -217,6 +223,7 @@ Most configuration is stored in the active database and managed from the web int
 | `JAVBEACON_LISTEN` | HTTP listen address | `:8080` |
 | `JAVBEACON_DB` | SQLite database path | `data/javbeacon.db` |
 | `JAVBEACON_COVERS` | Initial cover-cache directory | `data/covers` |
+| `JAVBEACON_SCREENSHOTS` | Initial screenshot-cache directory | `data/screenshots`; Compose uses `/app/data/screenshots` |
 | `JAVBEACON_INITIAL_USERNAME` | Username created on the first start | `admin` |
 | `JAVBEACON_INITIAL_PASSWORD` | Password created on the first start | `changeme123` |
 | `JAVBEACON_API_KEY` | Optional API compatibility key | unset |
@@ -277,7 +284,7 @@ The web client is embedded from `internal/web/static` into the Go binary.
 JAVBeacon uses semantic versions. `internal/version/VERSION` is the source of
 truth used by local builds, Docker image metadata, the version API, and the
 frontend. Release tags use the same value with a `v` prefix—for example,
-`VERSION=1.0.8` is released as `v1.0.8`.
+`VERSION=1.0.9` is released as `v1.0.9`.
 
 Pushing a matching `v*` tag runs the GitHub release workflow. It executes the
 test suite, validates the Compose stack, builds Linux, macOS, and Windows

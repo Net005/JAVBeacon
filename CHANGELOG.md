@@ -7,6 +7,29 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-08-26
+
+### Added
+
+- Added a global, per-user interface zoom setting and a configurable hover
+  slideshow interval, avoiding the need to change browser zoom for readability.
+- Extract and locally cache full-size JavLibrary preview screenshots under the
+  separate `/app/data/screenshots` path.
+- Added screenshot slideshows on cover hover and a compact Release Details
+  carousel that disappears completely when no screenshots exist.
+- Added a natural-size screenshot lightbox with Escape/mouse-out closing and
+  navigation through the configured Release Details previous/next shortcuts.
+- Added resumable historical screenshot maintenance that works newest-first,
+  remembers releases with or without screenshots, and queues each scrape at a
+  configurable default priority of 75 so normal scrape work can run first.
+- Store the human-facing torrent detail page used for a download and expose it
+  as a direct link in Download Activity.
+
+### Fixed
+
+- Replaced the oversized Refresh modes information control with a compact,
+  properly aligned icon that no longer inherits full-width form-button styles.
+
 ## [1.0.8] - 2026-08-25
 
 ### Added
@@ -152,7 +175,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.8...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.9...HEAD
+[1.0.9]: https://github.com/Net005/JAVBeacon/compare/v1.0.8...v1.0.9
 [1.0.8]: https://github.com/Net005/JAVBeacon/compare/v1.0.7...v1.0.8
 [1.0.7]: https://github.com/Net005/JAVBeacon/compare/v1.0.6...v1.0.7
 [1.0.6]: https://github.com/Net005/JAVBeacon/compare/v1.0.5...v1.0.6
