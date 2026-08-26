@@ -129,6 +129,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/ws", websocket.Handler(s.releaseStream))
 	s.mux.HandleFunc("GET /covers/{id}", s.cover)
 	s.mux.HandleFunc("GET /screenshots/{id}/{index}", s.screenshot)
+	s.mux.HandleFunc("GET /api/releases/{id}/screenshots", s.releaseScreenshots)
 	s.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -363,12 +364,12 @@ func (s *Server) startScreenshotBackfill(ctx context.Context) error {
 		s.coverJobMu.Unlock()
 		return errors.New("screenshot backfill is already running")
 	}
-	stats, err := s.store.Stats(ctx)
+	total, err := s.store.ReleasesCount(ctx, domain.ReleaseFilter{Source: "JavLibrary"})
 	if err != nil {
 		s.coverJobMu.Unlock()
 		return err
 	}
-	s.screenshotJob = screenshotBackfillStatus{Running: true, StartedAt: time.Now().UTC(), Total: stats.Releases}
+	s.screenshotJob = screenshotBackfillStatus{Running: true, StartedAt: time.Now().UTC(), Total: total}
 	s.coverJobMu.Unlock()
 	go s.runScreenshotBackfill(context.WithoutCancel(ctx))
 	return nil
@@ -383,7 +384,7 @@ func (s *Server) runScreenshotBackfill(ctx context.Context) {
 		s.coverJobMu.Unlock()
 	}()
 	for offset := 0; ; offset += 500 {
-		releases, err := s.store.Releases(ctx, domain.ReleaseFilter{Sort: "release", Direction: "desc", Limit: 500, Offset: offset})
+		releases, err := s.store.Releases(ctx, domain.ReleaseFilter{Source: "JavLibrary", Sort: "release", Direction: "desc", Limit: 500, Offset: offset})
 		if err != nil {
 			s.coverJobMu.Lock()
 			s.screenshotJob.LastError = err.Error()
@@ -391,15 +392,17 @@ func (s *Server) runScreenshotBackfill(ctx context.Context) {
 			return
 		}
 		for _, release := range releases {
-			if !strings.EqualFold(release.Source, "JavLibrary") {
-				continue
-			}
 			completed, completedErr := s.store.ScreenshotBackfillCompleted(ctx, release.ID)
 			if completedErr != nil {
 				s.updateScreenshotBackfill(release.VideoID, "failed", completedErr)
 				continue
 			}
-			if completed || s.screenshots.Complete(release.VideoID, release.Screenshots) {
+			cacheComplete := s.screenshots.Complete(release.VideoID, release.Screenshots)
+			// A completed zero-screenshot scrape is remembered, while releases
+			// with screenshot metadata are only skipped while every local file
+			// still exists. This lets the job repair an interrupted/removed cache
+			// without repeatedly scraping releases that genuinely have no shots.
+			if (completed && len(release.Screenshots) == 0) || cacheComplete {
 				if !completed {
 					_ = s.store.MarkScreenshotBackfillCompleted(ctx, release.ID)
 				}
@@ -836,11 +839,6 @@ func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if _, err := s.screenshots.Ensure(r.Context(), release.VideoID, index, release.Screenshots[index]); err != nil {
-		s.log.Warn("local screenshot unavailable", "release_id", releaseID, "video_id", release.VideoID, "index", index, "error", err)
-		http.NotFound(w, r)
-		return
-	}
 	path := s.screenshots.Path(release.VideoID, index)
 	f, err := os.Open(path)
 	if err != nil {
@@ -855,6 +853,24 @@ func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	http.ServeContent(w, r, release.VideoID+"-screenshot", info.ModTime(), f)
+}
+
+func (s *Server) releaseScreenshots(w http.ResponseWriter, r *http.Request) {
+	if s.screenshots == nil {
+		s.json(w, http.StatusOK, map[string]any{"indexes": []int{}})
+		return
+	}
+	releaseID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		s.problem(w, http.StatusBadRequest, "invalid release id")
+		return
+	}
+	release, err := s.store.Release(r.Context(), releaseID)
+	if err != nil {
+		s.problem(w, http.StatusNotFound, "release not found")
+		return
+	}
+	s.json(w, http.StatusOK, map[string]any{"indexes": s.screenshots.Available(release.VideoID, release.Screenshots)})
 }
 
 func (s *Server) serveUnavailableCover(w http.ResponseWriter, r *http.Request) {

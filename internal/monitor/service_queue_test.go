@@ -99,6 +99,9 @@ func TestResolvePriorityUsesOverrideThenSettingThenBuiltinDefault(t *testing.T) 
 	if got := service.resolvePriority(ctx, PriorityKindStartSource, 0); got != 10 {
 		t.Fatalf("built-in default = %d, want 10", got)
 	}
+	if got := service.resolvePriority(ctx, PriorityKindScreenshotBackfill, 0); got != 75 {
+		t.Fatalf("screenshot backfill default = %d, want 75", got)
+	}
 	if got := service.resolvePriority(ctx, PriorityKindStartSource, 42); got != 42 {
 		t.Fatalf("explicit override = %d, want 42", got)
 	}

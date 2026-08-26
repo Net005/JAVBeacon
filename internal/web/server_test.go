@@ -20,6 +20,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"github.com/Net005/JAVBeacon/internal/download"
 	"github.com/Net005/JAVBeacon/internal/logging"
+	"github.com/Net005/JAVBeacon/internal/screenshots"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
 
@@ -31,8 +32,80 @@ func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"version":"v1.0.9"`) {
-		t.Fatalf("response = %s, want v1.0.9", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"version":"v1.0.10"`) {
+		t.Fatalf("response = %s, want v1.0.10", rec.Body.String())
+	}
+}
+
+func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		`Zoom level<select id="uiZoom">`,
+		`root.zoom=uiScale===100?'':String(uiScale/100)`,
+		`prefs.uiZoom=Number(uiZoom.value)||100`,
+		`/releases/${release.id}/screenshots`,
+		`shortcutMatches('nextItem',e.key)`,
+		`screenshotLightboxImage.addEventListener('mouseleave'`,
+	} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("embedded app.js is missing %q", marker)
+		}
+	}
+	stylesheet, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{`.detailScreenshotRail{`, `.screenshotLightbox img{`, `width:auto;height:auto;max-width:`} {
+		if !strings.Contains(string(stylesheet), marker) {
+			t.Fatalf("embedded app.css is missing %q", marker)
+		}
+	}
+}
+
+func TestReleaseScreenshotManifestOnlyExposesLocalCacheFiles(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "screenshot-manifest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "SHOT-22", Title: "Screenshots", Source: "JavLibrary", Screenshots: []string{"https://example.invalid/full.jpg"}})
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Search: "SHOT-22", Limit: 1})
+	if len(releases) != 1 {
+		t.Fatal("release setup failed")
+	}
+	cache, err := screenshots.New(t.TempDir(), time.Second, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: st, screenshots: cache}
+
+	missingReq := httptest.NewRequest(http.MethodGet, "/screenshots/1/0", nil)
+	missingReq.SetPathValue("id", strconv.FormatInt(releases[0].ID, 10))
+	missingReq.SetPathValue("index", "0")
+	missingRec := httptest.NewRecorder()
+	server.screenshot(missingRec, missingReq)
+	if missingRec.Code != http.StatusNotFound {
+		t.Fatalf("uncached screenshot status=%d, want 404", missingRec.Code)
+	}
+
+	path := cache.Path(releases[0].VideoID, 0)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("local-image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifestReq := httptest.NewRequest(http.MethodGet, "/api/releases/1/screenshots", nil)
+	manifestReq.SetPathValue("id", strconv.FormatInt(releases[0].ID, 10))
+	manifestRec := httptest.NewRecorder()
+	server.releaseScreenshots(manifestRec, manifestReq)
+	if manifestRec.Code != http.StatusOK || !strings.Contains(manifestRec.Body.String(), `"indexes":[0]`) {
+		t.Fatalf("manifest status=%d body=%s", manifestRec.Code, manifestRec.Body.String())
 	}
 }
 
