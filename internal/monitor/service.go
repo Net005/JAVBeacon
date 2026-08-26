@@ -573,6 +573,19 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 		}
 		s.log.Info("site scrape returned releases", "site", site.Title, "provider", site.Name, "releases", len(items), "duration", time.Since(siteStarted).Round(time.Millisecond))
 		for _, r := range items {
+			// Same checkpoint as the scraper-side progress callback above, but
+			// for this second pass: ScrapeFiltered/ScrapeFilteredThroughEnd
+			// already returned every item for this site (detail pages fully
+			// fetched), and this loop is what actually downloads each item's
+			// cover/screenshots and writes it to the store. That can still be
+			// slow for a page full of new releases with several screenshots
+			// each, so it needs its own between-releases pause point too -
+			// otherwise a higher-priority job queued mid-scrape would have to
+			// wait out this entire write/download pass before getting a turn.
+			s.checkpoint(ctx, &job, options.Priority)
+			if ctx.Err() != nil {
+				return
+			}
 			r.SiteID = site.ID
 			r.SiteMonitorDownload = site.DownloadMode == "all"
 			if options.ReleaseID != 0 {

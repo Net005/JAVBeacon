@@ -201,3 +201,161 @@ func TestHigherPriorityJobPausesAndResumesLowerPriorityScan(t *testing.T) {
 		t.Fatalf("high-priority release title = %q, want it refreshed while the scan was paused", updated.Title)
 	}
 }
+
+// TestHigherPriorityJobPausesDuringCoverAndScreenshotDownloadPhase covers the
+// second checkpoint site: run()'s detail-page scrape for a whole site
+// finishes in one call (ScrapeFiltered/ScrapeFilteredThroughEnd returns only
+// once every item's detail page has been fetched), and only then does run()
+// loop back over those items to download each one's cover/screenshots and
+// write it to the store - a separate, potentially slow pass with its own
+// need to yield between releases. This is a regression test for that pass
+// specifically: both AAA-101 and AAA-102's detail pages are served
+// immediately (so the scrape-phase checkpoint above never has anything to
+// preempt), but AAA-101's cover image download blocks until the test
+// queues the higher-priority job - proving the write/download loop's own
+// checkpoint (not the scrape-phase one) is what catches it.
+func TestHigherPriorityJobPausesDuringCoverAndScreenshotDownloadPhase(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	record := func(name string) {
+		mu.Lock()
+		order = append(order, name)
+		mu.Unlock()
+	}
+	hasRecorded := func(name string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, n := range order {
+			if n == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	cover1Block := make(chan struct{})
+
+	detailPage := func(title, releaseDate, coverPath string) string {
+		return `<html><title>` + title + ` - JAVLibrary</title><img id="video_jacket_img" src="` + coverPath + `">` +
+			`<table><tr><td class="header">Release Date:</td><td class="text">` + releaseDate + `</td></tr>` +
+			`<tr><td class="header">Length:</td><td>90 min(s)</td></tr></table>` +
+			`<div class="director"><a>Director Name</a></div></html>`
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/list", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(
+			`<div class="video"><a href="/javaaa101.html" title="Listing title"><img src="/cover1.jpg"></a><div class="id">AAA-101</div></div>` +
+				`<div class="video"><a href="/javaaa102.html" title="Listing title"><img src="/cover2.jpg"></a><div class="id">AAA-102</div></div>`))
+	})
+	mux.HandleFunc("/javaaa101.html", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(detailPage("AAA-101 Title", "2024-01-01", "/cover1.jpg")))
+	})
+	mux.HandleFunc("/javaaa102.html", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(detailPage("AAA-102 Title", "2024-01-02", "/cover2.jpg")))
+	})
+	mux.HandleFunc("/highpri-detail.html", func(w http.ResponseWriter, _ *http.Request) {
+		record("highpri")
+		_, _ = w.Write([]byte(javLibraryDetailFixture("High Priority Updated Title", "2024-03-03")))
+	})
+	mux.HandleFunc("/cover1.jpg", func(w http.ResponseWriter, _ *http.Request) {
+		record("cover1-fetch-start")
+		<-cover1Block
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("cover1 bytes"))
+		record("cover1-fetch-done")
+	})
+	mux.HandleFunc("/cover2.jpg", func(w http.ResponseWriter, _ *http.Request) {
+		record("cover2-fetch")
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("cover2 bytes"))
+	})
+	mux.HandleFunc("/cover.jpg", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("highpri cover bytes"))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "priority-pause-write.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	ctx := context.Background()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true, URL: server.URL + "/list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	highpriRelease, err := st.UpsertRelease(ctx, domain.Release{
+		SiteID: site.ID, VideoID: "ZZZ-888", Source: "JavLibrary", Title: "Old Priority Title",
+		ProductURL: server.URL + "/highpri-detail.html",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = highpriRelease
+
+	coverCache, err := covers.New(t.TempDir(), 2*time.Second, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	javlib := scraper.NewJavLibrary(2*time.Second, "", 0, slog.Default())
+	akiba := scraper.NewAkiba("", "", 2*time.Second, slog.Default())
+	service := New(st, akiba, javlib, coverCache, 1, slog.Default())
+
+	saved, err := st.Releases(ctx, domain.ReleaseFilter{Search: "ZZZ-888"})
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("release lookup: items=%d err=%v", len(saved), err)
+	}
+	highpriID := saved[0].ID
+
+	if err := service.StartOptions(ctx, RefreshOptions{SiteID: site.ID, Mode: "quick", Priority: 900, Title: "Low priority site scan"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait until AAA-101's cover download is in flight - by this point both
+	// detail pages have already been fetched (the scrape phase is over),
+	// so any preemption from here on can only come from the write/download
+	// loop's own checkpoint.
+	deadline := time.Now().Add(5 * time.Second)
+	for !hasRecorded("cover1-fetch-start") {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for AAA-101's cover download to start")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	if err := service.StartOptions(ctx, RefreshOptions{ReleaseID: highpriID, Priority: 1, Title: "High priority release update"}); err != nil {
+		t.Fatal(err)
+	}
+
+	close(cover1Block)
+
+	job := waitForSiteJob(t, service)
+	if job.Added != 2 {
+		t.Fatalf("job.Added = %d, want 2 (both AAA-101 and AAA-102 added despite the pause)", job.Added)
+	}
+
+	mu.Lock()
+	gotOrder := append([]string{}, order...)
+	mu.Unlock()
+	wantOrder := []string{"cover1-fetch-start", "cover1-fetch-done", "highpri", "cover2-fetch"}
+	if len(gotOrder) != len(wantOrder) {
+		t.Fatalf("order = %v, want %v", gotOrder, wantOrder)
+	}
+	for i := range wantOrder {
+		if gotOrder[i] != wantOrder[i] {
+			t.Fatalf("order = %v, want %v (the high-priority job must run strictly between AAA-101's and AAA-102's cover downloads)", gotOrder, wantOrder)
+		}
+	}
+
+	updated, err := service.store.Release(ctx, highpriID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Title != "High Priority Updated Title" {
+		t.Fatalf("high-priority release title = %q, want it refreshed while the scan was paused", updated.Title)
+	}
+}
