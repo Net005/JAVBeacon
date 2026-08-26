@@ -334,6 +334,19 @@ func parseJavLibraryDetail(doc *html.Node, raw string) domain.Release {
 	if n := first(doc, func(n *html.Node) bool { return attr(n, "id") == "video_jacket_img" }); n != nil && !isNowPrintingImage(n) {
 		r.ImageURL = resolve(raw, attr(n, "src"))
 	}
+	for _, preview := range findAll(doc, func(n *html.Node) bool { return hasClass(n, "previewthumbs") }) {
+		for _, link := range findAll(preview, func(n *html.Node) bool { return n.Data == "a" }) {
+			shot := resolve(raw, attr(link, "href"))
+			if shot == "" {
+				if image := first(link, func(n *html.Node) bool { return n.Data == "img" }); image != nil {
+					shot = resolve(raw, attr(image, "src"))
+				}
+			}
+			if isScreenshotURL(shot) {
+				r.Screenshots = appendUnique(r.Screenshots, shot)
+			}
+		}
+	}
 	for _, h := range findAll(doc, func(n *html.Node) bool { return n.Data == "td" && hasClass(n, "header") }) {
 		label := strings.ToLower(nodeText(h))
 		vnode := nextElement(h)
@@ -486,7 +499,17 @@ func mergeJav(dst *domain.Release, src domain.Release) {
 	dst.Actress = src.Actress
 	dst.Studio = src.Studio
 	dst.Genres = src.Genres
+	dst.Screenshots = src.Screenshots
 	dst.Released = src.Released
+}
+
+func isScreenshotURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	path := strings.ToLower(u.Path)
+	return strings.HasSuffix(path, ".jpg") || strings.HasSuffix(path, ".jpeg") || strings.HasSuffix(path, ".png") || strings.HasSuffix(path, ".webp")
 }
 func lastPath(raw string) string {
 	u, e := url.Parse(raw)

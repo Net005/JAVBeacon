@@ -22,6 +22,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/download"
 	"github.com/Net005/JAVBeacon/internal/logging"
 	"github.com/Net005/JAVBeacon/internal/monitor"
+	"github.com/Net005/JAVBeacon/internal/screenshots"
 	"github.com/Net005/JAVBeacon/internal/stash"
 	"github.com/Net005/JAVBeacon/internal/store"
 	buildversion "github.com/Net005/JAVBeacon/internal/version"
@@ -32,22 +33,24 @@ import (
 var assets embed.FS
 
 type Server struct {
-	store      store.Store
-	auth       *auth.Service
-	monitor    *monitor.Service
-	stash      *stash.Service
-	downloads  *download.Service
-	covers     *covers.Cache
-	key        string
-	dbEngine   string
-	sqlitePath string
-	log        *slog.Logger
-	mux        *http.ServeMux
-	logs       *logging.RingHandler
-	clientsMu  sync.Mutex
-	clients    map[*websocket.Conn]bool
-	coverJobMu sync.RWMutex
-	coverJob   coverCacheStatus
+	store         store.Store
+	auth          *auth.Service
+	monitor       *monitor.Service
+	stash         *stash.Service
+	downloads     *download.Service
+	covers        *covers.Cache
+	screenshots   *screenshots.Cache
+	key           string
+	dbEngine      string
+	sqlitePath    string
+	log           *slog.Logger
+	mux           *http.ServeMux
+	logs          *logging.RingHandler
+	clientsMu     sync.Mutex
+	clients       map[*websocket.Conn]bool
+	coverJobMu    sync.RWMutex
+	coverJob      coverCacheStatus
+	screenshotJob screenshotBackfillStatus
 	// migrationMu guards migration (DB Phase 7's migration-wizard status,
 	// see migration.go) - in-memory only, single-user app.
 	migrationMu sync.Mutex
@@ -67,13 +70,29 @@ type coverCacheStatus struct {
 	LastError  string    `json:"last_error,omitempty"`
 }
 
+type screenshotBackfillStatus struct {
+	Running    bool      `json:"running"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
+	Total      int       `json:"total"`
+	Checked    int       `json:"checked"`
+	Completed  int       `json:"completed"`
+	Skipped    int       `json:"skipped"`
+	Failed     int       `json:"failed"`
+	VideoID    string    `json:"video_id,omitempty"`
+	LastError  string    `json:"last_error,omitempty"`
+}
+
 // sqlitePath is the application's configured SQLite database path
 // (config.Config.DatabasePath) regardless of which engine is currently
 // active - the DB Phase 7 migration wizard's "currently configured SQLite
 // database" source option (setupMigrationSource) needs to know it even
 // when the app is presently running on PostgreSQL.
-func New(st store.Store, authService *auth.Service, m *monitor.Service, stashSync *stash.Service, downloadService *download.Service, covers *covers.Cache, key string, dbEngine string, sqlitePath string, l *slog.Logger, logs *logging.RingHandler) http.Handler {
+func New(st store.Store, authService *auth.Service, m *monitor.Service, stashSync *stash.Service, downloadService *download.Service, covers *covers.Cache, key string, dbEngine string, sqlitePath string, l *slog.Logger, logs *logging.RingHandler, screenshotCaches ...*screenshots.Cache) http.Handler {
 	s := &Server{store: st, auth: authService, monitor: m, stash: stashSync, downloads: downloadService, covers: covers, key: key, dbEngine: dbEngine, sqlitePath: sqlitePath, log: l, logs: logs, mux: http.NewServeMux(), clients: map[*websocket.Conn]bool{}}
+	if len(screenshotCaches) > 0 {
+		s.screenshots = screenshotCaches[0]
+	}
 	m.OnRelease(s.broadcastRelease)
 	s.routes()
 	return s.security(s.mux)
@@ -109,6 +128,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/changelog/acknowledge", s.acknowledgeChangelog)
 	s.mux.Handle("GET /api/ws", websocket.Handler(s.releaseStream))
 	s.mux.HandleFunc("GET /covers/{id}", s.cover)
+	s.mux.HandleFunc("GET /screenshots/{id}/{index}", s.screenshot)
 	s.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -216,6 +236,14 @@ func (s *Server) routes() {
 		}
 		s.json(w, http.StatusAccepted, s.coverCacheStatus())
 	})
+	s.mux.HandleFunc("GET /api/jobs/screenshots", func(w http.ResponseWriter, r *http.Request) { s.json(w, http.StatusOK, s.screenshotBackfillStatus()) })
+	s.mux.HandleFunc("POST /api/jobs/screenshots", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.startScreenshotBackfill(r.Context()); err != nil {
+			s.problem(w, http.StatusConflict, err.Error())
+			return
+		}
+		s.json(w, http.StatusAccepted, s.screenshotBackfillStatus())
+	})
 	s.mux.HandleFunc("GET /api/path-mappings", s.pathMappings)
 	s.mux.HandleFunc("POST /api/path-mappings", s.pathMappings)
 	s.mux.HandleFunc("PUT /api/path-mappings/{id}", s.pathMappings)
@@ -318,6 +346,118 @@ func (s *Server) coverCacheStatus() coverCacheStatus {
 	s.coverJobMu.RLock()
 	defer s.coverJobMu.RUnlock()
 	return s.coverJob
+}
+
+func (s *Server) screenshotBackfillStatus() screenshotBackfillStatus {
+	s.coverJobMu.RLock()
+	defer s.coverJobMu.RUnlock()
+	return s.screenshotJob
+}
+
+func (s *Server) startScreenshotBackfill(ctx context.Context) error {
+	if s.screenshots == nil {
+		return errors.New("screenshot cache is unavailable")
+	}
+	s.coverJobMu.Lock()
+	if s.screenshotJob.Running {
+		s.coverJobMu.Unlock()
+		return errors.New("screenshot backfill is already running")
+	}
+	stats, err := s.store.Stats(ctx)
+	if err != nil {
+		s.coverJobMu.Unlock()
+		return err
+	}
+	s.screenshotJob = screenshotBackfillStatus{Running: true, StartedAt: time.Now().UTC(), Total: stats.Releases}
+	s.coverJobMu.Unlock()
+	go s.runScreenshotBackfill(context.WithoutCancel(ctx))
+	return nil
+}
+
+func (s *Server) runScreenshotBackfill(ctx context.Context) {
+	defer func() {
+		s.coverJobMu.Lock()
+		s.screenshotJob.Running = false
+		s.screenshotJob.FinishedAt = time.Now().UTC()
+		s.screenshotJob.VideoID = ""
+		s.coverJobMu.Unlock()
+	}()
+	for offset := 0; ; offset += 500 {
+		releases, err := s.store.Releases(ctx, domain.ReleaseFilter{Sort: "release", Direction: "desc", Limit: 500, Offset: offset})
+		if err != nil {
+			s.coverJobMu.Lock()
+			s.screenshotJob.LastError = err.Error()
+			s.coverJobMu.Unlock()
+			return
+		}
+		for _, release := range releases {
+			if !strings.EqualFold(release.Source, "JavLibrary") {
+				continue
+			}
+			completed, completedErr := s.store.ScreenshotBackfillCompleted(ctx, release.ID)
+			if completedErr != nil {
+				s.updateScreenshotBackfill(release.VideoID, "failed", completedErr)
+				continue
+			}
+			if completed || s.screenshots.Complete(release.VideoID, release.Screenshots) {
+				if !completed {
+					_ = s.store.MarkScreenshotBackfillCompleted(ctx, release.ID)
+				}
+				s.updateScreenshotBackfill(release.VideoID, "skipped", nil)
+				continue
+			}
+			if err := s.monitor.StartOptions(ctx, monitor.RefreshOptions{ReleaseID: release.ID, Mode: "screenshots", Kind: monitor.PriorityKindScreenshotBackfill, Title: "Screenshot backfill · " + release.VideoID}); err != nil {
+				s.updateScreenshotBackfill(release.VideoID, "failed", err)
+				continue
+			}
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(500 * time.Millisecond):
+				}
+				job := s.monitor.StatusForRelease(release.ID)
+				if job.State == "queued" || job.State == "running" || job.State == "stopping" {
+					continue
+				}
+				if job.State == "completed" && job.Error == "" {
+					if err := s.store.MarkScreenshotBackfillCompleted(ctx, release.ID); err != nil {
+						s.updateScreenshotBackfill(release.VideoID, "failed", err)
+					} else {
+						s.updateScreenshotBackfill(release.VideoID, "completed", nil)
+					}
+				} else {
+					jobErr := errors.New("screenshot scrape did not complete")
+					if strings.TrimSpace(job.Error) != "" {
+						jobErr = errors.New(job.Error)
+					}
+					s.updateScreenshotBackfill(release.VideoID, "failed", jobErr)
+				}
+				break
+			}
+		}
+		if len(releases) < 500 {
+			return
+		}
+	}
+}
+
+func (s *Server) updateScreenshotBackfill(videoID, outcome string, err error) {
+	s.coverJobMu.Lock()
+	defer s.coverJobMu.Unlock()
+	s.screenshotJob.VideoID = videoID
+	s.screenshotJob.Checked++
+	switch outcome {
+	case "completed":
+		s.screenshotJob.Completed++
+	case "skipped":
+		s.screenshotJob.Skipped++
+	default:
+		s.screenshotJob.Failed++
+		if err != nil {
+			s.screenshotJob.LastError = videoID + ": " + err.Error()
+		}
+	}
 }
 
 func (s *Server) startCoverCache(ctx context.Context) error {
@@ -676,6 +816,47 @@ func (s *Server) cover(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, release.VideoID, info.ModTime(), f)
 }
 
+func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
+	if s.screenshots == nil {
+		http.NotFound(w, r)
+		return
+	}
+	releaseID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	index, err := strconv.Atoi(r.PathValue("index"))
+	if err != nil || index < 0 {
+		http.NotFound(w, r)
+		return
+	}
+	release, err := s.store.Release(r.Context(), releaseID)
+	if err != nil || index >= len(release.Screenshots) {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.screenshots.Ensure(r.Context(), release.VideoID, index, release.Screenshots[index]); err != nil {
+		s.log.Warn("local screenshot unavailable", "release_id", releaseID, "video_id", release.VideoID, "index", index, "error", err)
+		http.NotFound(w, r)
+		return
+	}
+	path := s.screenshots.Path(release.VideoID, index)
+	f, err := os.Open(path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	http.ServeContent(w, r, release.VideoID+"-screenshot", info.ModTime(), f)
+}
+
 func (s *Server) serveUnavailableCover(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFileFS(w, r, assets, "static/cover-unavailable.svg")
@@ -854,7 +1035,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &x) {
 		return
 	}
-	allowed := map[string]bool{"page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "stash_desired_tag_id": true, "stash_desired_sync_enabled": true, "stash_desired_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true}
+	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "stash_desired_tag_id": true, "stash_desired_sync_enabled": true, "stash_desired_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true}
 	for _, kind := range monitor.JobPriorityKinds {
 		allowed[monitor.JobPrioritySettingKey(kind)] = true
 	}

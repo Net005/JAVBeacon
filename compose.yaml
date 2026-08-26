@@ -11,6 +11,9 @@ services:
       JAVBEACON_INITIAL_PASSWORD: ${JAVBEACON_INITIAL_PASSWORD:?JAVBEACON_INITIAL_PASSWORD must be set in .env}
       JAVBEACON_API_KEY: ${JAVBEACON_API_KEY:-}
       JAVBEACON_PAGE_LIMIT: ${JAVBEACON_PAGE_LIMIT:-5}
+      # Screenshot previews are cached separately from covers, but remain
+      # inside the same persistent application-data mount.
+      JAVBEACON_SCREENSHOTS: "${JAVBEACON_SCREENSHOTS:-/app/data/screenshots}"
       JAVBEACON_DB_ENGINE: postgres
       JAVBEACON_DB_HOST: postgres
       JAVBEACON_DB_PORT: 5432

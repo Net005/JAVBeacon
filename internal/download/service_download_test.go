@@ -26,12 +26,16 @@ func TestDownloadRechecksFilenameRulesServerSide(t *testing.T) {
 	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "PRED-888", Title: "Test", Source: "JavLibrary", Released: true})
 	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
 	service := New(st, time.Second, slog.Default())
-	result, err := service.Download(ctx, releases[0], domain.SearchResult{Provider: "Sukebei/Nyaa", Title: "PRED-888 untrusted filename", Link: "magnet:?xt=fake", Accepted: true}, "Manual Search", "test")
+	sourceURL := "https://sukebei.nyaa.si/view/4544529"
+	result, err := service.Download(ctx, releases[0], domain.SearchResult{Provider: "Sukebei/Nyaa", Title: "PRED-888 untrusted filename", Link: "magnet:?xt=fake", SourceURL: sourceURL, Accepted: true}, "Manual Search", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Status != "failed" || result.Error != "result rejected by filename rules" {
 		t.Fatalf("client-provided acceptance was trusted: %+v", result)
+	}
+	if result.SourceReference != sourceURL {
+		t.Fatalf("download source reference=%q, want torrent detail page %q", result.SourceReference, sourceURL)
 	}
 }
 

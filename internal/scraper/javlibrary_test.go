@@ -241,6 +241,18 @@ func TestParseJavLibraryDetailIgnoresNowPrintingPlaceholder(t *testing.T) {
 	}
 }
 
+func TestParseJavLibraryDetailUsesFullSizePreviewLinks(t *testing.T) {
+	doc, err := html.Parse(strings.NewReader(`<html><title>FJIN-17 - JAVLibrary</title><div class="previewthumbs"><a href="https://pics.dmm.co.jp/digital/video/fjin00017/fjin00017jp-1.jpg"><img src="https://pics.dmm.co.jp/digital/video/fjin00017/fjin00017-1.jpg"></a><a href="https://pics.dmm.co.jp/digital/video/fjin00017/fjin00017jp-2.jpg"><img src="https://pics.dmm.co.jp/digital/video/fjin00017/fjin00017-2.jpg"></a></div></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := parseJavLibraryDetail(doc, "https://www.javlibrary.com/en/javtest.html").Screenshots
+	want := []string{"https://pics.dmm.co.jp/digital/video/fjin00017/fjin00017jp-1.jpg", "https://pics.dmm.co.jp/digital/video/fjin00017/fjin00017jp-2.jpg"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("screenshots=%v, want full-size links %v", got, want)
+	}
+}
+
 func TestJavLibraryLiveMultiActressAndTags(t *testing.T) {
 	if os.Getenv("JAVBEACON_LIVE_JAVLIBRARY_TEST") != "1" {
 		t.Skip("set JAVBEACON_LIVE_JAVLIBRARY_TEST=1")

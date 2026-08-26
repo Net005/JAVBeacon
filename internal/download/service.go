@@ -163,7 +163,10 @@ func (s *Service) searchNative(ctx context.Context, release domain.Release, sour
 		for _, result := range rows {
 			item := history
 			item.Name = result.Title
-			item.SourceReference = result.Link
+			item.SourceReference = result.SourceURL
+			if item.SourceReference == "" {
+				item.SourceReference = result.Link
+			}
 			item.MatchReason = result.Reason
 			if result.Accepted {
 				item.Status = "search_accepted"
@@ -387,6 +390,11 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 		matchReason = "manually forced despite automatic match result: " + result.Reason
 	case excluded:
 		matchReason = "non-preferred filename allowed by Missing Library Files fallback search despite automatic match result: " + result.Reason
+	}
+	if result.SourceURL != "" {
+		sourceRef = result.SourceURL
+	} else if sourceRef == "" {
+		sourceRef = result.Link
 	}
 	x := domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: sourceRef, Query: r.VideoID, Name: result.Title, Status: "queued", MatchReason: matchReason, FilenamePatternExcluded: forced || excluded}
 	if !result.Accepted && !forced && !excluded {
