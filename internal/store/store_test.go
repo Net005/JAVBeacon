@@ -69,6 +69,26 @@ func TestScreenshotBackfillCompletionPersists(t *testing.T) {
 	}
 }
 
+func TestReleaseSourceFilterRestrictsScreenshotBackfillCandidates(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "source-filter.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	javSite, _ := s.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	gigaSite, _ := s.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: true})
+	_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: javSite.ID, VideoID: "JAV-1", Title: "Jav", Source: "JavLibrary"})
+	_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: gigaSite.ID, VideoID: "GIGA-1", Title: "Giga", Source: "GIGA"})
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{Source: "javlibrary", Limit: 10})
+	if err != nil || len(rows) != 1 || rows[0].VideoID != "JAV-1" {
+		t.Fatalf("source-filtered releases=%v err=%v", rows, err)
+	}
+	if total, err := s.ReleasesCount(ctx, domain.ReleaseFilter{Source: "JavLibrary"}); err != nil || total != 1 {
+		t.Fatalf("source-filtered count=%d err=%v", total, err)
+	}
+}
+
 func TestReleaseTimestampsTrackMetadataChangesAndRepairInvalidOrder(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "release-timestamps.db")

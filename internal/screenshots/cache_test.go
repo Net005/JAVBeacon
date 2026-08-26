@@ -31,6 +31,10 @@ func TestCacheStoresScreenshotsSeparatelyAndSkipsExistingFiles(t *testing.T) {
 	if !cache.Complete("FJIN-17", urls) {
 		t.Fatal("cache should report the release complete")
 	}
+	available := cache.Available("FJIN-17", urls)
+	if len(available) != 2 || available[0] != 0 || available[1] != 1 {
+		t.Fatalf("available indexes=%v, want [0 1]", available)
+	}
 	if _, err := os.Stat(cache.Path("FJIN-17", 1)); err != nil {
 		t.Fatal(err)
 	}

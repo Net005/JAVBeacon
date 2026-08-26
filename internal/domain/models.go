@@ -142,9 +142,9 @@ type ReleaseEdit struct {
 }
 
 type ReleaseFilter struct {
-	Search, Site, Status, Sort, Direction, Category, Entries, SearchExpression string
-	Desired, HideLocal, MonitorDownload                                        bool
-	Limit, Offset                                                              int
+	Search, Site, Source, Status, Sort, Direction, Category, Entries, SearchExpression string
+	Desired, HideLocal, MonitorDownload                                                bool
+	Limit, Offset                                                                      int
 	// ShowNonPreferred, when false (the default), tells Releases/ReleasesCount
 	// to exclude any release matching an ignore rule (see IgnoreTags and
 	// IgnoreTitles) - the Release Library's "hide ignored releases" behavior.

@@ -888,6 +888,10 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		}
 		q += `)`
 	}
+	if f.Source != "" {
+		q += ` AND LOWER(r.source)=LOWER(?)`
+		a = append(a, f.Source)
+	}
 	if f.SearchExpression != "" {
 		var expression releaseSearchExpression
 		if json.Unmarshal([]byte(f.SearchExpression), &expression) == nil {

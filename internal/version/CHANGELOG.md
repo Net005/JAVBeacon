@@ -7,6 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.10] - 2026-08-26
+
+### Fixed
+
+- Only show locally cached screenshots on card hover and in Release Details;
+  viewing the library no longer performs implicit screenshot downloads, and
+  releases without local screenshots reserve no carousel space.
+- Report the historical screenshot job's exact JavLibrary release total and
+  repair missing cache files even when an earlier backfill was completed.
+
 ## [1.0.9] - 2026-08-26
 
 ### Added
@@ -175,7 +185,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.9...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.10...HEAD
+[1.0.10]: https://github.com/Net005/JAVBeacon/compare/v1.0.9...v1.0.10
 [1.0.9]: https://github.com/Net005/JAVBeacon/compare/v1.0.8...v1.0.9
 [1.0.8]: https://github.com/Net005/JAVBeacon/compare/v1.0.7...v1.0.8
 [1.0.7]: https://github.com/Net005/JAVBeacon/compare/v1.0.6...v1.0.7

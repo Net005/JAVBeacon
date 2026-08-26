@@ -56,6 +56,19 @@ func (c *Cache) Complete(videoID string, urls []string) bool {
 	return true
 }
 
+// Available returns the indexes that are already present in the local cache.
+// UI callers use this manifest instead of probing remote source URLs, so a
+// hover or detail view never turns into an implicit screenshot download.
+func (c *Cache) Available(videoID string, urls []string) []int {
+	available := make([]int, 0, len(urls))
+	for index := range urls {
+		if info, err := os.Stat(c.Path(videoID, index)); err == nil && info.Size() > 0 {
+			available = append(available, index)
+		}
+	}
+	return available
+}
+
 func (c *Cache) EnsureAll(ctx context.Context, videoID string, urls []string) (downloaded, skipped, failed int, lastErr error) {
 	for index, raw := range urls {
 		cached, err := c.Ensure(ctx, videoID, index, raw)
