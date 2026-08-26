@@ -7,6 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.11] - 2026-08-26
+
+### Fixed
+
+- Fixed a Firefox startup failure caused by relying on implicit DOM globals for
+  screenshot lightbox navigation. The Release Library, navigation, statistics,
+  and version badge now finish loading normally.
+- Ensured the complete application version remains readable beside Sign out at
+  increased interface zoom levels.
+
 ## [1.0.10] - 2026-08-26
 
 ### Fixed
@@ -185,7 +195,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.10...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.11...HEAD
+[1.0.11]: https://github.com/Net005/JAVBeacon/compare/v1.0.10...v1.0.11
 [1.0.10]: https://github.com/Net005/JAVBeacon/compare/v1.0.9...v1.0.10
 [1.0.9]: https://github.com/Net005/JAVBeacon/compare/v1.0.8...v1.0.9
 [1.0.8]: https://github.com/Net005/JAVBeacon/compare/v1.0.7...v1.0.8
