@@ -7,6 +7,43 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.17] - 2026-08-27
+
+### Added
+
+- Release Details' screenshot rail and the fullscreen viewer's thumbnail
+  strip now scroll horizontally with an ordinary mouse scroll wheel, in
+  addition to middle-button drag - including trackpoint/trackpad
+  press-and-hold scroll gestures that are delivered as wheel events.
+- Download Activity's "Open torrent page" link is now a pill showing the
+  source site's favicon, matching the style of the other badges next to it.
+- The Downloading/Downloaded status pill - in Release Details and on
+  Release Library/Notifications cards - now links directly to the torrent's
+  detail page when one is known, with the source site's favicon, for both
+  the in-progress and completed states.
+- Added a collapsible "Filters & sort" panel to Download Activity, collapsed
+  by default, to save vertical space.
+- Settings → Scraping now shows each of Quick refresh, Full refresh, and New
+  Release Only's own enabled/interval state and next 3 predicted run times
+  directly under that schedule's controls - the same information the
+  "Scheduled runs" panel under Download monitoring already showed, now also
+  visible right next to the settings that produce it, and refreshing
+  immediately after you save a schedule change.
+
+### Fixed
+
+- Fixed the Release Details panel itself rendering oversized and overflowing
+  the browser window at interface zoom levels above 100%, which could push
+  its rightmost Discover/Tracking button (e.g. Update details, Monitor
+  searches) off the edge of the screen with no way to reach it. Affects only
+  the interface zoom setting under Settings → Interface, not your browser's
+  own zoom, which was unaffected.
+- Download Activity's "Delete complete" status no longer reappears on every
+  visit reflecting whatever bulk delete/replace job last ran, possibly long
+  ago (e.g. a stale "Delete complete · 0 removed"); it's now shown only for
+  a job actually run in the current visit, plus any job still genuinely in
+  progress.
+
 ## [1.0.16] - 2026-08-26
 
 ### Fixed
@@ -291,7 +328,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.16...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.17...HEAD
+[1.0.17]: https://github.com/Net005/JAVBeacon/compare/v1.0.16...v1.0.17
 [1.0.16]: https://github.com/Net005/JAVBeacon/compare/v1.0.15...v1.0.16
 [1.0.15]: https://github.com/Net005/JAVBeacon/compare/v1.0.14...v1.0.15
 [1.0.14]: https://github.com/Net005/JAVBeacon/compare/v1.0.13...v1.0.14
