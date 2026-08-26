@@ -210,8 +210,33 @@ document.addEventListener('mousemove',e=>{if(!draggingScreenshotRail)return;drag
 document.addEventListener('mouseup',e=>{if(e.button!==1||!draggingScreenshotRail)return;draggingScreenshotRail.classList.remove('dragging');draggingScreenshotRail=null});
 document.addEventListener('mouseleave',()=>{if(draggingScreenshotRail){draggingScreenshotRail.classList.remove('dragging');draggingScreenshotRail=null}});
 renderReleaseDetail=function(x){renderReleaseDetailBase(x);enhanceReleaseScreenshots(x)};
-function showLightboxScreenshot(){const state=screenshotLightboxState;if(!state)return;const count=state.indexes.length;state.position=(state.position+count)%count;const index=state.indexes[state.position];screenshotLightboxImage.src=screenshotURL(state.release.id,index);screenshotLightboxImage.alt=`${state.release.video_id} screenshot ${state.position+1}`;screenshotLightboxCount.textContent=`${state.position+1} / ${count}`;screenshotLightboxPrev.hidden=screenshotLightboxNext.hidden=count<2;const stripButtons=screenshotLightboxStrip.querySelectorAll('button');stripButtons.forEach((b,i)=>b.classList.toggle('active',i===state.position));stripButtons[state.position]?.scrollIntoView({block:'nearest',inline:'center',behavior:'smooth'})}
-async function openScreenshotLightbox(index){if(!activeReleaseData?.screenshots?.length)return;const release=activeReleaseData,indexes=await localScreenshotIndexes(release),position=indexes.indexOf(index);if(position<0||activeReleaseData?.id!==release.id)return;screenshotLightboxState={release,indexes,position};screenshotLightboxStrip.innerHTML=indexes.map((idx,i)=>`<button type="button" onclick="jumpScreenshot(${i})" aria-label="Jump to screenshot ${i+1} of ${indexes.length}"><img loading="lazy" src="${screenshotURL(release.id,idx)}" alt=""></button>`).join('');showLightboxScreenshot();if(!screenshotLightbox.open)screenshotLightbox.showModal()}
+function showLightboxScreenshot(){const state=screenshotLightboxState;if(!state)return;const count=state.indexes.length;state.position=Math.max(0,Math.min(count-1,state.position));const index=state.indexes[state.position];screenshotLightboxImage.src=screenshotURL(state.release.id,index);screenshotLightboxImage.alt=`${state.release.video_id} screenshot ${state.position+1}`;screenshotLightboxCount.textContent=`${state.position+1} / ${count}`;screenshotLightboxPrev.hidden=screenshotLightboxNext.hidden=count<2;screenshotLightboxPrev.disabled=state.position<=0;screenshotLightboxNext.disabled=state.position>=count-1;const stripButtons=screenshotLightboxStrip.querySelectorAll('button');stripButtons.forEach((b,i)=>b.classList.toggle('active',i===state.position));stripButtons[state.position]?.scrollIntoView({block:'nearest',inline:'center',behavior:'smooth'});fitScreenshotLightboxImage()}
+// syncScreenshotLightboxSize sizes the lightbox <dialog> from the real,
+// zoom-independent window.innerWidth/innerHeight instead of CSS 100vw/100vh.
+// A <dialog> shown via showModal() renders in the browser's top layer, and
+// at least in Chromium that top-layer box does not track the page's
+// uiZoom (CSS `zoom` on <html>) the same way normal in-flow content does -
+// 100vw/100vh end up scaled BY the zoom factor (e.g. 110% zoom made the
+// dialog render 1.1x larger than the actual viewport), pushing the image
+// and the Next button outside the visible/clickable window entirely.
+// Sizing from window.innerWidth/innerHeight in real pixels sidesteps that
+// quirk regardless of zoom level. Re-run on resize while open so rotating
+// or resizing the window keeps the dialog correctly sized.
+function applyScreenshotLightboxSize(){const z=Number(getComputedStyle(document.documentElement).zoom)||1;screenshotLightbox.style.width=(window.innerWidth/z)+'px';screenshotLightbox.style.height=(window.innerHeight/z)+'px';fitScreenshotLightboxImage()}
+// fitScreenshotLightboxImage caps the screenshot's own rendered size from
+// the Stage element's actual on-screen box (getBoundingClientRect, which -
+// like the dialog above - reports the zoom-multiplied size) instead of
+// relying on max-width/max-height:100%. Percentage sizing on the image
+// inherits the same zoom quirk as the dialog itself once nested inside a
+// top-layer <dialog>, so a portrait screenshot could render far taller
+// than the actual visible stage (e.g. 900x1400 painted at ~1.1x on top of
+// an already-constrained stage, overflowing well past the viewport).
+// Measuring the stage directly and pre-dividing by the zoom factor keeps
+// the image correctly contained at any zoom level.
+function fitScreenshotLightboxImage(){if(!screenshotLightbox.open)return;const z=Number(getComputedStyle(document.documentElement).zoom)||1;const rect=screenshotLightboxStage.getBoundingClientRect();if(rect.width>0&&rect.height>0){screenshotLightboxImage.style.maxWidth=(rect.width/z)+'px';screenshotLightboxImage.style.maxHeight=(rect.height/z)+'px'}}
+function syncScreenshotLightboxSize(){if(!screenshotLightbox.open)return;applyScreenshotLightboxSize()}
+window.addEventListener('resize',syncScreenshotLightboxSize);
+async function openScreenshotLightbox(index){if(!activeReleaseData?.screenshots?.length)return;const release=activeReleaseData,indexes=await localScreenshotIndexes(release),position=indexes.indexOf(index);if(position<0||activeReleaseData?.id!==release.id)return;screenshotLightboxState={release,indexes,position};screenshotLightboxStrip.innerHTML=indexes.map((idx,i)=>`<button type="button" onclick="jumpScreenshot(${i})" aria-label="Jump to screenshot ${i+1} of ${indexes.length}"><img loading="lazy" src="${screenshotURL(release.id,idx)}" alt=""></button>`).join('');showLightboxScreenshot();if(!screenshotLightbox.open){screenshotLightbox.showModal();applyScreenshotLightboxSize()}}
 function navigateScreenshot(delta){if(!screenshotLightboxState)return;screenshotLightboxState.position+=delta;showLightboxScreenshot()}
 function jumpScreenshot(position){if(!screenshotLightboxState)return;screenshotLightboxState.position=position;showLightboxScreenshot()}
 function closeScreenshotLightbox(){if(screenshotLightbox.open)screenshotLightbox.close();screenshotLightboxState=null}
