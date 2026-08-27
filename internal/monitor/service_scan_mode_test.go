@@ -71,7 +71,7 @@ func newSiteScanTestService(t *testing.T, detailHandler http.HandlerFunc) (*Serv
 	}
 	javlib := scraper.NewJavLibrary(2*time.Second, "", 0, slog.Default())
 	akiba := scraper.NewAkiba("", "", 2*time.Second, slog.Default())
-	service := New(st, akiba, javlib, coverCache, 1, slog.Default())
+	service := New(st, akiba, javlib, coverCache, 1, slog.Default(), time.Hour)
 	return service, site, items[0]
 }
 

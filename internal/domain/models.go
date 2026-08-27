@@ -165,6 +165,13 @@ type ReleaseFilter struct {
 	// same name: nil means no filter, true/false restrict to releases with
 	// the flag set/unset.
 	AllowNonPreferredFilenames *bool
+	// MinReleaseDate/MaxReleaseDate restrict r.release_date to an inclusive
+	// "YYYY-MM-DD" range when set (empty means unbounded on that side). The
+	// Release Library's Released tab uses this for its configurable
+	// min/max-days-released window, so a release whose release_date hasn't
+	// actually arrived yet (a data mismatch with the released flag) can be
+	// excluded even though r.released=1.
+	MinReleaseDate, MaxReleaseDate string
 }
 
 // ParseIgnoreList splits a newline-separated ignore_tags or ignore_titles

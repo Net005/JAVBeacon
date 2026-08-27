@@ -43,6 +43,15 @@ type Service struct {
 	// set) are not tracked here - ScheduleForecast simulates those directly
 	// with calendarScheduleMatches instead, which needs no running-loop state.
 	scheduleNextAttempt map[string]time.Time
+	// scrapeFallback is the interval Quick refresh and New releases only
+	// scan on when their own "refresh_interval"/"new_release_refresh_interval"
+	// setting is unset or invalid - the same value ScheduleScrapes is started
+	// with (app.cfg.RefreshEvery) - kept here too so ScheduleForecast can
+	// report the schedule's real effective interval instead of always
+	// assuming a fallback of 0, which previously made an unset interval
+	// display as "Every 0s · Next run not yet known" even though the actual
+	// running scheduler loop was ticking along fine on this fallback.
+	scrapeFallback time.Duration
 }
 
 type RefreshOptions struct {
@@ -145,8 +154,8 @@ func releaseHasSite(release domain.Release, siteID int64) bool {
 	return false
 }
 
-func New(s store.Store, a *scraper.Akiba, j *scraper.JavLibrary, covers *covers.Cache, pages int, l *slog.Logger, screenshotCaches ...*screenshots.Cache) *Service {
-	service := &Service{store: s, akiba: a, javlibrary: j, covers: covers, pages: pages, log: l, details: map[int64]domain.Job{}, scheduleNextAttempt: map[string]time.Time{}}
+func New(s store.Store, a *scraper.Akiba, j *scraper.JavLibrary, covers *covers.Cache, pages int, l *slog.Logger, scrapeFallback time.Duration, screenshotCaches ...*screenshots.Cache) *Service {
+	service := &Service{store: s, akiba: a, javlibrary: j, covers: covers, pages: pages, log: l, details: map[int64]domain.Job{}, scheduleNextAttempt: map[string]time.Time{}, scrapeFallback: scrapeFallback}
 	if len(screenshotCaches) > 0 {
 		service.screenshots = screenshotCaches[0]
 	}
@@ -925,7 +934,7 @@ func (s *Service) runScrapeSchedules(ctx context.Context, schedules []scrapeSche
 				continue
 			}
 			interval := schedule.fallback
-			if parsed, err := time.ParseDuration(settings[schedule.intervalKey]); err == nil && parsed >= time.Minute {
+			if parsed, err := domain.ParseScheduleDuration(settings[schedule.intervalKey]); err == nil && parsed >= time.Minute {
 				interval = parsed
 			}
 			if interval <= 0 {
@@ -1034,7 +1043,7 @@ func (s *Service) ScheduleScrapes(ctx context.Context, quickEvery time.Duration)
 		return
 	}
 	s.runScrapeSchedules(ctx, []scrapeSchedule{
-		fullScrapeSchedule(24 * time.Hour),
+		fullScrapeSchedule(defaultFullRefreshFallback),
 		newReleaseScrapeSchedule(quickEvery),
 		quickScrapeSchedule(quickEvery),
 	})
@@ -1043,6 +1052,12 @@ func (s *Service) ScheduleScrapes(ctx context.Context, quickEvery time.Duration)
 // scheduleForecastRunCount is how many upcoming run times ScheduleForecast
 // predicts per schedule.
 const scheduleForecastRunCount = 3
+
+// defaultFullRefreshFallback is the full-refresh schedule's built-in interval
+// when its own setting isn't configured - shared by ScheduleScrapes (the real
+// running scheduler) and ScheduleForecast (its display), so the two can never
+// disagree about what "no interval configured" actually falls back to.
+const defaultFullRefreshFallback = 24 * time.Hour
 
 // ScheduleForecast reports each configurable scrape schedule's current
 // enabled/interval state plus its next scheduleForecastRunCount predicted
@@ -1059,9 +1074,9 @@ func (s *Service) ScheduleForecast(ctx context.Context) []domain.ScheduleForecas
 	settings, _ := s.store.Settings(ctx)
 	now := time.Now()
 	schedules := []scrapeSchedule{
-		quickScrapeSchedule(0),
-		newReleaseScrapeSchedule(0),
-		fullScrapeSchedule(0),
+		quickScrapeSchedule(s.scrapeFallback),
+		newReleaseScrapeSchedule(s.scrapeFallback),
+		fullScrapeSchedule(defaultFullRefreshFallback),
 	}
 	forecasts := make([]domain.ScheduleForecast, 0, len(schedules))
 	for _, schedule := range schedules {
@@ -1083,8 +1098,8 @@ func (s *Service) ScheduleForecast(ctx context.Context) []domain.ScheduleForecas
 			forecasts = append(forecasts, forecast)
 			continue
 		}
-		interval := time.Duration(0)
-		if parsed, err := time.ParseDuration(settings[schedule.intervalKey]); err == nil && parsed >= time.Minute {
+		interval := schedule.fallback
+		if parsed, err := domain.ParseScheduleDuration(settings[schedule.intervalKey]); err == nil && parsed >= time.Minute {
 			interval = parsed
 		}
 		forecast.Interval = interval.String()

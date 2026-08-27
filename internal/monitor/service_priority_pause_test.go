@@ -112,7 +112,7 @@ func TestHigherPriorityJobPausesAndResumesLowerPriorityScan(t *testing.T) {
 	}
 	javlib := scraper.NewJavLibrary(2*time.Second, "", 0, slog.Default())
 	akiba := scraper.NewAkiba("", "", 2*time.Second, slog.Default())
-	service := New(st, akiba, javlib, coverCache, 1, slog.Default())
+	service := New(st, akiba, javlib, coverCache, 1, slog.Default(), time.Hour)
 
 	saved, err := st.Releases(ctx, domain.ReleaseFilter{Search: "ZZZ-999"})
 	if err != nil || len(saved) != 1 {
@@ -303,7 +303,7 @@ func TestHigherPriorityJobPausesDuringCoverAndScreenshotDownloadPhase(t *testing
 	}
 	javlib := scraper.NewJavLibrary(2*time.Second, "", 0, slog.Default())
 	akiba := scraper.NewAkiba("", "", 2*time.Second, slog.Default())
-	service := New(st, akiba, javlib, coverCache, 1, slog.Default())
+	service := New(st, akiba, javlib, coverCache, 1, slog.Default(), time.Hour)
 
 	saved, err := st.Releases(ctx, domain.ReleaseFilter{Search: "ZZZ-888"})
 	if err != nil || len(saved) != 1 {
