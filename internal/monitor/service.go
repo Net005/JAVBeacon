@@ -857,17 +857,18 @@ func (s *Service) emit(release domain.Release) {
 var scheduleMaxSleepChunk = 30 * time.Second
 
 type scrapeSchedule struct {
-	mode           string
-	title          string
-	enabledKey     string
-	intervalKey    string
-	startTimeKey   string
-	weekdaysKey    string
-	cronKey        string
-	pagesKey       string
-	priorityKind   string
-	fallback       time.Duration
-	defaultEnabled bool
+	mode            string
+	title           string
+	enabledKey      string
+	scheduleModeKey string
+	intervalKey     string
+	startTimeKey    string
+	weekdaysKey     string
+	cronKey         string
+	pagesKey        string
+	priorityKind    string
+	fallback        time.Duration
+	defaultEnabled  bool
 }
 
 type dueScrape struct {
@@ -882,13 +883,13 @@ type dueScrape struct {
 // predicts their next run times), so the two can never disagree about which
 // setting keys or defaults a given schedule uses.
 func quickScrapeSchedule(fallback time.Duration) scrapeSchedule {
-	return scrapeSchedule{mode: "quick", title: "Quick refresh · all enabled sites", enabledKey: "quick_refresh_enabled", intervalKey: "refresh_interval", startTimeKey: "quick_refresh_start_time", weekdaysKey: "quick_refresh_weekdays", cronKey: "quick_refresh_cron", priorityKind: PriorityKindScheduledQuick, fallback: fallback, defaultEnabled: true}
+	return scrapeSchedule{mode: "quick", title: "Quick refresh · all enabled sites", enabledKey: "quick_refresh_enabled", scheduleModeKey: "quick_refresh_schedule_mode", intervalKey: "refresh_interval", startTimeKey: "quick_refresh_start_time", weekdaysKey: "quick_refresh_weekdays", cronKey: "quick_refresh_cron", priorityKind: PriorityKindScheduledQuick, fallback: fallback, defaultEnabled: true}
 }
 func fullScrapeSchedule(fallback time.Duration) scrapeSchedule {
-	return scrapeSchedule{mode: "full", title: "Full refresh · all enabled sites", enabledKey: "full_refresh_enabled", intervalKey: "full_refresh_interval", startTimeKey: "full_refresh_start_time", weekdaysKey: "full_refresh_weekdays", cronKey: "full_refresh_cron", pagesKey: "full_refresh_page_limit", priorityKind: PriorityKindScheduledFull, fallback: fallback}
+	return scrapeSchedule{mode: "full", title: "Full refresh · all enabled sites", enabledKey: "full_refresh_enabled", scheduleModeKey: "full_refresh_schedule_mode", intervalKey: "full_refresh_interval", startTimeKey: "full_refresh_start_time", weekdaysKey: "full_refresh_weekdays", cronKey: "full_refresh_cron", pagesKey: "full_refresh_page_limit", priorityKind: PriorityKindScheduledFull, fallback: fallback}
 }
 func newReleaseScrapeSchedule(fallback time.Duration) scrapeSchedule {
-	return scrapeSchedule{mode: "new", title: "New releases only · all enabled sites", enabledKey: "new_release_refresh_enabled", intervalKey: "new_release_refresh_interval", startTimeKey: "new_release_refresh_start_time", weekdaysKey: "new_release_refresh_weekdays", cronKey: "new_release_refresh_cron", pagesKey: "new_release_refresh_page_limit", priorityKind: PriorityKindScheduledNew, fallback: fallback, defaultEnabled: true}
+	return scrapeSchedule{mode: "new", title: "New releases only · all enabled sites", enabledKey: "new_release_refresh_enabled", scheduleModeKey: "new_release_refresh_schedule_mode", intervalKey: "new_release_refresh_interval", startTimeKey: "new_release_refresh_start_time", weekdaysKey: "new_release_refresh_weekdays", cronKey: "new_release_refresh_cron", pagesKey: "new_release_refresh_page_limit", priorityKind: PriorityKindScheduledNew, fallback: fallback, defaultEnabled: true}
 }
 
 // runScrapeSchedules is the one coordinator for scheduled scrape scans. A
@@ -899,10 +900,8 @@ func newReleaseScrapeSchedule(fallback time.Duration) scrapeSchedule {
 func (s *Service) runScrapeSchedules(ctx context.Context, schedules []scrapeSchedule) {
 	lastAttempt := make(map[string]time.Time, len(schedules))
 	lastCalendarMinute := make(map[string]string, len(schedules))
-	started := time.Now()
-	for _, schedule := range schedules {
-		lastAttempt[schedule.mode] = started
-	}
+	basicNext := make(map[string]time.Time, len(schedules))
+	basicSignature := make(map[string]string, len(schedules))
 	for {
 		settings, _ := s.store.Settings(ctx)
 		now := time.Now()
@@ -913,26 +912,6 @@ func (s *Service) runScrapeSchedules(ctx context.Context, schedules []scrapeSche
 			if raw, ok := settings[schedule.enabledKey]; ok {
 				enabled = raw == "true"
 			}
-			calendarConfigured := strings.TrimSpace(settings[schedule.cronKey]) != "" || strings.TrimSpace(settings[schedule.startTimeKey]) != ""
-			if calendarConfigured {
-				minuteKey := now.Format("200601021504")
-				matches, err := calendarScheduleMatches(now, settings[schedule.startTimeKey], settings[schedule.weekdaysKey], settings[schedule.cronKey])
-				if err != nil {
-					s.log.Error("invalid scheduled scrape timing", "mode", schedule.mode, "error", err)
-				} else if enabled && matches && lastCalendarMinute[schedule.mode] != minuteKey {
-					lastCalendarMinute[schedule.mode] = minuteKey
-					pages := 0
-					if schedule.pagesKey != "" {
-						pages, _ = strconv.Atoi(settings[schedule.pagesKey])
-						if pages <= 0 {
-							pages = s.pages
-						}
-					}
-					priority := s.resolvePriority(ctx, schedule.priorityKind, 0)
-					due = append(due, dueScrape{priority: priority, options: RefreshOptions{Mode: schedule.mode, Title: schedule.title, Pages: pages, Scheduled: true, Kind: schedule.priorityKind, Priority: priority}})
-				}
-				continue
-			}
 			interval := schedule.fallback
 			if parsed, err := domain.ParseScheduleDuration(settings[schedule.intervalKey]); err == nil && parsed >= time.Minute {
 				interval = parsed
@@ -940,28 +919,56 @@ func (s *Service) runScrapeSchedules(ctx context.Context, schedules []scrapeSche
 			if interval <= 0 {
 				continue
 			}
-			elapsed := now.Sub(lastAttempt[schedule.mode])
-			remaining := interval - elapsed
-			if remaining <= 0 {
-				lastAttempt[schedule.mode] = now
-				if enabled {
-					pages := 0
-					if schedule.pagesKey != "" {
-						pages, _ = strconv.Atoi(settings[schedule.pagesKey])
-						if pages <= 0 {
-							pages = s.pages
-						}
-					}
-					priority := s.resolvePriority(ctx, schedule.priorityKind, 0)
-					due = append(due, dueScrape{priority: priority, options: RefreshOptions{Mode: schedule.mode, Title: schedule.title, Pages: pages, Scheduled: true, Kind: schedule.priorityKind, Priority: priority}})
+			mode := normalizeScheduleMode(settings[schedule.scheduleModeKey], settings[schedule.startTimeKey], settings[schedule.weekdaysKey], settings[schedule.cronKey])
+			queue := func() {
+				if !enabled {
+					return
 				}
-				remaining = interval
+				pages := 0
+				if schedule.pagesKey != "" {
+					pages, _ = strconv.Atoi(settings[schedule.pagesKey])
+					if pages <= 0 {
+						pages = s.pages
+					}
+				}
+				priority := s.resolvePriority(ctx, schedule.priorityKind, 0)
+				due = append(due, dueScrape{priority: priority, options: RefreshOptions{Mode: schedule.mode, Title: schedule.title, Pages: pages, Scheduled: true, Kind: schedule.priorityKind, Priority: priority}})
 			}
+			if mode == "cron" || mode == "advanced" {
+				minuteKey := now.Format("200601021504")
+				cronText := ""
+				if mode == "cron" {
+					cronText = settings[schedule.cronKey]
+				}
+				matches, err := calendarScheduleMatches(now, settings[schedule.startTimeKey], settings[schedule.weekdaysKey], cronText)
+				if err != nil {
+					s.log.Error("invalid scheduled scrape timing", "mode", schedule.mode, "error", err)
+				} else if matches && lastCalendarMinute[schedule.mode] != minuteKey {
+					lastCalendarMinute[schedule.mode] = minuteKey
+					if mode == "cron" || lastAttempt[schedule.mode].IsZero() || now.Sub(lastAttempt[schedule.mode]) >= interval {
+						lastAttempt[schedule.mode] = now
+						queue()
+					}
+				}
+				continue
+			}
+			signature := interval.String() + "|" + strings.TrimSpace(settings[schedule.startTimeKey])
+			if basicSignature[schedule.mode] != signature || basicNext[schedule.mode].IsZero() {
+				basicSignature[schedule.mode] = signature
+				basicNext[schedule.mode] = nextBasicRun(now, interval, settings[schedule.startTimeKey])
+			}
+			if !now.Before(basicNext[schedule.mode]) {
+				queue()
+				for !basicNext[schedule.mode].After(now) {
+					basicNext[schedule.mode] = basicNext[schedule.mode].Add(interval)
+				}
+			}
+			remaining := basicNext[schedule.mode].Sub(now)
 			s.mu.Lock()
 			if s.scheduleNextAttempt == nil {
 				s.scheduleNextAttempt = map[string]time.Time{}
 			}
-			s.scheduleNextAttempt[schedule.mode] = now.Add(remaining)
+			s.scheduleNextAttempt[schedule.mode] = basicNext[schedule.mode]
 			s.mu.Unlock()
 			if remaining < nextSleep {
 				nextSleep = remaining
@@ -1085,24 +1092,28 @@ func (s *Service) ScheduleForecast(ctx context.Context) []domain.ScheduleForecas
 			enabled = raw == "true"
 		}
 		forecast := domain.ScheduleForecast{Group: "Scheduled scrapes", Name: schedule.title, Enabled: enabled}
-		calendarConfigured := strings.TrimSpace(settings[schedule.cronKey]) != "" || strings.TrimSpace(settings[schedule.startTimeKey]) != ""
-		if calendarConfigured {
-			if strings.TrimSpace(settings[schedule.cronKey]) != "" {
-				forecast.Interval = "cron: " + strings.TrimSpace(settings[schedule.cronKey])
-			} else {
-				forecast.Interval = "calendar: " + strings.TrimSpace(settings[schedule.startTimeKey])
-			}
-			if enabled {
-				forecast.NextRuns = nextCalendarRuns(now, settings[schedule.startTimeKey], settings[schedule.weekdaysKey], settings[schedule.cronKey], scheduleForecastRunCount)
-			}
-			forecasts = append(forecasts, forecast)
-			continue
-		}
 		interval := schedule.fallback
 		if parsed, err := domain.ParseScheduleDuration(settings[schedule.intervalKey]); err == nil && parsed >= time.Minute {
 			interval = parsed
 		}
-		forecast.Interval = interval.String()
+		mode := normalizeScheduleMode(settings[schedule.scheduleModeKey], settings[schedule.startTimeKey], settings[schedule.weekdaysKey], settings[schedule.cronKey])
+		if mode == "cron" {
+			forecast.Interval = "cron: " + strings.TrimSpace(settings[schedule.cronKey])
+			if enabled {
+				forecast.NextRuns = nextCalendarRuns(now, "", "", settings[schedule.cronKey], scheduleForecastRunCount)
+			}
+			forecasts = append(forecasts, forecast)
+			continue
+		}
+		if mode == "advanced" {
+			forecast.Interval = "advanced: " + interval.String()
+			if enabled {
+				forecast.NextRuns = nextAdvancedRuns(now, settings[schedule.startTimeKey], settings[schedule.weekdaysKey], interval, scheduleForecastRunCount)
+			}
+			forecasts = append(forecasts, forecast)
+			continue
+		}
+		forecast.Interval = "basic: " + interval.String()
 		if enabled && interval > 0 {
 			s.mu.RLock()
 			next, tracked := s.scheduleNextAttempt[schedule.mode]
@@ -1114,6 +1125,12 @@ func (s *Service) ScheduleForecast(ctx context.Context) []domain.ScheduleForecas
 					next = next.Add(interval)
 				}
 				forecast.NextRuns = runs
+			} else {
+				next := nextBasicRun(now, interval, settings[schedule.startTimeKey])
+				for len(forecast.NextRuns) < scheduleForecastRunCount {
+					forecast.NextRuns = append(forecast.NextRuns, next)
+					next = next.Add(interval)
+				}
 			}
 		}
 		forecasts = append(forecasts, forecast)

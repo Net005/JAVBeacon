@@ -7,6 +7,40 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.22] - 2026-08-27
+
+### Added
+
+- Scrape schedules now have explicit Basic, Advanced, and Power user modes.
+  Basic combines an interval with an optional first-run time; Advanced runs
+  on selected weekdays at a chosen time while enforcing the interval as a
+  minimum gap; Power user uses a five-field cron expression as the complete
+  schedule. Only fields used by the selected mode are shown.
+- The Released tab's date window now has a selectable start date, defaulting
+  to today, and lives in a compact collapsible panel. The start date, day
+  offsets, and folded state persist across reloads and application restarts;
+  saved filter sets also capture the effective start date and both offsets
+  for exact site- or studio-specific release windows.
+
+### Fixed
+
+- Settings now save atomically in one request. Validation failures from the
+  main form or schedule fields are shown beside the Save button and can no
+  longer be swallowed by a later partial save that incorrectly reports
+  success.
+- Day and week suffixes such as `7d` and `2w` now pass the same validation
+  for Download Monitoring and StashApp schedules that their schedulers use.
+- Restored the next scheduled run date to both recent and older Monitored
+  releases job summaries by reconnecting them to the live schedule forecast.
+- Monitored releases jobs with no completed run now show `never` instead of
+  formatting Go's zero-value timestamp as a misleading year-1 date.
+
+### Changed
+
+- Scrape schedule configuration no longer relies on hidden field precedence;
+  each job saves one explicit schedule mode and its live forecast reflects
+  that mode.
+
 ## [1.0.21] - 2026-08-27
 
 ### Added
@@ -422,7 +456,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.21...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.22...HEAD
+[1.0.22]: https://github.com/Net005/JAVBeacon/compare/v1.0.21...v1.0.22
 [1.0.21]: https://github.com/Net005/JAVBeacon/compare/v1.0.20...v1.0.21
 [1.0.20]: https://github.com/Net005/JAVBeacon/compare/v1.0.19...v1.0.20
 [1.0.19]: https://github.com/Net005/JAVBeacon/compare/v1.0.18...v1.0.19
