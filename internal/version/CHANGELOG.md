@@ -7,6 +7,19 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.21] - 2026-08-27
+
+### Added
+
+- The Jobs page's "Job progress" section now shows the Screenshot backfill
+  maintenance job's own progress (currently-processing release, checked/
+  total counts, and how many are remaining) with a progress bar, alongside
+  the existing Settings → Storage display - so its progress is visible from
+  Jobs without switching views while it runs. Both displays also now show
+  the run's total elapsed runtime and an estimated time remaining, computed
+  from the job's own actual throughput so far and updated every tick, plus
+  the total runtime of the last completed run.
+
 ## [1.0.20] - 2026-08-27
 
 ### Added
@@ -409,7 +422,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.20...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.21...HEAD
+[1.0.21]: https://github.com/Net005/JAVBeacon/compare/v1.0.20...v1.0.21
 [1.0.20]: https://github.com/Net005/JAVBeacon/compare/v1.0.19...v1.0.20
 [1.0.19]: https://github.com/Net005/JAVBeacon/compare/v1.0.18...v1.0.19
 [1.0.18]: https://github.com/Net005/JAVBeacon/compare/v1.0.17...v1.0.18
