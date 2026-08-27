@@ -43,6 +43,7 @@ button,input,select,textarea{min-height:40px;line-height:1.2}button:focus-visibl
 button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck input{min-height:0}
 #advancedSearch{font-size:0}#advancedSearch::before{content:none}.conditionButton>span{display:block;font:800 16px/1 ui-monospace,monospace;letter-spacing:-2px;transform:translateX(-1px)}
 .settingHelp{margin:-4px 0 12px;padding:9px 10px;border-left:3px solid #53677d;border-radius:0 6px 6px 0;background:#0b1017;color:#aeb8c5;font-size:11px;line-height:1.5}
+.settingsSaveStatus{min-height:20px;margin:4px 0 8px;font-size:12px;font-weight:700}.settingsSaveStatus.saving{color:var(--muted)}.settingsSaveStatus.success{color:#8ee6bd}.settingsSaveStatus.error{color:#ff8995}
 .allPagesHelp{grid-column:1/-1;margin:-3px 0 7px;color:#8e99a7;font-size:10px;line-height:1.45}.pagesIgnored{opacity:.42}.pagesIgnored input{cursor:not-allowed;text-decoration:line-through}.siteDesiredHelp{margin-top:-7px}.siteURLHelp{margin-top:-7px}.siteURLHelp code{color:#d4dbe5}
 .scrapeLiveControls{display:flex;align-items:center;justify-content:flex-end;margin:-42px 0 10px}.scrapeLiveControls:has(button[hidden]){display:none}.scrapeLiveControls button{min-height:34px;padding:7px 10px;font-size:10px}.queuedJobs{display:grid;gap:6px;margin-top:10px;padding:10px;border:1px solid #303743;border-radius:9px;background:#0c1016}.queuedJobs>header{display:flex;align-items:center;justify-content:space-between;margin:0 2px 2px;color:#aeb7c4;font-size:10px}.queuedJobs>header span{color:#747e8c}.queuedJobs>article{display:grid;grid-template-columns:26px minmax(0,1fr) auto;gap:9px;align-items:center;padding:8px 9px;border:1px solid #292f39;border-radius:7px;background:#121720}.queuedJobs>article>strong{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#28202a;color:#e7bdc5;font-size:10px}.queuedJobs>article b{display:block;font-size:11px}.queuedJobs>article small{display:block;margin-top:3px;color:#7f8996;font-size:9px}.queuedJobs>article>span{padding:3px 6px;border:1px solid #455064;border-radius:99px;color:#9eabbc;font-size:9px;font-weight:800}@media(max-width:650px){.scrapeLiveControls{margin:0 0 10px}}
 .headerJobWidget{display:flex;align-items:stretch;height:32px;border:1px solid #303641;border-radius:999px;background:#0d1016;color:#808895;overflow:hidden;box-shadow:0 4px 14px #0004}.headerJobWidget[hidden]{display:none}.headerJobWidget button{min-height:0;border:0;border-radius:0;background:transparent;color:inherit}.headerJobWidget #headerJobIndicator{display:flex;align-items:center;gap:7px;padding:6px 8px 6px 10px;font-size:10px;font-weight:750}.headerJobWidget #hideHeaderJob{width:27px;padding:0;border-left:1px solid #292f38;color:#626b78;font-size:14px}.headerJobWidget button:hover{background:#171c24;color:#cbd2dc}.jobPulse{width:7px;height:7px;border-radius:50%;background:#59616c}.headerJobWidget.active{border-color:#28684f;background:#10231c;color:#90e4bd}.headerJobWidget.active .jobPulse{background:#59d79e;box-shadow:0 0 0 4px #48bd8930;animation:jobPulse 1.2s ease-in-out infinite}.headerJobWidget.stopping{border-color:#805d2b;background:#2b2112;color:#e9c67b}.headerJobWidget.stopping .jobPulse{background:#e2ad4d}.headerJobWidget.paused{border-color:#3d5a80;background:#101b28;color:#8fb8e0}.headerJobWidget.paused .jobPulse{background:#5b8fc9;animation:none}@keyframes jobPulse{50%{opacity:.55;transform:scale(.72)}}
@@ -913,9 +914,13 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
    author rule can't out-specificity the UA stylesheet's [hidden]{display:
    none} the way an unconditional .foo{display:flex} would (see the
    .foldPanel comment above for the same <details> pitfall in general form). */
-.releasedRangePanel:not([hidden]){display:flex;flex-wrap:wrap}
-.releasedRangePanel{gap:12px;align-items:center;padding:10px 12px;margin:10px 0 0;border:1px solid var(--line);border-radius:9px;background:var(--surface2)}
-.releasedRangePanel label{display:grid;gap:4px;margin:0;color:var(--muted);font-size:12px}
-.releasedRangePanel input{width:110px}
-.releasedRangePanel p{margin:0;flex:1 1 220px;font-size:12px}
+.releasedRangePanel:not([hidden]){display:block}
+.releasedRangePanel{margin:8px 0 0;border:1px solid var(--line);border-radius:9px;background:var(--surface2)}
+.releasedRangePanel>summary{display:flex;align-items:center;gap:10px;min-height:38px;padding:7px 12px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer}
+.releasedRangePanel>summary small{margin-left:auto;font-weight:500}
+.releasedRangeControls{display:flex;align-items:end;flex-wrap:wrap;gap:10px;padding:0 12px 10px;border-top:1px solid #ffffff0a}
+.releasedRangePanel label{display:grid;gap:3px;margin:8px 0 0;color:var(--muted);font-size:11px}
+.releasedRangePanel input{width:132px;padding:7px 9px}
+.releasedRangePanel input[type=number]{width:105px}
+.releasedRangePanel p{margin:0 0 2px;flex:1 1 260px;font-size:11px}
 .screenshotBackfillJobPanel progress{width:100%;height:12px;margin:8px 0 4px;accent-color:var(--accent)}

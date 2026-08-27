@@ -32,8 +32,8 @@ func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"version":"v1.0.21"`) {
-		t.Fatalf("response = %s, want v1.0.21", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"version":"v1.0.22"`) {
+		t.Fatalf("response = %s, want v1.0.22", rec.Body.String())
 	}
 }
 
@@ -60,16 +60,28 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`safe=(v='')=>{v=String(v||'').trim();if(!v)return'';`,
 		`x.download_source_reference||''`,
 		`cardScreenshotTimers.get(cover)!==state||!state.indexes.length`,
+		`releasedStartDate:prefs.releasedStartDate||''`,
+		`function downloadNextRunText(`,
+		`validDate(j.finished_at)?fullDateTime(j.finished_at):'never'`,
+		`const settingsSaveStatus=$('#settingsSaveStatus')`,
+		`toast(` + "`" + `Settings not saved: ${message}` + "`" + `)`,
+		`'job_priority_screenshot_backfill'`,
+		`Basic · interval + start time`,
+		`Advanced · weekdays + time + interval`,
+		`Power user · cron expression`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("embedded app.js is missing %q", marker)
 		}
 	}
+	if count := strings.Count(string(javascript), "settingsForm.onsubmit="); count != 1 {
+		t.Fatalf("settings form has %d submit handlers, want one atomic handler", count)
+	}
 	stylesheet, err := assets.ReadFile("static/app.css")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:103px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`} {
+	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:103px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("embedded app.css is missing %q", marker)
 		}
@@ -80,6 +92,9 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	}
 	if !strings.Contains(string(markup), `aria-label="Fullscreen screenshot view"`) {
 		t.Fatal("embedded index.html is missing the fullscreen screenshot view")
+	}
+	if !strings.Contains(string(markup), `id="releasedStartDate" type="date"`) {
+		t.Fatal("embedded index.html is missing the persisted Released-tab start date")
 	}
 }
 

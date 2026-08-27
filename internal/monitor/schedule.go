@@ -154,6 +154,51 @@ func ValidateCronSchedule(raw string) error {
 	return err
 }
 
+func normalizeScheduleMode(raw, startTime, weekdays, cronText string) string {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	if mode == "basic" || mode == "advanced" || mode == "cron" {
+		return mode
+	}
+	// Preserve the behaviour of configurations saved before explicit modes
+	// existed: cron won first, then any calendar field, then the interval.
+	if strings.TrimSpace(cronText) != "" {
+		return "cron"
+	}
+	if strings.TrimSpace(startTime) != "" || strings.TrimSpace(weekdays) != "" {
+		return "advanced"
+	}
+	return "basic"
+}
+
+func nextBasicRun(now time.Time, interval time.Duration, startTime string) time.Time {
+	if strings.TrimSpace(startTime) == "" {
+		return now.Add(interval)
+	}
+	start, err := time.Parse("15:04", strings.TrimSpace(startTime))
+	if err != nil {
+		return now.Add(interval)
+	}
+	anchor := time.Date(now.Year(), now.Month(), now.Day(), start.Hour(), start.Minute(), 0, 0, now.Location())
+	if !anchor.After(now) {
+		anchor = anchor.Add(24 * time.Hour)
+	}
+	return anchor
+}
+
+func nextAdvancedRuns(now time.Time, startTime, weekdays string, interval time.Duration, count int) []time.Time {
+	candidates := nextCalendarRuns(now, startTime, weekdays, "", count*16+16)
+	runs := make([]time.Time, 0, count)
+	for _, candidate := range candidates {
+		if len(runs) == 0 || candidate.Sub(runs[len(runs)-1]) >= interval {
+			runs = append(runs, candidate)
+			if len(runs) == count {
+				break
+			}
+		}
+	}
+	return runs
+}
+
 // calendarForecastHorizon bounds how far into the future nextCalendarRuns
 // simulates before giving up on finding enough matches - a var (not a
 // const) purely so tests can shrink it instead of running a slow ~1.4M

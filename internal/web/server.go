@@ -1069,18 +1069,44 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &x) {
 		return
 	}
-	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "stash_desired_tag_id": true, "stash_desired_sync_enabled": true, "stash_desired_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true}
+	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "stash_desired_tag_id": true, "stash_desired_sync_enabled": true, "stash_desired_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true}
 	for _, kind := range monitor.JobPriorityKinds {
 		allowed[monitor.JobPrioritySettingKey(kind)] = true
 	}
-	for _, prefix := range []string{"quick_refresh", "full_refresh", "new_release_refresh"} {
-		if err := monitor.ValidateCalendarSchedule(x[prefix+"_start_time"], x[prefix+"_weekdays"]); err != nil {
-			s.problem(w, http.StatusUnprocessableEntity, prefix+": "+err.Error())
+	for _, spec := range []struct{ prefix, intervalKey string }{{"quick_refresh", "refresh_interval"}, {"full_refresh", "full_refresh_interval"}, {"new_release_refresh", "new_release_refresh_interval"}} {
+		mode := strings.ToLower(strings.TrimSpace(x[spec.prefix+"_schedule_mode"]))
+		if mode == "" {
+			mode = "basic"
+		}
+		if mode != "basic" && mode != "advanced" && mode != "cron" {
+			s.problem(w, http.StatusUnprocessableEntity, spec.prefix+": schedule mode must be Basic, Advanced, or Cron")
 			return
 		}
-		if err := monitor.ValidateCronSchedule(x[prefix+"_cron"]); err != nil {
-			s.problem(w, http.StatusUnprocessableEntity, prefix+": "+err.Error())
+		if raw, ok := x[spec.intervalKey]; ok && strings.TrimSpace(raw) != "" {
+			if parsed, err := domain.ParseScheduleDuration(raw); err != nil || parsed < time.Minute {
+				s.problem(w, http.StatusUnprocessableEntity, spec.prefix+": interval must be at least 1 minute (e.g. \"12h\", \"7d\")")
+				return
+			}
+		}
+		if mode != "cron" {
+			if err := monitor.ValidateCalendarSchedule(x[spec.prefix+"_start_time"], x[spec.prefix+"_weekdays"]); err != nil {
+				s.problem(w, http.StatusUnprocessableEntity, spec.prefix+": "+err.Error())
+				return
+			}
+		}
+		if mode == "advanced" && strings.TrimSpace(x[spec.prefix+"_start_time"]) == "" {
+			s.problem(w, http.StatusUnprocessableEntity, spec.prefix+": Advanced mode requires a start time")
 			return
+		}
+		if mode == "cron" && strings.TrimSpace(x[spec.prefix+"_cron"]) == "" {
+			s.problem(w, http.StatusUnprocessableEntity, spec.prefix+": Cron mode requires a five-field cron expression")
+			return
+		}
+		if mode == "cron" {
+			if err := monitor.ValidateCronSchedule(x[spec.prefix+"_cron"]); err != nil {
+				s.problem(w, http.StatusUnprocessableEntity, spec.prefix+": "+err.Error())
+				return
+			}
 		}
 	}
 	// download_search_interval/download_search_older_interval (Monitored
@@ -1095,8 +1121,8 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// hadn't picked up the change at all.
 	for _, key := range []string{"download_search_interval", "download_search_older_interval", "stash_sync_interval", "stash_desired_sync_interval"} {
 		if raw, ok := x[key]; ok && strings.TrimSpace(raw) != "" {
-			if parsed, err := time.ParseDuration(strings.TrimSpace(raw)); err != nil || parsed < time.Minute {
-				s.problem(w, http.StatusUnprocessableEntity, key+": schedule must be a valid duration of at least 1 minute (e.g. \"1h\", \"30m\")")
+			if parsed, err := domain.ParseScheduleDuration(strings.TrimSpace(raw)); err != nil || parsed < time.Minute {
+				s.problem(w, http.StatusUnprocessableEntity, key+": schedule must be a valid duration of at least 1 minute (e.g. \"1h\", \"30m\", \"7d\")")
 				return
 			}
 		}
