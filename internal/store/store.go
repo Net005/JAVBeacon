@@ -997,6 +997,14 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 	case "local":
 		q += ` AND r.is_local=1`
 	}
+	if f.MinReleaseDate != "" {
+		q += ` AND r.release_date>=?`
+		a = append(a, f.MinReleaseDate)
+	}
+	if f.MaxReleaseDate != "" {
+		q += ` AND r.release_date<=?`
+		a = append(a, f.MaxReleaseDate)
+	}
 	return q, a
 }
 

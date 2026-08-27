@@ -7,6 +7,65 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.20] - 2026-08-27
+
+### Added
+
+- StashApp sync's Local library sync and Desired-tag sync now show their own
+  enabled/interval state and next 3 predicted run times directly under
+  Settings → StashApp's own controls, the same way Settings → Scraping does
+  for the scrape schedules.
+- The Release Library's Released tab now has a configurable "Min days since
+  release" / "Max days since release" window, remembered across visits. The
+  tab always shows the effective date range applied ("Showing releases
+  released between X and Y", or "...released up to X" with no minimum set),
+  computed from those two settings.
+- The card "Actions" menu (Search, Search & Download, Update details, Open
+  detail) moved from its own full-width row into the Notify/Desired/Monitor
+  button row, as a compact "⋯ Actions" trigger, to save vertical space on
+  every card.
+- Release Library cards now show as many tag chips as fit on one line
+  instead of always exactly 2, adapting to the card's actual width (cover
+  size, zoom, and window size); anything that doesn't fit collapses behind
+  a "+N" badge whose hover popover lists every tag, unchanged.
+
+### Fixed
+
+- Fixed the Quick refresh / Full refresh / New Release Only scrape
+  schedules always displaying "Every 0s · Next run not yet known" regardless
+  of their actual configured or default interval - the schedule status
+  display simply wasn't looking at the same fallback interval the real
+  running scheduler uses, so it showed nothing useful even when the
+  schedule was running normally.
+- Fixed a schedule interval typed with a "d" (day) or "w" (week) suffix -
+  e.g. "7d" or "2w" - being silently rejected everywhere a schedule
+  interval is parsed (Quick/Full/New Release Only scrape schedules,
+  Monitored releases' recent/older search schedules, and StashApp's sync
+  schedules): the typed value looked accepted and was saved and echoed
+  back, but the schedule actually kept running on its old built-in default
+  interval instead, with no error shown anywhere. These fields now also
+  accept "d" and "w" units in addition to Go's usual s/m/h.
+- Fixed "Monitored releases (older)" on Download Monitoring getting stuck on
+  "Loading schedule…" the first time you navigated to that view in a
+  session (as opposed to landing there via a full page reload), instead of
+  showing its actual schedule status.
+- Removed the generic "Scheduled runs" panel from Download Monitoring - it
+  mixed together scrape, StashApp sync, and download-monitoring schedules
+  that don't otherwise belong on that page. Each group's status now lives
+  next to the settings that actually control it instead (see Added, above).
+- The Released tab could show releases whose release date is still in the
+  future, because it only checked the release's stored "released" flag,
+  which doesn't always agree with the release date. It now also excludes
+  anything dated after today by default, and further narrows that with the
+  new configurable min/max-days-since-release window described above.
+- Fixed the tag chip overflow popover (hover the "+N" badge to see every
+  tag) sometimes closing itself before you could reach and click a tag
+  inside it.
+- The card "Actions" menu (see Added, above) previously opened on mouse
+  hover as well as on click, which meant a mouse just passing over a card
+  could pop its menu open unintentionally; it now only opens and closes on
+  click.
+
 ## [1.0.19] - 2026-08-27
 
 ### Changed
@@ -350,7 +409,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.19...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.20...HEAD
+[1.0.20]: https://github.com/Net005/JAVBeacon/compare/v1.0.19...v1.0.20
 [1.0.19]: https://github.com/Net005/JAVBeacon/compare/v1.0.18...v1.0.19
 [1.0.18]: https://github.com/Net005/JAVBeacon/compare/v1.0.17...v1.0.18
 [1.0.17]: https://github.com/Net005/JAVBeacon/compare/v1.0.16...v1.0.17

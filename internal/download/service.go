@@ -1096,7 +1096,7 @@ func (s *Service) SearchSchedule(ctx context.Context) {
 	for {
 		settings, _ := s.store.Settings(ctx)
 		wait := time.Hour
-		if parsed, err := time.ParseDuration(settings["download_search_interval"]); err == nil && parsed >= time.Minute {
+		if parsed, err := domain.ParseScheduleDuration(settings["download_search_interval"]); err == nil && parsed >= time.Minute {
 			wait = parsed
 		}
 		now := time.Now()
@@ -1138,7 +1138,7 @@ func (s *Service) OlderSearchSchedule(ctx context.Context) {
 	for {
 		settings, _ := s.store.Settings(ctx)
 		wait := 24 * time.Hour
-		if parsed, err := time.ParseDuration(settings["download_search_older_interval"]); err == nil && parsed >= time.Minute {
+		if parsed, err := domain.ParseScheduleDuration(settings["download_search_older_interval"]); err == nil && parsed >= time.Minute {
 			wait = parsed
 		}
 		now := time.Now()
@@ -1280,7 +1280,7 @@ func (s *Service) SearchScheduleForecast(ctx context.Context) []domain.ScheduleF
 // by repeatedly adding its interval to the loop's live next-check time.
 func (s *Service) intervalScheduleForecast(mode, name string, enabled bool, rawInterval string, fallback time.Duration) domain.ScheduleForecast {
 	interval := fallback
-	if parsed, err := time.ParseDuration(rawInterval); err == nil && parsed >= time.Minute {
+	if parsed, err := domain.ParseScheduleDuration(rawInterval); err == nil && parsed >= time.Minute {
 		interval = parsed
 	}
 	forecast := domain.ScheduleForecast{Group: "Download monitoring", Name: name, Enabled: enabled, Interval: interval.String()}

@@ -531,7 +531,7 @@ func (s *Service) Schedule(ctx context.Context) {
 	lastAttempt := time.Now()
 	for {
 		settings, _ := s.store.Settings(ctx)
-		interval, err := time.ParseDuration(settings["stash_sync_interval"])
+		interval, err := domain.ParseScheduleDuration(settings["stash_sync_interval"])
 		if err != nil || interval < time.Minute {
 			interval = 6 * time.Hour
 		}
@@ -568,7 +568,7 @@ func (s *Service) DesiredSchedule(ctx context.Context) {
 	lastAttempt := time.Now()
 	for {
 		settings, _ := s.store.Settings(ctx)
-		interval, err := time.ParseDuration(settings["stash_desired_sync_interval"])
+		interval, err := domain.ParseScheduleDuration(settings["stash_desired_sync_interval"])
 		if err != nil || interval < time.Minute {
 			interval = 6 * time.Hour
 		}
@@ -631,7 +631,7 @@ func (s *Service) ScheduleForecast(ctx context.Context) []domain.ScheduleForecas
 // extrapolating scheduleForecastRunCount future runs by repeatedly adding
 // its interval to the loop's live next-check time.
 func (s *Service) intervalScheduleForecast(mode, name string, enabled bool, rawInterval string) domain.ScheduleForecast {
-	interval, err := time.ParseDuration(rawInterval)
+	interval, err := domain.ParseScheduleDuration(rawInterval)
 	if err != nil || interval < time.Minute {
 		interval = 6 * time.Hour
 	}

@@ -218,7 +218,7 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		st.Close()
 		return nil, err
 	}
-	mon := monitor.New(st, akiba, javlibrary, coverCache, cfg.PageLimit, log, screenshotCache)
+	mon := monitor.New(st, akiba, javlibrary, coverCache, cfg.PageLimit, log, cfg.RefreshEvery, screenshotCache)
 	downloadService := download.New(st, cfg.RequestTimeout, log)
 	stashSync := stash.New(st, cfg.RequestTimeout, log, javlibrary, downloadService)
 	mon.OnRelease(func(r domain.Release) { downloadService.Auto(context.Background(), r) })

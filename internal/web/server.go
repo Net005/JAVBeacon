@@ -1252,10 +1252,24 @@ func (s *Server) deleteSite(w http.ResponseWriter, r *http.Request) {
 // not asking to see ignored releases anyway - the common case (a settings
 // lookup this function's own callers already had to make regardless)
 // avoids threading store access into this otherwise-pure helper.
+// validReleaseDateBound returns raw unchanged if it parses as a plain
+// "YYYY-MM-DD" date, and "" otherwise - so a malformed min/max_release_date
+// query parameter is silently ignored (treated as "no bound") rather than
+// reaching the store as a nonsense string comparison.
+func validReleaseDateBound(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if _, err := time.Parse("2006-01-02", raw); err != nil {
+		return ""
+	}
+	return raw
+}
+
 func releaseFilterFromQuery(q url.Values, settings map[string]string) domain.ReleaseFilter {
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
-	f := domain.ReleaseFilter{Search: q.Get("search"), Site: q.Get("site"), Status: q.Get("status"), Sort: q.Get("sort"), Direction: q.Get("direction"), Category: q.Get("category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), Desired: q.Get("desired") == "true", MonitorDownload: q.Get("monitor_download") == "true", HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Limit: limit, Offset: offset}
+	f := domain.ReleaseFilter{Search: q.Get("search"), Site: q.Get("site"), Status: q.Get("status"), Sort: q.Get("sort"), Direction: q.Get("direction"), Category: q.Get("category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), Desired: q.Get("desired") == "true", MonitorDownload: q.Get("monitor_download") == "true", HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", MinReleaseDate: validReleaseDateBound(q.Get("min_release_date")), MaxReleaseDate: validReleaseDateBound(q.Get("max_release_date")), Limit: limit, Offset: offset}
 	if !f.ShowNonPreferred {
 		f.IgnoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
 		f.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])

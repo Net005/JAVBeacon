@@ -76,7 +76,7 @@ func newRefreshTestService(t *testing.T, mux *http.ServeMux) (*Service, domain.R
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := New(st, akiba, javlib, coverCache, 1, slog.Default(), screenshotCache)
+	service := New(st, akiba, javlib, coverCache, 1, slog.Default(), time.Hour, screenshotCache)
 	return service, items[0]
 }
 
