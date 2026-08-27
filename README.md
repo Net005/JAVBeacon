@@ -120,11 +120,11 @@ also be pulled directly for deployments that deliberately require a fixed
 release:
 
 ```bash
-docker pull ghcr.io/net005/javbeacon:1.0.20
+docker pull ghcr.io/net005/javbeacon:1.0.21
 docker pull ghcr.io/net005/javbeacon:latest
 ```
 
-Published tags include `v1.0.20`, `1.0.20`, `1.0`, and `latest`. See the
+Published tags include `v1.0.21`, `1.0.21`, `1.0`, and `latest`. See the
 [JAVBeacon GitHub package](https://github.com/Net005/JAVBeacon/pkgs/container/javbeacon)
 for available versions and digests. To build the application image locally
 instead, keep the repository checkout and run `docker compose up -d --build`.
@@ -145,7 +145,7 @@ docker run -d \
   --shm-size 512m \
   ghcr.io/thephaseless/byparr:latest
 
-docker build --build-arg VERSION=1.0.20 -t javbeacon:1.0.20 .
+docker build --build-arg VERSION=1.0.21 -t javbeacon:1.0.21 .
 docker volume create javbeacon-data
 
 docker run -d \
@@ -157,7 +157,7 @@ docker run -d \
   -e JAVBEACON_INITIAL_USERNAME=admin \
   -e JAVBEACON_INITIAL_PASSWORD='replace-with-a-long-password' \
   -e JAVBEACON_FLARESOLVERR_URL='http://javbeacon-byparr:8191/v1' \
-  javbeacon:1.0.20
+  javbeacon:1.0.21
 ```
 
 If initial credentials are not supplied, JAVBeacon creates `admin` / `changeme123`. Change them immediately.
@@ -284,7 +284,7 @@ The web client is embedded from `internal/web/static` into the Go binary.
 JAVBeacon uses semantic versions. `internal/version/VERSION` is the source of
 truth used by local builds, Docker image metadata, the version API, and the
 frontend. Release tags use the same value with a `v` prefix—for example,
-`VERSION=1.0.20` is released as `v1.0.20`.
+`VERSION=1.0.21` is released as `v1.0.21`.
 
 Pushing a matching `v*` tag runs the GitHub release workflow. It executes the
 test suite, validates the Compose stack, builds Linux, macOS, and Windows
