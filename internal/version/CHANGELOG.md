@@ -7,6 +7,42 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.29] - 2026-08-28
+
+### Added
+
+- Closing Release Details after browsing now returns the Release Library to
+  the release that was actually being viewed, focuses its card, and briefly
+  highlights it. This also waits for fullscreen mode to finish closing before
+  restoring the library position.
+
+### Changed
+
+- Release Library infinite scrolling now preloads the next batch at roughly
+  60% page depth and appends cards without rebuilding the existing grid, for a
+  smoother continuous scroll. Release Details starts preloading when 25 items
+  remain in its navigation list.
+- Release Details screenshot thumbnails and their rail are 30% taller, with
+  proportionally wider thumbnails for easier previewing.
+
+### Fixed
+
+- Loading a saved filter set now synchronizes its stored tab with the visible
+  Release Library tab. This fixes Hide Local appearing ineffective and Fade
+  Local dimming every card when a preset's hidden state was still on Local.
+- A filter or preset change made while an older release batch was still
+  loading can no longer be blocked by that stale request or append stale rows.
+- Release Details navigation now retains its live Release Library context
+  after the first Next/Previous action, allowing later batches to keep loading.
+- Bottom-right notifications are now a contained fixed overlay and no longer
+  resize or shift the cover and screenshot layout in Release Details.
+- The sidebar gives the version badge guaranteed space so the full version is
+  readable instead of being clipped by the Sign out control.
+- Download Activity's dynamically-added filter, sort, cover-size, and page-size
+  controls now share a consistent bottom baseline and control height.
+- Release workflow tests now validate against the current application version,
+  fixing the stale v1.0.27 assertion that stopped the v1.0.28 GHCR build.
+
 ## [1.0.28] - 2026-08-28
 
 ### Changed

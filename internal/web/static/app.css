@@ -113,7 +113,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .scrapeTiming{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.scrapeTiming label{min-width:0}.downloadRunTable{overflow:auto;border:1px solid var(--line);border-radius:9px}.downloadRunHead,.downloadRunRow{display:grid;grid-template-columns:minmax(120px,1.2fr) minmax(155px,1.5fr) repeat(5,minmax(72px,.65fr)) minmax(150px,1.5fr);gap:10px;align-items:center;min-width:900px;padding:10px 12px}.downloadRunHead{background:var(--surface2);color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px}.downloadRunRow{border-top:1px solid var(--line);font-size:11px}.downloadRunRow small{overflow:hidden;color:var(--muted);text-overflow:ellipsis;white-space:nowrap}.runDownloaded{color:#8ee6bd;font-weight:800}.runFailed{color:#ff8995;font-weight:800}@media(max-width:700px){.scrapeTiming{grid-template-columns:1fr}}
 .downloadReplacementStatus{margin:.65rem 0;padding:.7rem .85rem;border:1px solid var(--line);border-radius:10px;background:var(--surface2)}
 
-.sidebarFooter{display:flex;align-items:center;gap:6px;margin-top:auto;min-width:0;padding-top:8px;border-top:1px solid #252a33}.sidebarFooter #logout{order:1;flex:1;width:auto;margin-top:0;padding:8px}.sidebarFooter #appVersion{order:2;display:block;flex:none;padding:3px 7px;border:1px solid #303643;border-radius:999px;background:#12161e;color:#9ba3b2;font:700 10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.25px}.navCollapsed .sidebarFooter #appVersion,.navCollapsedInitial .sidebarFooter #appVersion{display:none}@media(max-width:650px){.sidebarFooter{display:none}}
+.sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr);align-items:center;gap:6px;margin-top:auto;min-width:0;padding-top:8px;border-top:1px solid #252a33}.sidebarFooter #appVersion{display:block;min-width:max-content;padding:3px 7px;white-space:nowrap;border:1px solid #303643;border-radius:999px;background:#12161e;color:#9ba3b2;font:700 10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.25px}.sidebarFooter #logout{min-width:0;width:auto;margin-top:0;padding:8px;gap:7px}.sidebarFooter #logout span{min-width:0;overflow:hidden;text-overflow:ellipsis}.navCollapsed .sidebarFooter #appVersion,.navCollapsedInitial .sidebarFooter #appVersion{display:none}@media(max-width:650px){.sidebarFooter{display:none}}
 
 /* Release detail Source/StashApp row fix: don't let horizontal overflow create
    an implicit vertical clipping container around the taller link button. */
@@ -779,7 +779,9 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 
 /* App-native action confirmations and modal-safe notifications. Popovers are
    promoted to the browser's top layer, so release details cannot cover them. */
-#toast[popover]{position:fixed;inset:auto 22px 22px auto;margin:0;padding:12px 18px;border:1px solid #7d3541;border-radius:8px;background:#28151a;color:var(--text);z-index:10000}
+#toast[popover]{position:fixed!important;inset:auto 22px 22px auto!important;width:max-content;max-width:min(420px,calc(100vw - 44px));margin:0!important;padding:12px 18px;border:1px solid #7d3541;border-radius:8px;background:#28151a;color:var(--text);box-shadow:0 14px 38px #000b;contain:layout paint;z-index:10000}
+.card.returnFocus{opacity:1!important;outline:3px solid color-mix(in srgb,var(--accent) 88%,white);outline-offset:4px;animation:returnReleaseFocus 2.2s ease-out;scroll-margin-block:18vh}
+@keyframes returnReleaseFocus{0%,30%{box-shadow:0 0 0 7px color-mix(in srgb,var(--accent) 35%,transparent),0 0 42px color-mix(in srgb,var(--accent) 65%,transparent);border-color:var(--accent)}100%{box-shadow:0 10px 26px #0008}}
 .actionConfirmDialog{width:min(92vw,520px);z-index:10001}
 .actionConfirmMessage{white-space:pre-line;color:var(--muted);line-height:1.65}
 .actionConfirmDialog .dialogActions button{min-width:120px}
@@ -835,7 +837,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .detailScreenshotRail{flex:1;min-width:0;display:flex;gap:8px;overflow-x:auto;scroll-snap-type:x proximity;scrollbar-width:none;padding-bottom:0;cursor:grab}
 .detailScreenshotRail::-webkit-scrollbar{display:none}
 .detailScreenshotRail.dragging{cursor:grabbing;scroll-snap-type:none}
-.detailScreenshotRail button{flex:0 0 clamp(138px,18%,239px);height:103px;padding:0;overflow:hidden;border:1px solid #3b414d;border-radius:7px;background:#050609;scroll-snap-align:start}
+.detailScreenshotRail button{flex:0 0 clamp(179px,18%,311px);height:134px;padding:0;overflow:hidden;border:1px solid #3b414d;border-radius:7px;background:#050609;scroll-snap-align:start}
 .detailScreenshotRail button:hover,.detailScreenshotRail button:focus-visible{border-color:var(--accent);box-shadow:0 0 0 1px #e44b5966}
 .detailScreenshotRail img{display:block;width:100%;height:100%;object-fit:cover}
 .detailScreenshotNav{flex:0 0 auto;display:grid;place-items:center;width:32px;height:32px;padding:0;border:1px solid #687283;border-radius:50%;background:#111720e8;color:#fff;font-size:18px;box-shadow:0 6px 16px #000b}
@@ -945,3 +947,9 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .cardMetadataValues button{flex:0 0 auto;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cardMetadataValues i{color:#5f6672;font-style:normal}
 .stashSyncSummary{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.stashSyncSummary p{margin-bottom:6px}.stashSyncSummary small{overflow:hidden;color:#8e98a7;text-overflow:ellipsis;white-space:nowrap}.stashSyncProgress{width:100%;height:12px;margin:4px 0 7px;overflow:hidden;border:0;border-radius:99px;accent-color:var(--accent)}.errorText{color:#ff8e9b}
+
+/* Keep dynamically-added Download Activity filters on one control baseline. */
+.downloadToolbar{align-items:flex-end;column-gap:10px;row-gap:10px}
+.downloadToolbar>label{margin:0}
+.downloadToolbar>.check{align-self:flex-end;min-height:40px}
+.downloadToolbar>select,.downloadToolbar>button,.downloadToolbar>input:not([type="range"]){min-height:40px}

@@ -363,6 +363,38 @@ func TestReleaseConditionsSupportMetadataDatesNumbersAndStates(t *testing.T) {
 	}
 }
 
+func TestStructuredReleaseSearchCanHideLocalMatches(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "structured-hide-local.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Tag", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, release := range []domain.Release{
+		{SiteID: site.ID, VideoID: "LOCAL-1", Title: "Drug story", Genres: []string{"Drug"}},
+		{SiteID: site.ID, VideoID: "REMOTE-1", Title: "Drug story", Genres: []string{"Drug"}},
+	} {
+		if _, err := s.UpsertRelease(ctx, release); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET is_local=1,stash_scene_id='scene-local-1' WHERE video_id='LOCAL-1'`); err != nil {
+		t.Fatal(err)
+	}
+	expr := `{"logic":"and","conditions":[{"field":"tag","value":"Drug","exact":true}]}`
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{SearchExpression: expr, HideLocal: true, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].VideoID != "REMOTE-1" || rows[0].Local {
+		t.Fatalf("structured search with hide-local returned %+v, want only REMOTE-1", rows)
+	}
+}
+
 func TestActressSearchAcceptsReversedTwoPartNames(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "actress-search.db"))

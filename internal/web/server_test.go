@@ -22,6 +22,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/logging"
 	"github.com/Net005/JAVBeacon/internal/screenshots"
 	"github.com/Net005/JAVBeacon/internal/store"
+	buildversion "github.com/Net005/JAVBeacon/internal/version"
 )
 
 func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
@@ -32,8 +33,9 @@ func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"version":"v1.0.27"`) {
-		t.Fatalf("response = %s, want v1.0.27", rec.Body.String())
+	expected := fmt.Sprintf(`"version":%q`, buildversion.Current())
+	if !strings.Contains(rec.Body.String(), expected) {
+		t.Fatalf("response = %s, want %s", rec.Body.String(), expected)
 	}
 }
 
@@ -74,6 +76,12 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`${filterButton(x.label,'Label')||'—'}`,
 		`class="stashSyncProgress"`,
 		`j.current_item?`,
+		`function syncReleaseTabControls()`,
+		`viewportBottom>=pageHeight*.60`,
+		`releaseNavIDs.length-idx-1>25`,
+		`releaseNavFromGrid?null:releaseNavIDs`,
+		`function focusReleaseCard(id)`,
+		`returnToGrid=releaseNavFromGrid&&!releasesView.hidden`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("embedded app.js is missing %q", marker)
@@ -86,7 +94,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:103px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.cardMetadataRole{`, `.stashSyncProgress{`} {
+	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:134px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.cardMetadataRole{`, `.stashSyncProgress{`, `.sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr)`, `.sidebarFooter #appVersion{display:block;min-width:max-content`, `#toast[popover]{position:fixed!important;inset:auto 22px 22px auto!important`, `.card.returnFocus{`, `.downloadToolbar{align-items:flex-end;`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("embedded app.css is missing %q", marker)
 		}
