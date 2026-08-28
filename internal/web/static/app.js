@@ -538,7 +538,7 @@ function settingsTab(name,persist=true){prefs.settingsTab=name;$$('.settingsTabs
 function applySettingsFilter(){const q=(settingsSearch?.value||'').trim(),activeTab=prefs.settingsTab||'general';$$('.settingsGrid>.panel').forEach(p=>{p.hidden=q?!wildcardMatch(p.textContent,q):(p.dataset.settingsTab||'general')!==activeTab})}
 function syncReleaseTabControls(){const desired=!!prefs.desired;$$('#releasesView .subtabs button').forEach(b=>b.classList.toggle('active',(b.dataset.status||'')===(prefs.activeTab||'')&&String(!!b.dataset.desired)===String(desired)));updateReleasedRangeStatus();updateUpcomingRangeStatus()}
 function statusTab(value,desired=false,persist=true){prefs.activeTab=value||'';prefs.desired=desired;syncSortForTab();syncReleaseTabControls();if(persist){savePreferences();loadReleases()}}
-releasedStartDate.onchange=releasedMinDays.onchange=releasedMaxDays.onchange=()=>{prefs.releasedStartDate=releasedStartDate.value||isoDateDaysAgo(0);prefs.releasedMinDays=releasedMinDays.value;prefs.releasedMaxDays=releasedMaxDays.value;updateReleasedRangeStatus();savePreferences();loadReleases()};
+releasedStartDate.onchange=releasedMinDays.onchange=releasedMaxDays.onchange=()=>{prefs.releasedStartDate=releasedStartDate.value||isoDateDaysAgo(0);prefs.releasedMinDays=releasedMinDays.value;prefs.releasedMaxDays=releasedMaxDays.value;updateReleasedRangeStatus();savePreferencesNow();loadReleases()};
 releasedRangePanel.addEventListener('toggle',()=>{prefs.releasedRangeOpen=releasedRangePanel.open;savePreferences()});
 // Upcoming tab's "days in future" bound - same persistent foldable-panel
 // style/UX as the Released tab's date-range panel above.
