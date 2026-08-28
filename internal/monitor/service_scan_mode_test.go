@@ -13,6 +13,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/covers"
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"github.com/Net005/JAVBeacon/internal/scraper"
+	"github.com/Net005/JAVBeacon/internal/screenshots"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
 
@@ -40,6 +41,10 @@ func newSiteScanTestService(t *testing.T, detailHandler http.HandlerFunc) (*Serv
 	mux.HandleFunc("/cover.jpg", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/jpeg")
 		_, _ = w.Write([]byte("finished release cover"))
+	})
+	mux.HandleFunc("/full-shot.jpg", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("full-size screenshot"))
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -71,7 +76,11 @@ func newSiteScanTestService(t *testing.T, detailHandler http.HandlerFunc) (*Serv
 	}
 	javlib := scraper.NewJavLibrary(2*time.Second, "", 0, slog.Default())
 	akiba := scraper.NewAkiba("", "", 2*time.Second, slog.Default())
-	service := New(st, akiba, javlib, coverCache, 1, slog.Default(), time.Hour)
+	screenshotCache, err := screenshots.New(t.TempDir(), 2*time.Second, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, akiba, javlib, coverCache, 1, slog.Default(), time.Hour, screenshotCache)
 	return service, site, items[0]
 }
 
@@ -180,6 +189,32 @@ func TestQuickModeRefreshesArtworkForAnExistingRelease(t *testing.T) {
 	}
 }
 
+func TestQuickModeRepairsScreenshotsWithoutUpdatingExistingMetadata(t *testing.T) {
+	service, site, release := newSiteScanTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(javLibraryDetailFixture("New Title From Site", "2024-06-06") + `<div class="previewthumbs"><a href="/full-shot.jpg"><img src="/thumb-shot.jpg"></a></div>`))
+	})
+	if err := service.StartOptions(context.Background(), RefreshOptions{SiteID: site.ID, Mode: "quick", Scheduled: true}); err != nil {
+		t.Fatal(err)
+	}
+	job := waitForSiteJob(t, service)
+	if job.Updated != 0 || job.Skipped != 1 {
+		t.Fatalf("job=%+v, want metadata skipped while screenshots are repaired", job)
+	}
+	stored, err := service.store.Release(context.Background(), release.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Title != "Old Title" || stored.ReleaseDate != "2024-01-01" {
+		t.Fatalf("Quick refresh changed metadata while repairing screenshots: %+v", stored)
+	}
+	if len(stored.Screenshots) != 1 {
+		t.Fatalf("stored screenshots=%v, want one screenshot URL", stored.Screenshots)
+	}
+	if info, err := os.Stat(service.screenshots.Path(release.VideoID, 0)); err != nil || info.Size() == 0 {
+		t.Fatalf("Quick refresh did not cache screenshot: info=%v err=%v", info, err)
+	}
+}
+
 // TestFullModeUpdatesAnExistingReleaseFoundInThePageScan covers the other
 // half of the Quick/Full split: Full refresh (Mode=="full") both adds new
 // releases and updates every existing release its page scan finds, so the
@@ -202,6 +237,29 @@ func TestFullModeUpdatesAnExistingReleaseFoundInThePageScan(t *testing.T) {
 	}
 	if stored.Title != "New Title From Site" || stored.ReleaseDate != "2024-06-06" {
 		t.Fatalf("Full refresh must update an existing release with the freshly scraped page, got %+v", stored)
+	}
+}
+
+func TestFullModeCachesScreenshotsForAnExistingRelease(t *testing.T) {
+	service, site, release := newSiteScanTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(javLibraryDetailFixture("New Title From Site", "2024-06-06") + `<div class="previewthumbs"><a href="/full-shot.jpg"><img src="/thumb-shot.jpg"></a></div>`))
+	})
+	if err := service.StartOptions(context.Background(), RefreshOptions{SiteID: site.ID, Mode: "full", Scheduled: true}); err != nil {
+		t.Fatal(err)
+	}
+	job := waitForSiteJob(t, service)
+	if job.Updated != 1 || job.Error != "" {
+		t.Fatalf("job=%+v, want one successful full-refresh update", job)
+	}
+	stored, err := service.store.Release(context.Background(), release.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Screenshots) != 1 {
+		t.Fatalf("stored screenshots=%v, want one screenshot URL", stored.Screenshots)
+	}
+	if info, err := os.Stat(service.screenshots.Path(release.VideoID, 0)); err != nil || info.Size() == 0 {
+		t.Fatalf("Full refresh did not cache screenshot: info=%v err=%v", info, err)
 	}
 }
 

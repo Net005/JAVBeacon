@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -379,13 +381,24 @@ func parseJavLibraryDetail(doc *html.Node, raw string) domain.Release {
 		r.ImageURL = resolve(raw, attr(n, "src"))
 	}
 	for _, preview := range findAll(doc, func(n *html.Node) bool { return hasClass(n, "previewthumbs") }) {
-		for _, link := range findAll(preview, func(n *html.Node) bool { return n.Data == "a" }) {
+		links := findAll(preview, func(n *html.Node) bool { return n.Data == "a" })
+		for _, link := range links {
 			shot := resolve(raw, attr(link, "href"))
 			if shot == "" {
 				if image := first(link, func(n *html.Node) bool { return n.Data == "img" }); image != nil {
 					shot = resolve(raw, attr(image, "src"))
 				}
 			}
+			if isScreenshotURL(shot) {
+				r.Screenshots = appendUnique(r.Screenshots, shot)
+			}
+		}
+		// Some JavLibrary pages expose some or all preview thumbnails as direct
+		// children instead of wrapping them in full-size links. In that form
+		// the thumbnail filename is the only source available; DMM's full-size
+		// preview convention inserts "jp" immediately before the shot number.
+		for _, image := range findAll(preview, func(n *html.Node) bool { return n.Data == "img" && n.Parent == preview }) {
+			shot := fullSizeScreenshotURL(resolve(raw, attr(image, "src")))
 			if isScreenshotURL(shot) {
 				r.Screenshots = appendUnique(r.Screenshots, shot)
 			}
@@ -557,6 +570,25 @@ func isScreenshotURL(raw string) bool {
 	}
 	path := strings.ToLower(u.Path)
 	return strings.HasSuffix(path, ".jpg") || strings.HasSuffix(path, ".jpeg") || strings.HasSuffix(path, ".png") || strings.HasSuffix(path, ".webp")
+}
+
+func fullSizeScreenshotURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return raw
+	}
+	if !strings.EqualFold(u.Hostname(), "pics.dmm.co.jp") {
+		return u.String()
+	}
+	name := path.Base(u.Path)
+	ext := path.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	if i := strings.LastIndex(stem, "-"); i > 0 {
+		if _, err := strconv.Atoi(stem[i+1:]); err == nil && !strings.HasSuffix(stem[:i], "jp") {
+			u.Path = path.Join(path.Dir(u.Path), stem[:i]+"jp"+stem[i:]+ext)
+		}
+	}
+	return u.String()
 }
 func lastPath(raw string) string {
 	u, e := url.Parse(raw)
