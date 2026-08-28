@@ -68,6 +68,36 @@ func TestJavLibraryRejectsCloudflareChallengeFromFlareSolverr(t *testing.T) {
 	}
 }
 
+func TestJavLibraryRetriesTransientInvalidListingResponse(t *testing.T) {
+	withFastRetryBackoff(t)
+	attempts := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/list", func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 3 {
+			_, _ = w.Write([]byte(`<html><body><p>Temporary incomplete response</p></body></html>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<html><div class="video"><a href="/javabc123.html" title="Recovered listing"><img src="/abc00123ps.jpg"></a><div class="id">ABC-123</div></div></html>`))
+	})
+	mux.HandleFunc("/javabc123.html", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<html><title>Recovered detail - JAVLibrary</title><img id="video_jacket_img" src="/abc00123pl.jpg"></html>`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	items, err := NewJavLibrary(2*time.Second, "", 0, nil).Scrape(context.Background(), server.URL+"/list", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 {
+		t.Fatalf("listing attempts=%d, want initial request plus two retries", attempts)
+	}
+	if len(items) != 1 || items[0].VideoID != "ABC-123" {
+		t.Fatalf("items=%+v, want recovered ABC-123 listing", items)
+	}
+}
+
 // TestNormalizeJavLibraryURL covers the https-enforcement fix: any
 // javlibrary.com/www.javlibrary.com URL, whatever scheme or host variant it
 // arrived with, must be rewritten to https://www.javlibrary.com so scraping

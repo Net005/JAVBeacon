@@ -39,8 +39,9 @@ const DefaultQuery = `query JAVBeaconLocalScenes { findScenes(filter: { per_page
 // fallback in fetchPlaybackStats: try the full query first, and if the
 // whole request errors, retry without o_history so the O-Counter/Play
 // Count/Last Played figures still sync even when Last O Count Date can't.
-const playbackStatsQueryWithHistory = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id created_at o_counter play_count last_played_at o_history } } }`
-const playbackStatsQueryBasic = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id created_at o_counter play_count last_played_at } } }`
+const playbackStatsQueryWithHistory = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id o_counter play_count last_played_at o_history } } }`
+const playbackStatsQueryBasic = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id o_counter play_count last_played_at } } }`
+const sceneCreatedAtQuery = `query JAVBeaconSceneCreatedAt { findScenes(filter: { per_page: -1 }) { scenes { id created_at } } }`
 
 // playbackStats is one scene's parsed O-Counter/Play Count/Last Played/Last
 // O Count Date figures, keyed by StashApp scene ID in fetchPlaybackStats's
@@ -48,7 +49,6 @@ const playbackStatsQueryBasic = `query JAVBeaconPlaybackStats { findScenes(filte
 // (the basic-tier query was used, or the scene's o_history was empty) - see
 // SetStashPlaybackStats's doc comment for how run() treats that.
 type playbackStats struct {
-	CreatedAt    string
 	OCounter     int
 	PlayCount    int
 	LastPlayedAt string
@@ -58,13 +58,17 @@ type playbackStats struct {
 var idInText = regexp.MustCompile(`(?i)[a-z]{2,}[\s_-]*0*[0-9]{2,7}`)
 
 type Status struct {
-	Running    bool      `json:"running"`
-	StartedAt  time.Time `json:"started_at,omitempty"`
-	FinishedAt time.Time `json:"finished_at,omitempty"`
-	Scenes     int       `json:"scenes"`
-	Matched    int       `json:"matched"`
-	Updated    int       `json:"updated"`
-	Error      string    `json:"error,omitempty"`
+	Running     bool      `json:"running"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+	FinishedAt  time.Time `json:"finished_at,omitempty"`
+	Phase       string    `json:"phase,omitempty"`
+	Scenes      int       `json:"scenes"`
+	Total       int       `json:"total"`
+	Processed   int       `json:"processed"`
+	Matched     int       `json:"matched"`
+	Updated     int       `json:"updated"`
+	CurrentItem string    `json:"current_item,omitempty"`
+	Error       string    `json:"error,omitempty"`
 }
 
 type DesiredStatus struct {
@@ -128,13 +132,19 @@ func New(st store.Store, timeout time.Duration, log *slog.Logger, jav *scraper.J
 
 func (s *Service) Status() Status { s.mu.RLock(); defer s.mu.RUnlock(); return s.status }
 
+func (s *Service) publishStatus(status Status) {
+	s.mu.Lock()
+	s.status = status
+	s.mu.Unlock()
+}
+
 func (s *Service) Start(ctx context.Context) error {
 	s.mu.Lock()
 	if s.status.Running {
 		s.mu.Unlock()
 		return errors.New("Stash sync already running")
 	}
-	s.status = Status{Running: true, StartedAt: time.Now().UTC()}
+	s.status = Status{Running: true, StartedAt: time.Now().UTC(), Phase: "Preparing"}
 	s.mu.Unlock()
 	go s.run(context.WithoutCancel(ctx))
 	return nil
@@ -142,13 +152,29 @@ func (s *Service) Start(ctx context.Context) error {
 
 func (s *Service) run(ctx context.Context) {
 	result := s.Status()
+	if result.StartedAt.IsZero() {
+		result.Running = true
+		result.StartedAt = time.Now().UTC()
+	}
 	defer func() {
 		result.Running = false
 		result.FinishedAt = time.Now().UTC()
-		s.mu.Lock()
-		s.status = result
-		s.mu.Unlock()
+		result.CurrentItem = ""
+		if result.Error == "" {
+			result.Phase = "Complete"
+		} else {
+			result.Phase = "Failed"
+		}
+		s.publishStatus(result)
+		fields := []any{"scenes", result.Scenes, "total", result.Total, "processed", result.Processed, "matched", result.Matched, "updated", result.Updated, "duration", result.FinishedAt.Sub(result.StartedAt).Round(time.Millisecond)}
+		if result.Error != "" {
+			s.log.Error("Stash local release sync finished with an error", append(fields, "error", result.Error)...)
+		} else {
+			s.log.Info("Stash local release sync completed", fields...)
+		}
 	}()
+	result.Phase = "Loading settings"
+	s.publishStatus(result)
 	settings, err := s.store.Settings(ctx)
 	if err != nil {
 		result.Error = err.Error()
@@ -165,11 +191,19 @@ func (s *Service) run(ctx context.Context) {
 		query = DefaultQuery
 	}
 	s.log.Info("Stash local release sync started", "url", url)
+	result.Phase = "Fetching StashApp scenes"
+	s.publishStatus(result)
 	ids, dates, scenes, err := s.fetch(ctx, url, query, apiKey)
 	result.Scenes = scenes
 	if err != nil {
 		result.Error = err.Error()
-		s.log.Error("Stash sync failed", "url", url, "error", err)
+		return
+	}
+	result.Phase = "Fetching StashApp details"
+	s.publishStatus(result)
+	createdAtByScene, createdAtErr := s.fetchSceneCreatedAt(ctx, url, apiKey)
+	if createdAtErr != nil {
+		result.Error = "fetch StashApp scene creation dates: " + createdAtErr.Error()
 		return
 	}
 	// Playback stats are a separate, best-effort pass (see the doc comment
@@ -183,6 +217,24 @@ func (s *Service) run(ctx context.Context) {
 		s.log.Warn("Stash playback-stats sync skipped", "url", url, "error", statsErr)
 		stats = nil
 	}
+	total, err := s.store.ReleasesCount(ctx, domain.ReleaseFilter{})
+	if err != nil {
+		result.Error = err.Error()
+		return
+	}
+	result.Total = total
+	result.Phase = "Matching releases"
+	s.publishStatus(result)
+	s.log.Info("Stash local release sync matching started", "scenes", scenes, "identifiers", len(ids), "releases", total)
+	advanceProgress := func() {
+		result.Processed++
+		if result.Processed%25 == 0 || result.Processed == result.Total {
+			s.publishStatus(result)
+		}
+		if result.Processed%500 == 0 || result.Processed == result.Total {
+			s.log.Info("Stash local release sync progress", "processed", result.Processed, "total", result.Total, "matched", result.Matched, "updated", result.Updated, "current_item", result.CurrentItem)
+		}
+	}
 	for offset := 0; ; offset += 500 {
 		releases, e := s.store.Releases(ctx, domain.ReleaseFilter{Limit: 500, Offset: offset})
 		if e != nil {
@@ -190,6 +242,8 @@ func (s *Service) run(ctx context.Context) {
 			return
 		}
 		for _, release := range releases {
+			result.CurrentItem = release.VideoID
+			releaseUpdated := false
 			key := canonical(release.VideoID)
 			sceneID, local := ids[key]
 			if local {
@@ -198,10 +252,11 @@ func (s *Service) run(ctx context.Context) {
 			if local != release.Local || sceneID != release.StashSceneID {
 				if e := s.store.SetStashState(ctx, release.ID, local, sceneID); e != nil {
 					result.Error = e.Error()
+					advanceProgress()
 					continue
 				}
-				result.Updated++
-				s.log.Info("release local state changed from Stash", "video_id", release.VideoID, "local", local)
+				releaseUpdated = true
+				s.log.Debug("release local state changed from Stash", "video_id", release.VideoID, "local", local)
 			}
 			// TODO-2.0's "Missing released status display": best-effort, so a
 			// scene lookup miss or a custom query lacking `date` just means
@@ -210,6 +265,8 @@ func (s *Service) run(ctx context.Context) {
 			if date := dates[key]; date != "" && date != release.StashReleaseDate {
 				if e := s.store.SetStashReleaseDate(ctx, release.ID, date); e != nil {
 					result.Error = e.Error()
+				} else {
+					releaseUpdated = true
 				}
 			}
 			// Playback stats use the scene ID found in this sync, not the ID
@@ -218,6 +275,25 @@ func (s *Service) run(ctx context.Context) {
 			// O Count, Play Count, Last Played, and Last O Count remain empty
 			// until a second sync. Only current local matches are eligible, so a
 			// scene removed from Stash cannot refresh stale playback values.
+			if local && sceneID != "" {
+				// created_at is a required part of a local Stash match and is
+				// fetched independently from optional playback statistics. This
+				// guarantees the Local tab's Added Locally sort is backed by the
+				// same timestamp as StashApp's sortby=created_at.
+				if rawCreatedAt := createdAtByScene[sceneID]; rawCreatedAt != "" {
+					if createdAt, e := time.Parse(time.RFC3339, rawCreatedAt); e != nil {
+						result.Error = fmt.Sprintf("parse StashApp created_at for scene %s: %v", sceneID, e)
+					} else if !createdAt.Equal(release.StashCreatedAt) {
+						if e := s.store.SetStashCreatedAt(ctx, release.ID, createdAt); e != nil {
+							result.Error = e.Error()
+						} else {
+							releaseUpdated = true
+						}
+					}
+				} else {
+					result.Error = fmt.Sprintf("StashApp scene %s did not return created_at", sceneID)
+				}
+			}
 			if stats != nil && local && sceneID != "" {
 				if st, ok := stats[sceneID]; ok {
 					lastOCountAt := st.LastOCountAt
@@ -230,30 +306,65 @@ func (s *Service) run(ctx context.Context) {
 					if st.OCounter != release.OCounter || st.PlayCount != release.PlayCount || st.LastPlayedAt != release.LastPlayedAt || lastOCountAt != release.LastOCountAt {
 						if e := s.store.SetStashPlaybackStats(ctx, release.ID, st.OCounter, st.PlayCount, st.LastPlayedAt, lastOCountAt); e != nil {
 							s.log.Error("Stash playback-stats update failed", "video_id", release.VideoID, "error", e)
-						}
-					}
-					// StashApp's own created_at for the matched scene, powering
-					// the Local tab's "Added Locally" sort - see
-					// domain.Release.StashCreatedAt. Parsed as RFC3339 (what
-					// StashApp's GraphQL API returns); a parse failure or an
-					// older StashApp/custom query lacking the field just means
-					// this round found nothing new, same as an empty
-					// stash_release_date.
-					if st.CreatedAt != "" {
-						if createdAt, e := time.Parse(time.RFC3339, st.CreatedAt); e == nil && !createdAt.Equal(release.StashCreatedAt) {
-							if e := s.store.SetStashCreatedAt(ctx, release.ID, createdAt); e != nil {
-								s.log.Error("Stash created-at update failed", "video_id", release.VideoID, "error", e)
-							}
+						} else {
+							releaseUpdated = true
 						}
 					}
 				}
 			}
+			if releaseUpdated {
+				result.Updated++
+			}
+			advanceProgress()
 		}
 		if len(releases) < 500 {
 			break
 		}
 	}
-	s.log.Info("Stash local release sync completed", "scenes", scenes, "identifiers", len(ids), "matched", result.Matched, "updated", result.Updated)
+}
+
+func (s *Service) fetchSceneCreatedAt(ctx context.Context, url, apiKey string) (map[string]string, error) {
+	body, _ := json.Marshal(map[string]string{"query": sceneCreatedAtQuery})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("ApiKey", apiKey)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("Stash returned HTTP %d", resp.StatusCode)
+	}
+	var payload struct {
+		Data struct {
+			FindScenes struct {
+				Scenes []struct {
+					ID        string `json:"id"`
+					CreatedAt string `json:"created_at"`
+				} `json:"scenes"`
+			} `json:"findScenes"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	if len(payload.Errors) > 0 {
+		return nil, errors.New(payload.Errors[0].Message)
+	}
+	out := make(map[string]string, len(payload.Data.FindScenes.Scenes))
+	for _, scene := range payload.Data.FindScenes.Scenes {
+		out[scene.ID] = scene.CreatedAt
+	}
+	return out, nil
 }
 
 func (s *Service) fetch(ctx context.Context, url, query, apiKey string) (map[string]string, map[string]string, int, error) {
@@ -344,7 +455,6 @@ func (s *Service) fetchPlaybackStatsQuery(ctx context.Context, url, apiKey, quer
 			FindScenes struct {
 				Scenes []struct {
 					ID           string   `json:"id"`
-					CreatedAt    string   `json:"created_at"`
 					OCounter     int      `json:"o_counter"`
 					PlayCount    int      `json:"play_count"`
 					LastPlayedAt string   `json:"last_played_at"`
@@ -364,7 +474,7 @@ func (s *Service) fetchPlaybackStatsQuery(ctx context.Context, url, apiKey, quer
 	}
 	out := map[string]playbackStats{}
 	for _, scene := range payload.Data.FindScenes.Scenes {
-		st := playbackStats{CreatedAt: scene.CreatedAt, OCounter: scene.OCounter, PlayCount: scene.PlayCount, LastPlayedAt: scene.LastPlayedAt}
+		st := playbackStats{OCounter: scene.OCounter, PlayCount: scene.PlayCount, LastPlayedAt: scene.LastPlayedAt}
 		if withHistory {
 			for _, t := range scene.OHistory {
 				if t > st.LastOCountAt {
@@ -559,9 +669,7 @@ func (s *Service) Schedule(ctx context.Context) {
 		remaining := interval - now.Sub(lastAttempt)
 		if remaining <= 0 {
 			lastAttempt = now
-			if settings["stash_local_sync_enabled"] == "true" && settings["stash_base_url"] != "" {
-				_ = s.Start(ctx)
-			}
+			s.startScheduledLocalSync(ctx, settings)
 			remaining = interval
 		}
 		s.mu.Lock()
@@ -582,6 +690,23 @@ func (s *Service) Schedule(ctx context.Context) {
 		case <-t.C:
 		}
 	}
+}
+
+// startScheduledLocalSync deliberately delegates to Start instead of keeping
+// a reduced scheduled-only sync path. This guarantees every regular schedule
+// run performs the same required scene created_at fetch, local matching,
+// release-date sync, and optional playback-stat sync as the manual Integration
+// Sync button.
+func (s *Service) startScheduledLocalSync(ctx context.Context, settings map[string]string) bool {
+	if settings["stash_local_sync_enabled"] != "true" || strings.TrimSpace(settings["stash_base_url"]) == "" {
+		return false
+	}
+	if err := s.Start(ctx); err != nil {
+		s.log.Warn("scheduled Stash local-library sync not started", "error", err)
+		return false
+	}
+	s.log.Info("scheduled Stash local-library sync started")
+	return true
 }
 
 func (s *Service) DesiredSchedule(ctx context.Context) {

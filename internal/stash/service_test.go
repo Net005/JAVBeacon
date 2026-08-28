@@ -130,15 +130,19 @@ func TestLocalSyncDoesNotRunDesiredTagSync(t *testing.T) {
 	s := New(st, time.Second, slog.Default(), nil, nil)
 	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		requests++
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":{"findScenes":{"scenes":[{"id":"scene-1","title":"TEST-1","code":"TEST-1"}]}}}`)), Header: make(http.Header)}, nil
+		body, _ := io.ReadAll(r.Body)
+		response := `{"data":{"findScenes":{"scenes":[{"id":"scene-1","title":"TEST-1","code":"TEST-1"}]}}}`
+		if strings.Contains(string(body), "JAVBeaconSceneCreatedAt") {
+			response = `{"data":{"findScenes":{"scenes":[{"id":"scene-1","created_at":"2026-08-28T10:00:00Z"}]}}}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
 	})
 	s.run(ctx)
-	// 2, not 1: the scene discovery request plus the separate best-effort
-	// playback-stats request (task 38's O Count/Last O Count Date/Last
-	// Played sync) - still not the Desired tag sync's own requests, which is
-	// what this test actually guards against.
-	if requests != 2 {
-		t.Fatalf("local sync made %d Stash requests, want only the scene discovery + playback-stats requests", requests)
+	// Three local-library requests: scene discovery, the required created_at
+	// timestamps used by Added Locally, and optional playback statistics. None
+	// belong to the Desired tag sync, which is what this test guards against.
+	if requests != 3 {
+		t.Fatalf("local sync made %d Stash requests, want scene discovery + created-at + playback-stat requests", requests)
 	}
 }
 
@@ -159,7 +163,9 @@ func TestFirstLocalSyncStoresPlaybackStatsForReleaseConditions(t *testing.T) {
 	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(r.Body)
 		response := `{"data":{"findScenes":{"scenes":[{"id":"scene-100","title":"SYNC-100","code":"SYNC-100"}]}}}`
-		if strings.Contains(string(body), "JAVBeaconPlaybackStats") {
+		if strings.Contains(string(body), "JAVBeaconSceneCreatedAt") {
+			response = `{"data":{"findScenes":{"scenes":[{"id":"scene-100","created_at":"2026-08-28T10:00:00Z"}]}}}`
+		} else if strings.Contains(string(body), "JAVBeaconPlaybackStats") {
 			response = `{"data":{"findScenes":{"scenes":[{"id":"scene-100","o_counter":3,"play_count":5,"last_played_at":"2024-05-10T12:00:00Z","o_history":["2024-04-01T12:00:00Z","2024-05-09T12:00:00Z"]}]}}}`
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
@@ -171,8 +177,12 @@ func TestFirstLocalSyncStoresPlaybackStatsForReleaseConditions(t *testing.T) {
 		t.Fatalf("release lookup: releases=%+v err=%v", releases, err)
 	}
 	got := releases[0]
-	if !got.Local || got.StashSceneID != "scene-100" || got.OCounter != 3 || got.PlayCount != 5 || got.LastPlayedAt != "2024-05-10T12:00:00Z" || got.LastOCountAt != "2024-05-09T12:00:00Z" {
+	if !got.Local || got.StashSceneID != "scene-100" || got.StashCreatedAt.IsZero() || got.OCounter != 3 || got.PlayCount != 5 || got.LastPlayedAt != "2024-05-10T12:00:00Z" || got.LastOCountAt != "2024-05-09T12:00:00Z" {
 		t.Fatalf("first sync did not persist local state and playback stats together: %+v", got)
+	}
+	status := s.Status()
+	if status.Running || status.Phase != "Complete" || status.Total != 1 || status.Processed != 1 || status.Matched != 1 || status.CurrentItem != "" || status.Error != "" {
+		t.Fatalf("completed sync status does not expose final progress: %+v", status)
 	}
 
 	conditions := []string{
@@ -188,6 +198,55 @@ func TestFirstLocalSyncStoresPlaybackStatsForReleaseConditions(t *testing.T) {
 		if filterErr != nil || len(matches) != 1 || matches[0].VideoID != "SYNC-100" {
 			t.Fatalf("condition %s: matches=%+v err=%v", condition, matches, filterErr)
 		}
+	}
+}
+
+func TestScheduledLocalSyncFetchesRequiredSceneCreatedAt(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "stash-scheduled-created-at.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	settings := map[string]string{
+		"stash_base_url":           "https://stash.example",
+		"stash_local_sync_enabled": "true",
+	}
+	if err := st.SaveSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Scheduled", Type: "Site", Name: "GIGA", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "SCHED-100", Title: "Scheduled sync", Source: "GIGA"})
+
+	s := New(st, time.Second, slog.Default(), nil, nil)
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		response := `{"data":{"findScenes":{"scenes":[{"id":"scene-scheduled","title":"SCHED-100","code":"SCHED-100"}]}}}`
+		if strings.Contains(string(body), "JAVBeaconSceneCreatedAt") {
+			response = `{"data":{"findScenes":{"scenes":[{"id":"scene-scheduled","created_at":"2026-08-28T15:00:00Z"}]}}}`
+		} else if strings.Contains(string(body), "JAVBeaconPlaybackStats") {
+			response = `{"data":{"findScenes":{"scenes":[{"id":"scene-scheduled"}]}}}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
+	})
+	if !s.startScheduledLocalSync(ctx, settings) {
+		t.Fatal("enabled scheduled local-library sync was not started")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for s.Status().Running && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	status := s.Status()
+	if status.Running || status.Error != "" || status.Phase != "Complete" {
+		t.Fatalf("scheduled sync did not complete successfully: %+v", status)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "SCHED-100", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("scheduled release lookup: releases=%+v err=%v", releases, err)
+	}
+	want := time.Date(2026, 8, 28, 15, 0, 0, 0, time.UTC)
+	if !releases[0].Local || releases[0].StashSceneID != "scene-scheduled" || !releases[0].StashCreatedAt.Equal(want) {
+		t.Fatalf("scheduled sync did not persist required Stash created_at: %+v", releases[0])
 	}
 }
 
@@ -211,7 +270,12 @@ func TestLocalSyncStoresStashReleaseDate(t *testing.T) {
 
 	s := New(st, time.Second, slog.Default(), nil, nil)
 	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":{"findScenes":{"scenes":[{"id":"scene-1","title":"TEST-1","code":"TEST-1","date":"2024-03-02"}]}}}`)), Header: make(http.Header)}, nil
+		body, _ := io.ReadAll(r.Body)
+		response := `{"data":{"findScenes":{"scenes":[{"id":"scene-1","title":"TEST-1","code":"TEST-1","date":"2024-03-02"}]}}}`
+		if strings.Contains(string(body), "JAVBeaconSceneCreatedAt") {
+			response = `{"data":{"findScenes":{"scenes":[{"id":"scene-1","created_at":"2024-03-31T12:39:00Z"}]}}}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
 	})
 	s.run(ctx)
 	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "TEST-1"})
@@ -224,7 +288,12 @@ func TestLocalSyncStoresStashReleaseDate(t *testing.T) {
 
 	// A later sync whose response omits the date entirely must not clear it.
 	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":{"findScenes":{"scenes":[{"id":"scene-1","title":"TEST-1","code":"TEST-1"}]}}}`)), Header: make(http.Header)}, nil
+		body, _ := io.ReadAll(r.Body)
+		response := `{"data":{"findScenes":{"scenes":[{"id":"scene-1","title":"TEST-1","code":"TEST-1"}]}}}`
+		if strings.Contains(string(body), "JAVBeaconSceneCreatedAt") {
+			response = `{"data":{"findScenes":{"scenes":[{"id":"scene-1","created_at":"2024-03-31T12:39:00Z"}]}}}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
 	})
 	s.run(ctx)
 	releases, err = st.Releases(ctx, domain.ReleaseFilter{Search: "TEST-1"})

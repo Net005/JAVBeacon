@@ -70,6 +70,10 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`Advanced · weekdays + time + interval`,
 		`Power user · cron expression`,
 		"validDate(j.finished_at)?`Last scan: ${fullDateTime(j.finished_at)}${counts}`:'Not scanned yet.'",
+		`function cardMetadataGroup(role,category,values)`,
+		`${filterButton(x.label,'Label')||'—'}`,
+		`class="stashSyncProgress"`,
+		`j.current_item?`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("embedded app.js is missing %q", marker)
@@ -82,7 +86,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:103px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`} {
+	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:103px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.cardMetadataRole{`, `.stashSyncProgress{`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("embedded app.css is missing %q", marker)
 		}

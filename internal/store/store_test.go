@@ -215,6 +215,11 @@ func TestJobHistoryCombinesCategoriesAndPaginatesChronologically(t *testing.T) {
 	if _, err := s.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Provider: "Sukebei", SourceType: "torrent", Query: "HIST-1", Status: "completed", MatchReason: "accepted filename", Files: json.RawMessage(`[]`)}); err != nil {
 		t.Fatal(err)
 	}
+	for _, status := range []string{"searched", "search_accepted", "search_rejected"} {
+		if _, err := s.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Provider: "Sukebei", SourceType: "Automatic Search", Query: "HIST-1", Status: status, MatchReason: "candidate audit row"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	first, total, err := s.JobHistory(ctx, 1, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -1756,6 +1761,69 @@ func TestReleasesSortByAddedBreaksTiesByInsertionOrder(t *testing.T) {
 			t.Fatalf("asc[%d].ID=%d, want %d (tie-broken by insertion order): got order %v, want %v", i, r.ID, ids[i], idsOf(asc), ids)
 		}
 	}
+}
+
+// TestReleasesSortByStashCreatedAtUsesNewestFirstAndKeepsUnknownLast guards
+// the Release Library's "Added Locally" sort. That value is StashApp's own
+// scene created_at, equivalent to Stash's sortby=created_at. In particular,
+// PostgreSQL's default DESC ordering places NULL first unless told otherwise,
+// so an unsynchronized scene must not outrank a genuinely recent scene.
+func TestReleasesSortByStashCreatedAtUsesNewestFirstAndKeepsUnknownLast(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "sort-stash-created.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "Stash sort", Type: "Site", Name: "GIGA", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]int64{}
+	for _, videoID := range []string{"LOCAL-OLD", "LOCAL-NEW", "LOCAL-UNKNOWN"} {
+		if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: videoID, Source: "GIGA"}); err != nil {
+			t.Fatal(err)
+		}
+		var id int64
+		if err := s.db.QueryRowContext(ctx, `SELECT id FROM releases WHERE video_id=?`, videoID).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids[videoID] = id
+		if err := s.SetStashState(ctx, id, true, "stash-"+videoID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldTime := time.Date(2024, 3, 31, 12, 39, 0, 0, time.UTC)
+	newTime := time.Date(2026, 8, 28, 9, 15, 0, 0, time.UTC)
+	if err := s.SetStashCreatedAt(ctx, ids["LOCAL-OLD"], oldTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetStashCreatedAt(ctx, ids["LOCAL-NEW"], newTime); err != nil {
+		t.Fatal(err)
+	}
+
+	desc, err := s.Releases(ctx, domain.ReleaseFilter{Status: "local", Sort: "local_added", Direction: "desc", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(videoIDsOf(desc), ","), "LOCAL-NEW,LOCAL-OLD,LOCAL-UNKNOWN"; got != want {
+		t.Fatalf("descending Added Locally order=%s, want %s", got, want)
+	}
+	asc, err := s.Releases(ctx, domain.ReleaseFilter{Status: "local", Sort: "local_added", Direction: "asc", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(videoIDsOf(asc), ","), "LOCAL-OLD,LOCAL-NEW,LOCAL-UNKNOWN"; got != want {
+		t.Fatalf("ascending Added Locally order=%s, want %s", got, want)
+	}
+}
+
+func videoIDsOf(releases []domain.Release) []string {
+	ids := make([]string, len(releases))
+	for i, release := range releases {
+		ids[i] = release.VideoID
+	}
+	return ids
 }
 
 func toAnySlice(ids []int64) []any {

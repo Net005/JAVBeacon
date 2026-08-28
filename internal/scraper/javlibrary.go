@@ -82,9 +82,12 @@ func normalizeJavLibraryURL(raw string) string {
 // configured does documentOnce fetch directly.
 //
 // document itself is a thin retry wrapper around documentOnce: a Cloudflare
-// block or a transport/parse error gets scrapeRetryAttempts more tries (with
-// a short backoff between them) before giving up, since both are commonly
-// transient; a structurally-wrong page (ScrapeInvalid) is not retried.
+// block, transport/parse error, or structurally-empty listing response gets
+// scrapeRetryAttempts more tries (with a short backoff between them) before
+// giving up. JavLibrary occasionally returns a partial/anti-bot response with
+// none of the expected listing entries even through a solver; detail-page
+// validation failures remain terminal because those more often indicate a
+// genuinely changed page shape.
 func (j *JavLibrary) document(ctx context.Context, raw, kind string, stage ...DetailStage) (*html.Node, error) {
 	return withScrapeRetry(ctx, func() (*html.Node, error) {
 		return j.documentOnce(ctx, raw, kind, stage...)
@@ -114,6 +117,9 @@ func (j *JavLibrary) documentOnce(ctx context.Context, raw, kind string, stage .
 			return doc, nil
 		}
 		j.log.Info("scrape response rejected", "provider", "JavLibrary", "kind", kind, "url", raw, "status", string(status), "reason", reason, "via", "direct")
+		if status == ScrapeInvalid && kind == "listing" {
+			return nil, retryableStatusErrorf(status, "JavLibrary response %s: %s", status, reason)
+		}
 		if status == ScrapeBlocked || status == ScrapeInvalid {
 			return nil, statusErrorf(status, "JavLibrary response %s: %s", status, reason)
 		}
@@ -139,6 +145,9 @@ func (j *JavLibrary) documentOnce(ctx context.Context, raw, kind string, stage .
 	}
 	if status, reason := validatePage("JavLibrary", kind, doc); status != ScrapeValid {
 		j.log.Info("scrape response rejected", "provider", "JavLibrary", "kind", kind, "url", raw, "status", string(status), "reason", reason, "via", "flaresolverr")
+		if status == ScrapeInvalid && kind == "listing" {
+			return nil, retryableStatusErrorf(status, "JavLibrary FlareSolverr response %s: %s", status, reason)
+		}
 		return nil, statusErrorf(status, "JavLibrary FlareSolverr response %s: %s", status, reason)
 	}
 	j.log.Info("scrape response valid", "provider", "JavLibrary", "kind", kind, "url", raw, "status", string(ScrapeValid), "via", "flaresolverr", "bytes", len(body))

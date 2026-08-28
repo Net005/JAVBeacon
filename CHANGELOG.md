@@ -7,6 +7,38 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.28] - 2026-08-28
+
+### Changed
+
+- StashApp Integration Sync now shows live phase, checked/total, percentage,
+  current release, matched/updated counts, and a progress bar. Server logs now
+  record the start, periodic progress, completion totals, duration, and errors.
+- Release cards now identify actress, studio, and label metadata with compact
+  color-coded `ACT`, `STU`, and `LBL` role markers while keeping the metadata
+  on one space-efficient line.
+
+### Fixed
+
+- JavLibrary listing responses classified as `INVALID` because they contain
+  no `.video` or `.id` entries are now treated as transient and receive the
+  normal two retries with solver cooldown/backoff before the scrape fails.
+  Invalid detail-page structures remain terminal rather than being retried.
+- Local StashApp matches now fetch the scene's always-available `created_at`
+  through a dedicated required query instead of coupling it to optional
+  playback statistics. This guarantees "Added Locally" uses the same data as
+  StashApp's `sortby=created_at` ordering. Regular scheduled local-library
+  integration syncs explicitly use this same complete sync path.
+- "Added Locally" now switches to newest-first when selected, matching
+  StashApp's `created_at` descending sort. Releases whose StashApp creation
+  timestamp has not synchronized yet are kept at the end instead of appearing
+  above releases with a known date on PostgreSQL.
+- Labels in Release Details are now clickable and open a new Release Library
+  page filtered to that label, matching actress, studio, and tag links.
+- Job History no longer presents every accepted or rejected torrent search
+  candidate as a separate download job. Those detailed audit records remain
+  stored, while Job History shows only meaningful download lifecycle entries.
+
 ## [1.0.27] - 2026-08-28
 
 ### Added
@@ -589,7 +621,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.27...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.28...HEAD
+[1.0.28]: https://github.com/Net005/JAVBeacon/compare/v1.0.27...v1.0.28
 [1.0.27]: https://github.com/Net005/JAVBeacon/compare/v1.0.26...v1.0.27
 [1.0.26]: https://github.com/Net005/JAVBeacon/compare/v1.0.25...v1.0.26
 [1.0.25]: https://github.com/Net005/JAVBeacon/compare/v1.0.24...v1.0.25
