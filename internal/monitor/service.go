@@ -841,6 +841,21 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 							s.log.Info("existing release cover updated", "site", site.Title, "provider", site.Name, "mode", options.Mode, "video_id", r.VideoID)
 						}
 					}
+					// Quick refresh intentionally leaves existing metadata alone,
+					// but it has already fetched the detail page and therefore has
+					// everything needed to repair a missing screenshot cache. Save
+					// only the screenshot URLs and preserve updated_at so this asset
+					// repair does not turn Quick refresh into a metadata refresh.
+					if s.screenshots != nil && len(r.Screenshots) > 0 {
+						_, _, failed, screenshotErr := s.screenshots.EnsureAll(ctx, r.VideoID, r.Screenshots)
+						if screenshotErr != nil {
+							s.log.Warn("release screenshot cache incomplete", "site", site.Title, "video_id", r.VideoID, "failed", failed, "error", screenshotErr)
+						}
+						if _, screenshotStoreErr := s.store.UpsertReleaseKeepUpdatedAt(ctx, domain.Release{SiteID: site.ID, VideoID: r.VideoID, Source: r.Source, Screenshots: r.Screenshots}); screenshotStoreErr != nil {
+							job.Error = screenshotStoreErr.Error()
+							s.log.Error("release screenshots could not be saved", "site", site.Title, "provider", site.Name, "video_id", r.VideoID, "error", screenshotStoreErr)
+						}
+					}
 					job.Skipped++
 					s.log.Info("quick refresh skipped existing release metadata", "site", site.Title, "provider", site.Name, "video_id", r.VideoID)
 					continue
