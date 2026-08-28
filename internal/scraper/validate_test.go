@@ -29,6 +29,7 @@ func TestShouldRetryScrapeClassification(t *testing.T) {
 		{"blocked is retried", &StatusError{Status: ScrapeBlocked, Message: "cloudflare"}, true},
 		{"generic scrape error is retried", &StatusError{Status: ScrapeError, Message: "boom"}, true},
 		{"invalid page is not retried", &StatusError{Status: ScrapeInvalid, Message: "wrong page"}, false},
+		{"explicitly retryable invalid page is retried", &StatusError{Status: ScrapeInvalid, Message: "empty listing", Retryable: true}, true},
 		{"plain transport error is retried", errors.New("connection reset"), true},
 	}
 	for _, c := range cases {
@@ -102,5 +103,23 @@ func TestWithScrapeRetryDoesNotRetryInvalidPage(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("expected exactly 1 attempt for an invalid page, got %d", attempts)
+	}
+}
+
+func TestWithScrapeRetryRetriesTransientInvalidListing(t *testing.T) {
+	withFastRetryBackoff(t)
+	attempts := 0
+	doc, err := withScrapeRetry(context.Background(), func() (*html.Node, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, retryableStatusErrorf(ScrapeInvalid, "JavLibrary listing contained no entries")
+		}
+		return &html.Node{}, nil
+	}, nil)
+	if err != nil || doc == nil {
+		t.Fatalf("expected retryable invalid listing to recover, doc=%v err=%v", doc, err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts=%d, want initial request plus two retries", attempts)
 	}
 }

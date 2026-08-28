@@ -18,14 +18,19 @@ import (
 // as ordinary errors and are treated as ScrapeError by any caller that
 // checks with errors.As and finds no *StatusError.
 type StatusError struct {
-	Status  ScrapeStatus
-	Message string
+	Status    ScrapeStatus
+	Message   string
+	Retryable bool
 }
 
 func (e *StatusError) Error() string { return e.Message }
 
 func statusErrorf(status ScrapeStatus, format string, args ...any) *StatusError {
 	return &StatusError{Status: status, Message: fmt.Sprintf(format, args...)}
+}
+
+func retryableStatusErrorf(status ScrapeStatus, format string, args ...any) *StatusError {
+	return &StatusError{Status: status, Message: fmt.Sprintf(format, args...), Retryable: true}
 }
 
 // ScrapeStatus classifies a fetched, parsed page before it is allowed to be
@@ -121,10 +126,9 @@ func validatePage(provider, kind string, doc *html.Node) (ScrapeStatus, string) 
 
 // scrapeRetryAttempts is how many additional attempts a Cloudflare-blocked or
 // otherwise failed fetch gets before giving up, on top of the first try -
-// "at least 2 retries" per TODO-2.0. ScrapeInvalid is deliberately excluded
-// from retries everywhere this is used: a structurally wrong page (changed
-// layout, wrong content, a "no results" page) will not fix itself by asking
-// again, so retrying it only wastes time and requests.
+// "at least 2 retries" per TODO-2.0. Structurally invalid pages are normally
+// terminal, but individual scraper paths may mark one retryable when that
+// invalid shape is known to be a transient anti-bot/partial-render symptom.
 const scrapeRetryAttempts = 2
 
 // RetryFirstBackoff and RetrySecondBackoff are the delays before
@@ -152,8 +156,8 @@ func scrapeRetryBackoff(attempt int) time.Duration {
 }
 
 // shouldRetryScrape reports whether a failed fetch is worth retrying: a
-// Cloudflare/interstitial block or a transport/parse-level error, but not a
-// structurally-wrong page (ScrapeInvalid), and never once the context has
+// Cloudflare/interstitial block, a transport/parse-level error, or an
+// explicitly retryable validation failure, and never once the context has
 // already been cancelled or timed out.
 func shouldRetryScrape(ctx context.Context, err error) bool {
 	if err == nil || ctx.Err() != nil {
@@ -161,7 +165,7 @@ func shouldRetryScrape(ctx context.Context, err error) bool {
 	}
 	var statusErr *StatusError
 	if errors.As(err, &statusErr) {
-		return statusErr.Status == ScrapeBlocked || statusErr.Status == ScrapeError
+		return statusErr.Retryable || statusErr.Status == ScrapeBlocked || statusErr.Status == ScrapeError
 	}
 	return true
 }

@@ -1077,7 +1077,12 @@ func (s *SQLite) Releases(ctx context.Context, f domain.ReleaseFilter) ([]domain
 	// order SQLite's query plan happens to produce. That previously made
 	// "Date added" look unsorted/random whenever a bulk scrape or import
 	// inserted many releases within the same timestamp.
-	q += ` ORDER BY ` + sortColumn + ` ` + direction + `,r.id ` + direction
+	// Keep releases whose selected date has not been synchronized at the end
+	// in both directions. PostgreSQL otherwise puts NULL values first for a
+	// descending sort, which made an "Added Locally · newest first" result
+	// start with releases that had no StashApp created_at at all. The explicit
+	// CASE is portable across both PostgreSQL and SQLite.
+	q += ` ORDER BY CASE WHEN ` + sortColumn + ` IS NULL THEN 1 ELSE 0 END ASC,` + sortColumn + ` ` + direction + `,r.id ` + direction
 	if f.Limit <= 0 || f.Limit > 500 {
 		f.Limit = 100
 	}
@@ -1883,7 +1888,11 @@ func (s *SQLite) Jobs(ctx context.Context, limit int) ([]domain.Job, error) {
 }
 
 // JobHistory returns a single newest-first timeline across scrape jobs and
-// download activity. Combining the tables in SQL keeps pagination stable:
+// meaningful download lifecycle activity. Per-result search audit rows stay
+// stored for the search/audit paths, but are intentionally excluded here: one
+// provider response can contain dozens of accepted/rejected candidates and
+// otherwise makes a single search look like dozens of duplicate jobs.
+// Combining the tables in SQL keeps pagination stable:
 // fetching page two cannot repeat or omit rows merely because one category
 // happened to have more recent activity than the other.
 func (s *SQLite) JobHistory(ctx context.Context, limit, offset int) ([]domain.JobHistoryEntry, int, error) {
@@ -1897,7 +1906,7 @@ func (s *SQLite) JobHistory(ctx context.Context, limit, offset int) ([]domain.Jo
 		offset = 0
 	}
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM job_history)+(SELECT COUNT(*) FROM downloads)`).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM job_history)+(SELECT COUNT(*) FROM downloads WHERE status NOT IN ('searched','search_accepted','search_rejected'))`).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id,category,kind,state,mode,title,provider,started_at,finished_at,added,updated,skipped,error,details FROM (
@@ -1913,6 +1922,7 @@ func (s *SQLite) JobHistory(ctx context.Context, limit, offset int) ([]domain.Jo
 			0 AS added,0 AS updated,0 AS skipped,d.error,
 			COALESCE(NULLIF(d.match_reason,''),NULLIF(d.qb_response,''),NULLIF(d.name,''),'') AS details
 		FROM downloads d LEFT JOIN releases r ON r.id=d.release_id
+		WHERE d.status NOT IN ('searched','search_accepted','search_rejected')
 	) activity ORDER BY started_at DESC,id DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, 0, err
