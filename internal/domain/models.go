@@ -76,6 +76,14 @@ type Release struct {
 	// unchanged on every later sync of the same release (TODO-2.0 card/detail
 	// "Added to StashApp (with date)").
 	StashAddedAt time.Time `json:"stash_added_at,omitempty"`
+	// DesiredAt records when a release was (most recently) marked Desired:
+	// refreshed on every PatchRelease call that sets Desired to true (unlike
+	// StashAddedAt's "set once" pattern, re-marking something Desired after
+	// unmarking it is a deliberate user action that should bubble it back to
+	// the top), and left untouched when Desired is cleared. It powers the
+	// Release Library's "Desired" tab default sort (newest marked first) via
+	// the desired_marked sort option.
+	DesiredAt time.Time `json:"desired_at,omitempty"`
 	// StashReleaseDate is the release's `date` field as recorded on its
 	// matched StashApp scene, kept in sync opportunistically during a local-
 	// library sync. It exists to fill in a release date for display when
@@ -117,7 +125,7 @@ type Release struct {
 // this alone", not "clear it".
 //
 // Deliberately excluded: Local, Notified, StashSceneID, StashAddedAt,
-// StashReleaseDate, and DownloadedAt. Those are derived from real external
+// StashReleaseDate, DesiredAt, and DownloadedAt. Those are derived from real external
 // state (an actual download, an actual StashApp sync) rather than being
 // facts about the release itself, so hand-editing them here would let the
 // UI claim something happened (a download, a library sync) that didn't -

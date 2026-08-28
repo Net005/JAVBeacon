@@ -202,11 +202,21 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 			`ALTER TABLE releases ADD COLUMN last_played_at TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE releases ADD COLUMN last_o_count_at TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE releases ADD COLUMN screenshots_checked_at DATETIME`,
+			`ALTER TABLE releases ADD COLUMN desired_at DATETIME`,
 		} {
 			if _, alterErr := s.db.Exec(statement); alterErr != nil && !strings.Contains(strings.ToLower(alterErr.Error()), "duplicate column") {
 				return alterErr
 			}
 		}
+	}
+	if err == nil {
+		// Backfill desired_at for releases already marked Desired before this
+		// column existed, so the Desired tab's "when marked as desired" sort
+		// has something to sort by right after upgrade instead of every
+		// pre-existing Desired release tying at NULL. updated_at is the
+		// closest available approximation of when desired was last toggled
+		// true for these rows.
+		_, err = s.db.Exec(`UPDATE releases SET desired_at=updated_at WHERE desired=1 AND desired_at IS NULL`)
 	}
 	if err == nil {
 		err = s.removeScheduledDownloads()
@@ -625,14 +635,14 @@ func releaseSelect(d Dialect) string {
 	// and source detail-page URL together, plus the latest successful download
 	// completion time. Active downloads take precedence over completed ones so
 	// the status pill and its URL always describe the same download row.
-	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,` + actresses + `,r.director,r.studio,r.label,r.genres,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.desired,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_release_date,r.allow_non_preferred_filenames,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,` + actresses + `,r.director,r.studio,r.label,r.genres,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.desired,r.desired_at,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_release_date,r.allow_non_preferred_filenames,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 func scanRelease(scanner interface{ Scan(...any) error }) (domain.Release, error) {
 	var x domain.Release
 	var siteIDs, siteTitles, actresses, genres, shots string
-	var stashAddedAt, downloadedAt sql.NullTime
-	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &x.Actress, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Desired, &x.MonitorDownload, &x.SiteMonitorDownload, &x.StashSceneID, &stashAddedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &downloadedAt)
+	var stashAddedAt, desiredAt, downloadedAt sql.NullTime
+	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &x.Actress, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Desired, &desiredAt, &x.MonitorDownload, &x.SiteMonitorDownload, &x.StashSceneID, &stashAddedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &downloadedAt)
 	if err == nil {
 		_ = json.Unmarshal([]byte(siteIDs), &x.SiteIDs)
 		_ = json.Unmarshal([]byte(siteTitles), &x.SiteTitles)
@@ -641,6 +651,9 @@ func scanRelease(scanner interface{ Scan(...any) error }) (domain.Release, error
 		_ = json.Unmarshal([]byte(shots), &x.Screenshots)
 		if stashAddedAt.Valid {
 			x.StashAddedAt = stashAddedAt.Time
+		}
+		if desiredAt.Valid {
+			x.DesiredAt = desiredAt.Time
 		}
 		if downloadedAt.Valid {
 			x.DownloadedAt = downloadedAt.Time
@@ -1021,7 +1034,7 @@ func (s *SQLite) Releases(ctx context.Context, f domain.ReleaseFilter) ([]domain
 	if strings.EqualFold(f.Direction, "asc") {
 		direction = "ASC"
 	}
-	sortColumn := map[string]string{"added": "r.added_at", "notification": "COALESCE((SELECT MAX(n.created_at) FROM notifications n WHERE n.release_id=r.id),r.added_at)", "release": "r.release_date", "name": "r.title", "updated": "r.updated_at"}[f.Sort]
+	sortColumn := map[string]string{"added": "r.added_at", "notification": "COALESCE((SELECT MAX(n.created_at) FROM notifications n WHERE n.release_id=r.id),r.added_at)", "release": "r.release_date", "name": "r.title", "updated": "r.updated_at", "local_added": "r.stash_added_at", "desired_marked": "r.desired_at"}[f.Sort]
 	if sortColumn == "" {
 		sortColumn = "r.release_date"
 	}
@@ -1496,13 +1509,27 @@ func (s *SQLite) cleanupStoredReleaseText(ctx context.Context) error {
 }
 
 func (s *SQLite) PatchRelease(ctx context.Context, id int64, released, local, notified, notifyOnRelease, desired, monitorDownload *bool, label *string, allowNonPreferredFilenames *bool) error {
+	now := time.Now().UTC()
 	sets := []string{"updated_at=?"}
-	a := []any{time.Now().UTC()}
+	a := []any{now}
 	for k, v := range map[string]*bool{"released": released, "is_local": local, "notified": notified, "notify_on_release": notifyOnRelease, "desired": desired, "monitor_download": monitorDownload, "allow_non_preferred_filenames": allowNonPreferredFilenames} {
 		if v != nil {
 			sets = append(sets, k+"=?")
 			a = append(a, *v)
 		}
+	}
+	// DesiredAt records when a release was (most recently) marked Desired,
+	// powering the Release Library's Desired-tab default sort ("when marked
+	// as desired", newest first). Unlike StashAddedAt's "set once" pattern,
+	// this is refreshed on every explicit mark-as-desired toggle rather than
+	// only the first one, since re-marking something after unmarking it is a
+	// deliberate user action that should bubble it back to the top - it's
+	// left untouched when desired is cleared, so the last-marked date stays
+	// available if the release is marked again later without another
+	// explicit toggle in between.
+	if desired != nil && *desired {
+		sets = append(sets, "desired_at=?")
+		a = append(a, now)
 	}
 	if label != nil {
 		sets = append(sets, "label=?")
