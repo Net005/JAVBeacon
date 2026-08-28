@@ -7,6 +7,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.27] - 2026-08-28
+
 ### Added
 
 - Manual "Update details" refreshes now run concurrently across every idle
@@ -587,7 +589,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.26...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.27...HEAD
+[1.0.27]: https://github.com/Net005/JAVBeacon/compare/v1.0.26...v1.0.27
 [1.0.26]: https://github.com/Net005/JAVBeacon/compare/v1.0.25...v1.0.26
 [1.0.25]: https://github.com/Net005/JAVBeacon/compare/v1.0.24...v1.0.25
 [1.0.24]: https://github.com/Net005/JAVBeacon/compare/v1.0.23...v1.0.24
