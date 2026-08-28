@@ -7,12 +7,31 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- New configurable keyboard shortcut (default: `p`) opens the fullscreen
+  screenshot view straight from Release Details, alongside the existing
+  Toggle fullscreen shortcut.
+
 ### Changed
 
 - Moved the Release Library's release count ("N of total") up next to the
   "Release library" heading as a small badge, instead of its own row above
   the filter tabs - frees up vertical space and reads more like a page
   subtitle.
+
+### Fixed
+
+- The sidebar's Sign out button and version badge could render below the
+  visible window at a UI Zoom setting above 100%, since the sidebar's height
+  was computed from the raw viewport before zoom instead of the same
+  zoom-corrected value already used elsewhere for full-screen dialogs.
+- The version badge disappeared entirely when the left navigation was
+  collapsed instead of staying visible in the narrow column.
+- "Min days since release" and "Max days since release" could be lost after
+  an app restart if the browser tab closed or reloaded within the short
+  debounce window after changing them; they now save immediately, matching
+  the other Release Library toggle filters.
 
 ## [1.0.29] - 2026-08-28
 
