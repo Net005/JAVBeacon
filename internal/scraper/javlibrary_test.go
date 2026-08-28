@@ -21,7 +21,7 @@ func TestJavLibraryListingAndDetail(t *testing.T) {
 		_, _ = w.Write([]byte(`<html><title>Videos starring Test</title><div class="video"><a href="/javabc123.html" title="Listing title"><img src="/abc00123ps.jpg"></a><div class="id">ABC-123</div></div></html>`))
 	})
 	mux.HandleFunc("/javabc123.html", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`<html><title>Detailed title - JAVLibrary</title><img id="video_jacket_img" src="/abc00123pl.jpg"><table><tr><td class="header">Release Date:</td><td class="text">2024-02-03</td></tr><tr><td class="header">Length:</td><td>90 min(s)</td></tr></table><div class="director"><a>Director Name</a></div><div id="video_genres"><span class="genre"><a>Drama</a></span><span class="genre"><a>Best, Omnibus</a></span></div><div id="video_cast"><span class="cast"><span class="star"><a>Actor One</a></span></span><span class="cast"><span class="star"><a>Actor Two</a></span><span class="alias">Alias Two</span></span><span class="cast"><span class="star"><a>Actor Three</a></span> (Stage Three)</span></div></html>`))
+		_, _ = w.Write([]byte(`<html><title>Detailed title - JAVLibrary</title><img id="video_jacket_img" src="/abc00123pl.jpg"><table><tr><td class="header">Release Date:</td><td class="text">2024-02-03</td></tr><tr><td class="header">Length:</td><td>90 min(s)</td></tr><tr><td class="header">Maker:</td><td><a>Attackers</a></td></tr><tr><td class="header">Label:</td><td><a>Otona No Drama</a></td></tr></table><div class="director"><a>Director Name</a></div><div id="video_genres"><span class="genre"><a>Drama</a></span><span class="genre"><a>Best, Omnibus</a></span></div><div id="video_cast"><span class="cast"><span class="star"><a>Actor One</a></span></span><span class="cast"><span class="star"><a>Actor Two</a></span><span class="alias">Alias Two</span></span><span class="cast"><span class="star"><a>Actor Three</a></span> (Stage Three)</span></div></html>`))
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -33,7 +33,7 @@ func TestJavLibraryListingAndDetail(t *testing.T) {
 		t.Fatalf("items=%d", len(items))
 	}
 	x := items[0]
-	if x.VideoID != "ABC-123" || x.Title != "Detailed title" || x.ReleaseDate != "2024-02-03" || x.Actress != "Actor One, Actor Two, Alias Two, Actor Three, Stage Three" || len(x.Genres) != 2 || x.Genres[1] != "Best, Omnibus" || x.Director != "Director Name" || !x.Released {
+	if x.VideoID != "ABC-123" || x.Title != "Detailed title" || x.ReleaseDate != "2024-02-03" || x.Actress != "Actor One, Actor Two, Alias Two, Actor Three, Stage Three" || len(x.Genres) != 2 || x.Genres[1] != "Best, Omnibus" || x.Director != "Director Name" || x.Studio != "Attackers" || x.Label != "Otona No Drama" || !x.Released {
 		t.Fatalf("unexpected release: %+v", x)
 	}
 }

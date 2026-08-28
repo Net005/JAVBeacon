@@ -7,6 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- JavLibrary's "Label" field (e.g. "Otona No Drama") was never scraped into
+  release details — the value was parsed but then dropped while merging the
+  detail page into the release, so it always showed as blank. Release cards
+  and the notifications list also mislabeled the monitoring site's own name
+  as if it were the release's Label (which happened to duplicate the Studio
+  name in some cases, e.g. showing "Attackers" twice); they now show the
+  actual Label field.
+
 ## [1.0.26] - 2026-08-28
 
 ### Added
