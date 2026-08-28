@@ -18,4 +18,7 @@ func TestListingPageLimitReportsOnlineMaximumWithinCeiling(t *testing.T) {
 	if got := listingPageLimit(doc, "page", 20, 3); got != 20 {
 		t.Fatalf("capped max=%d, want 20", got)
 	}
+	if got := listingPageLimit(doc, "page", 0, 3); got != 47 {
+		t.Fatalf("unlimited online max=%d, want 47", got)
+	}
 }

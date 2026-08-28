@@ -1,13 +1,17 @@
 package version
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCurrentUsesEmbeddedReleaseVersion(t *testing.T) {
 	previous := Value
 	Value = ""
 	t.Cleanup(func() { Value = previous })
-	if got := Current(); got != "v1.0.30" {
-		t.Fatalf("Current() = %q, want v1.0.30", got)
+	want := "v" + strings.TrimSpace(source)
+	if got := Current(); got != want {
+		t.Fatalf("Current() = %q, want %s", got, want)
 	}
 }
 

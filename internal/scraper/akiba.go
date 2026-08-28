@@ -153,7 +153,8 @@ func (a *Akiba) ScrapeFilteredThroughEnd(ctx context.Context, pages int, include
 
 func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(string) bool, stopWhenNoIncluded bool, concurrency ScrapeConcurrency, progress ...Progress) ([]domain.Release, error) {
 	started := time.Now()
-	if pages < 1 {
+	unlimited := pages <= 0 && !stopWhenNoIncluded
+	if pages < 1 && !unlimited {
 		pages = 1
 	}
 	if err := a.prime(ctx); err != nil {
@@ -162,7 +163,7 @@ func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(stri
 	a.log.Info("scrape session ready", "provider", "GIGA", "pages", pages, "gate", a.gateState)
 	seen := map[string]bool{}
 	var out []domain.Release
-	for page := 1; page <= pages; page++ {
+	for page := 1; unlimited || page <= pages; page++ {
 		rawURL := pagePattern.ReplaceAllString(a.base+a.path, "${1}"+fmt.Sprint(page))
 		a.log.Info("scraping listing page", "provider", "GIGA", "page", page, "page_limit", pages, "url", rawURL)
 		doc, e := a.fetch(ctx, rawURL, "listing")
@@ -231,6 +232,10 @@ func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(stri
 			break
 		}
 		a.log.Info("listing page completed", "provider", "GIGA", "page", page, "releases", added, "total", len(out))
+		if reportedPageLimit > 0 && (unlimited || reportedPageLimit < pages) && page >= reportedPageLimit {
+			a.log.Info("online listing end reached", "provider", "GIGA", "last_page", page, "reason", "reported pagination maximum")
+			break
+		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].ReleaseDate > out[j].ReleaseDate })
 	a.log.Info("provider scrape completed", "provider", "GIGA", "releases", len(out), "duration", time.Since(started).Round(time.Millisecond))
