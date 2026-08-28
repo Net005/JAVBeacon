@@ -107,7 +107,7 @@ func TestJavLibrarySolverBoundaryAlwaysReceivesHTTPS(t *testing.T) {
 	defer solver.Close()
 
 	j := NewJavLibrary(2*time.Second, solver.URL, 0, nil)
-	if _, err := j.flare(context.Background(), "http://www.javlibrary.com/en/javme3rf2u.html", solver.URL, 0); err != nil {
+	if _, err := j.flare(context.Background(), "http://www.javlibrary.com/en/javme3rf2u.html", solver.URL); err != nil {
 		t.Fatal(err)
 	}
 	if target != "https://www.javlibrary.com/en/javme3rf2u.html" {
@@ -176,7 +176,7 @@ func TestJavLibraryAllPagesContinuesPastFilteredPageAndStopsAtOnlineEnd(t *testi
 
 	items, err := NewJavLibrary(2*time.Second, "", 0, nil).ScrapeFilteredThroughEnd(context.Background(), server.URL+"/list", 500, func(videoID string) bool {
 		return videoID == "NEW-2"
-	})
+	}, ScrapeConcurrency{})
 	if err != nil {
 		t.Fatal(err)
 	}

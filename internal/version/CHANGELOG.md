@@ -7,6 +7,31 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.23] - 2026-08-28
+
+### Added
+
+- Settings → Scraping now supports configuring multiple Byparr/FlareSolverr
+  instances instead of just one, each with its own priority - add a row per
+  reachable instance to spread JavLibrary scraping across them concurrently.
+  A request always picks the highest-priority free instance first and falls
+  through to the next free one once it's busy, so every enabled instance
+  ends up used under load without needing to pick one by hand. Manual
+  "Update details" always gets first pick of a free instance over a
+  background job. Quick refresh, Full refresh, New releases only, and the
+  Screenshot backfill maintenance job can each be capped to a maximum number
+  of instances independently (Settings → Scraping · blank means "use every
+  enabled instance").
+
+### Changed
+
+- Screenshot backfill no longer bumps a release's "date updated" - it was
+  possible for a backfill run that merely confirmed or repaired an old
+  release's screenshots to jump that release back to the top of "sort by
+  date updated" in the Release Library, with no other change to explain why.
+  Backfill also now processes multiple releases concurrently (using the
+  configured Byparr instance pool, see above) instead of one at a time.
+
 ## [1.0.22] - 2026-08-27
 
 ### Added
@@ -456,7 +481,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.22...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.23...HEAD
+[1.0.23]: https://github.com/Net005/JAVBeacon/compare/v1.0.22...v1.0.23
 [1.0.22]: https://github.com/Net005/JAVBeacon/compare/v1.0.21...v1.0.22
 [1.0.21]: https://github.com/Net005/JAVBeacon/compare/v1.0.20...v1.0.21
 [1.0.20]: https://github.com/Net005/JAVBeacon/compare/v1.0.19...v1.0.20
