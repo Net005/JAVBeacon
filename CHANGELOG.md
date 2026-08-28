@@ -7,6 +7,13 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Moved the Release Library's release count ("N of total") up next to the
+  "Release library" heading as a small badge, instead of its own row above
+  the filter tabs - frees up vertical space and reads more like a page
+  subtitle.
+
 ## [1.0.29] - 2026-08-28
 
 ### Added
