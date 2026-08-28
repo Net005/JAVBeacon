@@ -7,6 +7,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Release Library's infinite-scroll and release-details paging batch size
+  is now configurable in Settings → General (Release Library → Batch
+  loading), defaulting to 100 releases per batch.
+
+### Changed
+
+- Renamed the Local tab's "Added to StashApp (local)" sort option to
+  "Added Locally" so it no longer gets clipped in the sort dropdown.
+
 ## [1.0.25] - 2026-08-28
 
 ### Added
