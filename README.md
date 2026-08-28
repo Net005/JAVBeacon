@@ -157,6 +157,7 @@ docker run -d \
   -e JAVBEACON_INITIAL_USERNAME=admin \
   -e JAVBEACON_INITIAL_PASSWORD='replace-with-a-long-password' \
   -e JAVBEACON_FLARESOLVERR_URL='http://javbeacon-byparr:8191/v1' \
+  -e TZ='UTC' \
   javbeacon:1.0.25
 ```
 
@@ -221,6 +222,7 @@ Most configuration is stored in the active database and managed from the web int
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `JAVBEACON_LISTEN` | HTTP listen address | `:8080` |
+| `TZ` | IANA timezone the container (and therefore all "server local time" schedules) runs in | `UTC` |
 | `JAVBEACON_DB` | SQLite database path | `data/javbeacon.db` |
 | `JAVBEACON_COVERS` | Initial cover-cache directory | `data/covers` |
 | `JAVBEACON_SCREENSHOTS` | Initial screenshot-cache directory | `data/screenshots`; Compose uses `/app/data/screenshots` |

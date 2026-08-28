@@ -6,6 +6,12 @@ services:
     container_name: javbeacon
     restart: unless-stopped
     environment:
+      # Controls the timezone Go's time.Local (and therefore every
+      # "server local time" schedule below) resolves to inside the
+      # container. Defaults to UTC - set to your own IANA zone (e.g.
+      # Europe/Amsterdam) in .env so scheduled start times match your
+      # actual wall clock instead of UTC.
+      TZ: "${TZ:-UTC}"
       JAVBEACON_LISTEN: "${JAVBEACON_LISTEN:-:8080}"
       JAVBEACON_INITIAL_USERNAME: ${JAVBEACON_INITIAL_USERNAME:-admin}
       JAVBEACON_INITIAL_PASSWORD: ${JAVBEACON_INITIAL_PASSWORD:?JAVBEACON_INITIAL_PASSWORD must be set in .env}

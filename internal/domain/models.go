@@ -76,6 +76,18 @@ type Release struct {
 	// unchanged on every later sync of the same release (TODO-2.0 card/detail
 	// "Added to StashApp (with date)").
 	StashAddedAt time.Time `json:"stash_added_at,omitempty"`
+	// StashCreatedAt is StashApp's own "Created At" timestamp for this
+	// release's matched scene, as opposed to StashAddedAt (JAVBeacon's own
+	// bookkeeping for when it first noticed the match). Best-effort,
+	// populated during the same scene-ID-keyed secondary sync pass as
+	// OCounter/PlayCount/LastPlayedAt (see stash.Service.run and
+	// SetStashCreatedAt), so a StashApp version or custom
+	// stash_graphql_query that can't provide created_at just leaves this
+	// blank rather than failing the whole sync. Powers the Release
+	// Library's Local-tab "Added Locally" sort (local_added), which
+	// reflects when the scene was actually created in your StashApp
+	// library rather than when JAVBeacon happened to notice it.
+	StashCreatedAt time.Time `json:"stash_created_at,omitempty"`
 	// DesiredAt records when a release was (most recently) marked Desired:
 	// refreshed on every PatchRelease call that sets Desired to true (unlike
 	// StashAddedAt's "set once" pattern, re-marking something Desired after
@@ -125,7 +137,7 @@ type Release struct {
 // this alone", not "clear it".
 //
 // Deliberately excluded: Local, Notified, StashSceneID, StashAddedAt,
-// StashReleaseDate, DesiredAt, and DownloadedAt. Those are derived from real external
+// StashCreatedAt, StashReleaseDate, DesiredAt, and DownloadedAt. Those are derived from real external
 // state (an actual download, an actual StashApp sync) rather than being
 // facts about the release itself, so hand-editing them here would let the
 // UI claim something happened (a download, a library sync) that didn't -

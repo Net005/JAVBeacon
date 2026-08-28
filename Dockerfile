@@ -32,6 +32,7 @@ RUN apk add --no-cache \
     bash \
     curl \
     ca-certificates \
+    tzdata \
     && addgroup -S javbeacon \
     && adduser -S -G javbeacon javbeacon
 

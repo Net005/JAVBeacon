@@ -18,6 +18,22 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Renamed the Local tab's "Added to StashApp (local)" sort option to
   "Added Locally" so it no longer gets clipped in the sort dropdown.
 
+### Fixed
+
+- The Local tab's "Added Locally" sort now actually sorts by when the
+  scene was created in your StashApp library (its own `created_at`),
+  instead of by when JAVBeacon happened to notice the match during a
+  sync. Existing matches are backfilled with JAVBeacon's first-seen date
+  as a placeholder until their next StashApp sync fills in the real value.
+- Scheduled scrapes now actually run at the time you configure. The
+  container previously had no timezone database installed, so "server
+  local time" silently meant UTC no matter what the host machine's clock
+  said - a schedule set for 02:00 could fire at 04:00 (or any other offset)
+  for anyone outside UTC. The image now ships tzdata and Compose passes
+  through a `TZ` environment variable (defaulting to UTC, unchanged from
+  before) - set `TZ=<your IANA zone>` (e.g. `Europe/Amsterdam`) in `.env`
+  and restart to have every schedule follow your actual local clock.
+
 ## [1.0.25] - 2026-08-28
 
 ### Added
