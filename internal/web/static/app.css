@@ -931,3 +931,6 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .byparrInstanceRow input[data-byparr-url]{min-width:0}
 .byparrInstanceRow input[data-byparr-priority]{min-width:0}
 .byparrInstanceRow label.check{white-space:nowrap;margin:0}
+.compactViewHead{min-height:40px;margin:-7px 0 8px;gap:12px}
+.compactViewHead>p{margin:0}
+.logsView>.compactViewHead+.logPanel{height:calc(100% - 40px)}

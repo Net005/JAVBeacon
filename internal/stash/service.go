@@ -118,7 +118,11 @@ type Service struct {
 var scheduleMaxSleepChunk = 30 * time.Second
 
 func New(st store.Store, timeout time.Duration, log *slog.Logger, jav *scraper.JavLibrary, downloads *download.Service) *Service {
-	return &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, jav: jav, downloads: downloads, scheduleNextAttempt: map[string]time.Time{}}
+	svc := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, jav: jav, downloads: downloads, scheduleNextAttempt: map[string]time.Time{}}
+	if st != nil {
+		svc.restoreMissingScanStatus(context.Background())
+	}
+	return svc
 }
 
 func (s *Service) Status() Status { s.mu.RLock(); defer s.mu.RUnlock(); return s.status }

@@ -69,6 +69,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`Basic · interval + start time`,
 		`Advanced · weekdays + time + interval`,
 		`Power user · cron expression`,
+		"validDate(j.finished_at)?`Last scan: ${fullDateTime(j.finished_at)}${counts}`:'Not scanned yet.'",
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("embedded app.js is missing %q", marker)
@@ -95,6 +96,12 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	}
 	if !strings.Contains(string(markup), `id="releasedStartDate" type="date"`) {
 		t.Fatal("embedded index.html is missing the persisted Released-tab start date")
+	}
+	if strings.Contains(string(markup), `<p class="eyebrow">SERVER DIAGNOSTICS</p><h2>Live application log</h2>`) || strings.Contains(string(markup), `<p class="eyebrow">STASHAPP RECOVERY</p><h2>Missing library files</h2>`) {
+		t.Fatal("embedded index.html still contains duplicate Logs or Missing Files page headings")
+	}
+	if strings.Count(string(markup), `class="sectionHead compactViewHead"`) < 2 {
+		t.Fatal("embedded index.html is missing compact Logs and Missing Files headers")
 	}
 }
 
