@@ -7,6 +7,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.26] - 2026-08-28
+
 ### Added
 
 - Release Library's infinite-scroll and release-details paging batch size
@@ -557,7 +559,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.25...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.26...HEAD
+[1.0.26]: https://github.com/Net005/JAVBeacon/compare/v1.0.25...v1.0.26
 [1.0.25]: https://github.com/Net005/JAVBeacon/compare/v1.0.24...v1.0.25
 [1.0.24]: https://github.com/Net005/JAVBeacon/compare/v1.0.23...v1.0.24
 [1.0.23]: https://github.com/Net005/JAVBeacon/compare/v1.0.22...v1.0.23
