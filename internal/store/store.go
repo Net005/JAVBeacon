@@ -31,6 +31,12 @@ type Store interface {
 	Release(context.Context, int64) (domain.Release, error)
 	ReleaseExistsForSite(context.Context, int64, string, string) (bool, error)
 	UpsertRelease(context.Context, domain.Release) (bool, error)
+	// UpsertReleaseKeepUpdatedAt behaves exactly like UpsertRelease except it
+	// never bumps updated_at on an existing release, whatever changed - used
+	// by the screenshot backfill job (see monitor.Service.RefreshReleaseNow)
+	// so a run that merely confirms or repairs screenshots on an old release
+	// doesn't pull it back to the top of "sort by date updated."
+	UpsertReleaseKeepUpdatedAt(context.Context, domain.Release) (bool, error)
 	PatchRelease(context.Context, int64, *bool, *bool, *bool, *bool, *bool, *bool, *string, *bool) error
 	BulkSetReleaseFlags(context.Context, []int64, *bool, *bool) (int64, error)
 	SetSiteReleaseMonitoring(context.Context, int64, bool) error
@@ -1159,7 +1165,22 @@ func (s *SQLite) ReleaseExistsForSite(ctx context.Context, siteID int64, source,
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM releases r JOIN release_sites rs ON rs.release_id=r.id WHERE r.identity_key=? AND rs.site_id=?)`, identity, siteID).Scan(&exists)
 	return exists, err
 }
+
+// UpsertRelease inserts or updates a release, bumping updated_at when its
+// scraped metadata actually changed. UpsertReleaseKeepUpdatedAt is the same
+// operation with that bump suppressed - see upsertRelease's preserveUpdatedAt
+// parameter.
 func (s *SQLite) UpsertRelease(ctx context.Context, x domain.Release) (bool, error) {
+	return s.upsertRelease(ctx, x, false)
+}
+
+// UpsertReleaseKeepUpdatedAt is UpsertRelease with updated_at never bumped -
+// see the Store interface doc comment for why (screenshot backfill).
+func (s *SQLite) UpsertReleaseKeepUpdatedAt(ctx context.Context, x domain.Release) (bool, error) {
+	return s.upsertRelease(ctx, x, true)
+}
+
+func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUpdatedAt bool) (bool, error) {
 	if len(x.Actresses) > 0 {
 		x.Actress = strings.Join(uniqueMetadataValues(x.Actresses), ", ")
 	}
@@ -1237,7 +1258,7 @@ func (s *SQLite) UpsertRelease(ctx context.Context, x domain.Release) (bool, err
 			(string(shots) != "[]" && string(shots) != "null" && string(shots) != current.screenshots) ||
 			(x.Released && !current.released)
 		updatedAt := current.updatedAt
-		if metadataChanged {
+		if metadataChanged && !preserveUpdatedAt {
 			updatedAt = now
 		}
 		// Repair an invalid historical ordering while touching the row, and

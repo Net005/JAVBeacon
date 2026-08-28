@@ -393,6 +393,18 @@ func (s *Server) startScreenshotBackfill(ctx context.Context) error {
 	return nil
 }
 
+// runScreenshotBackfill sweeps every JavLibrary release needing a
+// screenshot check through a bounded pool of concurrent workers, each
+// calling monitor.Service.RefreshReleaseNow directly - bypassing the single
+// global scrape job queue entirely, since that queue only ever runs one
+// thing at a time and this sweep is exactly the kind of independent,
+// lowest-priority background work the multi-instance Byparr pool exists to
+// soak up without starving a real scan or manual action (RefreshReleaseNow
+// still asks the pool for an instance at the screenshot-backfill priority,
+// so it fairly loses out when one of those is also contending for the same
+// instances). Worker count is min(configured byparr_max_instances_screenshots
+// cap, enabled pool instances) - or 1 if no solver is configured at all,
+// matching the pre-pooling one-at-a-time behavior in that case.
 func (s *Server) runScreenshotBackfill(ctx context.Context) {
 	defer func() {
 		s.coverJobMu.Lock()
@@ -401,66 +413,103 @@ func (s *Server) runScreenshotBackfill(ctx context.Context) {
 		s.screenshotJob.VideoID = ""
 		s.coverJobMu.Unlock()
 	}()
+	workers := s.screenshotBackfillWorkers(ctx)
+	candidates := make(chan domain.Release)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for release := range candidates {
+				s.screenshotBackfillOne(ctx, release)
+			}
+		}()
+	}
 	for offset := 0; ; offset += 500 {
 		releases, err := s.store.Releases(ctx, domain.ReleaseFilter{Source: "JavLibrary", Sort: "release", Direction: "desc", Limit: 500, Offset: offset})
 		if err != nil {
 			s.coverJobMu.Lock()
 			s.screenshotJob.LastError = err.Error()
 			s.coverJobMu.Unlock()
-			return
+			break
 		}
+		fed := true
 		for _, release := range releases {
-			completed, completedErr := s.store.ScreenshotBackfillCompleted(ctx, release.ID)
-			if completedErr != nil {
-				s.updateScreenshotBackfill(release.VideoID, "failed", completedErr)
-				continue
+			select {
+			case candidates <- release:
+			case <-ctx.Done():
+				fed = false
 			}
-			cacheComplete := s.screenshots.Complete(release.VideoID, release.Screenshots)
-			// A completed zero-screenshot scrape is remembered, while releases
-			// with screenshot metadata are only skipped while every local file
-			// still exists. This lets the job repair an interrupted/removed cache
-			// without repeatedly scraping releases that genuinely have no shots.
-			if (completed && len(release.Screenshots) == 0) || cacheComplete {
-				if !completed {
-					_ = s.store.MarkScreenshotBackfillCompleted(ctx, release.ID)
-				}
-				s.updateScreenshotBackfill(release.VideoID, "skipped", nil)
-				continue
-			}
-			if err := s.monitor.StartOptions(ctx, monitor.RefreshOptions{ReleaseID: release.ID, Mode: "screenshots", Kind: monitor.PriorityKindScreenshotBackfill, Title: "Screenshot backfill · " + release.VideoID}); err != nil {
-				s.updateScreenshotBackfill(release.VideoID, "failed", err)
-				continue
-			}
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(500 * time.Millisecond):
-				}
-				job := s.monitor.StatusForRelease(release.ID)
-				if job.State == "queued" || job.State == "running" || job.State == "stopping" {
-					continue
-				}
-				if job.State == "completed" && job.Error == "" {
-					if err := s.store.MarkScreenshotBackfillCompleted(ctx, release.ID); err != nil {
-						s.updateScreenshotBackfill(release.VideoID, "failed", err)
-					} else {
-						s.updateScreenshotBackfill(release.VideoID, "completed", nil)
-					}
-				} else {
-					jobErr := errors.New("screenshot scrape did not complete")
-					if strings.TrimSpace(job.Error) != "" {
-						jobErr = errors.New(job.Error)
-					}
-					s.updateScreenshotBackfill(release.VideoID, "failed", jobErr)
-				}
+			if !fed {
 				break
 			}
 		}
-		if len(releases) < 500 {
-			return
+		if !fed || len(releases) < 500 {
+			break
 		}
 	}
+	close(candidates)
+	wg.Wait()
+}
+
+// screenshotBackfillWorkers sizes the concurrent worker pool
+// runScreenshotBackfill dispatches releases to - see that function's doc
+// comment for the exact rule.
+func (s *Server) screenshotBackfillWorkers(ctx context.Context) int {
+	cap := 0
+	if settings, err := s.store.Settings(ctx); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(settings["byparr_max_instances_screenshots"])); err == nil && n > 0 {
+			cap = n
+		}
+	}
+	workers := s.monitor.SolverPoolEnabledCount()
+	if workers < 1 {
+		workers = 1
+	}
+	if cap > 0 && cap < workers {
+		workers = cap
+	}
+	return workers
+}
+
+// screenshotBackfillOne checks (and, if needed, refreshes) one release's
+// screenshots, recording the outcome via updateScreenshotBackfill. Called
+// concurrently from runScreenshotBackfill's worker pool - safe to do so
+// since it touches no state that isn't either per-release (independent rows)
+// or already protected by its own lock (coverJobMu, inside
+// updateScreenshotBackfill; the solver pool, inside RefreshReleaseNow).
+func (s *Server) screenshotBackfillOne(ctx context.Context, release domain.Release) {
+	completed, completedErr := s.store.ScreenshotBackfillCompleted(ctx, release.ID)
+	if completedErr != nil {
+		s.updateScreenshotBackfill(release.VideoID, "failed", completedErr)
+		return
+	}
+	cacheComplete := s.screenshots.Complete(release.VideoID, release.Screenshots)
+	// A completed zero-screenshot scrape is remembered, while releases
+	// with screenshot metadata are only skipped while every local file
+	// still exists. This lets the job repair an interrupted/removed cache
+	// without repeatedly scraping releases that genuinely have no shots.
+	if (completed && len(release.Screenshots) == 0) || cacheComplete {
+		if !completed {
+			_ = s.store.MarkScreenshotBackfillCompleted(ctx, release.ID)
+		}
+		s.updateScreenshotBackfill(release.VideoID, "skipped", nil)
+		return
+	}
+	job := s.monitor.RefreshReleaseNow(ctx, release.ID)
+	if job.State == "completed" && job.Error == "" {
+		if err := s.store.MarkScreenshotBackfillCompleted(ctx, release.ID); err != nil {
+			s.updateScreenshotBackfill(release.VideoID, "failed", err)
+		} else {
+			s.updateScreenshotBackfill(release.VideoID, "completed", nil)
+		}
+		return
+	}
+	jobErr := errors.New("screenshot scrape did not complete")
+	if strings.TrimSpace(job.Error) != "" {
+		jobErr = errors.New(job.Error)
+	}
+	s.updateScreenshotBackfill(release.VideoID, "failed", jobErr)
 }
 
 func (s *Server) updateScreenshotBackfill(videoID, outcome string, err error) {
@@ -1069,7 +1118,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &x) {
 		return
 	}
-	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "stash_desired_tag_id": true, "stash_desired_sync_enabled": true, "stash_desired_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true}
+	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "stash_desired_tag_id": true, "stash_desired_sync_enabled": true, "stash_desired_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true}
 	for _, kind := range monitor.JobPriorityKinds {
 		allowed[monitor.JobPrioritySettingKey(kind)] = true
 	}
@@ -1138,6 +1187,41 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		if raw, ok := x[key]; ok && strings.TrimSpace(raw) != "" {
 			if priority, e := strconv.Atoi(strings.TrimSpace(raw)); e != nil || priority < 1 || priority > 999 {
 				s.problem(w, http.StatusUnprocessableEntity, "job priority for "+kind+" must be a whole number from 1 to 999")
+				return
+			}
+		}
+	}
+	// byparr_instances is the JSON-encoded list of configured Byparr/
+	// FlareSolverr instances backing the multi-instance solver pool -
+	// rejected up front (rather than silently stored and ignored later) if
+	// it doesn't parse, or if any entry has a blank URL, so a typo in the
+	// Settings UI surfaces immediately instead of quietly leaving the pool
+	// short an instance.
+	if raw, ok := x["byparr_instances"]; ok && strings.TrimSpace(raw) != "" {
+		var instances []struct {
+			URL      string `json:"url"`
+			Priority int    `json:"priority"`
+			Enabled  bool   `json:"enabled"`
+		}
+		if err := json.Unmarshal([]byte(raw), &instances); err != nil {
+			s.problem(w, http.StatusUnprocessableEntity, "Byparr instances: invalid data")
+			return
+		}
+		for _, inst := range instances {
+			if strings.TrimSpace(inst.URL) == "" {
+				s.problem(w, http.StatusUnprocessableEntity, "Byparr instances: each instance needs a URL")
+				return
+			}
+		}
+	}
+	// byparr_max_instances_* cap how many of the configured Byparr instances
+	// each schedule type (quick/full/new releases) or the screenshot
+	// backfill job may use concurrently - blank/0 means "no cap, use every
+	// enabled instance."
+	for _, key := range []string{"byparr_max_instances_quick", "byparr_max_instances_full", "byparr_max_instances_new", "byparr_max_instances_screenshots"} {
+		if raw, ok := x[key]; ok && strings.TrimSpace(raw) != "" {
+			if n, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil || n < 0 {
+				s.problem(w, http.StatusUnprocessableEntity, key+" must be zero or greater")
 				return
 			}
 		}

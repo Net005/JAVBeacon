@@ -137,21 +137,21 @@ func (a *Akiba) fetchOnce(ctx context.Context, raw, kind string, stage ...Detail
 }
 
 func (a *Akiba) Scrape(ctx context.Context, pages int, progress ...Progress) ([]domain.Release, error) {
-	return a.ScrapeFiltered(ctx, pages, nil, progress...)
+	return a.ScrapeFiltered(ctx, pages, nil, ScrapeConcurrency{}, progress...)
 }
 
-func (a *Akiba) ScrapeFiltered(ctx context.Context, pages int, include func(string) bool, progress ...Progress) ([]domain.Release, error) {
-	return a.scrapeFiltered(ctx, pages, include, true, progress...)
+func (a *Akiba) ScrapeFiltered(ctx context.Context, pages int, include func(string) bool, concurrency ScrapeConcurrency, progress ...Progress) ([]domain.Release, error) {
+	return a.scrapeFiltered(ctx, pages, include, true, concurrency, progress...)
 }
 
 // ScrapeFilteredThroughEnd continues across listing pages even when a page only
 // contains releases rejected by include. Pagination still stops at the site's
 // actual empty/repeated end, with pages acting only as a safety ceiling.
-func (a *Akiba) ScrapeFilteredThroughEnd(ctx context.Context, pages int, include func(string) bool, progress ...Progress) ([]domain.Release, error) {
-	return a.scrapeFiltered(ctx, pages, include, false, progress...)
+func (a *Akiba) ScrapeFilteredThroughEnd(ctx context.Context, pages int, include func(string) bool, concurrency ScrapeConcurrency, progress ...Progress) ([]domain.Release, error) {
+	return a.scrapeFiltered(ctx, pages, include, false, concurrency, progress...)
 }
 
-func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(string) bool, stopWhenNoIncluded bool, progress ...Progress) ([]domain.Release, error) {
+func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(string) bool, stopWhenNoIncluded bool, concurrency ScrapeConcurrency, progress ...Progress) ([]domain.Release, error) {
 	started := time.Now()
 	if pages < 1 {
 		pages = 1
@@ -190,8 +190,8 @@ func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(stri
 		if len(progress) > 0 && progress[0] != nil {
 			progress[0](page, reportedPageLimit, 0, len(cards), "")
 		}
-		added := 0
 		discovered := 0
+		var candidates []domain.Release
 		for cardIndex, card := range cards {
 			r, ok := a.card(card)
 			if !ok || seen[r.ProductURL] {
@@ -205,15 +205,20 @@ func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(stri
 			if include != nil && !include(r.VideoID) {
 				continue
 			}
-			detail, e := a.detail(ctx, r.ProductURL)
-			if e == nil {
+			candidates = append(candidates, r)
+		}
+		fetched := make([]domain.Release, len(candidates))
+		fetchDetailsConcurrently(len(candidates), concurrency, func(i int) {
+			r := candidates[i]
+			if detail, e := a.detail(ctx, r.ProductURL); e == nil {
 				merge(&r, detail)
 			} else {
 				a.log.Warn("product detail failed", "provider", "GIGA", "page", page, "video_id", r.VideoID, "url", r.ProductURL, "error", e)
 			}
-			out = append(out, r)
-			added++
-		}
+			fetched[i] = r
+		})
+		out = append(out, fetched...)
+		added := len(candidates)
 		if discovered == 0 && page > 1 {
 			if len(progress) > 0 && progress[0] != nil {
 				progress[0](page-1, page-1, 0, 0, "")

@@ -212,6 +212,19 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 			}
 		}
 	}
+	// Byparr/FlareSolverr moved from a single flaresolverr_url setting to a
+	// list of instances (byparr_instances, JSON-encoded []scraper.Instance)
+	// so more than one solver can be configured for the concurrent-scraping
+	// pool - any install that already had a solver URL configured needs it
+	// converted once on startup, the same way stash_missing_path_remaps was
+	// migrated above, or it would silently end up with no solver at all.
+	if list := strings.TrimSpace(settings["byparr_instances"]); list == "" || list == "[]" {
+		if url := strings.TrimSpace(settings["flaresolverr_url"]); url != "" {
+			if encoded, err := json.Marshal([]scraper.Instance{{URL: url, Priority: 10, Enabled: true}}); err == nil {
+				_ = st.SaveSettings(context.Background(), map[string]string{"byparr_instances": string(encoded)})
+			}
+		}
+	}
 	settings, err = st.Settings(context.Background())
 	if err != nil {
 		st.Close()
@@ -230,6 +243,13 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		return nil, err
 	}
 	mon := monitor.New(st, akiba, javlibrary, coverCache, cfg.PageLimit, log, cfg.RefreshEvery, screenshotCache)
+	// javlibrary was constructed from cfg's env-sourced defaults above, which
+	// only match the database's saved settings on a fresh install - re-apply
+	// from the just-loaded settings row (in particular byparr_instances) so
+	// a solver configured via Settings on a prior run is actually live
+	// immediately, rather than only taking effect once the first scan job
+	// starts (run() re-Configures too) or a settings save happens.
+	mon.ApplySettings(context.Background())
 	downloadService := download.New(st, cfg.RequestTimeout, log)
 	stashSync := stash.New(st, cfg.RequestTimeout, log, javlibrary, downloadService)
 	mon.OnRelease(func(r domain.Release) { downloadService.Auto(context.Background(), r) })

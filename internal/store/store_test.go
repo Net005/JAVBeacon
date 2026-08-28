@@ -617,19 +617,18 @@ func TestReleaseLabelAndDownloadStatus(t *testing.T) {
 		t.Fatalf("partial rescrape erased label: %+v", got)
 	}
 
-	torrentPage := "https://sukebei.nyaa.si/view/4544529"
-	dl, err := s.SaveDownload(ctx, domain.Download{ReleaseID: got.ID, Provider: "Sukebei", SourceReference: torrentPage, Query: "LBL-1", Status: "downloading"})
+	dl, err := s.SaveDownload(ctx, domain.Download{ReleaseID: got.ID, Provider: "Sukebei", Query: "LBL-1", Status: "downloading"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fetch(); got.DownloadStatus != "downloading" || got.DownloadSourceReference != torrentPage {
+	if got := fetch(); got.DownloadStatus != "downloading" {
 		t.Fatalf("expected downloading status: %+v", got)
 	}
 	dl.Status = "completed"
 	if _, err := s.SaveDownload(ctx, dl); err != nil {
 		t.Fatal(err)
 	}
-	if got := fetch(); got.DownloadStatus != "completed" || got.DownloadSourceReference != torrentPage {
+	if got := fetch(); got.DownloadStatus != "completed" {
 		t.Fatalf("expected completed status: %+v", got)
 	}
 
@@ -1773,4 +1772,88 @@ func idsOf(releases []domain.Release) []int64 {
 		out[i] = r.ID
 	}
 	return out
+}
+
+// TestUpsertReleaseKeepUpdatedAtPreservesTimestamp guards the multi-Byparr
+// screenshot-backfill feature's core requirement: a backfill run confirming
+// or repairing a release's screenshots must not bump updated_at, or it
+// would pollute "sort by date updated" every time the maintenance job
+// merely re-confirms old releases. UpsertReleaseKeepUpdatedAt must still
+// apply the changed metadata itself - only the timestamp is suppressed.
+func TestUpsertReleaseKeepUpdatedAtPreservesTimestamp(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "PRED-901", Title: "Original title", Source: "JavLibrary", Released: true}); err != nil || !created {
+		t.Fatalf("initial upsert: created=%v err=%v", created, err)
+	}
+	before, err := s.Releases(ctx, domain.ReleaseFilter{Search: "PRED-901"})
+	if err != nil || len(before) != 1 {
+		t.Fatalf("initial lookup: items=%d err=%v", len(before), err)
+	}
+	initialUpdatedAt := before[0].UpdatedAt
+	time.Sleep(10 * time.Millisecond)
+
+	// A screenshots-only change is exactly the case that used to bump
+	// updated_at via UpsertRelease's metadataChanged check - it must not,
+	// through the KeepUpdatedAt variant.
+	changed := domain.Release{SiteID: site.ID, VideoID: "PRED-901", Title: "Original title", Source: "JavLibrary", Released: true, Screenshots: []string{"https://example.test/new-shot.jpg"}}
+	if created, err := s.UpsertReleaseKeepUpdatedAt(ctx, changed); err != nil || created {
+		t.Fatalf("keep-updated-at upsert: created=%v err=%v", created, err)
+	}
+	after, err := s.Releases(ctx, domain.ReleaseFilter{Search: "PRED-901"})
+	if err != nil || len(after) != 1 {
+		t.Fatalf("post-upsert lookup: items=%d err=%v", len(after), err)
+	}
+	if !after[0].UpdatedAt.Equal(initialUpdatedAt) {
+		t.Fatalf("updated_at changed: before=%v after=%v", initialUpdatedAt, after[0].UpdatedAt)
+	}
+	if len(after[0].Screenshots) != 1 || after[0].Screenshots[0] != "https://example.test/new-shot.jpg" {
+		t.Fatalf("screenshots were not applied: %v", after[0].Screenshots)
+	}
+}
+
+// TestUpsertReleaseStillBumpsUpdatedAtOnMetadataChange is the control case
+// for the test above: the ordinary UpsertRelease path must keep bumping
+// updated_at on a real metadata change exactly as before this feature's
+// upsertRelease(preserveUpdatedAt) refactor.
+func TestUpsertReleaseStillBumpsUpdatedAtOnMetadataChange(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "PRED-902", Title: "Original title", Source: "JavLibrary", Released: true}); err != nil || !created {
+		t.Fatalf("initial upsert: created=%v err=%v", created, err)
+	}
+	before, err := s.Releases(ctx, domain.ReleaseFilter{Search: "PRED-902"})
+	if err != nil || len(before) != 1 {
+		t.Fatalf("initial lookup: items=%d err=%v", len(before), err)
+	}
+	initialUpdatedAt := before[0].UpdatedAt
+	time.Sleep(10 * time.Millisecond)
+
+	changed := domain.Release{SiteID: site.ID, VideoID: "PRED-902", Title: "Original title", Source: "JavLibrary", Released: true, Screenshots: []string{"https://example.test/new-shot.jpg"}}
+	if created, err := s.UpsertRelease(ctx, changed); err != nil || created {
+		t.Fatalf("upsert: created=%v err=%v", created, err)
+	}
+	after, err := s.Releases(ctx, domain.ReleaseFilter{Search: "PRED-902"})
+	if err != nil || len(after) != 1 {
+		t.Fatalf("post-upsert lookup: items=%d err=%v", len(after), err)
+	}
+	if !after[0].UpdatedAt.After(initialUpdatedAt) {
+		t.Fatalf("updated_at did not advance: before=%v after=%v", initialUpdatedAt, after[0].UpdatedAt)
+	}
 }

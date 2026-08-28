@@ -200,11 +200,42 @@ func (s *Service) OnRelease(fn func(domain.Release)) {
 	s.listeners = append(s.listeners, fn)
 	s.mu.Unlock()
 }
+
+// SolverPoolEnabledCount reports how many Byparr/FlareSolverr instances are
+// currently configured and enabled, for callers outside this package that
+// need to size their own concurrent work against the pool (the screenshot
+// backfill's worker pool in internal/web/server.go) without reaching into
+// the JavLibrary scraper directly.
+func (s *Service) SolverPoolEnabledCount() int {
+	return s.javlibrary.Pool().EnabledCount()
+}
+
 func (s *Service) ApplySettings(ctx context.Context) {
 	if settings, e := s.store.Settings(ctx); e == nil {
-		cooldown, _ := strconv.ParseFloat(settings["flaresolverr_cooldown"], 64)
-		s.javlibrary.Configure(settings["flaresolverr_url"], cooldown)
+		s.javlibrary.Configure(byparrInstancesFromSettings(settings))
 	}
+}
+
+// byparrInstancesFromSettings parses the byparr_instances/flaresolverr_cooldown
+// settings pair into the form JavLibrary.Configure wants, shared by
+// ApplySettings and the per-job re-Configure in run().
+func byparrInstancesFromSettings(settings map[string]string) ([]scraper.Instance, time.Duration) {
+	cooldown, _ := strconv.ParseFloat(settings["flaresolverr_cooldown"], 64)
+	return scraper.ParseInstances(settings["byparr_instances"]), time.Duration(cooldown * float64(time.Second))
+}
+
+// capForSchedule returns the configured byparr_max_instances_<mode> setting
+// for a quick/full/new-releases scan, or 0 ("no cap") for any other mode or
+// an unset/invalid value.
+func capForSchedule(settings map[string]string, mode string) int {
+	if mode != "quick" && mode != "full" && mode != "new" {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(settings["byparr_max_instances_"+mode]))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 func (s *Service) Start(ctx context.Context, siteID int64) error {
 	return s.StartOptions(ctx, RefreshOptions{SiteID: siteID, Mode: "quick"})
@@ -462,13 +493,40 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 	if options.AllPages {
 		pages = 500
 	}
+	// javConcurrency/akibaConcurrency bound how many detail-page fetches this
+	// job's scan loop runs at once for each provider (see
+	// scraper.ScrapeConcurrency). JavLibrary defaults to using every enabled
+	// Byparr pool instance (capped by the configured
+	// byparr_max_instances_<mode> setting, if any); with no solver
+	// configured at all, it stays at 1 - concurrent *direct* requests to
+	// JavLibrary (bypassing Byparr entirely) is not something this feature
+	// is about and is likely to get blocked. GIGA has no solver pool to size
+	// against, so it only goes concurrent when the operator explicitly
+	// configures a cap greater than 1 for this schedule type; unset/0 keeps
+	// today's one-at-a-time behavior.
+	javConcurrency, akibaConcurrency := 1, 1
 	if settings, err := s.store.Settings(ctx); err == nil {
 		if n, err := strconv.Atoi(settings["page_limit"]); options.Pages <= 0 && !options.AllPages && err == nil && n > 0 {
 			pages = n
 		}
-		cooldown, _ := strconv.ParseFloat(settings["flaresolverr_cooldown"], 64)
-		s.javlibrary.Configure(settings["flaresolverr_url"], cooldown)
+		s.javlibrary.Configure(byparrInstancesFromSettings(settings))
+		cap := capForSchedule(settings, options.Mode)
+		if enabled := s.javlibrary.Pool().EnabledCount(); enabled > 0 {
+			javConcurrency = enabled
+			if cap > 0 && cap < javConcurrency {
+				javConcurrency = cap
+			}
+		}
+		if cap > 0 {
+			akibaConcurrency = cap
+		}
 	}
+	// Every detail-page fetch this job makes (including nested checkpoint
+	// preemptions, which call s.run with this same ctx) carries this job's
+	// resolved priority through to SolverPool.Acquire, so a manual
+	// "Update details" job's requests jump ahead of a lower-priority
+	// scheduled scan's when both are contending for the same pool.
+	ctx = scraper.WithSolverPriority(ctx, options.Priority)
 	// scanSites is the ordered subset of sites this job actually scans -
 	// resolved once, up front, so job.SiteCount (and each site's
 	// job.SiteIndex, set below) reports a real "site N of total" figure for
@@ -553,18 +611,25 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 				return true
 			}
 		}
+		// concurrency.Checkpoint gives a higher-priority job a chance to
+		// preempt between batches of concurrent detail fetches - the same
+		// role the per-item progress callback's checkpoint call plays for
+		// the fast, sequential listing-page parse above.
+		scanCheckpoint := func() { s.checkpoint(ctx, &job, options.Priority) }
 		switch {
 		case strings.EqualFold(site.Name, "GIGA"):
+			concurrency := scraper.ScrapeConcurrency{Max: akibaConcurrency, Checkpoint: scanCheckpoint}
 			if options.AllPages {
-				items, e = s.akiba.ScrapeFilteredThroughEnd(ctx, pages, include, progress)
+				items, e = s.akiba.ScrapeFilteredThroughEnd(ctx, pages, include, concurrency, progress)
 			} else {
-				items, e = s.akiba.ScrapeFiltered(ctx, pages, include, progress)
+				items, e = s.akiba.ScrapeFiltered(ctx, pages, include, concurrency, progress)
 			}
 		case strings.EqualFold(site.Name, "JavLibrary"):
+			concurrency := scraper.ScrapeConcurrency{Max: javConcurrency, Checkpoint: scanCheckpoint}
 			if options.AllPages {
-				items, e = s.javlibrary.ScrapeFilteredThroughEnd(ctx, site.URL, pages, include, progress)
+				items, e = s.javlibrary.ScrapeFilteredThroughEnd(ctx, site.URL, pages, include, concurrency, progress)
 			} else {
-				items, e = s.javlibrary.ScrapeFiltered(ctx, site.URL, pages, include, progress)
+				items, e = s.javlibrary.ScrapeFiltered(ctx, site.URL, pages, include, concurrency, progress)
 			}
 		default:
 			s.log.Warn("unsupported scraper skipped", "site", site.Title, "scraper", site.Name)
@@ -717,7 +782,59 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 	}
 }
 
+// refreshRelease is the queued path: manual "Update details" and any other
+// ReleaseID-scoped job (RefreshOptions.ReleaseID != 0) reaches here via
+// run(), on the single worker goroutine, exactly as before - it updates the
+// shared s.job status (via the report callback) so the Jobs page's "ACTIVE
+// SCRAPE" panel and per-release polling reflect its live progress.
 func (s *Service) refreshRelease(ctx context.Context, id int64, job *domain.Job) {
+	s.doRefreshRelease(ctx, id, job, false, func() { s.setJob(*job) })
+}
+
+// RefreshReleaseNow refreshes one release's full details immediately,
+// bypassing the single global job queue/worker entirely - safe to call
+// concurrently from multiple goroutines (this is what the screenshot
+// backfill's concurrent worker pool uses), since unlike refreshRelease it
+// touches no shared job/queue/s.job state, only the shared solver pool
+// (already concurrency-safe on its own) and this one release's independent
+// DB row. Always preserves the release's updated_at (see
+// UpsertReleaseKeepUpdatedAt) so a backfill run that merely confirms or
+// repairs screenshots never pollutes "sort by date updated." ctx is
+// wrapped with the screenshot-backfill priority kind so its solver-pool
+// requests still fairly lose out to a manual Update Details or a real
+// scan's requests when contending for the same instances.
+func (s *Service) RefreshReleaseNow(ctx context.Context, id int64) domain.Job {
+	ctx = scraper.WithSolverPriority(ctx, s.resolvePriority(ctx, PriorityKindScreenshotBackfill, 0))
+	job := domain.Job{Kind: "scrape", State: "running", Mode: "screenshots", Running: true, StartedAt: time.Now().UTC(), ReleaseID: id}
+	s.doRefreshRelease(ctx, id, &job, true, nil)
+	job.Running = false
+	job.FinishedAt = time.Now().UTC()
+	if job.Error != "" {
+		job.State = "failed"
+	} else {
+		job.State = "completed"
+	}
+	return job
+}
+
+// doRefreshRelease holds the actual scrape-refresh-and-save logic shared by
+// refreshRelease (queued, single-worker path) and RefreshReleaseNow
+// (direct, concurrency-safe path). report, when non-nil, is called after
+// every job field mutation so a caller tracking this refresh through the
+// shared job-status system (refreshRelease's use) sees live progress;
+// RefreshReleaseNow passes nil since it has nothing shared to publish into
+// until it returns the finished job.Whether keepUpdatedAt is set decides
+// both which Store.UpsertRelease variant persists the result and whether a
+// screenshot-cache failure is treated as a hard job failure - both were
+// keyed off job.Mode == "screenshots" before this was split into two
+// callers, and keepUpdatedAt is true for exactly the same case (the
+// backfill path) that Mode == "screenshots" used to identify.
+func (s *Service) doRefreshRelease(ctx context.Context, id int64, job *domain.Job, keepUpdatedAt bool, report func()) {
+	setJob := func() {
+		if report != nil {
+			report()
+		}
+	}
 	existing, err := s.store.Release(ctx, id)
 	if err != nil {
 		job.Error = err.Error()
@@ -727,12 +844,12 @@ func (s *Service) refreshRelease(ctx context.Context, id int64, job *domain.Job)
 	job.SiteTitle, job.Provider, job.VideoID = existing.SiteTitle, existing.Source, existing.VideoID
 	job.Page, job.PageLimit, job.Item, job.PageItems = 1, 1, 1, 1
 	job.Stage = scraper.StageConnecting
-	s.setJob(*job)
+	setJob()
 	// stage pushes a live progress update for this job's poller (Phase 12)
 	// each time the scraper reaches a new, genuinely distinguishable point
 	// in the refresh - see scraper.DetailStage's doc comment for exactly
 	// what each name covers and why.
-	stage := func(name string) { job.Stage = name; s.setJob(*job) }
+	stage := func(name string) { job.Stage = name; setJob() }
 	s.log.Info("release detail refresh started", "release_id", id, "video_id", existing.VideoID, "provider", existing.Source, "url", existing.ProductURL)
 	var updated domain.Release
 	switch {
@@ -768,7 +885,7 @@ func (s *Service) refreshRelease(ctx context.Context, id int64, job *domain.Job)
 		_, _, failed, screenshotErr := s.screenshots.EnsureAll(ctx, updated.VideoID, updated.Screenshots)
 		if screenshotErr != nil {
 			s.log.Warn("release screenshot cache incomplete", "release_id", id, "video_id", existing.VideoID, "failed", failed, "error", screenshotErr)
-			if job.Mode == "screenshots" {
+			if keepUpdatedAt {
 				job.Error = screenshotErr.Error()
 				job.Outcome = "failed"
 				return
@@ -776,7 +893,11 @@ func (s *Service) refreshRelease(ctx context.Context, id int64, job *domain.Job)
 		}
 	}
 	stage("updating")
-	if _, err = s.store.UpsertRelease(ctx, updated); err != nil {
+	upsert := s.store.UpsertRelease
+	if keepUpdatedAt {
+		upsert = s.store.UpsertReleaseKeepUpdatedAt
+	}
+	if _, err = upsert(ctx, updated); err != nil {
 		job.Error = err.Error()
 		job.Outcome = "failed"
 		return

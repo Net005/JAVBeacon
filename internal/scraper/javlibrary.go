@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
@@ -23,28 +22,41 @@ import (
 // JavLibrary is the general-purpose monitoring provider. It accepts the
 // actress/director/genre/maker/label/series/listing URLs managed by the client.
 type JavLibrary struct {
-	client       *http.Client
-	flareSolverr string
-	cooldown     time.Duration
-	log          *slog.Logger
-	mu           sync.RWMutex
+	client *http.Client
+	pool   *SolverPool
+	log    *slog.Logger
 }
 
 var parenthesizedActress = regexp.MustCompile(`\(([^()]+)\)`)
 
+// NewJavLibrary constructs a JavLibrary scraper with a single legacy solver
+// URL/cooldown, for backward-compatible callers (tests, any direct
+// construction that hasn't moved to the multi-instance settings model yet).
+// An empty flareSolverr yields a pool with zero instances - documentOnce
+// then fetches directly, exactly as before Byparr pooling existed.
 func NewJavLibrary(timeout time.Duration, flareSolverr string, cooldown float64, log *slog.Logger) *JavLibrary {
 	jar, _ := cookiejar.New(nil)
 	if log == nil {
 		log = slog.Default()
 	}
-	return &JavLibrary{client: &http.Client{Timeout: timeout, Jar: jar}, flareSolverr: strings.TrimRight(flareSolverr, "/"), cooldown: time.Duration(cooldown * float64(time.Second)), log: log}
+	j := &JavLibrary{client: &http.Client{Timeout: timeout, Jar: jar}, pool: NewSolverPool(), log: log}
+	if raw := strings.TrimRight(flareSolverr, "/"); raw != "" {
+		j.pool.Configure([]Instance{{URL: raw, Priority: 1, Enabled: true}}, time.Duration(cooldown*float64(time.Second)))
+	}
+	return j
 }
-func (j *JavLibrary) Configure(raw string, cooldown float64) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	j.flareSolverr = strings.TrimRight(raw, "/")
-	j.cooldown = time.Duration(cooldown * float64(time.Second))
+
+// Configure hot-swaps the pool of configured Byparr/FlareSolverr instances
+// and their shared cooldown. An empty/all-disabled instances list means "no
+// solver configured" - documentOnce then fetches directly.
+func (j *JavLibrary) Configure(instances []Instance, cooldown time.Duration) {
+	j.pool.Configure(instances, cooldown)
 }
+
+// Pool exposes the scraper's solver pool so callers (e.g. the monitor
+// package, when sizing a concurrent worker batch) can check EnabledCount()
+// without needing their own reference to the pool.
+func (j *JavLibrary) Pool() *SolverPool { return j.pool }
 
 // normalizeJavLibraryURL forces any javlibrary.com/www.javlibrary.com URL to
 // https://www.javlibrary.com, whatever scheme or host variant it arrived
@@ -84,11 +96,8 @@ func (j *JavLibrary) document(ctx context.Context, raw, kind string, stage ...De
 func (j *JavLibrary) documentOnce(ctx context.Context, raw, kind string, stage ...DetailStage) (*html.Node, error) {
 	raw = normalizeJavLibraryURL(raw)
 	report(stage, StageConnecting)
-	j.mu.RLock()
-	solver, cooldown := j.flareSolverr, j.cooldown
-	j.mu.RUnlock()
 
-	if solver == "" {
+	if j.pool.EnabledCount() == 0 {
 		body, e := j.direct(ctx, raw)
 		if e != nil {
 			j.log.Info("scrape response rejected", "provider", "JavLibrary", "kind", kind, "url", raw, "status", string(ScrapeError), "reason", e.Error(), "via", "direct")
@@ -112,8 +121,13 @@ func (j *JavLibrary) documentOnce(ctx context.Context, raw, kind string, stage .
 	}
 
 	report(stage, StageConnectingFlareSolverr)
-	j.log.Info("using anti-bot solver", "provider", "JavLibrary", "kind", kind, "url", raw, "solver", solver, "cooldown", cooldown)
-	body, e := j.flare(ctx, raw, solver, cooldown)
+	lease, e := j.pool.Acquire(ctx, solverPriorityFromContext(ctx))
+	if e != nil {
+		return nil, e
+	}
+	defer lease.Release()
+	j.log.Info("using anti-bot solver", "provider", "JavLibrary", "kind", kind, "url", raw, "solver", lease.URL())
+	body, e := j.flare(ctx, raw, lease.URL())
 	if e != nil {
 		j.log.Info("scrape response rejected", "provider", "JavLibrary", "kind", kind, "url", raw, "status", string(ScrapeError), "reason", e.Error(), "via", "flaresolverr")
 		return nil, statusErrorf(ScrapeError, "%s", e.Error())
@@ -148,18 +162,17 @@ func (j *JavLibrary) direct(ctx context.Context, raw string) ([]byte, error) {
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 }
-func (j *JavLibrary) flare(ctx context.Context, raw, solver string, cooldown time.Duration) ([]byte, error) {
+func (j *JavLibrary) flare(ctx context.Context, raw, solver string) ([]byte, error) {
 	// This is the last boundary before a URL leaves JAVBeacon. Normalize here
 	// even though documentOnce already does so, preventing a future or legacy
 	// caller from sending redirect-prone plain HTTP to the solver.
 	raw = normalizeJavLibraryURL(raw)
-	if cooldown > 0 {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(cooldown):
-		}
-	}
+	// The per-request cooldown that used to be a fixed sleep here is now
+	// enforced by SolverPool itself: it doesn't hand the leased instance back
+	// out to another caller until the configured cooldown has elapsed since
+	// this request's Release. With multiple instances, requests to different
+	// instances still proceed concurrently - only reuse of the same instance
+	// is throttled.
 	// FlareSolverr uses maxTimeout in milliseconds; Byparr uses max_timeout in
 	// seconds. Sending both keeps the provider endpoint interchangeable.
 	payload, _ := json.Marshal(map[string]any{"cmd": "request.get", "url": raw, "maxTimeout": 75000, "max_timeout": 75})
@@ -197,20 +210,20 @@ func (j *JavLibrary) flare(ctx context.Context, raw, solver string, cooldown tim
 	return []byte(result.Solution.Response), nil
 }
 func (j *JavLibrary) Scrape(ctx context.Context, base string, pages int, progress ...Progress) ([]domain.Release, error) {
-	return j.ScrapeFiltered(ctx, base, pages, nil, progress...)
+	return j.ScrapeFiltered(ctx, base, pages, nil, ScrapeConcurrency{}, progress...)
 }
 
-func (j *JavLibrary) ScrapeFiltered(ctx context.Context, base string, pages int, include func(string) bool, progress ...Progress) ([]domain.Release, error) {
-	return j.scrapeFiltered(ctx, base, pages, include, true, progress...)
+func (j *JavLibrary) ScrapeFiltered(ctx context.Context, base string, pages int, include func(string) bool, concurrency ScrapeConcurrency, progress ...Progress) ([]domain.Release, error) {
+	return j.scrapeFiltered(ctx, base, pages, include, true, concurrency, progress...)
 }
 
 // ScrapeFilteredThroughEnd keeps traversing when include rejects an entire
 // page, and stops only when the site's online pagination ends.
-func (j *JavLibrary) ScrapeFilteredThroughEnd(ctx context.Context, base string, pages int, include func(string) bool, progress ...Progress) ([]domain.Release, error) {
-	return j.scrapeFiltered(ctx, base, pages, include, false, progress...)
+func (j *JavLibrary) ScrapeFilteredThroughEnd(ctx context.Context, base string, pages int, include func(string) bool, concurrency ScrapeConcurrency, progress ...Progress) ([]domain.Release, error) {
+	return j.scrapeFiltered(ctx, base, pages, include, false, concurrency, progress...)
 }
 
-func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int, include func(string) bool, stopWhenNoIncluded bool, progress ...Progress) ([]domain.Release, error) {
+func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int, include func(string) bool, stopWhenNoIncluded bool, concurrency ScrapeConcurrency, progress ...Progress) ([]domain.Release, error) {
 	started := time.Now()
 	if strings.TrimSpace(base) == "" {
 		return nil, fmt.Errorf("JavLibrary site URL is required")
@@ -245,8 +258,12 @@ func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int,
 		if len(items) > 0 && len(progress) > 0 && progress[0] != nil {
 			progress[0](page, reportedPageLimit, 0, len(items), "")
 		}
-		added := 0
 		discovered := 0
+		type javCandidate struct {
+			r    domain.Release
+			href string
+		}
+		var candidates []javCandidate
 		for itemIndex, n := range items {
 			container := n
 			if hasClass(n, "id") && n.Parent != nil {
@@ -284,14 +301,27 @@ func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int,
 			if include != nil && !include(r.VideoID) {
 				continue
 			}
-			if detail, e := j.detail(ctx, href); e == nil {
+			candidates = append(candidates, javCandidate{r: r, href: href})
+		}
+		// The parsing pass above (fast, no network) still reports progress and
+		// runs the include filter strictly one item at a time, exactly as
+		// before concurrency existed. Only the actual detail-page fetches -
+		// the slow, network-bound part this feature is about - run in
+		// concurrent batches, with concurrency.Checkpoint (when set) giving a
+		// higher-priority job a chance to preempt between batches.
+		fetched := make([]domain.Release, len(candidates))
+		fetchDetailsConcurrently(len(candidates), concurrency, func(i int) {
+			c := candidates[i]
+			r := c.r
+			if detail, e := j.detail(ctx, c.href); e == nil {
 				mergeJav(&r, detail)
 			} else {
-				j.log.Warn("product detail failed", "provider", "JavLibrary", "page", page, "video_id", r.VideoID, "url", href, "error", e)
+				j.log.Warn("product detail failed", "provider", "JavLibrary", "page", page, "video_id", r.VideoID, "url", c.href, "error", e)
 			}
-			out = append(out, r)
-			added++
-		}
+			fetched[i] = r
+		})
+		out = append(out, fetched...)
+		added := len(candidates)
 		if discovered == 0 && page > 1 {
 			if len(progress) > 0 && progress[0] != nil {
 				progress[0](page-1, page-1, 0, 0, "")
