@@ -217,7 +217,7 @@ function renderSites(){const categories=[...new Set(sites.map(siteCategory))].so
 // "YYYY-MM-DD" (days<=0 returns today) - local calendar days, not a raw
 // 24h*days subtraction from now, so it lines up with what a person means by
 // "N days ago" regardless of time of day or DST.
-function isoDateDaysAgo(days,start=''){const d=/^\d{4}-\d{2}-\d{2}$/.test(start)?new Date(`${start}T12:00:00`):new Date();d.setDate(d.getDate()-Math.max(0,days));const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`}
+function isoDateDaysAgo(days,start=''){const d=/^\d{4}-\d{2}-\d{2}$/.test(start)?new Date(`${start}T12:00:00`):new Date();d.setDate(d.getDate()-days);const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`}
 // releasedDateBounds computes the Released tab's effective release_date
 // window from prefs.releasedMinDays/MaxDays. maxDate always defaults to
 // today even with nothing configured, so the tab can never show a release
@@ -228,8 +228,8 @@ function releasedDateBounds(){
   const minDays=Number(prefs.releasedMinDays);
   const maxDays=Number(prefs.releasedMaxDays);
 	const startDate=/^\d{4}-\d{2}-\d{2}$/.test(prefs.releasedStartDate||'')?prefs.releasedStartDate:isoDateDaysAgo(0);
-	const maxDate=prefs.releasedMinDays!==''&&Number.isFinite(minDays)&&minDays>0?isoDateDaysAgo(minDays,startDate):startDate;
-	const minDate=prefs.releasedMaxDays!==''&&Number.isFinite(maxDays)&&maxDays>0?isoDateDaysAgo(maxDays,startDate):'';
+	const maxDate=prefs.releasedMinDays!==''&&Number.isFinite(minDays)&&minDays!==0?isoDateDaysAgo(minDays,startDate):startDate;
+	const minDate=prefs.releasedMaxDays!==''&&Number.isFinite(maxDays)&&maxDays!==0?isoDateDaysAgo(maxDays,startDate):'';
   return {minDate,maxDate}
 }
 function updateReleasedRangeStatus(){
