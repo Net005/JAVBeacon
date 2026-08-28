@@ -7,6 +7,18 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Consolidated the duplicate Logs and Missing Library Files headings into
+  compact status/action rows, leaving more vertical room for their content.
+
+### Fixed
+
+- Missing Library Files now persists its last completed scan timestamp and
+  result counts across page reloads and application restarts. Existing
+  installations recover the most recent scan time from stored missing-file
+  rows, and a missing status can no longer render as a year-1 date.
+
 ## [1.0.24] - 2026-08-28
 
 ### Changed

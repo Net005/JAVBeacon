@@ -32,6 +32,8 @@ const DefaultMissingQuery = `query JAVBeaconMissingScenes { findScenes(filter: {
 // avoids polluting the real site list while still satisfying the schema.
 const recoverySiteTitle = "Missing Library Recovery (StashApp)"
 
+const missingScanStatusSetting = "stash_missing_scan_status"
+
 // MissingStatus is the pollable progress/result of a "Missing Library
 // Files" scan, mirroring Status above. Processed/CurrentItem let the UI
 // show live "checked N of Scenes" progress and the scene currently being
@@ -54,6 +56,44 @@ func (s *Service) MissingScanStatus() MissingStatus {
 	s.missingMu.RLock()
 	defer s.missingMu.RUnlock()
 	return s.missingStatus
+}
+
+// restoreMissingScanStatus reloads the last completed scan summary after an
+// application restart. Older installations do not have the summary setting
+// yet, so fall back to the newest last_scan_at value already recorded on the
+// missing-scene rows. Future runs persist the complete counts below.
+func (s *Service) restoreMissingScanStatus(ctx context.Context) {
+	settings, err := s.store.Settings(ctx)
+	if err == nil {
+		var status MissingStatus
+		if raw := strings.TrimSpace(settings[missingScanStatusSetting]); raw != "" && json.Unmarshal([]byte(raw), &status) == nil && !status.FinishedAt.IsZero() {
+			status.Running = false
+			status.CurrentItem = ""
+			s.missingStatus = status
+			return
+		}
+	}
+	rows, err := s.store.StashMissingScenes(ctx, domain.StashMissingFilter{Limit: 5000})
+	if err != nil || len(rows) == 0 || rows[0].LastScanAt.IsZero() {
+		return
+	}
+	status := MissingStatus{FinishedAt: rows[0].LastScanAt, Missing: len(rows)}
+	for _, row := range rows {
+		if row.ReleaseID != 0 {
+			status.Matched++
+		}
+	}
+	s.missingStatus = status
+}
+
+func (s *Service) persistMissingScanStatus(ctx context.Context, status MissingStatus) {
+	encoded, err := json.Marshal(status)
+	if err == nil {
+		err = s.store.SaveSettings(ctx, map[string]string{missingScanStatusSetting: string(encoded)})
+	}
+	if err != nil {
+		s.log.Warn("could not persist Missing Library Files scan status", "error", err)
+	}
 }
 
 // ClearMissingScenes wipes every recorded Missing Library Files result for
@@ -107,6 +147,7 @@ func (s *Service) runMissingScan(ctx context.Context) {
 		result.FinishedAt = time.Now().UTC()
 		result.CurrentItem = ""
 		flush()
+		s.persistMissingScanStatus(context.WithoutCancel(ctx), result)
 	}()
 	settings, err := s.store.Settings(ctx)
 	if err != nil {

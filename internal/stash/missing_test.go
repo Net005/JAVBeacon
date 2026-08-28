@@ -64,6 +64,10 @@ func TestMissingScanRecordsMissingScenesAndMatchesExisting(t *testing.T) {
 	if status.Scenes != 3 || status.Missing != 2 || status.Matched != 1 {
 		t.Fatalf("unexpected scan status: %+v", status)
 	}
+	restored := New(st, time.Second, slog.Default(), nil, nil).MissingScanStatus()
+	if restored.FinishedAt.IsZero() || restored.Running || restored.Scenes != 3 || restored.Missing != 2 || restored.Matched != 1 {
+		t.Fatalf("scan status was not restored after service restart: %+v", restored)
+	}
 
 	rows, err := st.StashMissingScenes(ctx, domain.StashMissingFilter{Limit: 10})
 	if err != nil || len(rows) != 2 {
