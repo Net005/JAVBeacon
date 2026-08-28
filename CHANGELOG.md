@@ -7,10 +7,27 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Release Library now remembers a separate sort order per tab. All defaults
+  to Date Added (newest first), Released and Upcoming default to Release
+  date (newest first), Local defaults to a new "Added to StashApp (local)"
+  sort (newest first), and Desired defaults to a new "Marked Desired" sort
+  (newest first) tracking when each release was most recently marked
+  desired. Changing the sort on one tab no longer affects the others.
+- The Upcoming tab gained a foldable "Upcoming window" panel, matching the
+  Released tab's date-range panel, letting you cap upcoming releases to a
+  configurable number of days from today. The chosen window (and whether the
+  panel is expanded) is remembered across visits.
+- Release Library now loads releases in batches as you scroll or navigate
+  through release details, instead of stopping at the first 500 results.
+
 ### Changed
 
 - Consolidated the duplicate Logs and Missing Library Files headings into
   compact status/action rows, leaving more vertical room for their content.
+- Release Library's heading and release count now share a single compact
+  row instead of repeating "Release Library" twice.
 
 ### Fixed
 
@@ -18,6 +35,11 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   result counts across page reloads and application restarts. Existing
   installations recover the most recent scan time from stored missing-file
   rows, and a missing status can no longer render as a year-1 date.
+- Settings could silently fail to save with no error or notification when an
+  invalid value was left in a field on a tab you'd since switched away from
+  (the browser's built-in validation couldn't show its message on a hidden
+  field, so the whole save silently aborted). Settings now always saves and
+  reports any validation problems through its own error message.
 
 ## [1.0.24] - 2026-08-28
 

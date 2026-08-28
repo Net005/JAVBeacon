@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS releases (
 	notified INTEGER NOT NULL DEFAULT 0,
 	notify_on_release INTEGER NOT NULL DEFAULT 0,
 	desired INTEGER NOT NULL DEFAULT 0,
+	desired_at TIMESTAMPTZ,
 	monitor_download INTEGER NOT NULL DEFAULT 0,
 	site_monitor_download INTEGER NOT NULL DEFAULT 0,
 	identity_key TEXT NOT NULL DEFAULT '',
@@ -420,10 +421,20 @@ func (s *SQLite) migratePostgres(ctx context.Context) error {
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS last_played_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS last_o_count_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS screenshots_checked_at TIMESTAMPTZ`,
+		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS desired_at TIMESTAMPTZ`,
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err
 		}
+	}
+	// Backfill desired_at for releases already marked Desired before this
+	// column existed, so the Release Library's Desired-tab "when marked as
+	// desired" sort has something to sort by right after upgrade instead of
+	// every pre-existing Desired release tying at NULL. updated_at is the
+	// closest available approximation of when desired was last toggled true
+	// for these rows.
+	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET desired_at=updated_at WHERE desired=1 AND desired_at IS NULL`); err != nil {
+		return err
 	}
 	if err := s.removeScheduledDownloads(); err != nil {
 		return err
