@@ -366,6 +366,13 @@ type Job struct {
 	// job, once it has stopped running: "updated", "no_change", "invalid",
 	// "blocked", or "failed".
 	Outcome string `json:"outcome,omitempty"`
+	// ActiveReleaseJobs lists every release-scoped "Update details" refresh
+	// currently running concurrently (via monitor.Service.StartRelease),
+	// independent of whatever this Job itself represents (a scan job, or
+	// idle). Populated only on the Status()/GET /api/jobs/refresh response,
+	// never on an individual entry within the list itself, and never
+	// persisted to job_history.
+	ActiveReleaseJobs []Job `json:"active_release_jobs,omitempty"`
 }
 
 // JobHistoryEntry is one row in the unified Jobs activity timeline. Scrape

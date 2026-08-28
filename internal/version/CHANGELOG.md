@@ -7,7 +7,25 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Manual "Update details" refreshes now run concurrently across every idle
+  Byparr/FlareSolverr instance instead of queuing strictly one at a time.
+  Starting several release updates at once (or one alongside a running
+  scheduled scan) now dispatches each to its own goroutine immediately;
+  contention for Byparr instances is resolved by priority, so a manual
+  update still jumps ahead of a lower-priority scan's own per-item fetches.
+  The Jobs page now lists every release update currently running under
+  "Updating now", and "Stop job" cancels all of them along with any active
+  scan.
+
 ### Fixed
+
+- SQLite installs could hit a hard "database is locked" error when two
+  scrapes tried to write at the same time (most reachable via the new
+  concurrent release-update dispatch above) - SQLite access is now routed
+  through a single pooled connection so writers queue behind SQLite's own
+  locking instead of racing across separate connections.
 
 - JavLibrary's "Label" field (e.g. "Otona No Drama") was never scraped into
   release details — the value was parsed but then dropped while merging the
