@@ -39,8 +39,8 @@ const DefaultQuery = `query JAVBeaconLocalScenes { findScenes(filter: { per_page
 // fallback in fetchPlaybackStats: try the full query first, and if the
 // whole request errors, retry without o_history so the O-Counter/Play
 // Count/Last Played figures still sync even when Last O Count Date can't.
-const playbackStatsQueryWithHistory = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id o_counter play_count last_played_at o_history } } }`
-const playbackStatsQueryBasic = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id o_counter play_count last_played_at } } }`
+const playbackStatsQueryWithHistory = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id created_at o_counter play_count last_played_at o_history } } }`
+const playbackStatsQueryBasic = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id created_at o_counter play_count last_played_at } } }`
 
 // playbackStats is one scene's parsed O-Counter/Play Count/Last Played/Last
 // O Count Date figures, keyed by StashApp scene ID in fetchPlaybackStats's
@@ -48,6 +48,7 @@ const playbackStatsQueryBasic = `query JAVBeaconPlaybackStats { findScenes(filte
 // (the basic-tier query was used, or the scene's o_history was empty) - see
 // SetStashPlaybackStats's doc comment for how run() treats that.
 type playbackStats struct {
+	CreatedAt    string
 	OCounter     int
 	PlayCount    int
 	LastPlayedAt string
@@ -231,6 +232,20 @@ func (s *Service) run(ctx context.Context) {
 							s.log.Error("Stash playback-stats update failed", "video_id", release.VideoID, "error", e)
 						}
 					}
+					// StashApp's own created_at for the matched scene, powering
+					// the Local tab's "Added Locally" sort - see
+					// domain.Release.StashCreatedAt. Parsed as RFC3339 (what
+					// StashApp's GraphQL API returns); a parse failure or an
+					// older StashApp/custom query lacking the field just means
+					// this round found nothing new, same as an empty
+					// stash_release_date.
+					if st.CreatedAt != "" {
+						if createdAt, e := time.Parse(time.RFC3339, st.CreatedAt); e == nil && !createdAt.Equal(release.StashCreatedAt) {
+							if e := s.store.SetStashCreatedAt(ctx, release.ID, createdAt); e != nil {
+								s.log.Error("Stash created-at update failed", "video_id", release.VideoID, "error", e)
+							}
+						}
+					}
 				}
 			}
 		}
@@ -329,6 +344,7 @@ func (s *Service) fetchPlaybackStatsQuery(ctx context.Context, url, apiKey, quer
 			FindScenes struct {
 				Scenes []struct {
 					ID           string   `json:"id"`
+					CreatedAt    string   `json:"created_at"`
 					OCounter     int      `json:"o_counter"`
 					PlayCount    int      `json:"play_count"`
 					LastPlayedAt string   `json:"last_played_at"`
@@ -348,7 +364,7 @@ func (s *Service) fetchPlaybackStatsQuery(ctx context.Context, url, apiKey, quer
 	}
 	out := map[string]playbackStats{}
 	for _, scene := range payload.Data.FindScenes.Scenes {
-		st := playbackStats{OCounter: scene.OCounter, PlayCount: scene.PlayCount, LastPlayedAt: scene.LastPlayedAt}
+		st := playbackStats{CreatedAt: scene.CreatedAt, OCounter: scene.OCounter, PlayCount: scene.PlayCount, LastPlayedAt: scene.LastPlayedAt}
 		if withHistory {
 			for _, t := range scene.OHistory {
 				if t > st.LastOCountAt {

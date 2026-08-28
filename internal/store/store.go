@@ -42,6 +42,7 @@ type Store interface {
 	SetSiteReleaseMonitoring(context.Context, int64, bool) error
 	SetStashState(context.Context, int64, bool, string) error
 	SetStashReleaseDate(context.Context, int64, string) error
+	SetStashCreatedAt(context.Context, int64, time.Time) error
 	SetStashPlaybackStats(context.Context, int64, int, int, string, string) error
 	Stats(context.Context) (domain.Stats, error)
 	Settings(context.Context) (map[string]string, error)
@@ -203,6 +204,7 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 			`ALTER TABLE releases ADD COLUMN last_o_count_at TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE releases ADD COLUMN screenshots_checked_at DATETIME`,
 			`ALTER TABLE releases ADD COLUMN desired_at DATETIME`,
+			`ALTER TABLE releases ADD COLUMN stash_created_at DATETIME`,
 		} {
 			if _, alterErr := s.db.Exec(statement); alterErr != nil && !strings.Contains(strings.ToLower(alterErr.Error()), "duplicate column") {
 				return alterErr
@@ -217,6 +219,17 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 		// closest available approximation of when desired was last toggled
 		// true for these rows.
 		_, err = s.db.Exec(`UPDATE releases SET desired_at=updated_at WHERE desired=1 AND desired_at IS NULL`)
+	}
+	if err == nil {
+		// Backfill stash_created_at for releases already locally matched
+		// before this column existed, using stash_added_at (JAVBeacon's own
+		// first-seen timestamp) as the closest available approximation -
+		// it is not StashApp's real created_at, but it keeps the Local
+		// tab's "Added Locally" sort meaningful immediately after upgrade
+		// instead of every pre-existing match tying at NULL. The next
+		// StashApp sync overwrites it with the real value for any release
+		// whose scene still resolves.
+		_, err = s.db.Exec(`UPDATE releases SET stash_created_at=stash_added_at WHERE is_local=1 AND stash_created_at IS NULL AND stash_added_at IS NOT NULL`)
 	}
 	if err == nil {
 		err = s.removeScheduledDownloads()
@@ -426,6 +439,7 @@ func releaseDedupUpdate(d Dialect) string {
 		maxFold("site_monitor_download") + `,` +
 		`stash_scene_id=COALESCE(NULLIF(stash_scene_id,''),(SELECT old.stash_scene_id FROM release_duplicate_map m JOIN releases old ON old.id=m.old_id WHERE m.keep_id=keep.id AND old.stash_scene_id<>'' LIMIT 1),''),` +
 		`stash_added_at=COALESCE(stash_added_at,(SELECT old.stash_added_at FROM release_duplicate_map m JOIN releases old ON old.id=m.old_id WHERE m.keep_id=keep.id AND old.stash_added_at IS NOT NULL LIMIT 1)),` +
+		`stash_created_at=COALESCE(stash_created_at,(SELECT old.stash_created_at FROM release_duplicate_map m JOIN releases old ON old.id=m.old_id WHERE m.keep_id=keep.id AND old.stash_created_at IS NOT NULL LIMIT 1)),` +
 		`stash_release_date=COALESCE(NULLIF(stash_release_date,''),(SELECT old.stash_release_date FROM release_duplicate_map m JOIN releases old ON old.id=m.old_id WHERE m.keep_id=keep.id AND old.stash_release_date<>'' LIMIT 1),''),` +
 		`added_at=` + d.Least("added_at", dupSelect("MIN", "added_at")+",added_at)") + `,` +
 		`updated_at=` + d.Greatest("updated_at", dupSelect("MAX", "updated_at")+",updated_at)") +
@@ -635,14 +649,14 @@ func releaseSelect(d Dialect) string {
 	// and source detail-page URL together, plus the latest successful download
 	// completion time. Active downloads take precedence over completed ones so
 	// the status pill and its URL always describe the same download row.
-	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,` + actresses + `,r.director,r.studio,r.label,r.genres,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.desired,r.desired_at,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_release_date,r.allow_non_preferred_filenames,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,` + actresses + `,r.director,r.studio,r.label,r.genres,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.desired,r.desired_at,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 func scanRelease(scanner interface{ Scan(...any) error }) (domain.Release, error) {
 	var x domain.Release
 	var siteIDs, siteTitles, actresses, genres, shots string
-	var stashAddedAt, desiredAt, downloadedAt sql.NullTime
-	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &x.Actress, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Desired, &desiredAt, &x.MonitorDownload, &x.SiteMonitorDownload, &x.StashSceneID, &stashAddedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &downloadedAt)
+	var stashAddedAt, stashCreatedAt, desiredAt, downloadedAt sql.NullTime
+	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &x.Actress, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Desired, &desiredAt, &x.MonitorDownload, &x.SiteMonitorDownload, &x.StashSceneID, &stashAddedAt, &stashCreatedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &downloadedAt)
 	if err == nil {
 		_ = json.Unmarshal([]byte(siteIDs), &x.SiteIDs)
 		_ = json.Unmarshal([]byte(siteTitles), &x.SiteTitles)
@@ -651,6 +665,9 @@ func scanRelease(scanner interface{ Scan(...any) error }) (domain.Release, error
 		_ = json.Unmarshal([]byte(shots), &x.Screenshots)
 		if stashAddedAt.Valid {
 			x.StashAddedAt = stashAddedAt.Time
+		}
+		if stashCreatedAt.Valid {
+			x.StashCreatedAt = stashCreatedAt.Time
 		}
 		if desiredAt.Valid {
 			x.DesiredAt = desiredAt.Time
@@ -1034,7 +1051,7 @@ func (s *SQLite) Releases(ctx context.Context, f domain.ReleaseFilter) ([]domain
 	if strings.EqualFold(f.Direction, "asc") {
 		direction = "ASC"
 	}
-	sortColumn := map[string]string{"added": "r.added_at", "notification": "COALESCE((SELECT MAX(n.created_at) FROM notifications n WHERE n.release_id=r.id),r.added_at)", "release": "r.release_date", "name": "r.title", "updated": "r.updated_at", "local_added": "r.stash_added_at", "desired_marked": "r.desired_at"}[f.Sort]
+	sortColumn := map[string]string{"added": "r.added_at", "notification": "COALESCE((SELECT MAX(n.created_at) FROM notifications n WHERE n.release_id=r.id),r.added_at)", "release": "r.release_date", "name": "r.title", "updated": "r.updated_at", "local_added": "r.stash_created_at", "desired_marked": "r.desired_at"}[f.Sort]
 	if sortColumn == "" {
 		sortColumn = "r.release_date"
 	}
@@ -1630,6 +1647,21 @@ func (s *SQLite) SetStashReleaseDate(ctx context.Context, id int64, date string)
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE releases SET stash_release_date=?,updated_at=? WHERE id=?`, date, time.Now().UTC(), id)
+	return err
+}
+
+// SetStashCreatedAt records StashApp's own "Created At" timestamp for a
+// release's matched scene (see domain.Release.StashCreatedAt), pulled
+// during the same best-effort, scene-ID-keyed sync pass as playback stats
+// (stash.Service.run). Guards against a zero time the same way
+// SetStashReleaseDate guards against a blank string, so a sync round that
+// could not determine created_at (older StashApp, custom query without the
+// field) never clears a previously stored value.
+func (s *SQLite) SetStashCreatedAt(ctx context.Context, id int64, createdAt time.Time) error {
+	if createdAt.IsZero() {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE releases SET stash_created_at=?,updated_at=? WHERE id=?`, createdAt, time.Now().UTC(), id)
 	return err
 }
 

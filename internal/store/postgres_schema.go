@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS releases (
 	identity_key TEXT NOT NULL DEFAULT '',
 	stash_scene_id TEXT NOT NULL DEFAULT '',
 	stash_added_at TIMESTAMPTZ,
+	stash_created_at TIMESTAMPTZ,
 	stash_release_date TEXT NOT NULL DEFAULT '',
 	allow_non_preferred_filenames INTEGER NOT NULL DEFAULT 0,
 	o_counter INTEGER NOT NULL DEFAULT 0,
@@ -422,6 +423,7 @@ func (s *SQLite) migratePostgres(ctx context.Context) error {
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS last_o_count_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS screenshots_checked_at TIMESTAMPTZ`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS desired_at TIMESTAMPTZ`,
+		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS stash_created_at TIMESTAMPTZ`,
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err
@@ -434,6 +436,12 @@ func (s *SQLite) migratePostgres(ctx context.Context) error {
 	// closest available approximation of when desired was last toggled true
 	// for these rows.
 	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET desired_at=updated_at WHERE desired=1 AND desired_at IS NULL`); err != nil {
+		return err
+	}
+	// Backfill stash_created_at the same way the SQLite migration does - see
+	// its comment for why stash_added_at is the closest available
+	// approximation until the next StashApp sync overwrites it.
+	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET stash_created_at=stash_added_at WHERE is_local=1 AND stash_created_at IS NULL AND stash_added_at IS NOT NULL`); err != nil {
 		return err
 	}
 	if err := s.removeScheduledDownloads(); err != nil {
