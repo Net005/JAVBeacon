@@ -82,6 +82,8 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`releaseNavFromGrid?null:releaseNavIDs`,
 		`function focusReleaseCard(id)`,
 		`returnToGrid=releaseNavFromGrid&&!releasesView.hidden`,
+		`Values above 500 are supported`,
+		`j.all_pages?'discovering online end':'configured limit'`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("embedded app.js is missing %q", marker)
@@ -114,6 +116,18 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	}
 	if strings.Count(string(markup), `class="sectionHead compactViewHead"`) < 2 {
 		t.Fatal("embedded index.html is missing compact Logs and Missing Files headers")
+	}
+	for _, capped := range []string{
+		`name="pages" type="number" min="1" max="500"`,
+		`name="page_limit" type="number" min="1" max="500"`,
+		`name="full_refresh_page_limit" type="number" min="1" max="500"`,
+	} {
+		if strings.Contains(string(markup), capped) {
+			t.Fatalf("embedded index.html still caps scrape pages: %s", capped)
+		}
+	}
+	if strings.Contains(string(javascript), `name="new_release_refresh_page_limit" type="number" min="1" max="500"`) {
+		t.Fatal("embedded app.js still caps New Release Only scrape pages")
 	}
 }
 

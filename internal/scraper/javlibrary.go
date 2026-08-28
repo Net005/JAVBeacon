@@ -238,12 +238,13 @@ func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int,
 		return nil, fmt.Errorf("JavLibrary site URL is required")
 	}
 	base = normalizeJavLibraryURL(base)
-	if pages < 1 {
+	unlimited := pages <= 0 && !stopWhenNoIncluded
+	if pages < 1 && !unlimited {
 		pages = 1
 	}
 	seen := map[string]bool{}
 	var out []domain.Release
-	for page := 1; page <= pages; page++ {
+	for page := 1; unlimited || page <= pages; page++ {
 		u, e := url.Parse(base)
 		if e != nil {
 			return nil, e
@@ -352,6 +353,10 @@ func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int,
 			}
 		}
 		j.log.Info("listing page completed", "provider", "JavLibrary", "page", page, "releases", added, "total", len(out))
+		if reportedPageLimit > 0 && (unlimited || reportedPageLimit < pages) && page >= reportedPageLimit {
+			j.log.Info("online listing end reached", "provider", "JavLibrary", "last_page", page, "reason", "reported pagination maximum")
+			break
+		}
 	}
 	j.log.Info("provider scrape completed", "provider", "JavLibrary", "releases", len(out), "duration", time.Since(started).Round(time.Millisecond))
 	return out, nil

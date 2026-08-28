@@ -56,5 +56,8 @@ func listingPageLimit(doc *html.Node, queryKey string, ceiling, current int) int
 	if onlineMax <= 0 {
 		return ceiling
 	}
+	if ceiling <= 0 {
+		return max(current, onlineMax)
+	}
 	return max(current, min(ceiling, onlineMax))
 }

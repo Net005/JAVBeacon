@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -204,7 +206,7 @@ func TestJavLibraryAllPagesContinuesPastFilteredPageAndStopsAtOnlineEnd(t *testi
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	items, err := NewJavLibrary(2*time.Second, "", 0, nil).ScrapeFilteredThroughEnd(context.Background(), server.URL+"/list", 500, func(videoID string) bool {
+	items, err := NewJavLibrary(2*time.Second, "", 0, nil).ScrapeFilteredThroughEnd(context.Background(), server.URL+"/list", 0, func(videoID string) bool {
 		return videoID == "NEW-2"
 	}, ScrapeConcurrency{})
 	if err != nil {
@@ -215,6 +217,35 @@ func TestJavLibraryAllPagesContinuesPastFilteredPageAndStopsAtOnlineEnd(t *testi
 	}
 	if maxPage != 3 {
 		t.Fatalf("last requested page=%d, want repeated online end at page 3", maxPage)
+	}
+}
+
+func TestJavLibraryRequestedLimitAbove500StopsAtReportedOnlineEnd(t *testing.T) {
+	maxPage := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/list", func(w http.ResponseWriter, r *http.Request) {
+		page := 1
+		if value := r.URL.Query().Get("page"); value != "" {
+			page, _ = strconv.Atoi(value)
+		}
+		maxPage = max(maxPage, page)
+		_, _ = fmt.Fprintf(w, `<html><a href="?page=3">Last</a><div class="video"><a href="/javpage%d.html" title="Page %d"><img src="/page%dps.jpg"></a><div class="id">PAGE-%d</div></div></html>`, page, page, page, page)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<html><title>Release detail - JAVLibrary</title></html>`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	items, err := NewJavLibrary(2*time.Second, "", 0, nil).Scrape(context.Background(), server.URL+"/list", 700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("items=%d, want 3", len(items))
+	}
+	if maxPage != 3 {
+		t.Fatalf("last requested page=%d, want reported online end at page 3", maxPage)
 	}
 }
 

@@ -170,6 +170,7 @@ func New(s store.Store, a *scraper.Akiba, j *scraper.JavLibrary, covers *covers.
 	}
 	return service
 }
+
 // activeReleaseJobsLocked returns a stable-ordered (oldest first) snapshot
 // of every release job currently tracked in s.releaseJobs. Callers must
 // already hold s.mu (read or write).
@@ -627,11 +628,13 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 		return
 	}
 	pages := options.Pages
-	if pages <= 0 {
-		pages = s.pages
-	}
 	if options.AllPages {
-		pages = 500
+		// Zero is the scraper's explicit "through the online end" value. The
+		// provider's reported last page plus empty/repeated-page detection are
+		// the termination guards; there is no arbitrary numeric ceiling.
+		pages = 0
+	} else if pages <= 0 {
+		pages = s.pages
 	}
 	// javConcurrency/akibaConcurrency bound how many detail-page fetches this
 	// job's scan loop runs at once for each provider (see
@@ -705,7 +708,7 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 			}
 		}
 		if options.AllPages {
-			job.PageLimitSource = "safety limit"
+			job.PageLimitSource = "discovering online end"
 		} else {
 			job.PageLimitSource = "configured limit"
 		}
@@ -725,10 +728,12 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 			switch {
 			case item == 0 && pageItems == 0:
 				job.PageLimitSource = "online end"
-			case pageLimit < pages:
+			case options.AllPages && pageLimit > 0:
+				job.PageLimitSource = "online max found"
+			case !options.AllPages && pageLimit < pages:
 				job.PageLimitSource = "online max found"
 			case options.AllPages:
-				job.PageLimitSource = "safety limit"
+				job.PageLimitSource = "discovering online end"
 			default:
 				job.PageLimitSource = "configured limit"
 			}
