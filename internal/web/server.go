@@ -1555,12 +1555,16 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if e := s.monitor.StartOptions(r.Context(), monitor.RefreshOptions{SiteID: p.SiteID, ReleaseID: p.ReleaseID, Mode: p.Mode, Pages: p.Pages, AllPages: p.AllPages, Kind: p.Kind, Priority: p.Priority}); e != nil {
-		s.problem(w, 409, e.Error())
+	if p.ReleaseID != 0 {
+		if _, e := s.monitor.StartRelease(r.Context(), p.ReleaseID, p.Kind, p.Priority); e != nil {
+			s.problem(w, 409, e.Error())
+			return
+		}
+		s.json(w, 202, s.monitor.StatusForRelease(p.ReleaseID))
 		return
 	}
-	if p.ReleaseID != 0 {
-		s.json(w, 202, s.monitor.StatusForRelease(p.ReleaseID))
+	if e := s.monitor.StartOptions(r.Context(), monitor.RefreshOptions{SiteID: p.SiteID, Mode: p.Mode, Pages: p.Pages, AllPages: p.AllPages, Kind: p.Kind, Priority: p.Priority}); e != nil {
+		s.problem(w, 409, e.Error())
 		return
 	}
 	s.json(w, 202, s.monitor.Status())

@@ -106,6 +106,20 @@ func OpenSQLite(path string) (*SQLite, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SQLite serializes writes at the file level regardless of how many
+	// connections Go's pool hands out, and letting concurrent callers race
+	// for the write lock across separate connections defeats the
+	// busy_timeout pragma above - modernc.org/sqlite's busy handler does not
+	// reliably retry a write-write conflict that crosses connections, so two
+	// goroutines writing at once (e.g. two concurrent release refreshes, see
+	// monitor.Service.StartRelease) can still surface a hard
+	// "database is locked" error instead of queuing behind it. Capping the
+	// pool at one connection routes every query - reads included - through
+	// the same connection, so SQLite's own internal locking (which busy_timeout
+	// does honor within a single connection) is what actually serializes
+	// concurrent access, and callers see the intended wait-then-succeed
+	// behavior instead of a random failure under load.
+	db.SetMaxOpenConns(1)
 	s := &SQLite{db: db, dialect: SQLiteDialect{}}
 	if err := s.migrate(); err != nil {
 		db.Close()

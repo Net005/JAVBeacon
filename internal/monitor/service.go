@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,14 @@ type Service struct {
 	worker      bool
 	cancel      context.CancelFunc
 	details     map[int64]domain.Job
+	// releaseJobs tracks every release-scoped job currently in flight via
+	// StartRelease, keyed by release ID - see StartRelease's doc comment for
+	// why these run independently of queue/worker/cancel above instead of
+	// going through the single-flight scan queue. Each entry's job field is
+	// mutated only while s.mu is held (mirroring the job/setJob pattern
+	// used by the scan worker), so concurrent reads via Status/
+	// StatusForRelease are always consistent.
+	releaseJobs map[int64]*releaseJobEntry
 	listeners   []func(domain.Release)
 	// scheduleNextAttempt tracks, per interval-configured scrapeSchedule.mode,
 	// the wall-clock time runScrapeSchedules's loop will next actually check
@@ -161,27 +170,51 @@ func New(s store.Store, a *scraper.Akiba, j *scraper.JavLibrary, covers *covers.
 	}
 	return service
 }
+// activeReleaseJobsLocked returns a stable-ordered (oldest first) snapshot
+// of every release job currently tracked in s.releaseJobs. Callers must
+// already hold s.mu (read or write).
+func (s *Service) activeReleaseJobsLocked() []domain.Job {
+	if len(s.releaseJobs) == 0 {
+		return nil
+	}
+	jobs := make([]domain.Job, 0, len(s.releaseJobs))
+	for _, entry := range s.releaseJobs {
+		jobs = append(jobs, entry.job)
+	}
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].StartedAt.Before(jobs[j].StartedAt) })
+	return jobs
+}
+
 func (s *Service) Status() domain.Job {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	var job domain.Job
 	if s.job.State == "" {
-		return domain.Job{State: "idle"}
+		job = domain.Job{State: "idle"}
+	} else {
+		job = s.job
+		job.QueueDepth = len(s.queue)
+		job.QueuedJobs = make([]domain.QueuedJob, 0, len(s.queue))
+		for index, options := range s.queue {
+			job.QueuedJobs = append(job.QueuedJobs, domain.QueuedJob{
+				Position: index + 1, SiteID: options.SiteID, ReleaseID: options.ReleaseID,
+				Title: options.Title, Mode: options.Mode, Priority: refreshPriority(options),
+				AllPages: options.AllPages, Scheduled: options.Scheduled,
+			})
+		}
 	}
-	job := s.job
-	job.QueueDepth = len(s.queue)
-	job.QueuedJobs = make([]domain.QueuedJob, 0, len(s.queue))
-	for index, options := range s.queue {
-		job.QueuedJobs = append(job.QueuedJobs, domain.QueuedJob{
-			Position: index + 1, SiteID: options.SiteID, ReleaseID: options.ReleaseID,
-			Title: options.Title, Mode: options.Mode, Priority: refreshPriority(options),
-			AllPages: options.AllPages, Scheduled: options.Scheduled,
-		})
-	}
+	// ActiveReleaseJobs surfaces every concurrently-running StartRelease job
+	// (see its doc comment) regardless of whether a scan job above is also
+	// running - manual "Update details" clicks no longer depend on one.
+	job.ActiveReleaseJobs = s.activeReleaseJobsLocked()
 	return job
 }
 func (s *Service) StatusForRelease(releaseID int64) domain.Job {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if entry, ok := s.releaseJobs[releaseID]; ok {
+		return entry.job
+	}
 	if s.job.ReleaseID == releaseID && s.job.State != "" {
 		return s.job
 	}
@@ -199,6 +232,96 @@ func (s *Service) OnRelease(fn func(domain.Release)) {
 	s.mu.Lock()
 	s.listeners = append(s.listeners, fn)
 	s.mu.Unlock()
+}
+
+// releaseJobEntry backs Service.releaseJobs - job is a live progress
+// snapshot (see StartRelease/runReleaseJob) and cancel lets Stop() end this
+// release's refresh early alongside the scan queue below.
+type releaseJobEntry struct {
+	job    domain.Job
+	cancel context.CancelFunc
+}
+
+// StartRelease begins an immediate, independent refresh of one release's
+// details (manual "Update details"). Unlike StartOptions below, it never
+// queues: every call spawns its own goroutine right away, and any
+// contention between it, other concurrent StartRelease calls, and an
+// in-progress scan job's own per-item detail fetches is resolved entirely
+// by the shared SolverPool's priority-ordered Acquire (see scraper.pool.go)
+// rather than by this service. That lets several "Update details" clicks -
+// or one alongside a running scheduled scan - actually use multiple idle
+// Byparr instances at once, instead of serializing behind the single scan
+// worker the checkpoint-based preemption below relies on.
+//
+// Calling StartRelease again for a release already being refreshed just
+// returns its current live status rather than starting a redundant second
+// refresh of the same row.
+func (s *Service) StartRelease(ctx context.Context, id int64, kind string, priorityOverride int) (domain.Job, error) {
+	if priorityOverride < 0 || priorityOverride > 999 {
+		return domain.Job{}, errors.New("priority must be between 1 and 999, or 0 to use the configured default")
+	}
+	if kind == "" {
+		kind = PriorityKindUpdateDetails
+	}
+	priority := s.resolvePriority(ctx, kind, priorityOverride)
+	workerContext, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	job := domain.Job{Kind: "scrape", State: "running", Mode: "manual", Running: true, StartedAt: time.Now().UTC(), ReleaseID: id, Priority: priority}
+	s.mu.Lock()
+	if entry, ok := s.releaseJobs[id]; ok {
+		s.mu.Unlock()
+		cancel()
+		return entry.job, nil
+	}
+	if s.releaseJobs == nil {
+		s.releaseJobs = map[int64]*releaseJobEntry{}
+	}
+	s.releaseJobs[id] = &releaseJobEntry{job: job, cancel: cancel}
+	delete(s.details, id)
+	s.mu.Unlock()
+	s.log.Info("release update job started", "release_id", id, "priority", priority)
+	go s.runReleaseJob(workerContext, id, priority, job.StartedAt)
+	return job, nil
+}
+
+// runReleaseJob is StartRelease's goroutine body. It shares doRefreshRelease
+// with the queued path (refreshRelease) and RefreshReleaseNow, but reports
+// progress into s.releaseJobs[id] instead of the single shared s.job, and
+// always bumps updated_at normally (keepUpdatedAt=false) since a manual
+// Update Details is a deliberate, meaningful change - unlike a screenshot
+// backfill pass, it should be reflected in "sort by date updated".
+func (s *Service) runReleaseJob(ctx context.Context, id int64, priority int, startedAt time.Time) {
+	jobStarted := time.Now()
+	ctx = scraper.WithSolverPriority(ctx, priority)
+	// job reuses StartRelease's already-published StartedAt (rather than
+	// taking its own time.Now() snapshot) so a caller polling
+	// StatusForRelease sees a stable StartedAt across the whole job, instead
+	// of it silently shifting forward by a few microseconds the moment this
+	// goroutine's first report() call overwrites s.releaseJobs[id].
+	job := domain.Job{Kind: "scrape", State: "running", Mode: "manual", Running: true, StartedAt: startedAt, ReleaseID: id, Priority: priority}
+	report := func() {
+		s.mu.Lock()
+		if entry, ok := s.releaseJobs[id]; ok {
+			entry.job = job
+		}
+		s.mu.Unlock()
+	}
+	s.doRefreshRelease(ctx, id, &job, false, report)
+	job.Running = false
+	job.FinishedAt = time.Now().UTC()
+	if errors.Is(ctx.Err(), context.Canceled) {
+		job.State = "cancelled"
+		job.Error = "cancelled by user"
+	} else if job.Error != "" {
+		job.State = "failed"
+	} else {
+		job.State = "completed"
+	}
+	_, _ = s.store.SaveJob(context.Background(), job)
+	s.mu.Lock()
+	s.details[id] = job
+	delete(s.releaseJobs, id)
+	s.mu.Unlock()
+	s.log.Info("release update job completed", "release_id", id, "state", job.State, "outcome", job.Outcome, "error", job.Error, "duration", time.Since(jobStarted).Round(time.Millisecond))
 }
 
 // SolverPoolEnabledCount reports how many Byparr/FlareSolverr instances are
@@ -323,23 +446,40 @@ func (s *Service) StartOptions(ctx context.Context, options RefreshOptions) erro
 	return nil
 }
 
+// Stop cancels the active scan job (if any) and clears its queue, and also
+// cancels every StartRelease job currently in flight (see releaseJobs) -
+// those run independently of the scan worker, so stopping "the" job needs
+// to reach them too for a single Stop control to actually halt everything
+// the Jobs page shows as active. Returns the number of queued *scan* jobs
+// cleared (unchanged meaning from before release jobs existed) and whether
+// anything was actually running to stop.
 func (s *Service) Stop() (int, bool) {
 	s.mu.Lock()
-	if !s.worker {
-		s.mu.Unlock()
-		return 0, false
-	}
 	cleared := len(s.queue)
-	s.queue = nil
-	cancel := s.cancel
-	s.job.State = "stopping"
-	s.job.QueueDepth = 0
-	s.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	var releaseCancels []context.CancelFunc
+	for _, entry := range s.releaseJobs {
+		releaseCancels = append(releaseCancels, entry.cancel)
 	}
-	s.log.Info("scrape job stop requested", "release_id", s.Status().ReleaseID, "cleared_queued_jobs", cleared)
-	return cleared, true
+	stoppingScan := s.worker
+	var scanCancel context.CancelFunc
+	if stoppingScan {
+		s.queue = nil
+		scanCancel = s.cancel
+		s.job.State = "stopping"
+		s.job.QueueDepth = 0
+	}
+	s.mu.Unlock()
+	if scanCancel != nil {
+		scanCancel()
+	}
+	for _, c := range releaseCancels {
+		c()
+	}
+	stopped := stoppingScan || len(releaseCancels) > 0
+	if stopped {
+		s.log.Info("scrape job stop requested", "cleared_queued_jobs", cleared, "cancelled_release_jobs", len(releaseCancels))
+	}
+	return cleared, stopped
 }
 
 // refreshPriority returns options' effective queue priority. StartOptions
