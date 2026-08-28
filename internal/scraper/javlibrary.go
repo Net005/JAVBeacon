@@ -393,6 +393,8 @@ func parseJavLibraryDetail(doc *html.Node, raw string) domain.Release {
 			r.Director = v
 		case strings.Contains(label, "maker") || strings.Contains(label, "studio"):
 			r.Studio = v
+		case strings.Contains(label, "label"):
+			r.Label = v
 		case strings.Contains(label, "genre") || strings.Contains(label, "categor"):
 			for _, a := range findAll(vnode, func(x *html.Node) bool { return x.Data == "a" }) {
 				r.Genres = appendUnique(r.Genres, nodeText(a))
@@ -528,6 +530,7 @@ func mergeJav(dst *domain.Release, src domain.Release) {
 	dst.Director = src.Director
 	dst.Actress = src.Actress
 	dst.Studio = src.Studio
+	dst.Label = src.Label
 	dst.Genres = src.Genres
 	dst.Screenshots = src.Screenshots
 	dst.Released = src.Released
