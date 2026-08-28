@@ -20,6 +20,12 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The Released tab's date-window "Min/Max days since release" fields now
+  accept negative values, letting the window extend past its start date
+  instead of only backward from it. Fixing the underlying date math also
+  fixed the Upcoming tab's "days in future" window, which was silently
+  a no-op (always showing just today) since it was added - it now
+  actually limits results to that many days ahead.
 - The Local tab's "Added Locally" sort now actually sorts by when the
   scene was created in your StashApp library (its own `created_at`),
   instead of by when JAVBeacon happened to notice the match during a
