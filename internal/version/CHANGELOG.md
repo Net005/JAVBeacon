@@ -7,6 +7,13 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.24] - 2026-08-28
+
+### Changed
+
+- Published a maintenance release containing the current scheduling,
+  release-filter, screenshot-backfill, and multi-Byparr improvements.
+
 ## [1.0.23] - 2026-08-28
 
 ### Added
@@ -481,7 +488,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.23...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.24...HEAD
+[1.0.24]: https://github.com/Net005/JAVBeacon/compare/v1.0.23...v1.0.24
 [1.0.23]: https://github.com/Net005/JAVBeacon/compare/v1.0.22...v1.0.23
 [1.0.22]: https://github.com/Net005/JAVBeacon/compare/v1.0.21...v1.0.22
 [1.0.21]: https://github.com/Net005/JAVBeacon/compare/v1.0.20...v1.0.21
