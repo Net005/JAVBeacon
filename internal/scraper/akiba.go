@@ -211,10 +211,29 @@ func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(stri
 		fetched := make([]domain.Release, len(candidates))
 		fetchDetailsConcurrently(len(candidates), concurrency, func(i int) {
 			r := candidates[i]
-			if detail, e := a.detail(ctx, r.ProductURL); e == nil {
+			detail, e := a.detail(ctx, r.ProductURL)
+			// See javlibrary.go's scrapeFiltered for why this is exactly one
+			// extra try after a longer, separate cooldown rather than a second
+			// full scrapeRetryAttempts cycle: a.detail already retried
+			// internally (fetch -> withScrapeRetry) before returning this
+			// error, so immediately retrying again would likely just repeat
+			// the same failure.
+			retried := false
+			if e != nil && shouldRetryScrape(ctx, e) {
+				retried = true
+				a.log.Info("scrape retry", "provider", "GIGA", "kind", "detail-item", "page", page, "video_id", r.VideoID, "url", r.ProductURL, "wait", RetrySecondBackoff.String(), "reason", e.Error())
+				select {
+				case <-ctx.Done():
+				case <-time.After(RetrySecondBackoff):
+				}
+				if ctx.Err() == nil {
+					detail, e = a.detail(ctx, r.ProductURL)
+				}
+			}
+			if e == nil {
 				merge(&r, detail)
 			} else {
-				a.log.Warn("product detail failed", "provider", "GIGA", "page", page, "video_id", r.VideoID, "url", r.ProductURL, "error", e)
+				a.log.Warn("product detail failed", "provider", "GIGA", "page", page, "video_id", r.VideoID, "url", r.ProductURL, "retried", retried, "error", e)
 				if concurrency.OnDetailFailure != nil {
 					concurrency.OnDetailFailure(r.VideoID, e)
 				}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,6 +98,49 @@ func TestJavLibraryRetriesTransientInvalidListingResponse(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].VideoID != "ABC-123" {
 		t.Fatalf("items=%+v, want recovered ABC-123 listing", items)
+	}
+}
+
+// TestScrapeFilteredRetriesTransientDetailFetchFailureOnce covers
+// scrapeFiltered's own extra, item-level retry: j.detail already retries
+// internally (document -> withScrapeRetry, one initial attempt plus
+// scrapeRetryAttempts=2 more), so this fails the detail endpoint on all
+// three of those internal attempts and only succeeds on the fourth call,
+// which only scrapeFiltered's own separate retry (after RetrySecondBackoff)
+// can reach - proving the two retry layers are distinct and the item-level
+// one actually recovers a candidate that would otherwise have been
+// reported via OnDetailFailure/job.Error.
+func TestScrapeFilteredRetriesTransientDetailFetchFailureOnce(t *testing.T) {
+	withFastRetryBackoff(t)
+	var detailCalls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/list", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<html><div class="video"><a href="/javabc123.html" title="Listing title"><img src="/abc00123ps.jpg"></a><div class="id">ABC-123</div></div></html>`))
+	})
+	mux.HandleFunc("/javabc123.html", func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&detailCalls, 1) <= 3 {
+			http.Error(w, "solver unavailable", http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`<html><title>Recovered detail - JAVLibrary</title><img id="video_jacket_img" src="/abc00123pl.jpg"><table><tr><td class="header">Label:</td><td><a>Otona No Drama</a></td></tr></table></html>`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	var failed []string
+	concurrency := ScrapeConcurrency{OnDetailFailure: func(videoID string, _ error) { failed = append(failed, videoID) }}
+	items, err := NewJavLibrary(2*time.Second, "", 0, nil).ScrapeFiltered(context.Background(), server.URL+"/list", 1, nil, concurrency)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&detailCalls); got != 4 {
+		t.Fatalf("detail endpoint called %d times, want exactly 4 (document()'s 3 internal attempts + scrapeFiltered's 1 extra item-level retry)", got)
+	}
+	if len(failed) != 0 {
+		t.Fatalf("OnDetailFailure fired for %v, want the item-level retry to have recovered the release before giving up", failed)
+	}
+	if len(items) != 1 || items[0].Label != "Otona No Drama" {
+		t.Fatalf("items=%+v, want the recovered detail page's Label merged in", items)
 	}
 }
 
