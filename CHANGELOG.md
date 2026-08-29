@@ -7,6 +7,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.44] - 2026-08-29
+
+### Fixed
+
+- Release Details now remains exactly within the physical phone viewport at
+  enlarged interface zoom levels, keeping cover and screenshot navigation
+  controls inside the right edge and preventing portrait information clipping.
+- Phone landscape no longer applies the desktop touch-scroll lock, so the
+  information pane can be scrolled independently while the cover and
+  screenshot strip remain in place.
+
 ## [1.0.43] - 2026-08-29
 
 ### Added
