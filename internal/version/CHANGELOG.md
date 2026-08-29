@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.34] - 2026-08-29
+
+### Fixed
+
+- PostgreSQL upgrades no longer rewrite every release while initializing the
+  materialized ignore-tag/title state. Only releases whose preference state
+  actually changes are updated, preventing large libraries from exceeding the
+  startup connection deadline and incorrectly entering database-recovery mode.
+
 ## [1.0.33] - 2026-08-29
 
 ### Changed

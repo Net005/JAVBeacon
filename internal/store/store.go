@@ -1400,11 +1400,22 @@ func (s *SQLite) refreshReleasePreferences(ctx context.Context) error {
 		}
 		parts = append(parts, `(`+strings.Join(titleParts, " OR ")+`)`)
 	}
-	preferred := "1"
-	if len(parts) > 0 {
-		preferred = `CASE WHEN ` + strings.Join(parts, " OR ") + ` THEN 0 ELSE 1 END`
+	if len(parts) == 0 {
+		_, err := s.db.ExecContext(ctx, `UPDATE releases SET is_preferred=1 WHERE is_preferred<>1`)
+		return err
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE releases AS r SET is_preferred=`+preferred, args...)
+
+	// Do not rewrite the entire releases table. On a large PostgreSQL library,
+	// an unconditional UPDATE creates a new row version for every release even
+	// when its value remains 1. Besides needless WAL and autovacuum pressure,
+	// that can exceed the startup connection deadline and make a healthy
+	// database look unreachable. These two updates touch only rows whose
+	// materialized preference state actually changed.
+	ignored := `(` + strings.Join(parts, " OR ") + `)`
+	if _, err := s.db.ExecContext(ctx, `UPDATE releases AS r SET is_preferred=0 WHERE is_preferred<>0 AND `+ignored, args...); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE releases AS r SET is_preferred=1 WHERE is_preferred<>1 AND NOT `+ignored, args...)
 	return err
 }
 
