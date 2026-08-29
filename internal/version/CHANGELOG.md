@@ -7,6 +7,21 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.35] - 2026-08-29
+
+### Added
+
+- Added a manual JavLibrary historical catalog backfill at default priority
+  500. It discovers genre, performer, and maker indexes, persists source and
+  release checkpoints across restarts, skips releases already present from any
+  normal monitoring source, relocates date-sorted resume boundaries to catch
+  releases inserted while offline, and shows separate historical and current-
+  run progress on the Jobs page.
+- Database migrations now have a temporary startup web interface showing the
+  active connection/schema/data phase, current table or index, phase progress,
+  and retry attempt. The PostgreSQL recovery page also shows migration progress
+  during automatic and manual retries.
+
 ## [1.0.34] - 2026-08-29
 
 ### Fixed
