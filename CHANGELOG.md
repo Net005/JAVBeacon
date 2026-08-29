@@ -7,6 +7,44 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.40] - 2026-08-29
+
+### Fixed
+
+- The manual JavLibrary historical backfill's genre/star/maker index crawl
+  could spiral into ever-growing, broken URLs
+  (`.../genres.php/genres.php/genres.php/...`), because the shared link
+  resolver always appended a trailing "/" to the current page's URL before
+  resolving a relative link against it - turning a `.../genres.php` "file"
+  URL into a synthetic "directory" and causing a self-referential or
+  pagination-style link on that page to resolve underneath itself instead
+  of beside it. The resolver now follows standard URL relative-reference
+  rules directly, so historical backfill discovery stays on the actual
+  genre/performer/maker index pages instead of drifting into
+  never-ending, malformed ones. The unrelated Akiba/GIGA scraper, which
+  uses the same resolver, is unaffected.
+
+### Added
+
+- The historical backfill now fetches multiple release detail pages at
+  once when more than one Byparr/FlareSolverr instance is configured,
+  instead of always fetching one at a time - a new "Max instances -
+  Historical backfill" setting (Settings -> Scraping -> Byparr /
+  FlareSolverr) caps how many it may use concurrently, matching the
+  existing per-schedule-type caps; leave it blank to use every enabled
+  instance. Manual scrapes and scheduled scans continue to get first pick
+  of a free instance over backfill work.
+
+### Changed
+
+- Moved the historical backfill's manual controls, and the cover and
+  screenshot cache maintenance panels, out of the Jobs/Activity page and
+  the Storage settings tab into a new Settings -> Maintenance tab, since
+  all three are backfill/maintenance work rather than everyday scrape
+  jobs. Also removed a long-unwired "Screenshot backfill" status card
+  that had been stuck on the Jobs page showing "Loading screenshot
+  status..." with no live updates.
+
 ## [1.0.39] - 2026-08-29
 
 ### Fixed
