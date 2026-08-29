@@ -261,6 +261,20 @@ go run ./cmd/javbeacon
 
 JAVBeacon does not silently fall back to SQLite when PostgreSQL is configured. If the database is unavailable, it starts a recovery interface and keeps retrying the configured connection.
 
+### Large-library performance
+
+JAVBeacon automatically installs its PostgreSQL search and sorting indexes on
+startup, including the `pg_trgm` extension used for fast partial title,
+release-ID, actress, studio, label, tag, and story matching. The first start
+after upgrading a large existing database can therefore take a little longer
+while PostgreSQL builds those indexes; later starts reuse them.
+
+The Release Library uses lightweight card responses, cursor pagination,
+short-lived exact-count caching, and a bounded metadata-suggestion cache.
+These caches live inside JAVBeacon and invalidate as data changes, so the
+recommended single-instance Compose stack does not need Redis. PostgreSQL 18,
+JAVBeacon, and Byparr remain the complete supported stack.
+
 ## Credential recovery
 
 Stop the running application and use either or both reset flags:

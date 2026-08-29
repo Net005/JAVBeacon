@@ -79,7 +79,7 @@ let sites=[],releases=[],releasesGrandTotal=null,settings={},presets=[],releaseN
 // against a stale in-flight batch response landing after the user has
 // already switched tabs/filters/sort and a newer load has started.
 function releaseBatchSize(){return Math.max(10,Math.min(500,Number(settings.release_batch_size)||100))}
-let releasesOffset=0,releasesHasMore=true,releasesLoadingSeq=0,releasesLoadSeq=0;
+let releasesOffset=0,releasesCursor='',releasesHasMore=true,releasesLoadingSeq=0,releasesLoadSeq=0,releaseCountAbort=null,releaseRowsAbort=null;
 const LOG_CLIENT_CAP=3000;
 // validDate/shortDate/fullDateTime (TODO-2.0): a Go zero-value time.Time
 // serializes as a string starting with "0001-", which JS's Date happily
@@ -277,18 +277,18 @@ function syncSortForTab(){
   sortDirection.textContent=prefs.sortDirection==='asc'?'↑':'↓';
 }
 function rememberTabSort(){const key=releaseTabKey();prefs.tabSort=prefs.tabSort||{};prefs.tabSort[key]={field:prefs.sortField,direction:prefs.sortDirection}}
-function releaseQuery(offset=0){const params={search:prefs.search||'',status:prefs.activeTab||'',category:prefs.category||'',entries:prefs.entries?.length?JSON.stringify(prefs.entries):'',search_expression:JSON.stringify(prefs.searchExpression||{}),sort:prefs.sortField,direction:prefs.sortDirection,hide_local:String(!!prefs.hideLocal),show_non_preferred:String(!!prefs.showNonPreferred),desired:String(!!prefs.desired),limit:String(releaseBatchSize()),offset:String(offset)};if(prefs.activeTab==='released'){const b=releasedDateBounds();params.max_release_date=b.maxDate;if(b.minDate)params.min_release_date=b.minDate}if(prefs.activeTab==='upcoming'){const d=upcomingMaxDate();if(d)params.max_release_date=d}return new URLSearchParams(params)}
+function releaseQuery(offset=0,cursor=''){const params={search:prefs.search||'',status:prefs.activeTab||'',category:prefs.category||'',entries:prefs.entries?.length?JSON.stringify(prefs.entries):'',search_expression:JSON.stringify(prefs.searchExpression||{}),sort:prefs.sortField,direction:prefs.sortDirection,hide_local:String(!!prefs.hideLocal),show_non_preferred:String(!!prefs.showNonPreferred),desired:String(!!prefs.desired),limit:String(releaseBatchSize()),offset:String(offset)};if(cursor)params.cursor=cursor;if(prefs.activeTab==='released'){const b=releasedDateBounds();params.max_release_date=b.maxDate;if(b.minDate)params.min_release_date=b.minDate}if(prefs.activeTab==='upcoming'){const d=upcomingMaxDate();if(d)params.max_release_date=d}return new URLSearchParams(params)}
 // loadReleases starts a fresh Release Library load for whatever
 // filters/tab/sort are currently active: resets pagination state and loads
 // the first batch. The count endpoint ignores limit/offset (it counts the
 // whole matching set), so the header badge always reflects the true total
 // even before every batch has been scrolled into view.
 async function loadReleases(){
-  releases=[];releasesOffset=0;releasesHasMore=true;
+  releaseCountAbort?.abort();releaseRowsAbort?.abort();releaseCountAbort=new AbortController();
+  releases=[];releasesOffset=0;releasesCursor='';releasesHasMore=true;
   const mySeq=++releasesLoadSeq;
-  const count=await api('/releases/count?'+releaseQuery(0));
-  if(mySeq!==releasesLoadSeq)return;
-  if(releaseLibraryCount)releaseLibraryCount.textContent=(releasesGrandTotal!=null&&count.total!==releasesGrandTotal)?`${count.total.toLocaleString()} of ${releasesGrandTotal.toLocaleString()}`:`${count.total.toLocaleString()} release${count.total===1?'':'s'}`;
+  if(releaseLibraryCount)releaseLibraryCount.textContent='Loading…';
+  api('/releases/count?'+releaseQuery(0),{signal:releaseCountAbort.signal}).then(count=>{if(mySeq!==releasesLoadSeq)return;if(releaseLibraryCount)releaseLibraryCount.textContent=(releasesGrandTotal!=null&&count.total!==releasesGrandTotal)?`${count.total.toLocaleString()} of ${releasesGrandTotal.toLocaleString()}`:`${count.total.toLocaleString()} release${count.total===1?'':'s'}`}).catch(error=>{if(error?.name!=='AbortError'&&mySeq===releasesLoadSeq&&releaseLibraryCount)releaseLibraryCount.textContent='Count unavailable'});
   await loadMoreReleases(mySeq);
   populateEntries();
 }
@@ -303,16 +303,21 @@ async function loadReleases(){
 async function loadMoreReleases(mySeq=releasesLoadSeq){
   if(releasesLoadingSeq===mySeq||!releasesHasMore||mySeq!==releasesLoadSeq)return;
   releasesLoadingSeq=mySeq;
+  releaseRowsAbort=new AbortController();
   if(releaseGridLoadingMore)releaseGridLoadingMore.hidden=releasesOffset===0;
   try{
-    const rows=await api('/releases?'+releaseQuery(releasesOffset));
+    const page=await api('/releases?'+new URLSearchParams({...Object.fromEntries(releaseQuery(releasesOffset,releasesCursor)),cards:'true'}),{signal:releaseRowsAbort.signal}),rows=page.items||[];
     if(mySeq!==releasesLoadSeq)return;
     const hadRows=releases.length>0;
     releases=releases.concat(rows);
     releasesOffset+=rows.length;
-    releasesHasMore=rows.length===releaseBatchSize();
+    releasesCursor=page.next_cursor||'';
+    if(page.next_offset)releasesOffset=page.next_offset;
+    releasesHasMore=!!(page.next_cursor||page.next_offset);
     if(hadRows)appendReleases(rows);else renderReleases();
     if(releaseNavFromGrid)releaseNavIDs=releases.map(r=>r.id);
+  } catch(error) {
+    if(error?.name!=='AbortError')throw error;
   } finally {
     if(releasesLoadingSeq===mySeq)releasesLoadingSeq=0;
     if(releaseGridLoadingMore&&mySeq===releasesLoadSeq)releaseGridLoadingMore.hidden=true;
@@ -389,8 +394,9 @@ window.addEventListener('resize',maybePrefetchReleases);
 if(typeof IntersectionObserver!=='undefined'&&releaseGridSentinel){
   new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting))loadMoreReleases()},{rootMargin:'800px 0px'}).observe(releaseGridSentinel);
 }
-async function populateMetadataOptions(category,list,search=''){const expected=`${category}\n${search}`;list.dataset.request=expected;try{const values=await api('/release-filter-options?'+new URLSearchParams({category,search}));if(list.dataset.request!==expected)return;list.innerHTML=values.map(v=>`<option value="${attr(v)}"></option>`).join('')}catch{}}
-function populateEntries(search=''){return populateMetadataOptions(prefs.category||'Actress',entryFilterOptions,search)}
+let metadataOptionTimer=0,metadataOptionAbort=null;
+async function populateMetadataOptions(category,list,search='',signal){const expected=`${category}\n${search}`;list.dataset.request=expected;try{const values=await api('/release-filter-options?'+new URLSearchParams({category,search}),{signal});if(list.dataset.request!==expected)return;list.innerHTML=values.map(v=>`<option value="${attr(v)}"></option>`).join('')}catch(error){if(error?.name!=='AbortError'&&list.dataset.request===expected)list.innerHTML=''}}
+function populateEntries(search=''){clearTimeout(metadataOptionTimer);metadataOptionAbort?.abort();if(search&&String(search).trim().length<2){entryFilterOptions.innerHTML='';return}metadataOptionAbort=new AbortController();const run=()=>populateMetadataOptions(prefs.category||'Actress',entryFilterOptions,search,metadataOptionAbort.signal);if(!search)return run();metadataOptionTimer=setTimeout(run,220)}
 function openMetadataFilter(category,value){const url=new URL('/',location.origin);url.searchParams.set('filterCategory',category);url.searchParams.set('filterEntry',value);window.open(url.toString(),'_blank','noopener')}function applyTemporaryMetadataFilter(){const params=new URLSearchParams(location.search),category=params.get('filterCategory'),entry=params.get('filterEntry');if(!category||!entry)return false;prefs.category=category;prefs.entries=[entry];prefs.activeTab='';prefs.desired=false;prefs.search='';prefs.searchExpression={logic:'and',conditions:[]};prefs.hideLocal=false;prefs.activePreset=null;switchView('releases',false);statusTab('',false,false);categoryFilter.value=category;populateEntries();entryFilter.value=entry;search.value='';setToggleButton(hideLocal,false);history.replaceState({},'','/');toast(`Temporary filter: ${category} = ${entry} (not saved)`);return true}
 const cardScreenshotTimers=new WeakMap(),localScreenshotCache=new Map();
 function screenshotURL(releaseID,index){return `/screenshots/${releaseID}/${index}`}

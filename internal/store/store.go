@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -94,8 +96,11 @@ type Store interface {
 }
 
 type SQLite struct {
-	db      *sql.DB
-	dialect Dialect
+	db           *sql.DB
+	dialect      Dialect
+	ignoreMu     sync.RWMutex
+	ignoreTags   []string
+	ignoreTitles []string
 }
 
 func OpenSQLite(path string) (*SQLite, error) {
@@ -122,6 +127,10 @@ func OpenSQLite(path string) (*SQLite, error) {
 	db.SetMaxOpenConns(1)
 	s := &SQLite{db: db, dialect: SQLiteDialect{}}
 	if err := s.migrate(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := s.initializeReleasePreferences(context.Background()); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -162,11 +171,13 @@ CREATE INDEX IF NOT EXISTS idx_download_search_runs_schedule_finished ON downloa
 CREATE TABLE IF NOT EXISTS downloads (id INTEGER PRIMARY KEY, release_id INTEGER REFERENCES releases(id) ON DELETE SET NULL, provider TEXT NOT NULL DEFAULT '', source_type TEXT NOT NULL DEFAULT '', source_reference TEXT NOT NULL DEFAULT '', query TEXT NOT NULL DEFAULT '', torrent_hash TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL, match_reason TEXT NOT NULL DEFAULT '', qb_response TEXT NOT NULL DEFAULT '', post_status TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', seed_ratio REAL NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, seeds INTEGER NOT NULL DEFAULT 0, peers INTEGER NOT NULL DEFAULT 0, eta_seconds INTEGER NOT NULL DEFAULT 0, seen_complete INTEGER NOT NULL DEFAULT 0, filename_pattern_excluded INTEGER NOT NULL DEFAULT 0, added_at DATETIME NOT NULL, updated_at DATETIME NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_downloads_status ON downloads(status);
 CREATE INDEX IF NOT EXISTS idx_downloads_release ON downloads(release_id);
+CREATE INDEX IF NOT EXISTS idx_downloads_release_status_updated ON downloads(release_id,status,updated_at DESC);
 CREATE TABLE IF NOT EXISTS path_mappings (id INTEGER PRIMARY KEY, download_prefix TEXT NOT NULL UNIQUE, local_prefix TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS pipeline_steps (id INTEGER PRIMARY KEY, position INTEGER NOT NULL, type TEXT NOT NULL, name TEXT NOT NULL, config TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 1, timeout_seconds INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS pipeline_logs (id INTEGER PRIMARY KEY, download_id INTEGER NOT NULL REFERENCES downloads(id) ON DELETE CASCADE, step_id INTEGER REFERENCES pipeline_steps(id) ON DELETE SET NULL, state TEXT NOT NULL, output TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', started_at DATETIME NOT NULL, finished_at DATETIME);
 CREATE INDEX IF NOT EXISTS idx_pipeline_logs_download ON pipeline_logs(download_id);
 CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY, release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE, type TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL, UNIQUE(release_id,type));
+CREATE INDEX IF NOT EXISTS idx_notifications_release_created ON notifications(release_id,created_at DESC);
 CREATE TABLE IF NOT EXISTS desired_sync (release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE, stash_scene_id TEXT NOT NULL, tag_id TEXT NOT NULL, synced_at DATETIME NOT NULL, result TEXT NOT NULL DEFAULT '');`)
 	}
 	if err == nil {
@@ -219,6 +230,7 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 			`ALTER TABLE releases ADD COLUMN screenshots_checked_at DATETIME`,
 			`ALTER TABLE releases ADD COLUMN desired_at DATETIME`,
 			`ALTER TABLE releases ADD COLUMN stash_created_at DATETIME`,
+			`ALTER TABLE releases ADD COLUMN is_preferred INTEGER NOT NULL DEFAULT 1`,
 		} {
 			if _, alterErr := s.db.Exec(statement); alterErr != nil && !strings.Contains(strings.ToLower(alterErr.Error()), "duplicate column") {
 				return alterErr
@@ -326,6 +338,9 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 	}
 	if err == nil {
 		err = s.normalizeReleaseTimestamps(context.Background())
+	}
+	if err == nil {
+		_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_releases_released_date ON releases(released,release_date DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_local_created ON releases(is_local,stash_created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_desired_date ON releases(desired,desired_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_updated ON releases(updated_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_title_order ON releases(title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS idx_releases_preferred ON releases(is_preferred,id);`)
 	}
 	return err
 }
@@ -664,6 +679,14 @@ func releaseSelect(d Dialect) string {
 	// completion time. Active downloads take precedence over completed ones so
 	// the status pill and its URL always describe the same download row.
 	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,` + actresses + `,r.director,r.studio,r.label,r.genres,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.desired,r.desired_at,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+}
+
+// releaseCardSelect keeps the Release Library payload small. Release Details
+// fetches the full row on demand, so cards do not need stories, directors,
+// durations, site-list aggregations, or playback statistics. Screenshots stay
+// present because the hover slideshow needs to know whether it should start.
+func releaseCardSelect(_ Dialect) string {
+	return `SELECT r.id,r.site_id,s.title,'[]','[]',r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,'[]','',r.studio,r.label,r.genres,'','',r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.desired,r.desired_at,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,0,0,'','',r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 func scanRelease(scanner interface{ Scan(...any) error }) (domain.Release, error) {
@@ -1023,7 +1046,9 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 	if f.HideLocal && f.Status != "local" {
 		q += ` AND r.is_local=0`
 	}
-	if len(f.IgnoreTags) > 0 {
+	if f.UsePreferred && (len(f.IgnoreTags) > 0 || len(f.IgnoreTitles) > 0) {
+		q += ` AND r.is_preferred=1`
+	} else if len(f.IgnoreTags) > 0 {
 		placeholders := make([]string, len(f.IgnoreTags))
 		for i, tag := range f.IgnoreTags {
 			placeholders[i] = "LOWER(?)"
@@ -1031,7 +1056,7 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		}
 		q += ` AND NOT EXISTS (SELECT 1 FROM release_tags t WHERE t.release_id=r.id AND t.name_normalized IN (` + strings.Join(placeholders, ",") + `))`
 	}
-	if len(f.IgnoreTitles) > 0 {
+	if !f.UsePreferred && len(f.IgnoreTitles) > 0 {
 		titleParts := make([]string, len(f.IgnoreTitles))
 		for i, title := range f.IgnoreTitles {
 			titleParts[i] = d.CaseInsensitiveLike("r.title")
@@ -1061,14 +1086,7 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 func (s *SQLite) Releases(ctx context.Context, f domain.ReleaseFilter) ([]domain.Release, error) {
 	where, a := releaseFilterWhere(s.dialect, f)
 	q := releaseSelect(s.dialect) + where
-	direction := "DESC"
-	if strings.EqualFold(f.Direction, "asc") {
-		direction = "ASC"
-	}
-	sortColumn := map[string]string{"added": "r.added_at", "notification": "COALESCE((SELECT MAX(n.created_at) FROM notifications n WHERE n.release_id=r.id),r.added_at)", "release": "r.release_date", "name": "r.title", "updated": "r.updated_at", "local_added": "r.stash_created_at", "desired_marked": "r.desired_at"}[f.Sort]
-	if sortColumn == "" {
-		sortColumn = "r.release_date"
-	}
+	direction, sortColumn := releaseSort(f)
 	// r.id (an INTEGER PRIMARY KEY / SQLite rowid) is a strictly
 	// monotonically increasing tiebreaker matching true insertion order,
 	// unlike a wall-clock timestamp column which can tie - most commonly
@@ -1082,7 +1100,7 @@ func (s *SQLite) Releases(ctx context.Context, f domain.ReleaseFilter) ([]domain
 	// descending sort, which made an "Added Locally · newest first" result
 	// start with releases that had no StashApp created_at at all. The explicit
 	// CASE is portable across both PostgreSQL and SQLite.
-	q += ` ORDER BY CASE WHEN ` + sortColumn + ` IS NULL THEN 1 ELSE 0 END ASC,` + sortColumn + ` ` + direction + `,r.id ` + direction
+	q += ` ORDER BY ` + sortColumn + ` ` + direction + ` NULLS LAST,r.id ` + direction
 	if f.Limit <= 0 || f.Limit > 500 {
 		f.Limit = 100
 	}
@@ -1102,6 +1120,133 @@ func (s *SQLite) Releases(ctx context.Context, f domain.ReleaseFilter) ([]domain
 		out = append(out, x)
 	}
 	return out, rows.Err()
+}
+
+type releasePageCursor struct {
+	Null  bool   `json:"null"`
+	Value string `json:"value"`
+	ID    int64  `json:"id"`
+}
+
+func releaseSort(f domain.ReleaseFilter) (string, string) {
+	direction := "DESC"
+	if strings.EqualFold(f.Direction, "asc") {
+		direction = "ASC"
+	}
+	sortColumn := map[string]string{"added": "r.added_at", "notification": "COALESCE((SELECT MAX(n.created_at) FROM notifications n WHERE n.release_id=r.id),r.added_at)", "release": "r.release_date", "name": "LOWER(r.title)", "updated": "r.updated_at", "local_added": "r.stash_created_at", "desired_marked": "r.desired_at"}[f.Sort]
+	if sortColumn == "" {
+		sortColumn = "r.release_date"
+	}
+	return direction, sortColumn
+}
+
+func releaseCursorValue(x domain.Release, sort string) (string, bool) {
+	switch sort {
+	case "added":
+		return x.AddedAt.UTC().Format(time.RFC3339Nano), x.AddedAt.IsZero()
+	case "updated":
+		return x.UpdatedAt.UTC().Format(time.RFC3339Nano), x.UpdatedAt.IsZero()
+	case "local_added":
+		return x.StashCreatedAt.UTC().Format(time.RFC3339Nano), x.StashCreatedAt.IsZero()
+	case "desired_marked":
+		return x.DesiredAt.UTC().Format(time.RFC3339Nano), x.DesiredAt.IsZero()
+	case "name":
+		return strings.ToLower(x.Title), false
+	default:
+		return x.ReleaseDate, false
+	}
+}
+
+func releaseCursorArg(sort, value string) (any, error) {
+	switch sort {
+	case "added", "updated", "local_added", "desired_marked":
+		return time.Parse(time.RFC3339Nano, value)
+	default:
+		return value, nil
+	}
+}
+
+func encodeReleaseCursor(x domain.Release, sort string) string {
+	value, null := releaseCursorValue(x, sort)
+	raw, _ := json.Marshal(releasePageCursor{Null: null, Value: value, ID: x.ID})
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+func decodeReleaseCursor(raw string) (releasePageCursor, error) {
+	var cursor releasePageCursor
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return cursor, err
+	}
+	err = json.Unmarshal(decoded, &cursor)
+	return cursor, err
+}
+
+// ReleaseCards returns a lightweight cursor page for the cover grid. The
+// notification-date expression cannot be reconstructed from a Release card,
+// so that uncommon sort retains offset pagination while still using the
+// smaller SELECT; every other Release Library sort uses a stable keyset.
+func (s *SQLite) ReleaseCards(ctx context.Context, f domain.ReleaseFilter, cursorRaw string) (domain.ReleasePage, error) {
+	where, args := releaseFilterWhere(s.dialect, f)
+	direction, sortColumn := releaseSort(f)
+	limit := f.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	useCursor := f.Sort != "notification"
+	if useCursor && cursorRaw != "" {
+		cursor, err := decodeReleaseCursor(cursorRaw)
+		if err != nil || cursor.ID <= 0 {
+			return domain.ReleasePage{}, fmt.Errorf("invalid release cursor")
+		}
+		op := "<"
+		if direction == "ASC" {
+			op = ">"
+		}
+		if cursor.Null {
+			where += ` AND ` + sortColumn + ` IS NULL AND r.id ` + op + ` ?`
+			args = append(args, cursor.ID)
+		} else {
+			value, err := releaseCursorArg(f.Sort, cursor.Value)
+			if err != nil {
+				return domain.ReleasePage{}, fmt.Errorf("invalid release cursor value")
+			}
+			where += ` AND ((` + sortColumn + ` ` + op + ` ?) OR (` + sortColumn + `=? AND r.id ` + op + ` ?) OR ` + sortColumn + ` IS NULL)`
+			args = append(args, value, value, cursor.ID)
+		}
+	}
+	q := releaseCardSelect(s.dialect) + where + ` ORDER BY ` + sortColumn + ` ` + direction + ` NULLS LAST,r.id ` + direction + ` LIMIT ?`
+	args = append(args, limit+1)
+	if !useCursor {
+		q += ` OFFSET ?`
+		args = append(args, f.Offset)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return domain.ReleasePage{}, err
+	}
+	defer rows.Close()
+	items := make([]domain.Release, 0, limit+1)
+	for rows.Next() {
+		x, err := scanRelease(rows)
+		if err != nil {
+			return domain.ReleasePage{}, err
+		}
+		items = append(items, x)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.ReleasePage{}, err
+	}
+	page := domain.ReleasePage{Items: items}
+	if len(items) > limit {
+		page.Items = items[:limit]
+		if useCursor {
+			page.NextCursor = encodeReleaseCursor(page.Items[len(page.Items)-1], f.Sort)
+		} else {
+			page.NextOffset = f.Offset + limit
+		}
+	}
+	return page, nil
 }
 
 // ReleasesCount returns the total number of releases matching f, ignoring
@@ -1125,32 +1270,29 @@ func (s *SQLite) ReleaseFilterOptions(ctx context.Context, category, search stri
 	category = strings.ToLower(strings.TrimSpace(category))
 	search = strings.TrimSpace(search)
 	pattern := metadataLikePattern(search)
-	var source string
+	var query string
 	var args []any
 	switch category {
 	case "actress":
-		source = `SELECT name AS value FROM release_actresses`
+		query = `SELECT MIN(name) AS value FROM release_actresses WHERE name_normalized LIKE LOWER(?) ESCAPE '\'`
 		args = append(args, pattern)
+		if reversed := reverseTwoWordName(search); reversed != "" {
+			query += ` OR name_normalized LIKE LOWER(?) ESCAPE '\'`
+			args = append(args, metadataLikePattern(reversed))
+		}
+		query += ` GROUP BY name_normalized ORDER BY name_normalized LIMIT 250`
 	case "tag":
-		source = `SELECT name AS value FROM release_tags`
+		query = `SELECT MIN(name) AS value FROM release_tags WHERE name_normalized LIKE LOWER(?) ESCAPE '\' GROUP BY name_normalized ORDER BY name_normalized LIMIT 250`
 		args = append(args, pattern)
 	case "studio":
-		source = `SELECT studio AS value FROM releases WHERE studio<>''`
+		query = `SELECT MIN(studio) AS value FROM releases WHERE studio<>'' AND LOWER(studio) LIKE LOWER(?) ESCAPE '\' GROUP BY LOWER(studio) ORDER BY LOWER(studio) LIMIT 250`
 		args = append(args, pattern)
 	case "label":
-		source = `SELECT label AS value FROM releases WHERE label<>'' UNION ALL SELECT s.title AS value FROM sites s JOIN release_sites rs ON rs.site_id=s.id WHERE s.title<>''`
-		args = append(args, pattern)
+		query = `SELECT MIN(value) AS value FROM (SELECT label AS value FROM releases WHERE label<>'' AND LOWER(label) LIKE LOWER(?) ESCAPE '\' UNION ALL SELECT s.title AS value FROM sites s JOIN release_sites rs ON rs.site_id=s.id WHERE s.title<>'' AND LOWER(s.title) LIKE LOWER(?) ESCAPE '\') filter_values GROUP BY LOWER(value) ORDER BY LOWER(value) LIMIT 250`
+		args = append(args, pattern, pattern)
 	default:
 		return []string{}, nil
 	}
-	query := `SELECT MIN(value) AS value FROM (` + source + `) filter_values WHERE LOWER(value) LIKE LOWER(?) ESCAPE '\'`
-	if category == "actress" {
-		if reversed := reverseTwoWordName(search); reversed != "" {
-			query += ` OR LOWER(value) LIKE LOWER(?) ESCAPE '\'`
-			args = append(args, metadataLikePattern(reversed))
-		}
-	}
-	query += ` GROUP BY LOWER(value) ORDER BY LOWER(value) LIMIT 250`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -1187,6 +1329,102 @@ func ignoreTitlePattern(value string) string {
 		return strings.NewReplacer("*", "%", "?", "_").Replace(value)
 	}
 	return "%" + value + "%"
+}
+
+func wildcardTextMatch(value, pattern string) bool {
+	value, pattern = strings.ToLower(value), strings.ToLower(strings.TrimSpace(pattern))
+	if pattern == "" {
+		return false
+	}
+	if !strings.ContainsAny(pattern, "*?") {
+		return strings.Contains(value, pattern)
+	}
+	quoted := regexp.QuoteMeta(pattern)
+	quoted = strings.ReplaceAll(strings.ReplaceAll(quoted, `\*`, `.*`), `\?`, `.`)
+	matched, _ := regexp.MatchString(`^`+quoted+`$`, value)
+	return matched
+}
+
+func (s *SQLite) releasePreferred(title string, tags []string) bool {
+	s.ignoreMu.RLock()
+	ignoredTags := append([]string(nil), s.ignoreTags...)
+	ignoredTitles := append([]string(nil), s.ignoreTitles...)
+	s.ignoreMu.RUnlock()
+	for _, tag := range tags {
+		for _, ignored := range ignoredTags {
+			if strings.EqualFold(strings.TrimSpace(tag), ignored) {
+				return false
+			}
+		}
+	}
+	for _, pattern := range ignoredTitles {
+		if wildcardTextMatch(title, pattern) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *SQLite) reloadIgnoreRules(ctx context.Context) error {
+	settings, err := s.Settings(ctx)
+	if err != nil {
+		return err
+	}
+	s.ignoreMu.Lock()
+	s.ignoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
+	s.ignoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
+	s.ignoreMu.Unlock()
+	return nil
+}
+
+func (s *SQLite) refreshReleasePreferences(ctx context.Context) error {
+	s.ignoreMu.RLock()
+	tags := append([]string(nil), s.ignoreTags...)
+	titles := append([]string(nil), s.ignoreTitles...)
+	s.ignoreMu.RUnlock()
+	parts := make([]string, 0, 2)
+	args := make([]any, 0, len(tags)+len(titles))
+	if len(tags) > 0 {
+		placeholders := make([]string, len(tags))
+		for i, tag := range tags {
+			placeholders[i] = "LOWER(?)"
+			args = append(args, tag)
+		}
+		parts = append(parts, `EXISTS (SELECT 1 FROM release_tags t WHERE t.release_id=r.id AND t.name_normalized IN (`+strings.Join(placeholders, ",")+`))`)
+	}
+	if len(titles) > 0 {
+		titleParts := make([]string, len(titles))
+		for i, title := range titles {
+			titleParts[i] = s.dialect.CaseInsensitiveLike("r.title")
+			args = append(args, ignoreTitlePattern(title))
+		}
+		parts = append(parts, `(`+strings.Join(titleParts, " OR ")+`)`)
+	}
+	preferred := "1"
+	if len(parts) > 0 {
+		preferred = `CASE WHEN ` + strings.Join(parts, " OR ") + ` THEN 0 ELSE 1 END`
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE releases AS r SET is_preferred=`+preferred, args...)
+	return err
+}
+
+func (s *SQLite) initializeReleasePreferences(ctx context.Context) error {
+	if err := s.reloadIgnoreRules(ctx); err != nil {
+		return err
+	}
+	var completed string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='release_preference_materialized_v1'`).Scan(&completed)
+	if err == nil && completed == "true" {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err := s.refreshReleasePreferences(ctx); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO settings(key,value,updated_at) VALUES('release_preference_materialized_v1','true',?) ON CONFLICT(key) DO UPDATE SET value='true',updated_at=excluded.updated_at`, time.Now().UTC())
+	return err
 }
 
 func reverseTwoWordName(value string) string {
@@ -1265,7 +1503,7 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 	created := false
 	if errors.Is(e, sql.ErrNoRows) {
 		var insertErr error
-		id, insertErr = s.dialect.InsertReturningID(ctx, tx, `INSERT INTO releases(site_id,video_id,scraper_id,title,release_date,source,image_url,product_url,actress,director,studio,label,genres,duration,story,screenshots,released,notify_on_release,desired,monitor_download,site_monitor_download,identity_key,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.SiteID, x.VideoID, x.ScraperID, x.Title, x.ReleaseDate, x.Source, x.ImageURL, x.ProductURL, x.Actress, x.Director, x.Studio, x.Label, string(genres), x.Duration, x.Story, string(shots), x.Released, x.NotifyOnRelease, x.Desired, x.MonitorDownload, x.SiteMonitorDownload, identity, now, now)
+		id, insertErr = s.dialect.InsertReturningID(ctx, tx, `INSERT INTO releases(site_id,video_id,scraper_id,title,release_date,source,image_url,product_url,actress,director,studio,label,genres,duration,story,screenshots,released,notify_on_release,desired,monitor_download,site_monitor_download,identity_key,is_preferred,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.SiteID, x.VideoID, x.ScraperID, x.Title, x.ReleaseDate, x.Source, x.ImageURL, x.ProductURL, x.Actress, x.Director, x.Studio, x.Label, string(genres), x.Duration, x.Story, string(shots), x.Released, x.NotifyOnRelease, x.Desired, x.MonitorDownload, x.SiteMonitorDownload, identity, s.releasePreferred(x.Title, x.Genres), now, now)
 		if insertErr != nil {
 			return false, insertErr
 		}
@@ -1350,13 +1588,16 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 			return false, e
 		}
 	}
-	var effectiveActress, effectiveGenres string
-	if e = tx.QueryRowContext(ctx, `SELECT actress,genres FROM releases WHERE id=?`, id).Scan(&effectiveActress, &effectiveGenres); e != nil {
+	var effectiveActress, effectiveGenres, effectiveTitle string
+	if e = tx.QueryRowContext(ctx, `SELECT actress,genres,title FROM releases WHERE id=?`, id).Scan(&effectiveActress, &effectiveGenres, &effectiveTitle); e != nil {
 		return false, e
 	}
 	var effectiveTags []string
 	_ = json.Unmarshal([]byte(effectiveGenres), &effectiveTags)
 	if e = SyncReleaseMetadata(ctx, tx, id, effectiveActress, effectiveTags); e != nil {
+		return false, e
+	}
+	if _, e = tx.ExecContext(ctx, `UPDATE releases SET is_preferred=? WHERE id=?`, s.releasePreferred(effectiveTitle, effectiveTags), id); e != nil {
 		return false, e
 	}
 	if e = tx.Commit(); e != nil {
@@ -1729,6 +1970,23 @@ func (s *SQLite) Settings(ctx context.Context) (map[string]string, error) {
 	return out, rows.Err()
 }
 func (s *SQLite) SaveSettings(ctx context.Context, values map[string]string) error {
+	tagsChanged, titlesChanged := false, false
+	if value, ok := values["ignore_tags"]; ok {
+		var previous string
+		err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='ignore_tags'`).Scan(&previous)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		tagsChanged = previous != value
+	}
+	if value, ok := values["ignore_titles"]; ok {
+		var previous string
+		err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='ignore_titles'`).Scan(&previous)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		titlesChanged = previous != value
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1739,7 +1997,16 @@ func (s *SQLite) SaveSettings(ctx context.Context, values map[string]string) err
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if tagsChanged || titlesChanged {
+		if err := s.reloadIgnoreRules(ctx); err != nil {
+			return err
+		}
+		return s.refreshReleasePreferences(ctx)
+	}
+	return nil
 }
 
 func (s *SQLite) ScreenshotBackfillCompleted(ctx context.Context, releaseID int64) (bool, error) {

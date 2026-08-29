@@ -128,6 +128,24 @@ func TestReleaseFilterWhereConditionsUseCaseInsensitiveLikeOnPostgres(t *testing
 	}
 }
 
+func TestPostgresSchemaIncludesReleaseLibraryPerformanceIndexes(t *testing.T) {
+	for _, marker := range []string{
+		"CREATE EXTENSION IF NOT EXISTS pg_trgm",
+		"idx_releases_title_trgm",
+		"idx_release_actresses_name_trgm",
+		"idx_release_tags_name_trgm",
+		"idx_releases_released_date",
+		"idx_releases_updated",
+		"idx_downloads_release_status_updated",
+		"idx_notifications_release_created",
+		"idx_releases_studio_filter_trgm",
+	} {
+		if !strings.Contains(postgresSchemaDDL, marker) {
+			t.Fatalf("PostgreSQL schema is missing %q", marker)
+		}
+	}
+}
+
 // TestStashMissingFilterWhereUsesCaseInsensitiveLikeOnPostgres is the
 // analogous regression test for the same bug class in
 // stashMissingFilterWhere's path/studio/tag Conditions branches, which

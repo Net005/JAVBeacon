@@ -167,7 +167,7 @@ type ReleaseEdit struct {
 
 type ReleaseFilter struct {
 	Search, Site, Source, Status, Sort, Direction, Category, Entries, SearchExpression string
-	Desired, HideLocal, MonitorDownload                                                bool
+	Desired, HideLocal, MonitorDownload, UsePreferred                                  bool
 	Limit, Offset                                                                      int
 	// ShowNonPreferred, when false (the default), tells Releases/ReleasesCount
 	// to exclude any release matching an ignore rule (see IgnoreTags and
@@ -192,6 +192,15 @@ type ReleaseFilter struct {
 	// actually arrived yet (a data mismatch with the released flag) can be
 	// excluded even though r.released=1.
 	MinReleaseDate, MaxReleaseDate string
+}
+
+// ReleasePage is the cursor-paginated, lightweight result used by the
+// Release Library cover grid. Other release consumers keep using Releases,
+// which returns full rows and offset pagination for backwards compatibility.
+type ReleasePage struct {
+	Items      []Release `json:"items"`
+	NextCursor string    `json:"next_cursor,omitempty"`
+	NextOffset int       `json:"next_offset,omitempty"`
 }
 
 // ParseIgnoreList splits a newline-separated ignore_tags or ignore_titles

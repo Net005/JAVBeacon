@@ -53,8 +53,21 @@ type Server struct {
 	screenshotJob screenshotBackfillStatus
 	// migrationMu guards migration (DB Phase 7's migration-wizard status,
 	// see migration.go) - in-memory only, single-user app.
-	migrationMu sync.Mutex
-	migration   migrationState
+	migrationMu       sync.Mutex
+	migration         migrationState
+	queryCacheMu      sync.Mutex
+	releaseCountCache map[string]cachedReleaseCount
+	filterOptionCache map[string]cachedFilterOptions
+}
+
+type cachedReleaseCount struct {
+	Total int
+	Until time.Time
+}
+
+type cachedFilterOptions struct {
+	Values []string
+	Until  time.Time
 }
 
 type coverCacheStatus struct {
@@ -89,7 +102,7 @@ type screenshotBackfillStatus struct {
 // database" source option (setupMigrationSource) needs to know it even
 // when the app is presently running on PostgreSQL.
 func New(st store.Store, authService *auth.Service, m *monitor.Service, stashSync *stash.Service, downloadService *download.Service, covers *covers.Cache, key string, dbEngine string, sqlitePath string, l *slog.Logger, logs *logging.RingHandler, screenshotCaches ...*screenshots.Cache) http.Handler {
-	s := &Server{store: st, auth: authService, monitor: m, stash: stashSync, downloads: downloadService, covers: covers, key: key, dbEngine: dbEngine, sqlitePath: sqlitePath, log: l, logs: logs, mux: http.NewServeMux(), clients: map[*websocket.Conn]bool{}}
+	s := &Server{store: st, auth: authService, monitor: m, stash: stashSync, downloads: downloadService, covers: covers, key: key, dbEngine: dbEngine, sqlitePath: sqlitePath, log: l, logs: logs, mux: http.NewServeMux(), clients: map[*websocket.Conn]bool{}, releaseCountCache: map[string]cachedReleaseCount{}, filterOptionCache: map[string]cachedFilterOptions{}}
 	if len(screenshotCaches) > 0 {
 		s.screenshots = screenshotCaches[0]
 	}
@@ -602,6 +615,10 @@ func (s *Server) releaseStream(conn *websocket.Conn) {
 }
 
 func (s *Server) broadcastRelease(release domain.Release) {
+	s.queryCacheMu.Lock()
+	clear(s.releaseCountCache)
+	clear(s.filterOptionCache)
+	s.queryCacheMu.Unlock()
 	payload, _ := json.Marshal(map[string]any{"type": "release", "release": release})
 	s.clientsMu.Lock()
 	defer s.clientsMu.Unlock()
@@ -1395,6 +1412,7 @@ func releaseFilterFromQuery(q url.Values, settings map[string]string) domain.Rel
 	if !f.ShowNonPreferred {
 		f.IgnoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
 		f.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
+		f.UsePreferred = len(f.IgnoreTags) > 0 || len(f.IgnoreTitles) > 0
 	}
 	if raw := q.Get("allow_non_preferred_filenames"); raw == "true" || raw == "false" {
 		v := raw == "true"
@@ -1408,7 +1426,21 @@ func (s *Server) releases(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, 500, e.Error())
 		return
 	}
-	x, e := s.store.Releases(r.Context(), releaseFilterFromQuery(r.URL.Query(), settings))
+	filter := releaseFilterFromQuery(r.URL.Query(), settings)
+	if r.URL.Query().Get("cards") == "true" {
+		if cards, ok := s.store.(interface {
+			ReleaseCards(context.Context, domain.ReleaseFilter, string) (domain.ReleasePage, error)
+		}); ok {
+			page, err := cards.ReleaseCards(r.Context(), filter, r.URL.Query().Get("cursor"))
+			if err != nil {
+				s.problem(w, 400, err.Error())
+				return
+			}
+			s.json(w, 200, page)
+			return
+		}
+	}
+	x, e := s.store.Releases(r.Context(), filter)
 	if e != nil {
 		s.problem(w, 500, e.Error())
 		return
@@ -1426,20 +1458,68 @@ func (s *Server) releasesCount(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, 500, e.Error())
 		return
 	}
+	cacheQuery := r.URL.Query()
+	cacheQuery.Del("limit")
+	cacheQuery.Del("offset")
+	cacheQuery.Del("cursor")
+	cacheQuery.Del("cards")
+	cacheKey := cacheQuery.Encode() + "\n" + settings["ignore_tags"] + "\n" + settings["ignore_titles"]
+	now := time.Now()
+	s.queryCacheMu.Lock()
+	if s.releaseCountCache == nil {
+		s.releaseCountCache = map[string]cachedReleaseCount{}
+	}
+	cached, found := s.releaseCountCache[cacheKey]
+	s.queryCacheMu.Unlock()
+	if found && now.Before(cached.Until) {
+		s.json(w, 200, map[string]any{"total": cached.Total, "cached": true})
+		return
+	}
 	total, e := s.store.ReleasesCount(r.Context(), releaseFilterFromQuery(r.URL.Query(), settings))
 	if e != nil {
 		s.problem(w, 500, e.Error())
 		return
 	}
+	s.queryCacheMu.Lock()
+	if s.releaseCountCache == nil {
+		s.releaseCountCache = map[string]cachedReleaseCount{}
+	}
+	if len(s.releaseCountCache) >= 128 {
+		clear(s.releaseCountCache)
+	}
+	s.releaseCountCache[cacheKey] = cachedReleaseCount{Total: total, Until: now.Add(20 * time.Second)}
+	s.queryCacheMu.Unlock()
 	s.json(w, 200, map[string]any{"total": total})
 }
 
 func (s *Server) releaseFilterOptions(w http.ResponseWriter, r *http.Request) {
-	values, err := s.store.ReleaseFilterOptions(r.Context(), r.URL.Query().Get("category"), r.URL.Query().Get("search"))
+	category, search := r.URL.Query().Get("category"), r.URL.Query().Get("search")
+	key := strings.ToLower(strings.TrimSpace(category)) + "\n" + strings.ToLower(strings.TrimSpace(search))
+	now := time.Now()
+	s.queryCacheMu.Lock()
+	if s.filterOptionCache == nil {
+		s.filterOptionCache = map[string]cachedFilterOptions{}
+	}
+	cached, found := s.filterOptionCache[key]
+	s.queryCacheMu.Unlock()
+	if found && now.Before(cached.Until) {
+		s.json(w, http.StatusOK, cached.Values)
+		return
+	}
+	values, err := s.store.ReleaseFilterOptions(r.Context(), category, search)
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.queryCacheMu.Lock()
+	if s.filterOptionCache == nil {
+		s.filterOptionCache = map[string]cachedFilterOptions{}
+	}
+	if len(s.filterOptionCache) >= 256 {
+		clear(s.filterOptionCache)
+	}
+	s.filterOptionCache[key] = cachedFilterOptions{Values: append([]string(nil), values...), Until: now.Add(5 * time.Minute)}
+	s.queryCacheMu.Unlock()
 	s.json(w, http.StatusOK, values)
 }
 func (s *Server) release(w http.ResponseWriter, r *http.Request) {
