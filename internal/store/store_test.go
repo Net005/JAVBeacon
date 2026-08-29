@@ -45,6 +45,76 @@ func TestSQLiteReleaseLifecycle(t *testing.T) {
 	}
 }
 
+func TestReleaseCardsUseCursorPaginationAndLightweightRows(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "release-cards.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, _ := s.SaveSite(ctx, domain.Site{Title: "Cards", Type: "Site", Name: "JavLibrary", Enabled: true})
+	for i := 1; i <= 5; i++ {
+		_, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: fmt.Sprintf("CARD-%d", i), Title: fmt.Sprintf("Card %d", i), Story: "large detail-only story", Source: "JavLibrary", ReleaseDate: fmt.Sprintf("2026-08-%02d", i), Screenshots: []string{"https://example.test/shot.jpg"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	filter := domain.ReleaseFilter{Sort: "release", Direction: "desc", Limit: 2}
+	cursor := ""
+	var ids []string
+	for {
+		page, err := s.ReleaseCards(ctx, filter, cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range page.Items {
+			ids = append(ids, item.VideoID)
+			if item.Story != "" || len(item.SiteTitles) != 0 {
+				t.Fatalf("card row contains detail-only payload: %+v", item)
+			}
+			if len(item.Screenshots) != 1 {
+				t.Fatalf("card lost screenshot availability: %+v", item.Screenshots)
+			}
+		}
+		cursor = page.NextCursor
+		if cursor == "" {
+			break
+		}
+	}
+	want := []string{"CARD-5", "CARD-4", "CARD-3", "CARD-2", "CARD-1"}
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Fatalf("cursor pages=%v, want %v", ids, want)
+	}
+}
+
+func TestMaterializedReleasePreferenceTracksSettingsAndNewRows(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "preferred.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, _ := s.SaveSite(ctx, domain.Site{Title: "Preferred", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "PREF-1", Title: "Ordinary release", Source: "JavLibrary", Genres: []string{"Drama"}})
+	if err := s.SaveSettings(ctx, map[string]string{"ignore_tags": "Drama", "ignore_titles": ""}); err != nil {
+		t.Fatal(err)
+	}
+	filter := domain.ReleaseFilter{UsePreferred: true, IgnoreTags: []string{"Drama"}, Limit: 10}
+	if rows, err := s.Releases(ctx, filter); err != nil || len(rows) != 0 {
+		t.Fatalf("materialized tag ignore rows=%v err=%v", rows, err)
+	}
+	_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "PREF-2", Title: "New ignored release", Source: "JavLibrary", Genres: []string{"Drama"}})
+	if rows, err := s.Releases(ctx, filter); err != nil || len(rows) != 0 {
+		t.Fatalf("new row ignored state rows=%v err=%v", rows, err)
+	}
+	if err := s.SaveSettings(ctx, map[string]string{"ignore_tags": "", "ignore_titles": ""}); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := s.Releases(ctx, domain.ReleaseFilter{Limit: 10}); err != nil || len(rows) != 2 {
+		t.Fatalf("cleared materialized ignores rows=%v err=%v", rows, err)
+	}
+}
+
 func TestScreenshotBackfillCompletionPersists(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "screenshots.db"))

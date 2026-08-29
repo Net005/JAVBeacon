@@ -7,6 +7,43 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.32] - 2026-08-29
+
+### Added
+
+- PostgreSQL large-library migrations now enable `pg_trgm` and add targeted
+  trigram, sort, notification, and download-status indexes for release search,
+  metadata filters, common tabs, and card status lookups.
+- Release Library batches now use stable cursor pagination for all normal
+  sorts, avoiding increasingly expensive database offsets as users browse
+  deeper into large libraries.
+
+### Changed
+
+- Release Library cards use a dedicated lightweight response that omits
+  detail-only fields while retaining the cover, screenshot, tracking, and
+  download state needed by the grid. Full metadata is still loaded when a
+  release is opened.
+- Matching release counts now load independently from the first card batch and
+  are cached briefly, so an exact count no longer blocks visible results.
+- Metadata suggestions are debounced, cancel stale requests, query normalized
+  metadata directly, and use a bounded five-minute application cache.
+- Ignore-tag and ignore-title results are materialized on releases and updated
+  when rules or release metadata change, replacing repeated per-row ignore
+  evaluation on every library query.
+
+### Fixed
+
+- Rapid search, filter, and sort changes now cancel superseded card and count
+  requests instead of allowing stale work to delay the current result set.
+- Quick and Full refresh now cache refreshed covers and screenshots for
+  existing JavLibrary releases even when their saved metadata does not need
+  updating. Artwork-only changes no longer alter the release's metadata
+  `Updated` timestamp.
+- Live scrape and sync updates now refresh the active Release Library query
+  instead of inserting a release directly into the visible grid, so current
+  tabs, saved filters, Hide Local, and ignore rules remain respected.
+
 ## [1.0.31] - 2026-08-28
 
 ### Changed

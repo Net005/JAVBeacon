@@ -84,6 +84,10 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`returnToGrid=releaseNavFromGrid&&!releasesView.hidden`,
 		`Values above 500 are supported`,
 		`j.all_pages?'discovering online end':'configured limit'`,
+		`cards:'true'`,
+		`page.next_cursor||''`,
+		`releaseCountAbort?.abort()`,
+		`metadataOptionTimer=setTimeout(run,220)`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("embedded app.js is missing %q", marker)
