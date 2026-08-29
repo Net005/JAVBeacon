@@ -7,6 +7,13 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.33] - 2026-08-29
+
+### Changed
+
+- Rebuilt and republished the current JAVBeacon application and multi-platform
+  container package as the next patch release.
+
 ## [1.0.32] - 2026-08-29
 
 ### Added
