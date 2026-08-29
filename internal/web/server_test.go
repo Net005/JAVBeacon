@@ -97,11 +97,15 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`releaseCountAbort?.abort()`,
 		`metadataOptionTimer=setTimeout(run,220)`,
 		`function wireTouchSwipe(`,
+		`const interactive=e=>e.target.closest?.('button,a,input,select,textarea')`,
 		`if(dx<0)next?.();else previous?.()`,
-		`tap:({x,width})=>{if(x<=width*.24)navigateRelease(-1);else if(x>=width*.76)navigateRelease(1)}`,
+		`function edgeTapDirection(x,width){return x<=width*.2?-1:x>=width*.8?1:0}`,
+		`tap:({x,width})=>runEdgeTap(x,width,navigateRelease)`,
 		`wireTouchSwipe(screenshotLightboxStage`,
-		`class="mobileCoverNav prev"`,
-		`mobilePrev=releaseDetail.querySelector('.mobileCoverNav.prev')`,
+		`tap:({x,width})=>runEdgeTap(x,width,navigateScreenshot)`,
+		`function wireReleaseDetailEdgeNavigation()`,
+		`screenshotLightbox.querySelector('.screenshotLightboxClose').onclick=closeScreenshotLightbox`,
+		`$('#releaseMobileClose').onclick=()=>releaseDialog.close()`,
 		`function lockDesktopReleaseScroll(){return matchMedia('(min-width:651px) and (pointer:fine)').matches}`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
@@ -124,7 +128,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:134px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.cardMetadataRole{`, `.stashSyncProgress{`, `.sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr)`, `.sidebarFooter #appVersion{display:block;min-width:max-content`, `#toast[popover]{position:fixed!important;inset:auto 22px 22px auto!important`, `.card.returnFocus{`, `.downloadToolbar{align-items:flex-end;`, `grid-template-columns:repeat(8,minmax(0,1fr))!important`, `.releaseVisual{display:grid!important;grid-template-rows:auto auto!important`, `.releaseArt .detailBackdrop{display:none!important}`, `.screenshotLightboxStage{touch-action:pan-y`, `.releaseDialog .releaseChrome{display:none!important}`, `.mobileCoverNav{`, `(orientation:landscape) and (pointer:coarse)`, `(max-width:1366px) and (pointer:coarse)`, `top:max(8px,env(safe-area-inset-top))!important;right:max(8px,env(safe-area-inset-right))!important`, `width:var(--vw100,100vw)!important;max-width:var(--vw100,100vw)!important`, `overflow-y:auto!important;overscroll-behavior:contain!important`} {
+	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:134px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.cardMetadataRole{`, `.stashSyncProgress{`, `.sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr)`, `.sidebarFooter #appVersion{display:block;min-width:max-content`, `#toast[popover]{position:fixed!important;inset:auto 22px 22px auto!important`, `.card.returnFocus{`, `.downloadToolbar{align-items:flex-end;`, `grid-template-columns:repeat(8,minmax(0,1fr))!important`, `.releaseVisual{display:grid!important;grid-template-rows:auto auto!important`, `.releaseArt .detailBackdrop{display:none!important}`, `.screenshotLightboxStage{touch-action:pan-y`, `.releaseDialog .releaseChrome{display:none!important}`, `(orientation:landscape) and (pointer:coarse)`, `(max-width:1366px) and (pointer:coarse)`, `width:60px;height:60px`, `width:52px;height:52px`, `top:max(8px,env(safe-area-inset-top))!important;right:max(8px,env(safe-area-inset-right))!important`, `width:var(--vw100,100vw)!important;max-width:var(--vw100,100vw)!important`, `overflow-y:auto!important;overscroll-behavior:contain!important`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("embedded app.css is missing %q", marker)
 		}
