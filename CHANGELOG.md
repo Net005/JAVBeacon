@@ -7,6 +7,20 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.43] - 2026-08-29
+
+### Added
+
+- Mobile Release Details now includes scalable previous and next buttons over
+  the cover for deliberate one-handed navigation alongside swipe gestures.
+
+### Fixed
+
+- Phone landscape Release Details now keeps the screenshot strip visible and
+  gives the right-side information pane its own touch scrolling.
+- Mobile layouts hide the overlapping desktop fullscreen/navigation chrome and
+  keep the top-edge close action available in both orientations.
+
 ## [1.0.42] - 2026-08-29
 
 ### Added
