@@ -207,8 +207,14 @@ func TestQuickModeRepairsScreenshotsWithoutUpdatingExistingMetadata(t *testing.T
 	if stored.Title != "Old Title" || stored.ReleaseDate != "2024-01-01" {
 		t.Fatalf("Quick refresh changed metadata while repairing screenshots: %+v", stored)
 	}
+	if !stored.UpdatedAt.Equal(release.UpdatedAt) {
+		t.Fatalf("Quick refresh artwork repair changed updated_at: before=%v after=%v", release.UpdatedAt, stored.UpdatedAt)
+	}
 	if len(stored.Screenshots) != 1 {
 		t.Fatalf("stored screenshots=%v, want one screenshot URL", stored.Screenshots)
+	}
+	if info, err := os.Stat(service.covers.Path(release.VideoID)); err != nil || info.Size() == 0 {
+		t.Fatalf("Quick refresh did not cache cover: info=%v err=%v", info, err)
 	}
 	if info, err := os.Stat(service.screenshots.Path(release.VideoID, 0)); err != nil || info.Size() == 0 {
 		t.Fatalf("Quick refresh did not cache screenshot: info=%v err=%v", info, err)
@@ -242,8 +248,20 @@ func TestFullModeUpdatesAnExistingReleaseFoundInThePageScan(t *testing.T) {
 
 func TestFullModeCachesScreenshotsForAnExistingRelease(t *testing.T) {
 	service, site, release := newSiteScanTestService(t, func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(javLibraryDetailFixture("New Title From Site", "2024-06-06") + `<div class="previewthumbs"><a href="/full-shot.jpg"><img src="/thumb-shot.jpg"></a></div>`))
+		_, _ = w.Write([]byte(javLibraryDetailFixture("Old Title", "2024-01-01") + `<div class="previewthumbs"><a href="/full-shot.jpg"><img src="/thumb-shot.jpg"></a></div>`))
 	})
+	productURL := site.URL[:len(site.URL)-len("/list")] + "/javabc123.html"
+	if _, err := service.store.UpsertRelease(context.Background(), domain.Release{
+		SiteID: site.ID, VideoID: release.VideoID, ScraperID: "javabc123", Title: "Old Title", ReleaseDate: "2024-01-01",
+		Source: "JavLibrary", ProductURL: productURL, Director: "Director Name", Duration: "90 min", Released: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	release, err = service.store.Release(context.Background(), release.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := service.StartOptions(context.Background(), RefreshOptions{SiteID: site.ID, Mode: "full", Scheduled: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -257,6 +275,12 @@ func TestFullModeCachesScreenshotsForAnExistingRelease(t *testing.T) {
 	}
 	if len(stored.Screenshots) != 1 {
 		t.Fatalf("stored screenshots=%v, want one screenshot URL", stored.Screenshots)
+	}
+	if !stored.UpdatedAt.Equal(release.UpdatedAt) {
+		t.Fatalf("Full refresh artwork-only update changed updated_at: before=%v after=%v", release.UpdatedAt, stored.UpdatedAt)
+	}
+	if info, err := os.Stat(service.covers.Path(release.VideoID)); err != nil || info.Size() == 0 {
+		t.Fatalf("Full refresh did not cache cover: info=%v err=%v", info, err)
 	}
 	if info, err := os.Stat(service.screenshots.Path(release.VideoID, 0)); err != nil || info.Size() == 0 {
 		t.Fatalf("Full refresh did not cache screenshot: info=%v err=%v", info, err)
