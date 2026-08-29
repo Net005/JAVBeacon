@@ -7,6 +7,25 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.39] - 2026-08-29
+
+### Fixed
+
+- A download's completion (or removal) event pipeline could occasionally
+  be started twice for the same event, running its steps back-to-back,
+  because the decision to start it was based on the pipeline's stored
+  "running" state - which only actually gets written once the shared
+  pipeline worker picks the job off the queue, not the moment it's
+  queued. A qBittorrent status poll landing in that small gap (more
+  likely with the faster, configurable poll interval added in 1.0.38)
+  would see the same "not started yet" state and queue a second run of
+  the exact same event for the exact same download. Pipeline runs are
+  still never executed concurrently and always run in the order they
+  were triggered - only the double-queuing itself is fixed - so any
+  shell command, StashApp call, or other configured step tied to a
+  completion or removal event now runs exactly once per event, not
+  occasionally twice.
+
 ## [1.0.38] - 2026-08-29
 
 ### Fixed
