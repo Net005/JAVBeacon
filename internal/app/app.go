@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/auth"
+	"github.com/Net005/JAVBeacon/internal/backfill"
 	"github.com/Net005/JAVBeacon/internal/config"
 	"github.com/Net005/JAVBeacon/internal/covers"
 	"github.com/Net005/JAVBeacon/internal/domain"
@@ -72,18 +73,27 @@ func New(log *slog.Logger, logs *logging.RingHandler) (*App, error) {
 	if e != nil {
 		return nil, e
 	}
+	progress := newStartupMigrationTracker(cfg)
+	stopProgressPage := serveStartupMigrationProgress(cfg.ListenAddress, progress, log)
+	defer stopProgressPage()
 	window := time.Duration(0)
 	if cfg.DatabaseEngine == config.EnginePostgres {
 		window = postgresStartupGraceWindow
 	}
-	st, e := openStoreWithGrace(func() (*store.SQLite, error) { return openStore(cfg) }, window, postgresStartupRetryInterval, log.Warn)
+	attempt := 0
+	st, e := openStoreWithGrace(func() (*store.SQLite, error) {
+		attempt++
+		progress.beginAttempt(attempt)
+		return openStoreWithProgress(cfg, progress.record)
+	}, window, postgresStartupRetryInterval, log.Warn)
 	if e != nil {
 		if cfg.DatabaseEngine != config.EnginePostgres {
 			return nil, e
 		}
-		log.Error("PostgreSQL is still not reachable after the startup grace period - entering connection-recovery mode until it is", "error", e)
+		log.Error("PostgreSQL startup did not complete within the grace period - entering connection-recovery mode", "error", e)
 		return &App{cfg: cfg, log: log, recoveryLogs: logs, recoveryErr: e}, nil
 	}
+	progress.record(store.MigrationProgress{Phase: "Application startup", Step: "Starting JAVBeacon services", Current: 1, Total: 1})
 	return finishStartup(cfg, log, logs, st)
 }
 
@@ -120,7 +130,7 @@ func openStoreWithGrace(open func() (*store.SQLite, error), window, interval tim
 		if !time.Now().Before(deadline) {
 			return nil, lastErr
 		}
-		warn("PostgreSQL not reachable yet, retrying before entering connection-recovery mode", "attempt", attempt, "error", err)
+		warn("PostgreSQL startup not complete yet, retrying before entering connection-recovery mode", "attempt", attempt, "error", err)
 		time.Sleep(interval)
 	}
 }
@@ -166,6 +176,9 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 	}
 	if settings["job_priority_screenshot_backfill"] == "" {
 		missing["job_priority_screenshot_backfill"] = "75"
+	}
+	if settings["job_priority_historical_backfill"] == "" {
+		missing["job_priority_historical_backfill"] = "500"
 	}
 	for _, prefix := range []string{"quick_refresh", "full_refresh", "new_release_refresh"} {
 		key, mode := prefix+"_schedule_mode", "basic"
@@ -243,6 +256,7 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		return nil, err
 	}
 	mon := monitor.New(st, akiba, javlibrary, coverCache, cfg.PageLimit, log, cfg.RefreshEvery, screenshotCache)
+	historicalBackfill := backfill.New(st, javlibrary, log)
 	// javlibrary was constructed from cfg's env-sourced defaults above, which
 	// only match the database's saved settings on a fresh install - re-apply
 	// from the just-loaded settings row (in particular byparr_instances) so
@@ -265,7 +279,7 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		st.Close()
 		return nil, err
 	}
-	handler := webapp.New(st, authService, mon, stashSync, downloadService, coverCache, cfg.APIKey, cfg.DatabaseEngine, cfg.DatabasePath, log, logs, screenshotCache)
+	handler := webapp.New(st, authService, mon, historicalBackfill, stashSync, downloadService, coverCache, cfg.APIKey, cfg.DatabaseEngine, cfg.DatabasePath, log, logs, screenshotCache)
 	return &App{cfg: cfg, log: log, store: st, monitor: mon, stash: stashSync, downloads: downloadService, server: &http.Server{Addr: cfg.ListenAddress, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}}, nil
 }
 
@@ -283,22 +297,36 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 // migration failure is always returned as an error - this never silently
 // falls back to SQLite.
 func openStore(cfg config.Config) (*store.SQLite, error) {
+	return openStoreWithProgress(cfg, nil)
+}
+
+func openStoreWithProgress(cfg config.Config, report store.MigrationProgressFunc) (*store.SQLite, error) {
 	if cfg.DatabaseEngine != config.EnginePostgres {
+		if report != nil {
+			report(store.MigrationProgress{
+				Phase: "Database schema",
+				Step:  "Opening and upgrading the SQLite database",
+			})
+		}
 		return store.OpenSQLite(cfg.DatabasePath)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	st, err := store.OpenPostgresStore(ctx, store.PostgresConfig{
-		Host:     cfg.PostgresHost,
-		Port:     cfg.PostgresPort,
-		Database: cfg.PostgresDatabase,
-		User:     cfg.PostgresUser,
-		Password: cfg.PostgresPassword,
-		SSLMode:  cfg.PostgresSSLMode,
-	})
+
+	st, err := store.OpenPostgresStoreWithProgress(
+		context.Background(),
+		store.PostgresConfig{
+			Host:     cfg.PostgresHost,
+			Port:     cfg.PostgresPort,
+			Database: cfg.PostgresDatabase,
+			User:     cfg.PostgresUser,
+			Password: cfg.PostgresPassword,
+			SSLMode:  cfg.PostgresSSLMode,
+		},
+		report,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("JAVBEACON_DB_ENGINE=postgres: %w", err)
 	}
+
 	return st, nil
 }
 

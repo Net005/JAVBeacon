@@ -154,6 +154,18 @@ func TestEmbeddedFrontendLiveReleaseUpdatesReloadActiveQuery(t *testing.T) {
 	}
 }
 
+func TestEmbeddedFrontendIncludesManualHistoricalBackfillProgress(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"JavLibrary historical backfill", "historicalBackfillResume", "Historical overall", "/jobs/javlibrary-historical-backfill", "placeholder=\"500\""} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("embedded historical backfill UI is missing %q", marker)
+		}
+	}
+}
+
 func TestReleaseScreenshotManifestOnlyExposesLocalCacheFiles(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "screenshot-manifest.db"))

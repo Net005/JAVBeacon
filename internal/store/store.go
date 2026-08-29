@@ -32,6 +32,7 @@ type Store interface {
 	ReleaseFilterOptions(context.Context, string, string) ([]string, error)
 	Release(context.Context, int64) (domain.Release, error)
 	ReleaseExistsForSite(context.Context, int64, string, string) (bool, error)
+	ReleaseKnown(context.Context, string, string) (string, bool, error)
 	UpsertRelease(context.Context, domain.Release) (bool, error)
 	// UpsertReleaseKeepUpdatedAt behaves exactly like UpsertRelease except it
 	// never bumps updated_at on an existing release, whatever changed - used
@@ -51,6 +52,14 @@ type Store interface {
 	SaveSettings(context.Context, map[string]string) error
 	ScreenshotBackfillCompleted(context.Context, int64) (bool, error)
 	MarkScreenshotBackfillCompleted(context.Context, int64) error
+	PrepareHistoricalBackfill(context.Context, bool) error
+	UpsertHistoricalBackfillSources(context.Context, []domain.HistoricalBackfillSource) error
+	HistoricalBackfillSources(context.Context) ([]domain.HistoricalBackfillSource, error)
+	HistoricalBackfillItem(context.Context, string) (domain.HistoricalBackfillItem, bool, error)
+	SaveHistoricalBackfillItem(context.Context, domain.HistoricalBackfillItem) error
+	SaveHistoricalBackfillSource(context.Context, domain.HistoricalBackfillSource) error
+	SetHistoricalBackfillState(context.Context, string) error
+	HistoricalBackfillStats(context.Context) (domain.HistoricalBackfillStats, error)
 	User(context.Context) (domain.User, error)
 	SaveUser(context.Context, string, string) error
 	CreateSession(context.Context, domain.Session) error
@@ -179,6 +188,22 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_logs_download ON pipeline_logs(download_
 CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY, release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE, type TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL, UNIQUE(release_id,type));
 CREATE INDEX IF NOT EXISTS idx_notifications_release_created ON notifications(release_id,created_at DESC);
 CREATE TABLE IF NOT EXISTS desired_sync (release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE, stash_scene_id TEXT NOT NULL, tag_id TEXT NOT NULL, synced_at DATETIME NOT NULL, result TEXT NOT NULL DEFAULT '');`)
+	}
+	if err == nil {
+		_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS historical_backfill_state (
+			id INTEGER PRIMARY KEY CHECK(id=1), state TEXT NOT NULL DEFAULT 'idle', updated_at DATETIME NOT NULL
+		);
+		INSERT OR IGNORE INTO historical_backfill_state(id,state,updated_at) VALUES(1,'idle',CURRENT_TIMESTAMP);
+		CREATE TABLE IF NOT EXISTS historical_backfill_sources (
+			url TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+			cursor_date TEXT NOT NULL DEFAULT '', resume_date TEXT NOT NULL DEFAULT '', next_page INTEGER NOT NULL DEFAULT 1,
+			page_limit INTEGER NOT NULL DEFAULT 0, pages_completed INTEGER NOT NULL DEFAULT 0, catchup_only INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE TABLE IF NOT EXISTS historical_backfill_items (
+			video_id TEXT PRIMARY KEY COLLATE NOCASE, release_date TEXT NOT NULL DEFAULT '', state TEXT NOT NULL,
+			source_url TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', updated_at DATETIME NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_historical_backfill_items_state ON historical_backfill_items(state);`)
 	}
 	if err == nil {
 		_, err = s.db.Exec(`
@@ -1464,6 +1489,18 @@ func (s *SQLite) ReleaseExistsForSite(ctx context.Context, siteID int64, source,
 	return exists, err
 }
 
+// ReleaseKnown checks the global source/video identity rather than one site
+// association. Historical graph discovery uses it to avoid fetching details
+// for releases JAVBeacon already learned from any normal monitoring site.
+func (s *SQLite) ReleaseKnown(ctx context.Context, source, videoID string) (string, bool, error) {
+	var releaseDate string
+	err := s.db.QueryRowContext(ctx, `SELECT release_date FROM releases WHERE identity_key=? AND identity_key<>''`, releaseIdentity(source, videoID)).Scan(&releaseDate)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return releaseDate, err == nil, err
+}
+
 // UpsertRelease inserts or updates a release, bumping updated_at when its
 // scraped metadata actually changed. UpsertReleaseKeepUpdatedAt is the same
 // operation with that bump suppressed - see upsertRelease's preserveUpdatedAt
@@ -2126,6 +2163,97 @@ func (s *SQLite) DeleteFilterPreset(ctx context.Context, id int64) error {
 	return err
 }
 
+func (s *SQLite) PrepareHistoricalBackfill(ctx context.Context, resume bool) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if !resume {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM historical_backfill_items`); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM historical_backfill_sources`); err != nil {
+			return err
+		}
+	} else {
+		// A completed source only needs its newly inserted head. An unfinished
+		// source catches up to the saved date boundary and then continues deeper.
+		if _, err = tx.ExecContext(ctx, `UPDATE historical_backfill_sources SET resume_date=cursor_date,catchup_only=CASE WHEN state='completed' THEN 1 ELSE 0 END,state='pending',next_page=1`); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE historical_backfill_state SET state='running',updated_at=? WHERE id=1`, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLite) UpsertHistoricalBackfillSources(ctx context.Context, sources []domain.HistoricalBackfillSource) error {
+	for _, x := range sources {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO historical_backfill_sources(url,kind,name,state,next_page) VALUES(?,?,?,'pending',1) ON CONFLICT(url) DO UPDATE SET kind=excluded.kind,name=excluded.name`, x.URL, x.Kind, x.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *SQLite) HistoricalBackfillSources(ctx context.Context) ([]domain.HistoricalBackfillSource, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT url,kind,name,state,cursor_date,resume_date,next_page,page_limit,pages_completed,catchup_only FROM historical_backfill_sources ORDER BY CASE kind WHEN 'genre' THEN 0 WHEN 'star' THEN 1 ELSE 2 END,name,url`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.HistoricalBackfillSource
+	for rows.Next() {
+		var x domain.HistoricalBackfillSource
+		if err := rows.Scan(&x.URL, &x.Kind, &x.Name, &x.State, &x.CursorDate, &x.ResumeDate, &x.NextPage, &x.PageLimit, &x.PagesCompleted, &x.CatchupOnly); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) HistoricalBackfillItem(ctx context.Context, videoID string) (domain.HistoricalBackfillItem, bool, error) {
+	var x domain.HistoricalBackfillItem
+	err := s.db.QueryRowContext(ctx, `SELECT video_id,release_date,state,source_url,error FROM historical_backfill_items WHERE video_id=?`, videoID).Scan(&x.VideoID, &x.ReleaseDate, &x.State, &x.SourceURL, &x.Error)
+	if errors.Is(err, sql.ErrNoRows) {
+		return x, false, nil
+	}
+	return x, err == nil, err
+}
+
+func (s *SQLite) SaveHistoricalBackfillItem(ctx context.Context, x domain.HistoricalBackfillItem) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO historical_backfill_items(video_id,release_date,state,source_url,error,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(video_id) DO UPDATE SET release_date=excluded.release_date,state=excluded.state,source_url=excluded.source_url,error=excluded.error,updated_at=excluded.updated_at`, x.VideoID, x.ReleaseDate, x.State, x.SourceURL, x.Error, time.Now().UTC())
+	return err
+}
+
+func (s *SQLite) SaveHistoricalBackfillSource(ctx context.Context, x domain.HistoricalBackfillSource) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE historical_backfill_sources SET state=?,cursor_date=?,resume_date=?,next_page=?,page_limit=?,pages_completed=?,catchup_only=? WHERE url=?`, x.State, x.CursorDate, x.ResumeDate, x.NextPage, x.PageLimit, x.PagesCompleted, x.CatchupOnly, x.URL)
+	return err
+}
+
+func (s *SQLite) SetHistoricalBackfillState(ctx context.Context, state string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE historical_backfill_state SET state=?,updated_at=? WHERE id=1`, state, time.Now().UTC())
+	return err
+}
+
+func (s *SQLite) HistoricalBackfillStats(ctx context.Context) (domain.HistoricalBackfillStats, error) {
+	var x domain.HistoricalBackfillStats
+	err := s.db.QueryRowContext(ctx, `SELECT state,updated_at,
+		(SELECT COUNT(*) FROM historical_backfill_sources),
+		(SELECT COUNT(*) FROM historical_backfill_sources WHERE state='completed'),
+		COALESCE((SELECT SUM(pages_completed) FROM historical_backfill_sources),0),
+		COALESCE((SELECT SUM(CASE WHEN page_limit>0 THEN page_limit ELSE pages_completed+1 END) FROM historical_backfill_sources),0),
+		(SELECT COUNT(*) FROM historical_backfill_items),
+		(SELECT COUNT(*) FROM historical_backfill_items WHERE state='completed'),
+		(SELECT COUNT(*) FROM historical_backfill_items WHERE state='failed')
+		FROM historical_backfill_state WHERE id=1`).Scan(&x.State, &x.UpdatedAt, &x.SourcesTotal, &x.SourcesCompleted, &x.PagesCompleted, &x.PagesEstimated, &x.ReleasesDiscovered, &x.ReleasesCompleted, &x.ReleasesFailed)
+	return x, err
+}
+
 func (s *SQLite) SaveJob(ctx context.Context, x domain.Job) (int64, error) {
 	if x.State == "" {
 		if x.Running {
@@ -2191,7 +2319,7 @@ func (s *SQLite) JobHistory(ctx context.Context, limit, offset int) ([]domain.Jo
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id,category,kind,state,mode,title,provider,started_at,finished_at,added,updated,skipped,error,details FROM (
 		SELECT id,
-			CASE WHEN kind='scrape' THEN 'Scraping' WHEN kind LIKE '%download%' THEN 'Downloading' WHEN kind LIKE '%stash%' THEN 'StashApp' ELSE 'System' END AS category,
+			CASE WHEN kind='scrape' OR kind='javlibrary_historical_backfill' THEN 'Scraping' WHEN kind LIKE '%download%' THEN 'Downloading' WHEN kind LIKE '%stash%' THEN 'StashApp' ELSE 'System' END AS category,
 			kind,state,mode,site_title AS title,provider,started_at,finished_at,added,updated,skipped,error,'' AS details
 		FROM job_history
 		UNION ALL

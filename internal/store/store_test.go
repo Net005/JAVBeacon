@@ -167,6 +167,50 @@ func TestScreenshotBackfillCompletionPersists(t *testing.T) {
 	}
 }
 
+func TestHistoricalBackfillResumeRebasesCompletedSourceByDate(t *testing.T) {
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "historical.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.PrepareHistoricalBackfill(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	source := domain.HistoricalBackfillSource{URL: "https://example.test/genre?mode=2", Kind: "genre", Name: "Test"}
+	if err := s.UpsertHistoricalBackfillSources(ctx, []domain.HistoricalBackfillSource{source}); err != nil {
+		t.Fatal(err)
+	}
+	source.State = "completed"
+	source.CursorDate = "2020-02-03"
+	source.NextPage = 42
+	source.PageLimit = 42
+	source.PagesCompleted = 42
+	if err := s.SaveHistoricalBackfillSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveHistoricalBackfillItem(ctx, domain.HistoricalBackfillItem{VideoID: "ABC-1", ReleaseDate: source.CursorDate, State: "completed", SourceURL: source.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PrepareHistoricalBackfill(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.HistoricalBackfillSources(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].State != "pending" || rows[0].NextPage != 1 || rows[0].ResumeDate != "2020-02-03" || !rows[0].CatchupOnly {
+		t.Fatalf("rebased source: %+v", rows)
+	}
+	stats, err := s.HistoricalBackfillStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ReleasesDiscovered != 1 || stats.ReleasesCompleted != 1 {
+		t.Fatalf("stats: %+v", stats)
+	}
+}
+
 func TestReleaseSourceFilterRestrictsScreenshotBackfillCandidates(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "source-filter.db"))

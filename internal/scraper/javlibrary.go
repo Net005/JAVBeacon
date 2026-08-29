@@ -60,6 +60,103 @@ func (j *JavLibrary) Configure(instances []Instance, cooldown time.Duration) {
 // without needing their own reference to the pool.
 func (j *JavLibrary) Pool() *SolverPool { return j.pool }
 
+// HistoricalIndex is a durable discovery edge used by the manual catalog
+// backfill. Releases are unioned across these indexes, because no single
+// rolling JavLibrary list represents the full historical catalog.
+type HistoricalIndex struct{ URL, Kind, Name string }
+
+// HistoricalIndexes discovers the site's genre, performer and maker graph.
+// A directory may be absent on a mirror; successful directories are still
+// returned, but genres are required because they are the broadest index.
+func (j *JavLibrary) HistoricalIndexes(ctx context.Context) ([]HistoricalIndex, error) {
+	roots := []struct{ url, kind, needle string }{
+		{"https://www.javlibrary.com/en/genres.php", "genre", "vl_genre.php"},
+		{"https://www.javlibrary.com/en/star_list.php", "star", "vl_star.php"},
+		{"https://www.javlibrary.com/en/makers.php", "maker", "vl_maker.php"},
+	}
+	seen := map[string]bool{}
+	var out []HistoricalIndex
+	for _, root := range roots {
+		directoryQueue, directorySeen := []string{root.url}, map[string]bool{}
+		for len(directoryQueue) > 0 && len(directorySeen) < 500 {
+			directoryURL := directoryQueue[0]
+			directoryQueue = directoryQueue[1:]
+			if directorySeen[directoryURL] {
+				continue
+			}
+			directorySeen[directoryURL] = true
+			doc, err := j.document(ctx, directoryURL, "index")
+			if err != nil {
+				if root.kind == "genre" && len(directorySeen) == 1 {
+					return nil, err
+				}
+				j.log.Warn("historical index directory unavailable", "kind", root.kind, "url", directoryURL, "error", err)
+				continue
+			}
+			for _, a := range findAll(doc, func(n *html.Node) bool { return n.Data == "a" }) {
+				href := attr(a, "href")
+				if strings.Contains(href, root.needle) {
+					u := normalizeJavLibraryURL(resolve(directoryURL, href))
+					parsed, err := url.Parse(u)
+					if err != nil {
+						continue
+					}
+					q := parsed.Query()
+					q.Set("mode", "2")
+					parsed.RawQuery = q.Encode()
+					u = parsed.String()
+					if !seen[u] {
+						seen[u] = true
+						name := strings.TrimSpace(nodeText(a))
+						if name == "" {
+							name = u
+						}
+						out = append(out, HistoricalIndex{URL: u, Kind: root.kind, Name: name})
+					}
+				}
+				candidate := normalizeJavLibraryURL(resolve(directoryURL, href))
+				parsedCandidate, e1 := url.Parse(candidate)
+				parsedRoot, e2 := url.Parse(root.url)
+				if e1 == nil {
+					parsedCandidate.Fragment = ""
+					candidate = parsedCandidate.String()
+				}
+				if e1 == nil && e2 == nil && parsedCandidate.Host == parsedRoot.Host && path.Base(parsedCandidate.Path) == path.Base(parsedRoot.Path) && candidate != directoryURL && candidate != root.url && !directorySeen[candidate] {
+					directoryQueue = append(directoryQueue, candidate)
+				}
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("JavLibrary historical directories contained no graph indexes")
+	}
+	return out, nil
+}
+
+// HistoricalPage fetches exactly one date-sorted index page and enriches
+// only candidates accepted by include. IDs reports every listing entry,
+// including already-known ones, so callers can locate a saved date boundary
+// without re-fetching its detail pages.
+func (j *JavLibrary) HistoricalPage(ctx context.Context, source string, page int, include func(string) bool) (items []domain.Release, ids []string, pageLimit int, err error) {
+	u, err := url.Parse(source)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	q := u.Query()
+	q.Set("mode", "2")
+	q.Set("page", strconv.Itoa(max(page, 1)))
+	u.RawQuery = q.Encode()
+	items, err = j.ScrapeFiltered(ctx, u.String(), 1, include, ScrapeConcurrency{Max: 1}, func(_ int, limit, item, _ int, videoID string) {
+		if limit > pageLimit {
+			pageLimit = limit
+		}
+		if item > 0 && videoID != "" {
+			ids = append(ids, videoID)
+		}
+	})
+	return
+}
+
 // normalizeJavLibraryURL forces any javlibrary.com/www.javlibrary.com URL to
 // https://www.javlibrary.com, whatever scheme or host variant it arrived
 // with. Older stored data (sites.url, releases.product_url) and links
@@ -251,6 +348,12 @@ func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int,
 		if e != nil {
 			return nil, e
 		}
+		requestedPage := page
+		if page == 1 {
+			if existing, parseErr := strconv.Atoi(u.Query().Get("page")); parseErr == nil && existing > 1 && pages == 1 {
+				requestedPage = existing
+			}
+		}
 		if page > 1 {
 			q := u.Query()
 			q.Set("page", fmt.Sprint(page))
@@ -265,10 +368,14 @@ func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int,
 		if len(items) == 0 {
 			items = findAll(doc, func(n *html.Node) bool { return hasClass(n, "id") })
 		}
-		reportedPageLimit := listingPageLimit(doc, "page", pages, page)
+		ceiling := pages
+		if requestedPage != page {
+			ceiling = 0
+		}
+		reportedPageLimit := listingPageLimit(doc, "page", ceiling, requestedPage)
 		j.log.Info("listing page parsed", "provider", "JavLibrary", "page", page, "entries", len(items), "url", u.String())
 		if len(items) > 0 && len(progress) > 0 && progress[0] != nil {
-			progress[0](page, reportedPageLimit, 0, len(items), "")
+			progress[0](requestedPage, reportedPageLimit, 0, len(items), "")
 		}
 		discovered := 0
 		type javCandidate struct {
@@ -308,7 +415,7 @@ func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int,
 			seen[strings.ToLower(videoID)] = true
 			discovered++
 			if len(progress) > 0 && progress[0] != nil {
-				progress[0](page, reportedPageLimit, itemIndex+1, len(items), r.VideoID)
+				progress[0](requestedPage, reportedPageLimit, itemIndex+1, len(items), r.VideoID)
 			}
 			if include != nil && !include(r.VideoID) {
 				continue

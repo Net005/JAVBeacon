@@ -54,6 +54,8 @@ type recoveryServer struct {
 	mu          sync.Mutex
 	lastError   error
 	lastCheckAt time.Time
+	migration   store.MigrationProgress
+	migrating   bool
 
 	// retryNow is how the HTTP handler asks the awaitRecovery loop to
 	// attempt a reconnect immediately instead of waiting for the next
@@ -70,6 +72,15 @@ func newRecoveryServer(cfg config.Config, initialErr error) *recoveryServer {
 func (r *recoveryServer) recordAttempt(err error) {
 	r.mu.Lock()
 	r.lastError = err
+	r.lastCheckAt = time.Now().UTC()
+	r.migrating = false
+	r.mu.Unlock()
+}
+
+func (r *recoveryServer) recordMigration(progress store.MigrationProgress) {
+	r.mu.Lock()
+	r.migration = progress
+	r.migrating = true
 	r.lastCheckAt = time.Now().UTC()
 	r.mu.Unlock()
 }
@@ -94,11 +105,16 @@ type recoveryStatusPayload struct {
 	LastCheckAt time.Time `json:"last_checked_at"`
 	Category    string    `json:"category,omitempty"`
 	Message     string    `json:"message,omitempty"`
+	Migrating   bool      `json:"migrating"`
+	Phase       string    `json:"migration_phase,omitempty"`
+	Step        string    `json:"migration_step,omitempty"`
+	Current     int       `json:"migration_current,omitempty"`
+	Total       int       `json:"migration_total,omitempty"`
 }
 
 func (r *recoveryServer) status() recoveryStatusPayload {
 	r.mu.Lock()
-	err, checked := r.lastError, r.lastCheckAt
+	err, checked, migrating, migration := r.lastError, r.lastCheckAt, r.migrating, r.migration
 	r.mu.Unlock()
 	out := recoveryStatusPayload{
 		Recovering:  true,
@@ -109,6 +125,11 @@ func (r *recoveryServer) status() recoveryStatusPayload {
 		User:        r.cfg.PostgresUser,
 		SSLMode:     r.cfg.PostgresSSLMode,
 		LastCheckAt: checked,
+		Migrating:   migrating,
+		Phase:       migration.Phase,
+		Step:        migration.Step,
+		Current:     migration.Current,
+		Total:       migration.Total,
 	}
 	if err != nil {
 		category, message := store.ClassifyPostgresError(err)
@@ -190,7 +211,7 @@ func (a *App) awaitRecovery(ctx context.Context) (*App, error) {
 	}()
 
 	attempt := func() (*store.SQLite, error) {
-		st, e := openStore(a.cfg)
+		st, e := openStoreWithProgress(a.cfg, rec.recordMigration)
 		rec.recordAttempt(e)
 		if e != nil {
 			a.log.Warn("PostgreSQL connection retry failed", "error", e)
@@ -213,10 +234,12 @@ func (a *App) awaitRecovery(ctx context.Context) (*App, error) {
 			return nil, e
 		case <-ticker.C:
 			if st, e := attempt(); e == nil {
+				rec.recordMigration(store.MigrationProgress{Phase: "Application startup", Step: "Starting JAVBeacon services", Current: 1, Total: 1})
 				return finishStartup(a.cfg, a.log, a.recoveryLogs, st)
 			}
 		case <-rec.retryNow:
 			if st, e := attempt(); e == nil {
+				rec.recordMigration(store.MigrationProgress{Phase: "Application startup", Step: "Starting JAVBeacon services", Current: 1, Total: 1})
 				return finishStartup(a.cfg, a.log, a.recoveryLogs, st)
 			}
 		}
@@ -237,9 +260,10 @@ button{margin-top:0.75rem;padding:0.5rem 1rem;border-radius:4px;border:1px solid
 button:hover{background:#33373f}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:0.5rem}
 #result,#testResult{margin-top:0.5rem;font-size:0.9rem;white-space:pre-wrap}
+.migration{margin-top:1rem;padding:1rem;border:1px solid #3a414d;border-radius:7px;background:#171a20}.track{height:9px;overflow:hidden;border-radius:99px;background:#303641}.bar{height:100%;width:0;background:#ff586c;transition:width .35s ease}.migrationMeta{display:flex;justify-content:space-between;gap:1rem;margin-top:.4rem}.migration[hidden]{display:none}
 </style></head>
 <body>
-<h1>JAVBeacon can't reach its PostgreSQL database</h1>
+<h1 id="pageHeading">JAVBeacon can't reach its PostgreSQL database</h1>
 <p class="muted">This page is served automatically instead of the application while the configured database is unreachable. It never switches databases or overwrites your configuration - it only helps you see why and confirm a fix. JAVBeacon keeps retrying the configured connection automatically; this page updates itself.</p>
 
 <div class="card">
@@ -248,6 +272,7 @@ button:hover{background:#33373f}
 <p class="muted" id="checked">Last checked: {{.LastCheckAt}}</p>
 <button id="retryBtn">Retry now</button>
 <div id="result"></div>
+<div class="migration" id="migration" {{if not .Step}}hidden{{end}}><strong id="migrationPhase">{{.Phase}}</strong><p id="migrationStep">{{.Step}}</p><div class="track"><div class="bar" id="migrationBar"></div></div><div class="migrationMeta muted"><span id="migrationCount"></span><span>Database upgrade</span></div></div>
 </div>
 
 <div class="card">
@@ -297,6 +322,9 @@ async function refresh() {
     const s = await (await fetch('/api/recovery/status')).json();
     document.getElementById('reason').innerHTML = '<strong>Last error:</strong> ' + (s.message || '(none yet)');
     document.getElementById('checked').textContent = 'Last checked: ' + s.last_checked_at;
+    const migration=document.getElementById('migration');
+    migration.hidden=!s.migration_step;
+    if(s.migration_step){document.getElementById('pageHeading').textContent=s.migrating?'JAVBeacon is upgrading its database':'Database upgrade was interrupted';document.getElementById('migrationPhase').textContent=s.migration_phase||'Database migration';document.getElementById('migrationStep').textContent=s.migration_step;const pct=s.migration_total?Math.max(2,Math.min(100,Math.round(s.migration_current/s.migration_total*100))):18;document.getElementById('migrationBar').style.width=pct+'%';document.getElementById('migrationCount').textContent=s.migration_total?(s.migration_current+' of '+s.migration_total):(s.migrating?'Working…':'Waiting to retry')}
     document.getElementById('result').textContent = '';
   } catch (e) {}
 }

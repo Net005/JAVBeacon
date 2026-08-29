@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/auth"
+	"github.com/Net005/JAVBeacon/internal/backfill"
 	"github.com/Net005/JAVBeacon/internal/covers"
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"github.com/Net005/JAVBeacon/internal/download"
@@ -36,6 +37,7 @@ type Server struct {
 	store         store.Store
 	auth          *auth.Service
 	monitor       *monitor.Service
+	historical    *backfill.Service
 	stash         *stash.Service
 	downloads     *download.Service
 	covers        *covers.Cache
@@ -101,8 +103,8 @@ type screenshotBackfillStatus struct {
 // active - the DB Phase 7 migration wizard's "currently configured SQLite
 // database" source option (setupMigrationSource) needs to know it even
 // when the app is presently running on PostgreSQL.
-func New(st store.Store, authService *auth.Service, m *monitor.Service, stashSync *stash.Service, downloadService *download.Service, covers *covers.Cache, key string, dbEngine string, sqlitePath string, l *slog.Logger, logs *logging.RingHandler, screenshotCaches ...*screenshots.Cache) http.Handler {
-	s := &Server{store: st, auth: authService, monitor: m, stash: stashSync, downloads: downloadService, covers: covers, key: key, dbEngine: dbEngine, sqlitePath: sqlitePath, log: l, logs: logs, mux: http.NewServeMux(), clients: map[*websocket.Conn]bool{}, releaseCountCache: map[string]cachedReleaseCount{}, filterOptionCache: map[string]cachedFilterOptions{}}
+func New(st store.Store, authService *auth.Service, m *monitor.Service, historical *backfill.Service, stashSync *stash.Service, downloadService *download.Service, covers *covers.Cache, key string, dbEngine string, sqlitePath string, l *slog.Logger, logs *logging.RingHandler, screenshotCaches ...*screenshots.Cache) http.Handler {
+	s := &Server{store: st, auth: authService, monitor: m, historical: historical, stash: stashSync, downloads: downloadService, covers: covers, key: key, dbEngine: dbEngine, sqlitePath: sqlitePath, log: l, logs: logs, mux: http.NewServeMux(), clients: map[*websocket.Conn]bool{}, releaseCountCache: map[string]cachedReleaseCount{}, filterOptionCache: map[string]cachedFilterOptions{}}
 	if len(screenshotCaches) > 0 {
 		s.screenshots = screenshotCaches[0]
 	}
@@ -297,6 +299,31 @@ func (s *Server) routes() {
 		s.json(w, http.StatusAccepted, map[string]any{"status": "stopping", "cleared_queued_jobs": cleared})
 	})
 	s.mux.HandleFunc("POST /api/jobs/refresh", s.refresh)
+	s.mux.HandleFunc("GET /api/jobs/javlibrary-historical-backfill", func(w http.ResponseWriter, r *http.Request) {
+		s.json(w, http.StatusOK, s.historical.Status(r.Context()))
+	})
+	s.mux.HandleFunc("POST /api/jobs/javlibrary-historical-backfill", func(w http.ResponseWriter, r *http.Request) {
+		var p struct {
+			Resume   bool `json:"resume"`
+			Priority int  `json:"priority"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			s.problem(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		if err := s.historical.Start(r.Context(), p.Resume, p.Priority); err != nil {
+			s.problem(w, http.StatusConflict, err.Error())
+			return
+		}
+		s.json(w, http.StatusAccepted, s.historical.Status(r.Context()))
+	})
+	s.mux.HandleFunc("DELETE /api/jobs/javlibrary-historical-backfill", func(w http.ResponseWriter, r *http.Request) {
+		if !s.historical.Stop() {
+			s.problem(w, http.StatusConflict, "historical backfill is not running")
+			return
+		}
+		s.json(w, http.StatusAccepted, map[string]string{"state": "stopping"})
+	})
 	s.mux.HandleFunc("GET /api/jobs/stash", func(w http.ResponseWriter, r *http.Request) { s.json(w, 200, s.stash.Status()) })
 	s.mux.HandleFunc("POST /api/jobs/stash", func(w http.ResponseWriter, r *http.Request) {
 		if e := s.stash.Start(r.Context()); e != nil {
@@ -1139,6 +1166,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	for _, kind := range monitor.JobPriorityKinds {
 		allowed[monitor.JobPrioritySettingKey(kind)] = true
 	}
+	allowed["job_priority_historical_backfill"] = true
 	for _, spec := range []struct{ prefix, intervalKey string }{{"quick_refresh", "refresh_interval"}, {"full_refresh", "full_refresh_interval"}, {"new_release_refresh", "new_release_refresh_interval"}} {
 		mode := strings.ToLower(strings.TrimSpace(x[spec.prefix+"_schedule_mode"]))
 		if mode == "" {
@@ -1206,6 +1234,12 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 				s.problem(w, http.StatusUnprocessableEntity, "job priority for "+kind+" must be a whole number from 1 to 999")
 				return
 			}
+		}
+	}
+	if raw, ok := x["job_priority_historical_backfill"]; ok && strings.TrimSpace(raw) != "" {
+		if priority, e := strconv.Atoi(strings.TrimSpace(raw)); e != nil || priority < 1 || priority > 999 {
+			s.problem(w, http.StatusUnprocessableEntity, "historical backfill priority must be a whole number from 1 to 999")
+			return
 		}
 	}
 	// byparr_instances is the JSON-encoded list of configured Byparr/
