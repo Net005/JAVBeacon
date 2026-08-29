@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -341,4 +342,65 @@ func TestMultiSiteScanTracksSiteIndexAndCount(t *testing.T) {
 	if single.SiteCount != 0 || single.SiteIndex != 0 {
 		t.Fatalf("single-site job=%+v, want SiteCount=0 and SiteIndex=0", single)
 	}
+}
+
+// TestFullModeSurfacesDetailFetchFailuresInsteadOfSilentlySucceeding is the
+// regression test for the exact bug report this covers: "Full/Quick scans
+// don't fill in Label or fetch missing screenshots, even though a manual
+// Update details on the same release works fine." Manual refresh and scan
+// share the same detail-page parser, so a real markup gap would break both
+// - the actual gap was that scrapeFiltered's concurrent detail-page fetch
+// (javlibrary.go) swallowed a failed fetch into just a WARN log line and
+// still fell through to add/"update" the release from listing-page data
+// alone (title/cover only), so a struggling solver produced a completely
+// normal-looking "N updated" job while refreshing nothing. This asserts
+// that a failed detail fetch is now visible on the job (job.Error) instead
+// of silently reporting success, and that the release's pre-existing
+// fields (seeded with a blank Label, mirroring a release that predates the
+// Label fix and still hasn't been backfilled) are left untouched rather
+// than being overwritten with blanks.
+func TestFullModeSurfacesDetailFetchFailuresInsteadOfSilentlySucceeding(t *testing.T) {
+	service, site, _ := newSiteScanTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		// Simulate a Byparr/solver failure on the detail-page fetch (a
+		// timeout, an overloaded solver, a still-challenged response that
+		// documentOnce's own validation rejects, etc.) - any non-2xx status
+		// is enough to make javlibrary.go's j.detail() return an error.
+		http.Error(w, "solver unavailable", http.StatusBadGateway)
+	})
+	origFirst, origSecond := scraper.RetryFirstBackoff, scraper.RetrySecondBackoff
+	scraper.RetryFirstBackoff, scraper.RetrySecondBackoff = time.Millisecond, time.Millisecond
+	t.Cleanup(func() { scraper.RetryFirstBackoff, scraper.RetrySecondBackoff = origFirst, origSecond })
+
+	ctx := context.Background()
+	if err := service.StartOptions(ctx, RefreshOptions{SiteID: site.ID, Mode: "full", Scheduled: true}); err != nil {
+		t.Fatal(err)
+	}
+	job := waitForSiteJob(t, service)
+	if job.Error == "" {
+		t.Fatal("job.Error is empty, want a summary reporting the failed detail-page fetch instead of silent success")
+	}
+	if !strings.Contains(job.Error, "ABC-123") && !strings.Contains(job.Error, "1 of 1") {
+		t.Fatalf("job.Error = %q, want it to identify the failed release/count", job.Error)
+	}
+	stored, err := service.store.Release(ctx, mustReleaseID(t, service, "ABC-123"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Title/cover come from the listing page too, so those legitimately
+	// still refresh even on a failed detail fetch - Label (like Studio,
+	// Genres, ReleaseDate, and Screenshots) only ever comes from the detail
+	// page, so it must be left exactly as seeded (blank) rather than
+	// silently "succeeding" with nothing actually merged in.
+	if stored.Label != "" {
+		t.Fatalf("stored.Label = %q, want it left blank since the detail-page fetch that would have populated it failed", stored.Label)
+	}
+}
+
+func mustReleaseID(t *testing.T, service *Service, videoID string) int64 {
+	t.Helper()
+	rows, err := service.store.Releases(context.Background(), domain.ReleaseFilter{Search: videoID})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("release lookup for %s: items=%d err=%v", videoID, len(rows), err)
+	}
+	return rows[0].ID
 }

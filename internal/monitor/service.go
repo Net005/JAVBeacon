@@ -761,16 +761,37 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 		// role the per-item progress callback's checkpoint call plays for
 		// the fast, sequential listing-page parse above.
 		scanCheckpoint := func() { s.checkpoint(ctx, &job, options.Priority) }
+		// detailFailures/detailFailureSample surface what used to be a
+		// silent per-item WARN log ("product detail failed"): a release
+		// whose detail-page fetch fails still gets added/"updated" from
+		// listing-page data alone (title/cover only - no Label, Studio,
+		// Genres, release date, or screenshots), so a scan job could
+		// report a normal-looking "N updated" while a struggling solver
+		// (Byparr/FlareSolverr overloaded, misconfigured for concurrent
+		// use, etc.) meant none of those releases actually got refreshed.
+		// Guarded by detailFailuresMu since OnDetailFailure fires from the
+		// concurrent detail-fetch goroutines in fetchDetailsConcurrently.
+		var detailFailuresMu sync.Mutex
+		var detailFailures int
+		var detailFailureSample []string
+		onDetailFailure := func(videoID string, _ error) {
+			detailFailuresMu.Lock()
+			detailFailures++
+			if len(detailFailureSample) < 5 {
+				detailFailureSample = append(detailFailureSample, videoID)
+			}
+			detailFailuresMu.Unlock()
+		}
 		switch {
 		case strings.EqualFold(site.Name, "GIGA"):
-			concurrency := scraper.ScrapeConcurrency{Max: akibaConcurrency, Checkpoint: scanCheckpoint}
+			concurrency := scraper.ScrapeConcurrency{Max: akibaConcurrency, Checkpoint: scanCheckpoint, OnDetailFailure: onDetailFailure}
 			if options.AllPages {
 				items, e = s.akiba.ScrapeFilteredThroughEnd(ctx, pages, include, concurrency, progress)
 			} else {
 				items, e = s.akiba.ScrapeFiltered(ctx, pages, include, concurrency, progress)
 			}
 		case strings.EqualFold(site.Name, "JavLibrary"):
-			concurrency := scraper.ScrapeConcurrency{Max: javConcurrency, Checkpoint: scanCheckpoint}
+			concurrency := scraper.ScrapeConcurrency{Max: javConcurrency, Checkpoint: scanCheckpoint, OnDetailFailure: onDetailFailure}
 			if options.AllPages {
 				items, e = s.javlibrary.ScrapeFilteredThroughEnd(ctx, site.URL, pages, include, concurrency, progress)
 			} else {
@@ -789,6 +810,13 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 			}
 			recordSiteScrape("failed")
 			continue
+		}
+		if detailFailures > 0 {
+			summary := fmt.Sprintf("%d of %d release detail pages could not be fetched this run (e.g. %s) - those releases were added/updated from listing-page data only, so Label/Studio/Genres/screenshots were not refreshed for them; check the solver (Byparr/FlareSolverr) and server logs", detailFailures, len(items), strings.Join(detailFailureSample, ", "))
+			s.log.Warn("release detail pages failed during scan", "site", site.Title, "provider", site.Name, "failed", detailFailures, "total", len(items), "sample", detailFailureSample)
+			if job.Error == "" {
+				job.Error = summary
+			}
 		}
 		s.log.Info("site scrape returned releases", "site", site.Title, "provider", site.Name, "releases", len(items), "duration", time.Since(siteStarted).Round(time.Millisecond))
 		for _, r := range items {
