@@ -9,6 +9,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Quick refresh now backfills Label, Studio, Director, Actress, release
+  date, Genres, and Duration/Story on an existing release when the freshly
+  scraped detail page has a value and the stored release does not - most
+  commonly Label on a release added before JavLibrary Label parsing
+  existed. Quick still never overwrites a field the release already has a
+  value for (that remains Full refresh's job), and this backfill - like
+  Quick's existing cover/screenshot repair - preserves updated_at so it
+  does not affect "sort by date updated." Previously Quick left every one
+  of these fields untouched no matter how long they had been blank.
 - Quick/Full/New-releases scan jobs no longer silently fall back to
   listing-page-only data (title/cover, no Label, Studio, Genres, release
   date, or screenshots) for a release whose detail-page fetch fails during
@@ -20,6 +29,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   never getting their Label or screenshots filled in. Manual "Update
   details" and the screenshot-backfill job were unaffected by this bug and
   are unchanged.
+
+### Changed
+
+- Removed the JAVBEACON_PAGE_LIMIT environment variable. It only ever
+  seeded the "page_limit"/"full_refresh_page_limit"/
+  "new_release_refresh_page_limit" settings on first startup - once an
+  install exists, those settings (editable in Settings -> Scraping) are
+  what every scan actually reads, so the environment variable had no
+  effect beyond that one-time seed and was a confusing, effectively dead
+  knob. The seeded default (5) is unchanged; change the settings
+  themselves to adjust it going forward.
 
 ## [1.0.36] - 2026-08-29
 

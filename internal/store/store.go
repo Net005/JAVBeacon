@@ -32,6 +32,7 @@ type Store interface {
 	ReleaseFilterOptions(context.Context, string, string) ([]string, error)
 	Release(context.Context, int64) (domain.Release, error)
 	ReleaseExistsForSite(context.Context, int64, string, string) (bool, error)
+	ReleaseForSite(context.Context, int64, string, string) (domain.Release, bool, error)
 	ReleaseKnown(context.Context, string, string) (string, bool, error)
 	UpsertRelease(context.Context, domain.Release) (bool, error)
 	// UpsertReleaseKeepUpdatedAt behaves exactly like UpsertRelease except it
@@ -1487,6 +1488,30 @@ func (s *SQLite) ReleaseExistsForSite(ctx context.Context, siteID int64, source,
 	var exists bool
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM releases r JOIN release_sites rs ON rs.release_id=r.id WHERE r.identity_key=? AND rs.site_id=?)`, identity, siteID).Scan(&exists)
 	return exists, err
+}
+
+// ReleaseForSite returns the full release row for this site+source+videoID,
+// if one exists - the same identity_key+site join as ReleaseExistsForSite,
+// but returning the release itself rather than a bool. Quick refresh (see
+// monitor.Service.run's Mode=="quick" handling) uses this to see which
+// metadata fields an existing release already has before backfilling only
+// the ones that are still blank, instead of overwriting fields it already
+// got right.
+func (s *SQLite) ReleaseForSite(ctx context.Context, siteID int64, source, videoID string) (domain.Release, bool, error) {
+	identity := releaseIdentity(source, videoID)
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT r.id FROM releases r JOIN release_sites rs ON rs.release_id=r.id WHERE r.identity_key=? AND rs.site_id=?`, identity, siteID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Release{}, false, nil
+	}
+	if err != nil {
+		return domain.Release{}, false, err
+	}
+	release, err := s.Release(ctx, id)
+	if err != nil {
+		return domain.Release{}, false, err
+	}
+	return release, true, nil
 }
 
 // ReleaseKnown checks the global source/video identity rather than one site
