@@ -215,6 +215,9 @@ func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(stri
 				merge(&r, detail)
 			} else {
 				a.log.Warn("product detail failed", "provider", "GIGA", "page", page, "video_id", r.VideoID, "url", r.ProductURL, "error", e)
+				if concurrency.OnDetailFailure != nil {
+					concurrency.OnDetailFailure(r.VideoID, e)
+				}
 			}
 			fetched[i] = r
 		})

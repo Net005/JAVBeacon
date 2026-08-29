@@ -17,6 +17,19 @@ import "sync"
 type ScrapeConcurrency struct {
 	Max        int
 	Checkpoint func()
+	// OnDetailFailure, if set, is called once for every candidate whose
+	// detail-page fetch failed (see javlibrary.go/akiba.go's scrapeFiltered).
+	// A failed detail fetch does not remove the release from the scan's
+	// results - it falls back to whatever the listing page alone provided
+	// (title/cover/video ID, no Label/Studio/Genres/Screenshots/release
+	// date) so the item is still added or "updated" - but with none of the
+	// detail-page fields actually refreshed. Without this hook that
+	// degradation was only visible as a WARN log line ("product detail
+	// failed"), so a scan could silently do nothing useful for every item
+	// (e.g. Byparr overloaded or misconfigured for concurrent use) while
+	// still reporting a normal "N updated" completion. The caller uses this
+	// to surface a real count on the job instead.
+	OnDetailFailure func(videoID string, err error)
 }
 
 // fetchDetailsConcurrently calls fetch(i) for every i in [0,n), running up

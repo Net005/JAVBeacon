@@ -7,6 +7,20 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Quick/Full/New-releases scan jobs no longer silently fall back to
+  listing-page-only data (title/cover, no Label, Studio, Genres, release
+  date, or screenshots) for a release whose detail-page fetch fails during
+  the scan's concurrent per-item fetch, while still reporting the release as
+  a normal "added"/"updated" success. That failure is now surfaced on the
+  job's Error field (visible on the Jobs page) with a count and a short
+  sample of affected video IDs, so a struggling or overloaded solver
+  (Byparr/FlareSolverr) shows up immediately instead of releases quietly
+  never getting their Label or screenshots filled in. Manual "Update
+  details" and the screenshot-backfill job were unaffected by this bug and
+  are unchanged.
+
 ## [1.0.36] - 2026-08-29
 
 ### Fixed

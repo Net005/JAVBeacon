@@ -436,6 +436,9 @@ func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int,
 				mergeJav(&r, detail)
 			} else {
 				j.log.Warn("product detail failed", "provider", "JavLibrary", "page", page, "video_id", r.VideoID, "url", c.href, "error", e)
+				if concurrency.OnDetailFailure != nil {
+					concurrency.OnDetailFailure(r.VideoID, e)
+				}
 			}
 			fetched[i] = r
 		})
