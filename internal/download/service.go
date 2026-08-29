@@ -1573,35 +1573,55 @@ func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Downl
 			}
 		}
 		if d.Status == "completed" {
+			// isPipelineInFlight is checked first, before ever looking at
+			// the stored PipelineRun state, and is what actually prevents
+			// the same (download, trigger) pipeline from being started
+			// twice - see the race this closes below. Once the
+			// in-flight goroutine finishes, it saves this row with the
+			// pipeline's own terminal state, so the very next tick reads
+			// a non-empty run.State and falls through the switch below
+			// like normal - queued, one at a time, never blocking this
+			// poll loop.
+			if s.isPipelineInFlight(d.ID, pipelineDownloadCompleted) {
+				// Our own background goroutine is still working on it -
+				// leave PostStatus as whatever it already is
+				// ("processing", set below the first time this was
+				// kicked off) and just let this tick's fresh qBittorrent
+				// fields above get saved as usual below.
+				_, _ = s.store.SaveDownload(ctx, d)
+				return
+			}
 			run, lookupErr := s.store.PipelineRun(ctx, d.ID, pipelineDownloadCompleted)
 			switch {
 			case lookupErr != nil:
 				d.PostStatus = "pipeline_failed"
 				d.Error = lookupErr.Error()
 			case run.State == "":
-				// Never started - hand it to the shared pipeline worker in
-				// the background (see runEventPipelineAsync) instead of
-				// blocking this poll tick on it, and persist the
-				// "processing" transition immediately below so Download
-				// Activity reflects it right away rather than staying
-				// stuck showing this row's last pre-completion progress
-				// for however long the pipeline takes to run.
+				// Never started (and, per the isPipelineInFlight check
+				// above, nothing already has it in flight either) - hand
+				// it to the shared pipeline worker in the background
+				// (see runEventPipelineAsync) instead of blocking this
+				// poll tick on it, and persist the "processing"
+				// transition immediately below so Download Activity
+				// reflects it right away rather than staying stuck
+				// showing this row's last pre-completion progress for
+				// however long the pipeline takes to run. Without the
+				// isPipelineInFlight guard above, a poll tick landing in
+				// the window between this goroutine being kicked off and
+				// runPipelineEvent actually persisting its own "running"
+				// PipelineRun row would see run.State still "" here and
+				// start a second one for the exact same download and
+				// trigger - the shared worker would still run them one
+				// at a time (never concurrently), but the event's steps
+				// would still end up executing twice.
 				d.PostStatus = "processing"
 				s.runEventPipelineAsync(ctx, d, t, pipelineDownloadCompleted, nil)
 			case run.State == "running":
-				if s.isPipelineInFlight(d.ID, pipelineDownloadCompleted) {
-					// Our own background goroutine is still working on
-					// it - leave PostStatus as whatever it already is
-					// ("processing", set above when it was kicked off)
-					// and just let this tick's fresh qBittorrent fields
-					// above get saved as usual below.
-				} else {
-					// Nothing in this process is actually running it -
-					// most likely the app restarted mid-run - so there's
-					// nothing left to wait on.
-					d.PostStatus = "pipeline_interrupted"
-					d.Error = "post-processing was interrupted; torrent cleanup was withheld"
-				}
+				// Not in flight per the check above, so nothing in this
+				// process is actually running it - most likely the app
+				// restarted mid-run - so there's nothing left to wait on.
+				d.PostStatus = "pipeline_interrupted"
+				d.Error = "post-processing was interrupted; torrent cleanup was withheld"
 			default:
 				// "completed" or "failed" both mean this trigger's
 				// pipeline has finished running for this download -
@@ -1774,7 +1794,16 @@ func (s *Service) cleanupTorrent(ctx context.Context, qb QBittorrent, d *domain.
 	// the torrent is already gone from qBittorrent at this point, so no
 	// further poll tick will touch this row's qBittorrent-derived fields
 	// regardless of how long the pipeline takes; only its own outcome
-	// fields get applied once it finishes.
+	// fields get applied once it finishes. cleanupTorrent is never actually
+	// re-entered for the same download while its own post-removal pipeline
+	// is still running (qb.Remove already succeeded above, so this row
+	// stops matching any live torrent from here on), but the
+	// isPipelineInFlight guard is kept anyway so this trigger is never
+	// started twice for the same download regardless of how this function
+	// ends up called in the future.
+	if s.isPipelineInFlight(d.ID, pipelineDownloadRemoved) {
+		return
+	}
 	hash := t.Hash
 	s.runEventPipelineAsync(ctx, *d, t, pipelineDownloadRemoved, func(cur *domain.Download, e error) {
 		// Unlike the completed-download pipeline (pollDownload), there is
