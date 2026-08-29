@@ -955,3 +955,48 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .downloadToolbar>label{margin:0}
 .downloadToolbar>.check{align-self:flex-end;min-height:40px}
 .downloadToolbar>select,.downloadToolbar>button,.downloadToolbar>input:not([type="range"]){min-height:40px}
+
+/* Mobile release navigation. Everything in this block is below the desktop
+   breakpoint so the established desktop detail geometry remains untouched. */
+.releaseMobileClose{display:none}
+@media(max-width:650px){
+  aside{
+    height:calc(62px + env(safe-area-inset-bottom))!important;
+    padding:5px max(4px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(4px,env(safe-area-inset-left))!important;
+    overflow:hidden!important;
+  }
+  aside nav{display:grid!important;grid-template-columns:repeat(8,minmax(0,1fr))!important;gap:2px!important;width:100%;height:56px}
+  aside nav button{min-width:0!important;width:100%!important;height:52px!important;padding:6px 1px!important;border-left:0!important;border-radius:8px!important;overflow:hidden}
+  aside nav button span{display:none!important}
+  aside nav button svg{width:21px;height:21px;flex:0 0 21px}
+  aside nav button.active{border-bottom:3px solid var(--accent)!important}
+  main{padding-bottom:calc(76px + env(safe-area-inset-bottom))!important}
+
+  .releaseDialog{
+    width:100vw!important;height:var(--dvh100,100dvh)!important;max-height:none!important;
+    margin:0!important;padding:calc(46px + env(safe-area-inset-top)) 10px calc(18px + env(safe-area-inset-bottom))!important;
+    overflow-x:hidden!important;overflow-y:auto!important;
+    background:#090b0f!important;isolation:isolate;overscroll-behavior:contain;
+  }
+  .releaseDialog::backdrop{background:#090b0f!important;backdrop-filter:none!important}
+  .releaseDialogInner,#releaseDetail,.releaseLayout{width:100%!important;height:auto!important;min-height:0!important;max-height:none!important}
+  .releaseDialogInner{position:relative!important;overflow:visible!important;background:#090b0f!important;isolation:isolate}
+  .releaseLayout{display:flex!important;flex-direction:column!important;gap:18px!important;overflow:visible!important;background:#090b0f!important}
+  .releaseVisual{display:grid!important;grid-template-rows:auto auto!important;gap:10px!important;order:1}
+  .releaseArt{order:1;min-height:45vh!important;touch-action:pan-y;overscroll-behavior-x:contain;contain:paint}
+  .releaseArt .detailBackdrop{display:none!important}
+  .releaseArt .detailCover{background:#050609}
+  .detailScreenshotCarousel{order:2;min-width:0}
+  .releaseInfo{order:2;overflow:visible!important;background:#090b0f!important}
+
+  .releaseMobileClose{
+    position:fixed;z-index:12;top:0;left:0;display:grid;width:100%;height:calc(42px + env(safe-area-inset-top));
+    padding:env(safe-area-inset-top) 0 0;border:0;border-radius:0;background:linear-gradient(180deg,#11151df5,#090b0fe8);place-items:center;
+  }
+  .releaseMobileClose span{display:block;width:46px;height:5px;border-radius:99px;background:#747d8c;box-shadow:0 1px 8px #000}
+  .releaseDialog .releaseChrome .navBtn,.releaseDialog .releaseChrome .close{top:48px!important}
+
+  .screenshotLightbox{background:#020305!important}
+  .screenshotLightboxStage{touch-action:pan-y;overscroll-behavior-x:contain}
+  .screenshotLightboxInner{background:#020305e8}
+}
