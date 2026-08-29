@@ -862,7 +862,8 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .screenshotLightboxStrip button.active{opacity:1;border-color:var(--accent)}
 .screenshotLightboxStrip img{display:block;width:100%;height:100%;object-fit:cover}
 .screenshotBackfillPanel progress{width:100%;height:12px;margin:8px 0 4px;accent-color:var(--accent)}.screenshotBackfillPanel button{width:100%}
-@media(max-width:650px){.releaseVisual{display:contents}.detailScreenshotCarousel{order:1}.releaseArt{order:2}.releaseInfo{order:3}.screenshotLightboxInner{padding:14px;gap:8px}.screenshotLightboxPrev{left:6px}.screenshotLightboxNext{right:6px}.screenshotLightboxStrip button{flex-basis:52px;height:48px}}
+@media(max-width:650px){.releaseVisual{display:contents}.detailScreenshotCarousel{order:1}.releaseArt{order:2}.releaseInfo{order:3}.screenshotLightboxInner{padding:14px;gap:8px}.screenshotLightboxPrev,.screenshotLightboxNext{top:50%;width:52px;height:52px;transform:translateY(-50%);font-size:27px}.screenshotLightboxPrev{left:6px}.screenshotLightboxNext{right:6px}.screenshotLightboxStrip button{flex-basis:52px;height:48px}}
+@media(min-width:651px) and (max-width:1366px) and (pointer:coarse){.screenshotLightboxPrev,.screenshotLightboxNext{top:50%;width:60px;height:60px;transform:translateY(-50%);font-size:31px}.screenshotLightboxPrev{left:clamp(12px,2vw,24px)}.screenshotLightboxNext{right:clamp(12px,2vw,24px)}}
 .refreshModeTooltip{display:none;position:absolute;z-index:40;top:calc(100% + 8px);left:0;width:min(500px,calc(100vw - 70px));padding:6px;border:1px solid #596273;border-radius:10px;background:#11151df8;box-shadow:0 18px 45px #000d;color:var(--text);font-weight:400}
 .refreshModeInfo:hover .refreshModeTooltip,.refreshModeInfo:focus-within .refreshModeTooltip{display:block}
 .refreshModeTooltip section{padding:10px 11px}
@@ -958,7 +959,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 
 /* Mobile release navigation. Everything in this block is below the desktop
    breakpoint so the established desktop detail geometry remains untouched. */
-.releaseMobileClose,.mobileCoverNav{display:none}
+.releaseMobileClose{display:none}
 @media(max-width:650px){
   aside{
     height:calc(62px + env(safe-area-inset-bottom))!important;
@@ -1006,18 +1007,10 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
   .screenshotLightboxInner{background:#020305e8}
 }
 
-/* Touch-only detail controls: the desktop chrome remains unchanged, while
-   phones use large, low-obstruction controls anchored to the artwork. */
+/* Touch-only detail chrome: cover navigation uses its invisible 20% edge
+   targets, so the artwork stays clear of overlaid previous/next buttons. */
 @media(max-width:650px), (min-width:651px) and (max-width:950px) and (orientation:landscape) and (pointer:coarse){
   .releaseDialog .releaseChrome{display:none!important}
-  .mobileCoverNav{
-    position:absolute;z-index:4;top:50%;display:grid;width:clamp(40px,6vmin,54px);height:clamp(40px,6vmin,54px);
-    padding:0;transform:translateY(-50%);place-items:center;border:1px solid #9aa5b899;border-radius:50%;
-    background:#0a0e14b8;color:#fff;font-size:clamp(25px,5vmin,34px);line-height:1;box-shadow:0 7px 24px #000b;backdrop-filter:blur(6px)
-  }
-  .mobileCoverNav.prev{left:clamp(7px,2vw,18px)}
-  .mobileCoverNav.next{right:clamp(7px,2vw,18px)}
-  .mobileCoverNav:disabled{opacity:.2;pointer-events:none}
 }
 
 /* A phone rotated to landscape is wider than the portrait breakpoint and was
