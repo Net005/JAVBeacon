@@ -666,6 +666,150 @@ func TestPollTorrentsRemovesByRatioDespiteFailedCompletionPipelineStep(t *testin
 	waitForDownloadPostStatus(t, service, download.ID, "completed_removed")
 }
 
+// TestRunEventPipelineAsyncMarksInFlightBeforeReturning is the
+// deterministic version of the "never start the same event pipeline twice"
+// guarantee: markPipelineInFlight runs synchronously in the caller, before
+// runEventPipelineAsync ever spawns its background goroutine, so
+// isPipelineInFlight must already report true the instant
+// runEventPipelineAsync returns - not "usually, depending on how fast the
+// goroutine gets scheduled." This is what pollDownload's guard actually
+// relies on to close the race described on
+// TestPollTorrentsNeverStartsTheSameCompletionPipelineTwice below; unlike
+// that test, this one can't pass by scheduling coincidence.
+func TestRunEventPipelineAsyncMarksInFlightBeforeReturning(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "pipeline-in-flight.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Pipeline", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "INFLIGHT-1", Title: "In-flight marking", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "INFLIGHT-1", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("releases=%+v err=%v", releases, err)
+	}
+	download, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, Status: "completed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SavePipelineSteps(ctx, []domain.PipelineStep{
+		{Trigger: pipelineDownloadCompleted, Type: "shell", Name: "Brief step", Config: []byte(`{"command":"sleep 0.2"}`), Enabled: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if service.isPipelineInFlight(download.ID, pipelineDownloadCompleted) {
+		t.Fatal("nothing kicked off yet, isPipelineInFlight should be false")
+	}
+	service.runEventPipelineAsync(ctx, download, Torrent{Hash: "hash-inflight"}, pipelineDownloadCompleted, nil)
+	// No sleep here - this must hold the instant the call above returns,
+	// deterministically, regardless of goroutine scheduling.
+	if !service.isPipelineInFlight(download.ID, pipelineDownloadCompleted) {
+		t.Fatal("isPipelineInFlight should already be true immediately after runEventPipelineAsync returns")
+	}
+	waitForPipelineRun(t, st, download.ID, pipelineDownloadCompleted)
+	deadline := time.Now().Add(5 * time.Second)
+	for service.isPipelineInFlight(download.ID, pipelineDownloadCompleted) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if service.isPipelineInFlight(download.ID, pipelineDownloadCompleted) {
+		t.Fatal("isPipelineInFlight should clear once the pipeline finishes")
+	}
+}
+
+// TestPollTorrentsSkipsKickoffWhilePipelineAlreadyInFlight is the
+// deterministic integration-level companion to
+// TestRunEventPipelineAsyncMarksInFlightBeforeReturning above, exercising
+// pollDownload's actual guard rather than just the primitive it relies on.
+// Before that guard existed, pollDownload decided whether to start the
+// download_completed pipeline purely from the stored PipelineRun's state,
+// which only actually becomes "running" once the shared pipeline worker
+// gets around to executing the job - not the moment it's queued. A poll
+// tick landing in that gap (a real but timing-dependent, not reliably
+// reproducible-by-sleeping race - see the isPipelineInFlight test above for
+// why marking happens synchronously rather than relying on the DB write
+// racing the next poll) used to see the same "never started" state and
+// queue a second run of the exact same event for the exact same download,
+// so its steps would end up executing twice even though the shared worker
+// only ever runs one job at a time. This test manufactures that "already in
+// flight" condition directly (via markPipelineInFlight) instead of hoping a
+// tight polling loop happens to land in the race window, and confirms
+// pollTorrents leaves the never-started PipelineRun alone while it holds,
+// then actually starts it once the flag clears - both deterministically.
+func TestPollTorrentsSkipsKickoffWhilePipelineAlreadyInFlight(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "poll-skips-in-flight.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	server, fake := newFakeQBittorrentServer(t)
+	fake.torrents = []Torrent{{Hash: "hash-dup", Name: "4k688.com@DUP-1", State: "stalledUP", Progress: 1}}
+
+	if err := st.SaveSettings(ctx, map[string]string{"qb_url": server.URL, "qb_completed_action": "keep"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SavePipelineSteps(ctx, []domain.PipelineStep{
+		{Trigger: pipelineDownloadCompleted, Type: "shell", Name: "Step", Config: []byte(`{"command":"true"}`), Enabled: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Pipeline", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "DUP-1", Title: "No duplicate pipeline runs", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "DUP-1", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("releases=%+v err=%v", releases, err)
+	}
+	download, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, Status: "downloading"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	service := New(st, 2*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// Force the "our own goroutine already has this in flight" condition
+	// directly, standing in for a poll tick that landed in the window
+	// before the real background goroutine's own runPipelineEvent call has
+	// persisted anything yet.
+	service.markPipelineInFlight(download.ID, pipelineDownloadCompleted)
+	service.pollTorrents(ctx)
+	if run, e := st.PipelineRun(ctx, download.ID, pipelineDownloadCompleted); e != nil || run.State != "" {
+		t.Fatalf("run=%+v err=%v, want no pipeline run started while already marked in flight", run, e)
+	}
+	// PostStatus is untouched here (still whatever it was before this
+	// call - blank, since this test never actually went through a real
+	// kickoff) rather than "processing": the guard only skips starting a
+	// second pipeline run and still saves this tick's fresh qBittorrent
+	// fields, it doesn't touch PostStatus itself - a real in-flight row
+	// would already show "processing" from the tick that did the actual
+	// kickoff.
+	rows, err := st.Downloads(ctx, "completed")
+	if err != nil || len(rows) != 1 || rows[0].PostStatus != "" {
+		t.Fatalf("rows=%+v err=%v, want PostStatus left untouched while the kickoff is skipped", rows, err)
+	}
+
+	// Now let the (fabricated) in-flight condition clear, the way the real
+	// background goroutine's defer would, and confirm the pipeline is
+	// actually started normally afterward.
+	service.clearPipelineInFlight(download.ID, pipelineDownloadCompleted)
+	service.pollTorrents(ctx)
+	run := waitForPipelineRun(t, st, download.ID, pipelineDownloadCompleted)
+	if run.State != "completed" {
+		t.Fatalf("run=%+v, want the pipeline to actually start once no longer marked in flight", run)
+	}
+}
+
 // TestPollTorrentsDoesNotBlockOnSlowCompletionPipeline is the regression
 // test for the actual bug report this fix addresses: qBittorrent showing a
 // torrent as fully seeded/complete while Download Activity kept showing
