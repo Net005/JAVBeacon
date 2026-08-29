@@ -41,6 +41,15 @@ type Service struct {
 	cleanupRetryMu sync.Mutex
 	cleanupRetryAt map[int64]time.Time
 
+	// pipelineInFlightMu/pipelineInFlight track which (download ID,
+	// trigger) event pipelines runEventPipelineAsync currently has running
+	// in the background, so pollTorrents can tell "our own goroutine is
+	// still working on this one - leave it alone" apart from "the DB says
+	// running but nothing is actually running it" (e.g. the app restarted
+	// mid-run) - see runEventPipelineAsync and pollDownload.
+	pipelineInFlightMu sync.Mutex
+	pipelineInFlight   map[string]bool
+
 	// scheduleNextAttempt tracks, per schedule loop below ("search",
 	// "older_search", "notification", "rss"), the wall-clock time that
 	// loop will next actually check whether it's due to run - kept live
@@ -139,6 +148,87 @@ func (s *Service) runPipelineSerialized(fn func() error) error {
 	job := pipelineJob{run: fn, done: make(chan error, 1)}
 	s.pipelineJobs <- job
 	return <-job.done
+}
+
+// pipelineInFlightKey identifies one (download, trigger) event pipeline for
+// the pipelineInFlight bookkeeping below.
+func pipelineInFlightKey(downloadID int64, trigger string) string {
+	return strconv.FormatInt(downloadID, 10) + ":" + trigger
+}
+func (s *Service) markPipelineInFlight(downloadID int64, trigger string) {
+	s.pipelineInFlightMu.Lock()
+	if s.pipelineInFlight == nil {
+		s.pipelineInFlight = map[string]bool{}
+	}
+	s.pipelineInFlight[pipelineInFlightKey(downloadID, trigger)] = true
+	s.pipelineInFlightMu.Unlock()
+}
+func (s *Service) clearPipelineInFlight(downloadID int64, trigger string) {
+	s.pipelineInFlightMu.Lock()
+	delete(s.pipelineInFlight, pipelineInFlightKey(downloadID, trigger))
+	s.pipelineInFlightMu.Unlock()
+}
+func (s *Service) isPipelineInFlight(downloadID int64, trigger string) bool {
+	s.pipelineInFlightMu.Lock()
+	defer s.pipelineInFlightMu.Unlock()
+	return s.pipelineInFlight[pipelineInFlightKey(downloadID, trigger)]
+}
+
+// downloadByID re-fetches one download row by ID from the given status
+// bucket ("downloading" or "completed" - a download's Status field is one
+// of the two for as long as pollTorrents still looks at it). Used by
+// runEventPipelineAsync to apply a finished pipeline's outcome against the
+// row's current state rather than whatever copy was captured when the
+// pipeline was kicked off, which later poll ticks keep updating in the
+// meantime (progress, seeds, peers, ratio...) while the pipeline runs.
+func (s *Service) downloadByID(ctx context.Context, id int64, status string) (domain.Download, bool) {
+	rows, e := s.store.Downloads(ctx, status)
+	if e != nil {
+		return domain.Download{}, false
+	}
+	for _, x := range rows {
+		if x.ID == id {
+			return x, true
+		}
+	}
+	return domain.Download{}, false
+}
+
+// runEventPipelineAsync runs trigger's event pipeline for d on the shared
+// serialized pipeline worker (runPipelineWorker - so pipelines still never
+// run concurrently with each other, and still run in the order they were
+// triggered) without blocking the caller. pollTorrents used to call
+// runPipelineSerialized directly and block on it, which meant a single
+// slow or stuck pipeline step (a large file move, a remux, a StashApp
+// call...) stalled qBittorrent status polling for every download, not just
+// the one whose pipeline was running - this is what runEventPipelineAsync
+// exists to avoid. Once the pipeline finishes, only its own outcome fields
+// (PostStatus/Error/QBResponse, plus whatever onFailure sets when the
+// pipeline errored) are applied, against a freshly reloaded copy of the
+// row - see downloadByID - never the copy captured at kickoff time.
+// onFinished, when non-nil, is called after every run (success or failure)
+// with the reloaded row (already carrying the pipeline's own PostStatus -
+// "pipeline_completed"/"pipeline_failed" - and QBResponse/Error) so the
+// caller can override PostStatus with something more specific, the same way
+// the pre-async code did inline. pipelineErr is the pipeline's own returned
+// error, nil on success.
+func (s *Service) runEventPipelineAsync(ctx context.Context, d domain.Download, t Torrent, trigger string, onFinished func(cur *domain.Download, pipelineErr error)) {
+	s.markPipelineInFlight(d.ID, trigger)
+	go func() {
+		defer s.clearPipelineInFlight(d.ID, trigger)
+		e := s.runPipelineSerialized(func() error { return s.runPipelineEvent(ctx, &d, t, trigger) })
+		current, ok := s.downloadByID(ctx, d.ID, "completed")
+		if !ok {
+			return
+		}
+		current.QBResponse = d.QBResponse
+		current.PostStatus = d.PostStatus
+		current.Error = d.Error
+		if onFinished != nil {
+			onFinished(&current, e)
+		}
+		_, _ = s.store.SaveDownload(ctx, current)
+	}()
 }
 func (s *Service) provider(ctx context.Context) (SearchProvider, error) {
 	settings, e := s.store.Settings(ctx)
@@ -1169,19 +1259,70 @@ func (s *Service) OlderSearchSchedule(ctx context.Context) {
 		}
 	}
 }
+
+// qbPollIntervalDefault is how often pollTorrents checks qBittorrent when
+// qb_poll_interval_seconds is unset or invalid. It's short enough that
+// Download Activity tracks qBittorrent close to real time, while staying
+// cheap regardless of how frequently it runs: each poll is a single batched
+// qb.Torrents() call no matter how many downloads are active, and
+// pollDownload only re-fetches a torrent's file list (a second, per-torrent
+// call) the first time it sees that torrent and again once when it
+// completes - not on every tick - so a fast interval doesn't multiply
+// qBittorrent's request load the way it would if every field were re-synced
+// per download on every poll.
+const qbPollIntervalDefault = 5 * time.Second
+
+// qbPollIntervalFloor is the fastest qb_poll_interval_seconds is ever
+// allowed to run at, no matter what's configured, so a mistyped or
+// deliberately tiny value can't hammer qBittorrent's HTTP API.
+const qbPollIntervalFloor = 2 * time.Second
+
+// qbPollInterval resolves the currently configured qBittorrent poll
+// interval, re-read from settings on every call (like every other schedule
+// loop's interval below) so an edit in Settings takes effect on the very
+// next tick instead of requiring a restart.
+func (s *Service) qbPollInterval(ctx context.Context) time.Duration {
+	settings, e := s.store.Settings(ctx)
+	if e != nil {
+		return qbPollIntervalDefault
+	}
+	secs, e := strconv.Atoi(strings.TrimSpace(settings["qb_poll_interval_seconds"]))
+	if e != nil || secs <= 0 {
+		return qbPollIntervalDefault
+	}
+	interval := time.Duration(secs) * time.Second
+	if interval < qbPollIntervalFloor {
+		return qbPollIntervalFloor
+	}
+	return interval
+}
+
 func (s *Service) Schedule(ctx context.Context) {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
 	for {
 		s.tick(ctx)
+		timer := time.NewTimer(s.qbPollInterval(ctx))
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
 }
 func (s *Service) tick(ctx context.Context) {
+	// pollTorrents runs on this single dedicated goroutine, once per
+	// configured interval - if anything inside it were ever to panic
+	// unrecovered, the whole process would go down (an unrecovered panic
+	// in any goroutine terminates the entire program, not just that
+	// goroutine), and Download Activity would silently stop updating for
+	// everyone until something noticed and restarted it. Recovering here
+	// means a bug in one poll cycle is logged and the next tick still
+	// runs on schedule instead of taking the whole app down with it.
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("qBittorrent poll panicked; recovered so Download Activity keeps updating on the next tick", "panic", r)
+		}
+	}()
 	s.pollTorrents(ctx)
 }
 func (s *Service) NotificationSchedule(ctx context.Context) {
@@ -1353,130 +1494,167 @@ func (s *Service) pollTorrents(ctx context.Context) {
 	minRatio, _ := strconv.ParseFloat(settings["minimum_seed_ratio"], 64)
 	rule := completedTorrentRule(settings["qb_completed_action"])
 	for _, d := range downloads {
-		matched := false
-		for _, t := range torrents {
-			// A download's torrent hash is qBittorrent's own unique ID for
-			// that torrent (its info-hash) - Download() always records it
-			// (via verifyAddedToQBittorrent) before a row's Status ever
-			// becomes "downloading" or "completed", so every row this loop
-			// sees normally already has one. Once a hash is known, matching
-			// MUST be by that hash alone: falling back to a name-substring
-			// match even when the hash disagreed used to let this download
-			// get silently re-pointed at a completely different torrent
-			// whose name happened to contain the same query text (e.g. a
-			// different release sharing part of a video ID) - the actual
-			// torrent could have been removed from qBittorrent while this
-			// row kept "monitoring" whatever unrelated torrent matched by
-			// name, showing its stale/unrelated progress forever. The
-			// name-substring fallback is now used only for the one
-			// legitimate case where no hash has been recorded yet (a
-			// brand-new row - see the comment below the loop).
-			if d.TorrentHash != "" {
-				if d.TorrentHash != t.Hash {
-					continue
-				}
-			} else if !strings.Contains(canonical(t.Name), canonical(d.Query)) {
+		s.safePollDownload(ctx, qb, d, torrents, minRatio, rule)
+	}
+}
+
+// safePollDownload runs pollDownload for one row with its own panic
+// recovery, so a bug triggered by one specific download (a bad file list,
+// an unusual pipeline config, ...) can't take down the rest of this tick's
+// batch - every other download still gets its qBittorrent status update
+// this cycle even if one row's processing panics.
+func (s *Service) safePollDownload(ctx context.Context, qb *QBClient, d domain.Download, torrents []Torrent, minRatio float64, rule string) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("qBittorrent poll panicked while processing one download; other downloads still updated this tick", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "panic", r)
+		}
+	}()
+	s.pollDownload(ctx, qb, d, torrents, minRatio, rule)
+}
+
+func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Download, torrents []Torrent, minRatio float64, rule string) {
+	matched := false
+	for _, t := range torrents {
+		// A download's torrent hash is qBittorrent's own unique ID for
+		// that torrent (its info-hash) - Download() always records it
+		// (via verifyAddedToQBittorrent) before a row's Status ever
+		// becomes "downloading" or "completed", so every row this loop
+		// sees normally already has one. Once a hash is known, matching
+		// MUST be by that hash alone: falling back to a name-substring
+		// match even when the hash disagreed used to let this download
+		// get silently re-pointed at a completely different torrent
+		// whose name happened to contain the same query text (e.g. a
+		// different release sharing part of a video ID) - the actual
+		// torrent could have been removed from qBittorrent while this
+		// row kept "monitoring" whatever unrelated torrent matched by
+		// name, showing its stale/unrelated progress forever. The
+		// name-substring fallback is now used only for the one
+		// legitimate case where no hash has been recorded yet (a
+		// brand-new row - see the comment below the loop).
+		if d.TorrentHash != "" {
+			if d.TorrentHash != t.Hash {
 				continue
 			}
-			matched = true
-			wasCompleted := d.Status == "completed"
-			d.TorrentHash = t.Hash
-			d.Name = t.Name
-			d.SeedRatio = t.Ratio
-			d.Progress = t.Progress
-			d.Seeds = t.Seeds
-			d.Peers = t.Peers
-			d.ETASeconds = t.ETA
-			d.SeenComplete = t.SeenComplete
+		} else if !strings.Contains(canonical(t.Name), canonical(d.Query)) {
+			continue
+		}
+		matched = true
+		wasCompleted := d.Status == "completed"
+		d.TorrentHash = t.Hash
+		d.Name = t.Name
+		d.SeedRatio = t.Ratio
+		d.Progress = t.Progress
+		d.Seeds = t.Seeds
+		d.Peers = t.Peers
+		d.ETASeconds = t.ETA
+		d.SeenComplete = t.SeenComplete
+		state := strings.ToLower(t.State)
+		isCompleteState := strings.Contains(state, "upload") || strings.HasSuffix(state, "up")
+		// The file list rarely changes once a torrent is added, so
+		// it's only worth its own qBittorrent API call the first time
+		// this row sees it (d.Files still empty) and once more right
+		// when the torrent finishes (in case files were
+		// renamed/reorganized on completion) - not unconditionally on
+		// every single tick, which would multiply qBittorrent's
+		// request load by however much faster qb_poll_interval_seconds
+		// runs than the old fixed 1-minute ticker did.
+		if len(d.Files) == 0 || (isCompleteState && !wasCompleted) {
 			if files, e := qb.Files(ctx, t.Hash); e == nil {
 				if raw, e := json.Marshal(files); e == nil {
 					d.Files = raw
 				}
 			}
-			state := strings.ToLower(t.State)
-			if strings.Contains(state, "upload") || strings.HasSuffix(state, "up") {
-				d.Status = "completed"
-				_, _ = s.store.CreateNotification(ctx, d.ReleaseID, "downloaded", "Download completed")
-				if !wasCompleted {
-					s.log.Info("qBittorrent download completed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "state", t.State, "seed_ratio", t.Ratio, "cleanup_rule", rule)
-				}
+		}
+		if isCompleteState {
+			d.Status = "completed"
+			_, _ = s.store.CreateNotification(ctx, d.ReleaseID, "downloaded", "Download completed")
+			if !wasCompleted {
+				s.log.Info("qBittorrent download completed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "state", t.State, "seed_ratio", t.Ratio, "cleanup_rule", rule)
 			}
-			if d.Status == "completed" {
-				run, lookupErr := s.store.PipelineRun(ctx, d.ID, pipelineDownloadCompleted)
-				if lookupErr == nil && run.State == "" {
-					// Not yet run for this download - run it now.
-					// runPipelineEvent always executes every enabled step
-					// for this trigger even if an earlier one fails (a
-					// failed step is logged and skipped over, not fatal
-					// to the run - see runPipelineEvent), so the run is
-					// always left in a terminal state afterwards.
-					_ = s.runPipelineSerialized(func() error { return s.runPipelineEvent(ctx, &d, t, pipelineDownloadCompleted) })
-					run, lookupErr = s.store.PipelineRun(ctx, d.ID, pipelineDownloadCompleted)
-				}
-				switch {
-				case lookupErr != nil:
-					d.PostStatus = "pipeline_failed"
-					d.Error = lookupErr.Error()
-				case run.State == "running":
-					// Still executing (e.g. interrupted mid-run by a
-					// restart) - leave the torrent alone until it
-					// reaches a terminal state rather than racing it.
+		}
+		if d.Status == "completed" {
+			run, lookupErr := s.store.PipelineRun(ctx, d.ID, pipelineDownloadCompleted)
+			switch {
+			case lookupErr != nil:
+				d.PostStatus = "pipeline_failed"
+				d.Error = lookupErr.Error()
+			case run.State == "":
+				// Never started - hand it to the shared pipeline worker in
+				// the background (see runEventPipelineAsync) instead of
+				// blocking this poll tick on it, and persist the
+				// "processing" transition immediately below so Download
+				// Activity reflects it right away rather than staying
+				// stuck showing this row's last pre-completion progress
+				// for however long the pipeline takes to run.
+				d.PostStatus = "processing"
+				s.runEventPipelineAsync(ctx, d, t, pipelineDownloadCompleted, nil)
+			case run.State == "running":
+				if s.isPipelineInFlight(d.ID, pipelineDownloadCompleted) {
+					// Our own background goroutine is still working on
+					// it - leave PostStatus as whatever it already is
+					// ("processing", set above when it was kicked off)
+					// and just let this tick's fresh qBittorrent fields
+					// above get saved as usual below.
+				} else {
+					// Nothing in this process is actually running it -
+					// most likely the app restarted mid-run - so there's
+					// nothing left to wait on.
 					d.PostStatus = "pipeline_interrupted"
 					d.Error = "post-processing was interrupted; torrent cleanup was withheld"
-				default:
-					// "completed" or "failed" both mean this trigger's
-					// pipeline has finished running for this download -
-					// a failed step must not block ratio-based cleanup,
-					// only a still-running or never-run pipeline should.
-					// The failure itself remains fully recorded in the
-					// pipeline run/step logs for troubleshooting; the
-					// cleanup-derived status below is more useful to
-					// show here than a stale "pipeline_failed".
-					switch {
-					case rule == completedTorrentKeep:
-						if d.PostStatus != "completed_retained" {
-							s.log.Info("completed qBittorrent torrent retained by cleanup rule", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "pipeline_trigger", pipelineDownloadCompleted, "files_retained", true)
-						}
-						d.PostStatus = "completed_retained"
-					case d.PostStatus == "cleanup_failed":
-						// A previous removal attempt failed. Don't hammer qBittorrent
-						// every poll, but do retry periodically instead of leaving the
-						// torrent stranded forever - the failure may well have been
-						// transient (a dropped qBittorrent session, a flaky pipeline
-						// step, etc).
-						if s.cleanupDue(d.ID) {
-							s.cleanupTorrent(ctx, qb, &d, t, rule)
-						}
-					case !completedTorrentReady(rule, t.Ratio, minRatio):
-						if d.PostStatus != "completed_waiting_ratio" {
-							s.log.Info("completed qBittorrent torrent waiting for seed ratio", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "seed_ratio", t.Ratio, "minimum_seed_ratio", minRatio, "pipeline_trigger", pipelineDownloadCompleted)
-						}
-						d.PostStatus = "completed_waiting_ratio"
-					default:
+				}
+			default:
+				// "completed" or "failed" both mean this trigger's
+				// pipeline has finished running for this download -
+				// a failed step must not block ratio-based cleanup,
+				// only a still-running or never-run pipeline should.
+				// The failure itself remains fully recorded in the
+				// pipeline run/step logs for troubleshooting; the
+				// cleanup-derived status below is more useful to
+				// show here than a stale "pipeline_failed".
+				switch {
+				case rule == completedTorrentKeep:
+					if d.PostStatus != "completed_retained" {
+						s.log.Info("completed qBittorrent torrent retained by cleanup rule", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "pipeline_trigger", pipelineDownloadCompleted, "files_retained", true)
+					}
+					d.PostStatus = "completed_retained"
+				case d.PostStatus == "cleanup_failed":
+					// A previous removal attempt failed. Don't hammer qBittorrent
+					// every poll, but do retry periodically instead of leaving the
+					// torrent stranded forever - the failure may well have been
+					// transient (a dropped qBittorrent session, a flaky pipeline
+					// step, etc).
+					if s.cleanupDue(d.ID) {
 						s.cleanupTorrent(ctx, qb, &d, t, rule)
 					}
+				case !completedTorrentReady(rule, t.Ratio, minRatio):
+					if d.PostStatus != "completed_waiting_ratio" {
+						s.log.Info("completed qBittorrent torrent waiting for seed ratio", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "seed_ratio", t.Ratio, "minimum_seed_ratio", minRatio, "pipeline_trigger", pipelineDownloadCompleted)
+					}
+					d.PostStatus = "completed_waiting_ratio"
+				default:
+					s.cleanupTorrent(ctx, qb, &d, t, rule)
 				}
 			}
-			_, _ = s.store.SaveDownload(ctx, d)
-			break
 		}
-		// The torrent this download expects is gone from qBittorrent
-		// entirely - not matched by hash or name against anything currently
-		// listed. Only treat this as a real removal once a hash was
-		// previously confirmed (d.TorrentHash != ""): a brand new download
-		// can briefly show no match while qBittorrent is still resolving
-		// its magnet/metadata, and that transient gap must not be mistaken
-		// for someone deleting it. Skip anything this app already knows is
-		// gone for a good reason (it removed it itself).
-		if !matched && d.TorrentHash != "" && !downloadGoneFromQBHandled(d.PostStatus) {
-			previousStatus, previousPostStatus := d.Status, d.PostStatus
-			s.clearCleanupRetry(d.ID)
-			d.Status = statusRemoved
-			d.PostStatus = postStatusRemovedUnknown
-			d.Error = ""
-			s.log.Info("torrent no longer present in qBittorrent; removing from Download Activity as removed (unknown reason)", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", d.TorrentHash, "previous_status", previousStatus, "previous_post_status", previousPostStatus)
-			_, _ = s.store.SaveDownload(ctx, d)
-		}
+		_, _ = s.store.SaveDownload(ctx, d)
+		return
+	}
+	// The torrent this download expects is gone from qBittorrent
+	// entirely - not matched by hash or name against anything currently
+	// listed. Only treat this as a real removal once a hash was
+	// previously confirmed (d.TorrentHash != ""): a brand new download
+	// can briefly show no match while qBittorrent is still resolving
+	// its magnet/metadata, and that transient gap must not be mistaken
+	// for someone deleting it. Skip anything this app already knows is
+	// gone for a good reason (it removed it itself).
+	if !matched && d.TorrentHash != "" && !downloadGoneFromQBHandled(d.PostStatus) {
+		previousStatus, previousPostStatus := d.Status, d.PostStatus
+		s.clearCleanupRetry(d.ID)
+		d.Status = statusRemoved
+		d.PostStatus = postStatusRemovedUnknown
+		d.Error = ""
+		s.log.Info("torrent no longer present in qBittorrent; removing from Download Activity as removed (unknown reason)", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", d.TorrentHash, "previous_status", previousStatus, "previous_post_status", previousPostStatus)
+		_, _ = s.store.SaveDownload(ctx, d)
 	}
 }
 func (s *Service) runPipelineEvent(ctx context.Context, d *domain.Download, t Torrent, trigger string) error {
@@ -1591,12 +1769,31 @@ func (s *Service) cleanupTorrent(ctx context.Context, qb QBittorrent, d *domain.
 	s.clearCleanupRetry(d.ID)
 	d.PostStatus = "completed_removed"
 	s.log.Info("completed qBittorrent torrent removed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "cleanup_rule", cleanupRule, "seed_ratio", t.Ratio, "files_retained", true)
-	if e := s.runPipelineSerialized(func() error { return s.runPipelineEvent(ctx, d, t, pipelineDownloadRemoved) }); e != nil {
-		d.PostStatus = "removed_pipeline_failed"
-		s.log.Error("post-removal pipeline failed after qBittorrent torrent removal", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "cleanup_rule", cleanupRule, "pipeline_trigger", pipelineDownloadRemoved, "files_retained", true, "error", e)
-		return
-	}
-	d.PostStatus = "completed_removed"
+	// The post-removal pipeline runs on the shared serialized worker in the
+	// background (see runEventPipelineAsync) rather than blocking here -
+	// the torrent is already gone from qBittorrent at this point, so no
+	// further poll tick will touch this row's qBittorrent-derived fields
+	// regardless of how long the pipeline takes; only its own outcome
+	// fields get applied once it finishes.
+	hash := t.Hash
+	s.runEventPipelineAsync(ctx, *d, t, pipelineDownloadRemoved, func(cur *domain.Download, e error) {
+		// Unlike the completed-download pipeline (pollDownload), there is
+		// no later poll tick that revisits this row's PostStatus - the
+		// torrent is already gone from qBittorrent, so once this callback
+		// runs it's the last word. Explicitly restore "completed_removed"
+		// on success rather than leaving whatever runPipelineEvent itself
+		// set (its own generic "pipeline_completed"), since
+		// downloadGoneFromQBHandled specifically checks for
+		// "completed_removed" to know this row's disappearance from
+		// qBittorrent was expected - anything else would make the very
+		// next poll tick misclassify it as removed for an unknown reason.
+		if e != nil {
+			cur.PostStatus = "removed_pipeline_failed"
+			s.log.Error("post-removal pipeline failed after qBittorrent torrent removal", "download_id", cur.ID, "release_id", cur.ReleaseID, "video_id", cur.Query, "torrent_hash", hash, "cleanup_rule", cleanupRule, "pipeline_trigger", pipelineDownloadRemoved, "files_retained", true, "error", e)
+			return
+		}
+		cur.PostStatus = "completed_removed"
+	})
 }
 func renderPipelineTemplate(query, trigger, path string, d domain.Download, t Torrent) string {
 	escape := func(value string) string {
