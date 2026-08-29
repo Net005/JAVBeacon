@@ -104,6 +104,21 @@ can be safely resumed. The included Byparr service uses
 `http://byparr:8191/v1`; when using an external service instead, provide its
 plain reachable URL with the `/v1` path and no Markdown formatting.
 
+The **Jobs** page also provides a manual-only **JavLibrary historical
+backfill**. It discovers date-sorted genre, performer, and maker indexes,
+deduplicates releases across that graph, skips IDs already present anywhere in
+the JAVBeacon release library, and stores every source/page/item checkpoint in
+the application database. Leave **Resume** selected after a
+restart: JAVBeacon replays each index from its newest page until it relocates
+the saved release-date boundary, captures anything inserted while the job was
+offline, and then continues deeper. Clearing Resume resets only the backfill
+discovery/checkpoint cache; releases already in the library are not deleted.
+The job uses one JavLibrary request at a time, is never scheduled, and defaults
+to priority `500`, allowing ordinary scraping work to use the shared solver
+pool first. The Jobs page reports durable all-time source/page/release totals
+separately from current-run counts; page totals are estimates until every
+index has exposed its last page.
+
 Compose tracks the latest published JAVBeacon image. Upgrade it without
 changing `.env`:
 

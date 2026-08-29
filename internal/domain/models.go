@@ -404,6 +404,32 @@ type JobHistoryEntry struct {
 	Details    string    `json:"details,omitempty"`
 }
 
+// HistoricalBackfillSource is one durable JavLibrary graph/index cursor.
+// CursorDate is the oldest fully processed release date. On resume the
+// crawler starts at the date-sorted head until it reaches this boundary, so
+// insertions at the front cannot hide releases behind a stale page number.
+type HistoricalBackfillSource struct {
+	URL, Kind, Name, State, CursorDate, ResumeDate string
+	NextPage, PageLimit, PagesCompleted            int
+	CatchupOnly                                    bool
+}
+
+type HistoricalBackfillItem struct {
+	VideoID, ReleaseDate, State, SourceURL, Error string
+}
+
+type HistoricalBackfillStats struct {
+	State              string    `json:"state"`
+	UpdatedAt          time.Time `json:"updated_at,omitempty"`
+	SourcesTotal       int       `json:"sources_total"`
+	SourcesCompleted   int       `json:"sources_completed"`
+	PagesCompleted     int       `json:"pages_completed"`
+	PagesEstimated     int       `json:"pages_estimated"`
+	ReleasesDiscovered int       `json:"releases_discovered"`
+	ReleasesCompleted  int       `json:"releases_completed"`
+	ReleasesFailed     int       `json:"releases_failed"`
+}
+
 type User struct {
 	ID           int64
 	Username     string

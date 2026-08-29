@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"strings"
+	"time"
 )
 
 // This file is DB Phase 5's PostgreSQL schema/migration counterpart to
@@ -299,6 +300,21 @@ CREATE TABLE IF NOT EXISTS desired_sync (
 	result TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS historical_backfill_state (
+	id INTEGER PRIMARY KEY CHECK(id=1), state TEXT NOT NULL DEFAULT 'idle', updated_at TIMESTAMPTZ NOT NULL
+);
+INSERT INTO historical_backfill_state(id,state,updated_at) VALUES(1,'idle',CURRENT_TIMESTAMP) ON CONFLICT(id) DO NOTHING;
+CREATE TABLE IF NOT EXISTS historical_backfill_sources (
+	url TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+	cursor_date TEXT NOT NULL DEFAULT '', resume_date TEXT NOT NULL DEFAULT '', next_page INTEGER NOT NULL DEFAULT 1,
+	page_limit INTEGER NOT NULL DEFAULT 0, pages_completed INTEGER NOT NULL DEFAULT 0, catchup_only INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS historical_backfill_items (
+	video_id TEXT PRIMARY KEY, release_date TEXT NOT NULL DEFAULT '', state TEXT NOT NULL,
+	source_url TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_historical_backfill_items_state ON historical_backfill_items(state);
+
 CREATE TABLE IF NOT EXISTS release_actresses (
 	release_id BIGINT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
 	position INTEGER NOT NULL,
@@ -391,16 +407,21 @@ CREATE INDEX IF NOT EXISTS idx_stash_missing_lastscan ON stash_missing_scenes(la
 // local_available_notifications_v1) set that a fresh SQLite install would
 // have, so the two engines' settings tables never observably disagree
 // about what "up to date" means.
-func (s *SQLite) migratePostgres(ctx context.Context) error {
+func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFunc) error {
+	statements := make([]string, 0)
 	for _, statement := range strings.Split(postgresSchemaDDL, ";\n") {
 		statement = strings.TrimSpace(statement)
-		if statement == "" {
-			continue
+		if statement != "" {
+			statements = append(statements, statement)
 		}
+	}
+	for current, statement := range statements {
+		reportMigration(report, MigrationProgress{Phase: "Database schema", Step: describePostgresMigrationStatement(statement), Current: current + 1, Total: len(statements)})
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err
 		}
 	}
+	reportMigration(report, MigrationProgress{Phase: "Data compatibility", Step: "Applying existing-installation migrations"})
 	// Incremental addition for a PostgreSQL database created before this
 	// column existed (TODO-2.0's "Added to StashApp (with date)"). Unlike
 	// SQLite, PostgreSQL supports IF NOT EXISTS on ADD COLUMN directly, so
@@ -510,18 +531,61 @@ func (s *SQLite) migratePostgres(ctx context.Context) error {
 // naming mistake). If migration fails, the pool is closed before
 // returning so a caller cannot end up holding a half-migrated connection.
 func OpenPostgresStore(ctx context.Context, c PostgresConfig) (*SQLite, error) {
-	db, err := OpenPostgres(ctx, c)
+	return OpenPostgresStoreWithProgress(ctx, c, nil)
+}
+
+// OpenPostgresStoreWithProgress is OpenPostgresStore with a read-only progress
+// callback for startup and recovery UIs. The callback is never allowed to
+// affect migration behavior and receives no credentials or row data.
+func OpenPostgresStoreWithProgress(
+	ctx context.Context,
+	c PostgresConfig,
+	report MigrationProgressFunc,
+) (*SQLite, error) {
+	reportMigration(report, MigrationProgress{
+		Phase: "Database connection",
+		Step:  "Connecting to PostgreSQL",
+	})
+
+	// Only the connection/ping phase gets a short timeout.
+	// Migrations and backfills may legitimately take much longer.
+	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	db, err := OpenPostgres(connectCtx, c)
+	cancel()
+
 	if err != nil {
 		return nil, err
 	}
-	s := &SQLite{db: db, dialect: PostgresDialect{}}
-	if err := s.migratePostgres(ctx); err != nil {
+
+	s := &SQLite{
+		db:      db,
+		dialect: PostgresDialect{},
+	}
+
+	// Use the original context for migrations, not connectCtx.
+	if err := s.migratePostgres(ctx, report); err != nil {
 		db.Close()
 		return nil, err
 	}
+
+	reportMigration(report, MigrationProgress{
+		Phase: "Release preferences",
+		Step:  "Updating saved ignore-tag and title filters",
+	})
+
+	// This may perform the large releases UPDATE and must not inherit
+	// the 30-second connection deadline.
 	if err := s.initializeReleasePreferences(ctx); err != nil {
 		db.Close()
 		return nil, err
 	}
+
+	reportMigration(report, MigrationProgress{
+		Phase:   "Database ready",
+		Step:    "Database migrations completed",
+		Current: 1,
+		Total:   1,
+	})
+
 	return s, nil
 }

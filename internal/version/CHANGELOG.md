@@ -7,6 +7,23 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.36] - 2026-08-29
+
+### Fixed
+
+- PostgreSQL startup now applies the 30-second timeout only to establishing and
+  validating the database connection. Schema migrations, data migrations, and
+  release-preference backfills are no longer cancelled when large databases
+  require more than 30 seconds to upgrade.
+- PostgreSQL migration progress reporting is preserved throughout startup and
+  database recovery while long-running migration operations use the normal
+  migration context.
+
+### Changed
+
+- Database startup now separates the short PostgreSQL connection timeout from
+  potentially long-running schema and release-preference migration work.
+
 ## [1.0.35] - 2026-08-29
 
 ### Added
