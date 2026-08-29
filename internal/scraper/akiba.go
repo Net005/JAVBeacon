@@ -404,7 +404,24 @@ func resolve(base, ref string) string {
 	if e != nil || ref == "" {
 		return ""
 	}
-	b, _ := url.Parse(base + "/")
+	// Parse base as-is (no forced trailing slash). RFC 3986 relative-
+	// reference resolution already treats a base ending in a path segment
+	// with no trailing slash as a "file" - a relative ref replaces that
+	// segment rather than being appended after it - and net/url.
+	// ResolveReference implements that correctly, including the
+	// bare-domain/empty-path case (a.base for Akiba/GIGA). The old
+	// unconditional "+ \"/\"" turned every base into a synthetic
+	// "directory", so a relative link on a *.php page (e.g. JavLibrary's
+	// genres.php linking to itself or to a sibling vl_genre.php) resolved
+	// underneath the current page instead of beside it - for a
+	// self-referential or pagination-style link this appended a new
+	// "/genres.php" segment on every resolve, growing the URL without
+	// bound on repeated crawls (see the historical-backfill directory walk
+	// in javlibrary.go).
+	b, e2 := url.Parse(base)
+	if e2 != nil {
+		return ""
+	}
 	return b.ResolveReference(u).String()
 }
 func attr(n *html.Node, key string) string {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +19,11 @@ const DefaultPriority = 500
 
 type historicalScraper interface {
 	HistoricalIndexes(context.Context) ([]scraper.HistoricalIndex, error)
-	HistoricalPage(context.Context, string, int, func(string) bool) ([]domain.Release, []string, int, error)
+	HistoricalPage(context.Context, string, int, func(string) bool, scraper.ScrapeConcurrency) ([]domain.Release, []string, int, error)
+	// PoolEnabledCount reports how many configured Byparr/FlareSolverr
+	// instances are currently enabled (0 if none configured), so run() can
+	// size how many detail pages it fetches concurrently per listing page.
+	PoolEnabledCount() int
 }
 
 type Status struct {
@@ -115,6 +120,25 @@ func parsePriority(raw string) (int, bool) {
 	return n, true
 }
 
+// historicalConcurrency bounds how many detail pages within one listing
+// page are fetched at once, mirroring internal/monitor's capForSchedule +
+// javConcurrency pattern: default to every enabled Byparr/FlareSolverr
+// instance, further capped by the byparr_max_instances_historical setting
+// if one is configured (blank/0/invalid means "no cap"). With no solver
+// configured at all (enabled == 0), it stays at 1 - concurrent *direct*
+// requests to JavLibrary bypassing Byparr is not what this is for and is
+// likely to get blocked.
+func historicalConcurrency(settings map[string]string, enabled int) int {
+	if enabled <= 0 {
+		return 1
+	}
+	n := enabled
+	if cap, err := strconv.Atoi(strings.TrimSpace(settings["byparr_max_instances_historical"])); err == nil && cap > 0 && cap < n {
+		n = cap
+	}
+	return n
+}
+
 func (s *Service) Stop() bool {
 	s.mu.Lock()
 	if !s.status.Running {
@@ -197,6 +221,13 @@ func (s *Service) run(ctx context.Context) {
 		return
 	}
 	ctx = scraper.WithSolverPriority(ctx, priority)
+	// Sized once per run, not per page: settings/pool membership can change
+	// mid-run via a later Configure call, but re-reading them on every page
+	// would just add noise for a value that only needs a coarse refresh.
+	concurrency := scraper.ScrapeConcurrency{Max: 1}
+	if settings, e := s.store.Settings(ctx); e == nil {
+		concurrency.Max = historicalConcurrency(settings, s.scraper.PoolEnabledCount())
+	}
 	for si := range sources {
 		source := sources[si]
 		if source.State == "completed" {
@@ -243,7 +274,7 @@ func (s *Service) run(ctx context.Context) {
 				return true
 			}
 			s.update(func(x *Status) { x.Page = page; x.PageLimit = source.PageLimit; x.VideoID = "" })
-			items, ids, limit, e := s.scraper.HistoricalPage(ctx, source.URL, page, include)
+			items, ids, limit, e := s.scraper.HistoricalPage(ctx, source.URL, page, include, concurrency)
 			if includeErr != nil {
 				runErr = includeErr
 				return
