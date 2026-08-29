@@ -30,6 +30,19 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   details" and the screenshot-backfill job were unaffected by this bug and
   are unchanged.
 
+### Added
+
+- Quick/Full/New-releases scans now give a release detail-page fetch one
+  extra try, after a longer separate cooldown, if it still failed after
+  its own existing fetch-and-retry cycle (a Cloudflare block, a solver
+  error, or a transport failure) - most useful when a Byparr/FlareSolverr
+  instance is only transiently overloaded by a scan's concurrent batch of
+  detail fetches rather than genuinely down. This does not apply to a
+  structurally invalid detail page (a real page-shape change), which
+  remains a terminal, non-retried failure as before, and it only ever adds
+  one bounded extra attempt - it does not repeat the existing retry cycle
+  itself, to avoid compounding delay under sustained solver trouble.
+
 ### Changed
 
 - Removed the JAVBEACON_PAGE_LIMIT environment variable. It only ever

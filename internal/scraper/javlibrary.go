@@ -432,10 +432,34 @@ func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int,
 		fetchDetailsConcurrently(len(candidates), concurrency, func(i int) {
 			c := candidates[i]
 			r := c.r
-			if detail, e := j.detail(ctx, c.href); e == nil {
+			detail, e := j.detail(ctx, c.href)
+			// j.detail already retried internally (document -> withScrapeRetry,
+			// scrapeRetryAttempts more tries with RetryFirstBackoff/
+			// RetrySecondBackoff) before returning this error, so a candidate
+			// reaching here has already failed a whole fetch-and-retry cycle -
+			// retrying it again immediately would very likely just repeat the
+			// same failure. Give it exactly one more try after a longer,
+			// separate cooldown (RetrySecondBackoff) instead: long enough that a
+			// transiently overloaded solver (the common real-world cause - see
+			// OnDetailFailure's doc comment) has a real chance to have recovered
+			// by the time this fires, without compounding into the multi-minute
+			// worst case a second full scrapeRetryAttempts cycle would cost.
+			retried := false
+			if e != nil && shouldRetryScrape(ctx, e) {
+				retried = true
+				j.log.Info("scrape retry", "provider", "JavLibrary", "kind", "detail-item", "page", page, "video_id", r.VideoID, "url", c.href, "wait", RetrySecondBackoff.String(), "reason", e.Error())
+				select {
+				case <-ctx.Done():
+				case <-time.After(RetrySecondBackoff):
+				}
+				if ctx.Err() == nil {
+					detail, e = j.detail(ctx, c.href)
+				}
+			}
+			if e == nil {
 				mergeJav(&r, detail)
 			} else {
-				j.log.Warn("product detail failed", "provider", "JavLibrary", "page", page, "video_id", r.VideoID, "url", c.href, "error", e)
+				j.log.Warn("product detail failed", "provider", "JavLibrary", "page", page, "video_id", r.VideoID, "url", c.href, "retried", retried, "error", e)
 				if concurrency.OnDetailFailure != nil {
 					concurrency.OnDetailFailure(r.VideoID, e)
 				}
