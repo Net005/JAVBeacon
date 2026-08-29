@@ -222,6 +222,99 @@ func TestQuickModeRepairsScreenshotsWithoutUpdatingExistingMetadata(t *testing.T
 	}
 }
 
+// TestQuickModeBackfillsBlankMetadataFieldsFoundOnTheDetailPage is the
+// regression test for the bug report that "Quick and Full scan jobs don't
+// fill in the previously missing Label field" - Quick mode's existing-
+// release branch above intentionally never *overwrites* metadata (see
+// TestQuickModeNeverUpdatesAnExistingRelease), but that used to mean it
+// never touched Label/Studio/Genres/release-date at all, even when they
+// were simply blank (most commonly because the release predates
+// JavLibrary's Label parsing and has never been re-scraped since). Quick
+// has already fetched the detail page by this point, so it now fills in
+// exactly the fields that are still blank, leaving Title (untouched by
+// design - see the "never updates an existing release" tests above) and
+// any already-populated field exactly as they were.
+func TestQuickModeBackfillsBlankMetadataFieldsFoundOnTheDetailPage(t *testing.T) {
+	detail := `<html><title>New Title From Site - JAVLibrary</title><img id="video_jacket_img" src="/cover.jpg">` +
+		`<table><tr><td class="header">Release Date:</td><td class="text">2024-06-06</td></tr>` +
+		`<tr><td class="header">Length:</td><td>90 min(s)</td></tr>` +
+		`<tr><td class="header">Maker:</td><td><a>Attackers</a></td></tr>` +
+		`<tr><td class="header">Label:</td><td><a>Otona No Drama</a></td></tr></table>` +
+		`<div class="director"><a>Director Name</a></div>` +
+		`<div id="video_genres"><span class="genre"><a>Drama</a></span></div></html>`
+	service, site, release := newSiteScanTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(detail))
+	})
+	if release.Label != "" || len(release.Genres) != 0 || release.Studio != "" {
+		t.Fatalf("seeded release=%+v, want Label/Genres/Studio blank so this test actually exercises the backfill", release)
+	}
+	if err := service.StartOptions(context.Background(), RefreshOptions{SiteID: site.ID, Mode: "quick", Scheduled: true}); err != nil {
+		t.Fatal(err)
+	}
+	job := waitForSiteJob(t, service)
+	if job.Updated != 0 || job.Skipped != 1 {
+		t.Fatalf("job=%+v, want the release counted as skipped (backfill is not a metadata \"update\")", job)
+	}
+	stored, err := service.store.Release(context.Background(), release.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Label != "Otona No Drama" {
+		t.Fatalf("stored.Label = %q, want the blank Label backfilled from the detail page", stored.Label)
+	}
+	if stored.Studio != "Attackers" {
+		t.Fatalf("stored.Studio = %q, want the blank Studio backfilled from the detail page", stored.Studio)
+	}
+	if len(stored.Genres) != 1 || stored.Genres[0] != "Drama" {
+		t.Fatalf("stored.Genres = %v, want the blank Genres backfilled from the detail page", stored.Genres)
+	}
+	// Title is handled separately (populated from the listing page for every
+	// mode) and is deliberately left out of the backfill-if-blank set above
+	// since it is never blank for an existing release in the first place -
+	// Quick's "never touch what a release already has" contract for it is
+	// covered by TestQuickModeNeverUpdatesAnExistingRelease.
+	if stored.Title != "Old Title" {
+		t.Fatalf("stored.Title = %q, want Quick refresh to leave the already-populated Title alone", stored.Title)
+	}
+	if !stored.UpdatedAt.Equal(release.UpdatedAt) {
+		t.Fatalf("Quick refresh metadata backfill changed updated_at: before=%v after=%v", release.UpdatedAt, stored.UpdatedAt)
+	}
+}
+
+// TestQuickModeNeverOverwritesAnAlreadyPopulatedMetadataField is the
+// counterpart to the backfill test above: a field the release already has a
+// value for must be left exactly as it was, even though Quick has fetched a
+// detail page reporting something different for it - the backfill only ever
+// fills in a currently-blank field, it never corrects/replaces one that
+// already has a value (that remains Full refresh's job).
+func TestQuickModeNeverOverwritesAnAlreadyPopulatedMetadataField(t *testing.T) {
+	detail := `<html><title>New Title From Site - JAVLibrary</title><img id="video_jacket_img" src="/cover.jpg">` +
+		`<table><tr><td class="header">Release Date:</td><td class="text">2024-06-06</td></tr>` +
+		`<tr><td class="header">Label:</td><td><a>New Label From Site</a></td></tr></table></html>`
+	service, site, release := newSiteScanTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(detail))
+	})
+	if _, err := service.store.UpsertRelease(context.Background(), domain.Release{
+		SiteID: site.ID, VideoID: release.VideoID, Source: release.Source, Label: "Original Label",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.StartOptions(context.Background(), RefreshOptions{SiteID: site.ID, Mode: "quick", Scheduled: true}); err != nil {
+		t.Fatal(err)
+	}
+	job := waitForSiteJob(t, service)
+	if job.Updated != 0 || job.Skipped != 1 {
+		t.Fatalf("job=%+v, want the release counted as skipped", job)
+	}
+	stored, err := service.store.Release(context.Background(), release.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Label != "Original Label" {
+		t.Fatalf("stored.Label = %q, want Quick refresh to leave an already-populated Label untouched", stored.Label)
+	}
+}
+
 // TestFullModeUpdatesAnExistingReleaseFoundInThePageScan covers the other
 // half of the Quick/Full split: Full refresh (Mode=="full") both adds new
 // releases and updates every existing release its page scan finds, so the

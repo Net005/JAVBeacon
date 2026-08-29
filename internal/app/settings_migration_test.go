@@ -42,7 +42,7 @@ func TestFinishStartupMigratesLegacyMissingPathRemapPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := slog.New(logging.NewRing(slog.NewTextHandler(io.Discard, nil), 100))
-	a, err := finishStartup(config.Config{DatabasePath: dbPath, PageLimit: 3, RefreshText: "1h"}, log, logging.NewRing(slog.NewTextHandler(io.Discard, nil), 100), st)
+	a, err := finishStartup(config.Config{DatabasePath: dbPath, RefreshText: "1h"}, log, logging.NewRing(slog.NewTextHandler(io.Discard, nil), 100), st)
 	if err != nil {
 		t.Fatalf("finishStartup: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestFinishStartupDefaultsMissingPathRemapsToEmptyListWhenNothingConfigured(
 		t.Fatal(err)
 	}
 	log := slog.New(logging.NewRing(slog.NewTextHandler(io.Discard, nil), 100))
-	a, err := finishStartup(config.Config{DatabasePath: dbPath, PageLimit: 3, RefreshText: "1h"}, log, logging.NewRing(slog.NewTextHandler(io.Discard, nil), 100), st)
+	a, err := finishStartup(config.Config{DatabasePath: dbPath, RefreshText: "1h"}, log, logging.NewRing(slog.NewTextHandler(io.Discard, nil), 100), st)
 	if err != nil {
 		t.Fatalf("finishStartup: %v", err)
 	}

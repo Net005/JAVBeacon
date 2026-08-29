@@ -858,7 +858,7 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 			// how Mode=="new"'s include() filter above decides the same
 			// question before ever fetching a detail page.
 			if options.Mode == "quick" {
-				exists, existsErr := s.store.ReleaseExistsForSite(ctx, site.ID, site.Name, r.VideoID)
+				existingRelease, exists, existsErr := s.store.ReleaseForSite(ctx, site.ID, site.Name, r.VideoID)
 				if existsErr != nil {
 					job.Error = existsErr.Error()
 				} else if exists {
@@ -869,23 +869,62 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 							s.log.Info("existing release cover updated", "site", site.Title, "provider", site.Name, "mode", options.Mode, "video_id", r.VideoID)
 						}
 					}
-					// Quick refresh intentionally leaves existing metadata alone,
-					// but it has already fetched the detail page and therefore has
-					// everything needed to repair a missing screenshot cache. Save
-					// only the screenshot URLs and preserve updated_at so this asset
-					// repair does not turn Quick refresh into a metadata refresh.
+					// Quick refresh still never overwrites a metadata field the
+					// release already has - see the "Quick Refresh keeps updating
+					// existing releases" precedent above - but it has already
+					// fetched the detail page, so it now backfills whichever of
+					// these fields are still blank (most commonly Label, on a
+					// release added before JavLibrary's Label parsing existed)
+					// instead of leaving them blank forever until a manual Update
+					// Details or a Full refresh happens to reach the same release.
+					// Each field is only set on fill when existingRelease's own
+					// value is empty; UpsertReleaseKeepUpdatedAt's
+					// COALESCE(NULLIF(?,''),column) then leaves every other column
+					// exactly as it already was. Screenshots are always
+					// added/repaired unconditionally to match the current page -
+					// a missing screenshot is an asset gap, not a metadata
+					// judgment call - and the cover above is likewise always
+					// refreshed when JavLibrary now shows a different one.
+					// preserveUpdatedAt (below) keeps all of this, backfill
+					// included, from turning Quick into a full metadata refresh
+					// for "sort by date updated" purposes.
+					fill := domain.Release{SiteID: site.ID, VideoID: r.VideoID, Source: r.Source, Screenshots: r.Screenshots}
+					if existingRelease.Label == "" {
+						fill.Label = r.Label
+					}
+					if existingRelease.Studio == "" {
+						fill.Studio = r.Studio
+					}
+					if existingRelease.Director == "" {
+						fill.Director = r.Director
+					}
+					if existingRelease.Actress == "" {
+						fill.Actress = r.Actress
+					}
+					if existingRelease.ReleaseDate == "" {
+						fill.ReleaseDate = r.ReleaseDate
+					}
+					if existingRelease.Duration == "" {
+						fill.Duration = r.Duration
+					}
+					if existingRelease.Story == "" {
+						fill.Story = r.Story
+					}
+					if len(existingRelease.Genres) == 0 {
+						fill.Genres = r.Genres
+					}
 					if s.screenshots != nil && len(r.Screenshots) > 0 {
 						_, _, failed, screenshotErr := s.screenshots.EnsureAll(ctx, r.VideoID, r.Screenshots)
 						if screenshotErr != nil {
 							s.log.Warn("release screenshot cache incomplete", "site", site.Title, "video_id", r.VideoID, "failed", failed, "error", screenshotErr)
 						}
-						if _, screenshotStoreErr := s.store.UpsertReleaseKeepUpdatedAt(ctx, domain.Release{SiteID: site.ID, VideoID: r.VideoID, Source: r.Source, Screenshots: r.Screenshots}); screenshotStoreErr != nil {
-							job.Error = screenshotStoreErr.Error()
-							s.log.Error("release screenshots could not be saved", "site", site.Title, "provider", site.Name, "video_id", r.VideoID, "error", screenshotStoreErr)
-						}
+					}
+					if _, fillErr := s.store.UpsertReleaseKeepUpdatedAt(ctx, fill); fillErr != nil {
+						job.Error = fillErr.Error()
+						s.log.Error("release metadata backfill could not be saved", "site", site.Title, "provider", site.Name, "video_id", r.VideoID, "error", fillErr)
 					}
 					job.Skipped++
-					s.log.Info("quick refresh skipped existing release metadata", "site", site.Title, "provider", site.Name, "video_id", r.VideoID)
+					s.log.Info("quick refresh backfilled existing release", "site", site.Title, "provider", site.Name, "video_id", r.VideoID)
 					continue
 				}
 			}

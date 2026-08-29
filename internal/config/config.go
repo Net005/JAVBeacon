@@ -26,7 +26,6 @@ type Config struct {
 	FlareSolverrCooldown float64       `json:"FlareSolverrCooldown"`
 	RefreshEvery         time.Duration `json:"-"`
 	RefreshText          string        `json:"refresh_interval"`
-	PageLimit            int           `json:"page_limit"`
 	RequestTimeout       time.Duration `json:"-"`
 
 	// DatabaseEngine selects which persistence backend the application
@@ -75,7 +74,6 @@ func Load() (Config, error) {
 		FlareSolverrURL:      "http://127.0.0.1:8191/v1",
 		FlareSolverrCooldown: 7.49,
 		RefreshText:          "1h",
-		PageLimit:            5,
 		RequestTimeout:       30 * time.Second,
 		DatabaseEngine:       EngineSQLite,
 		PostgresHost:         "127.0.0.1",
@@ -101,11 +99,6 @@ func Load() (Config, error) {
 	}
 	if v := os.Getenv("JAVBEACON_FLARESOLVERR_URL"); v != "" {
 		c.FlareSolverrURL = v
-	}
-	if v := os.Getenv("JAVBEACON_PAGE_LIMIT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.PageLimit = n
-		}
 	}
 	if v := strings.TrimSpace(os.Getenv("JAVBEACON_DB_ENGINE")); v != "" {
 		c.DatabaseEngine = strings.ToLower(v)
@@ -136,9 +129,6 @@ func Load() (Config, error) {
 	c.RefreshEvery, err = time.ParseDuration(c.RefreshText)
 	if err != nil {
 		return c, errors.New("invalid refresh_interval: " + err.Error())
-	}
-	if c.PageLimit < 1 {
-		c.PageLimit = 1
 	}
 	if c.DatabaseEngine != EngineSQLite && c.DatabaseEngine != EnginePostgres {
 		return c, errors.New("invalid JAVBEACON_DB_ENGINE: must be \"sqlite\" or \"postgres\", got " + c.DatabaseEngine)
