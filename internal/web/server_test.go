@@ -88,6 +88,10 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`page.next_cursor||''`,
 		`releaseCountAbort?.abort()`,
 		`metadataOptionTimer=setTimeout(run,220)`,
+		`function wireTouchSwipe(`,
+		`if(dx<0)next?.();else previous?.()`,
+		`tap:({x,width})=>{if(x<=width*.24)navigateRelease(-1);else if(x>=width*.76)navigateRelease(1)}`,
+		`wireTouchSwipe(screenshotLightboxStage`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("embedded app.js is missing %q", marker)
@@ -100,7 +104,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:134px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.cardMetadataRole{`, `.stashSyncProgress{`, `.sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr)`, `.sidebarFooter #appVersion{display:block;min-width:max-content`, `#toast[popover]{position:fixed!important;inset:auto 22px 22px auto!important`, `.card.returnFocus{`, `.downloadToolbar{align-items:flex-end;`} {
+	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:134px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.cardMetadataRole{`, `.stashSyncProgress{`, `.sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr)`, `.sidebarFooter #appVersion{display:block;min-width:max-content`, `#toast[popover]{position:fixed!important;inset:auto 22px 22px auto!important`, `.card.returnFocus{`, `.downloadToolbar{align-items:flex-end;`, `grid-template-columns:repeat(8,minmax(0,1fr))!important`, `.releaseVisual{display:grid!important;grid-template-rows:auto auto!important`, `.releaseArt .detailBackdrop{display:none!important}`, `.screenshotLightboxStage{touch-action:pan-y`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("embedded app.css is missing %q", marker)
 		}
@@ -111,6 +115,9 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	}
 	if !strings.Contains(string(markup), `aria-label="Fullscreen screenshot view"`) {
 		t.Fatal("embedded index.html is missing the fullscreen screenshot view")
+	}
+	if !strings.Contains(string(markup), `id="releaseMobileClose"`) {
+		t.Fatal("embedded index.html is missing the mobile release close target")
 	}
 	if !strings.Contains(string(markup), `id="releasedStartDate" type="date"`) {
 		t.Fatal("embedded index.html is missing the persisted Released-tab start date")

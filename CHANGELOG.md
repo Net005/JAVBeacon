@@ -7,6 +7,22 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.42] - 2026-08-29
+
+### Added
+
+- Mobile Release Details now supports natural swipe navigation on the cover
+  and fullscreen screenshots. Cover edge taps move to the previous or next
+  release, and a compact top-edge handle closes the detail view.
+
+### Fixed
+
+- Mobile Release Details now keeps screenshots directly below the cover and
+  uses an opaque, isolated background so artwork from the library behind the
+  dialog cannot bleed through.
+- The mobile bottom navigation now fits all eight destinations in one stable
+  row instead of wrapping Settings onto a second line.
+
 ## [1.0.41] - 2026-08-29
 
 ### Fixed
