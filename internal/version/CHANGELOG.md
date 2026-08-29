@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.45] - 2026-08-29
+
+### Changed
+
+- Release Library, Notifications, Monitored Releases, and Download Activity
+  cover sizes plus the global interface scale are now remembered separately by
+  each browser/device. Existing shared values seed a device on first use, and
+  legacy saved filters no longer overwrite its display scales.
+
 ## [1.0.44] - 2026-08-29
 
 ### Fixed
