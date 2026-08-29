@@ -115,6 +115,34 @@ func TestMaterializedReleasePreferenceTracksSettingsAndNewRows(t *testing.T) {
 	}
 }
 
+func TestReleasePreferenceRefreshOnlyUpdatesChangedRows(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "preferred-targeted.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, _ := s.SaveSite(ctx, domain.Site{Title: "Targeted", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TARGET-1", Title: "Drama release", Source: "JavLibrary", Genres: []string{"Drama"}})
+	_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TARGET-2", Title: "Action release", Source: "JavLibrary", Genres: []string{"Action"}})
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE preference_update_audit(n INTEGER); CREATE TRIGGER audit_preference_update AFTER UPDATE OF is_preferred ON releases BEGIN INSERT INTO preference_update_audit(n) VALUES(1); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSettings(ctx, map[string]string{"ignore_tags": "Drama", "ignore_titles": ""}); err != nil {
+		t.Fatal(err)
+	}
+	var updates int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM preference_update_audit`).Scan(&updates); err != nil || updates != 1 {
+		t.Fatalf("preference updates=%d err=%v, want only the one changed release", updates, err)
+	}
+	if err := s.SaveSettings(ctx, map[string]string{"ignore_tags": "Drama", "ignore_titles": ""}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM preference_update_audit`).Scan(&updates); err != nil || updates != 1 {
+		t.Fatalf("unchanged settings caused preference rewrites: updates=%d err=%v", updates, err)
+	}
+}
+
 func TestScreenshotBackfillCompletionPersists(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "screenshots.db"))
