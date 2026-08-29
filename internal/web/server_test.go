@@ -131,6 +131,25 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	}
 }
 
+func TestEmbeddedFrontendLiveReleaseUpdatesReloadActiveQuery(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		`function scheduleReleaseStreamReload()`,
+		`if(releasesView.hidden)return`,
+		`handleStreamRelease(x.release)`,
+	} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("embedded app.js is missing filtered live-update behavior %q", marker)
+		}
+	}
+	if strings.Contains(string(javascript), `else releases.unshift(x)`) {
+		t.Fatal("embedded app.js still prepends unfiltered live releases")
+	}
+}
+
 func TestReleaseScreenshotManifestOnlyExposesLocalCacheFiles(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "screenshot-manifest.db"))
