@@ -1297,14 +1297,16 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 			return false, e
 		}
 		changedText := func(incoming, stored string) bool { return incoming != "" && incoming != stored }
+		// Cover and screenshot changes are cache/artwork maintenance, not
+		// release metadata changes. Persist their URLs below, but do not move
+		// updated_at unless another scraped field changed in the same upsert.
 		metadataChanged := changedText(x.ScraperID, current.scraperID) || changedText(x.Title, current.title) ||
 			changedText(x.ReleaseDate, current.releaseDate) || changedText(x.Source, current.source) ||
-			changedText(x.ImageURL, current.imageURL) || changedText(x.ProductURL, current.productURL) ||
+			changedText(x.ProductURL, current.productURL) ||
 			changedText(x.Actress, current.actress) || changedText(x.Director, current.director) ||
 			changedText(x.Studio, current.studio) || changedText(x.Label, current.label) ||
 			(string(genres) != "[]" && string(genres) != "null" && string(genres) != current.genres) ||
 			changedText(x.Duration, current.duration) || changedText(x.Story, current.story) ||
-			(string(shots) != "[]" && string(shots) != "null" && string(shots) != current.screenshots) ||
 			(x.Released && !current.released)
 		updatedAt := current.updatedAt
 		if metadataChanged && !preserveUpdatedAt {

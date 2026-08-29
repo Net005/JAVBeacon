@@ -1920,11 +1920,10 @@ func TestUpsertReleaseKeepUpdatedAtPreservesTimestamp(t *testing.T) {
 	}
 }
 
-// TestUpsertReleaseStillBumpsUpdatedAtOnMetadataChange is the control case
-// for the test above: the ordinary UpsertRelease path must keep bumping
-// updated_at on a real metadata change exactly as before this feature's
-// upsertRelease(preserveUpdatedAt) refactor.
-func TestUpsertReleaseStillBumpsUpdatedAtOnMetadataChange(t *testing.T) {
+// TestUpsertReleaseDoesNotBumpUpdatedAtOnArtworkOnlyChange covers ordinary
+// Full refresh upserts: cover and screenshot URL changes are persisted, but
+// are cache maintenance and must not move the release metadata timestamp.
+func TestUpsertReleaseDoesNotBumpUpdatedAtOnArtworkOnlyChange(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -1935,7 +1934,7 @@ func TestUpsertReleaseStillBumpsUpdatedAtOnMetadataChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "PRED-902", Title: "Original title", Source: "JavLibrary", Released: true}); err != nil || !created {
+	if created, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "PRED-902", Title: "Original title", Source: "JavLibrary", ImageURL: "https://example.test/old-cover.jpg", Released: true}); err != nil || !created {
 		t.Fatalf("initial upsert: created=%v err=%v", created, err)
 	}
 	before, err := s.Releases(ctx, domain.ReleaseFilter{Search: "PRED-902"})
@@ -1945,7 +1944,7 @@ func TestUpsertReleaseStillBumpsUpdatedAtOnMetadataChange(t *testing.T) {
 	initialUpdatedAt := before[0].UpdatedAt
 	time.Sleep(10 * time.Millisecond)
 
-	changed := domain.Release{SiteID: site.ID, VideoID: "PRED-902", Title: "Original title", Source: "JavLibrary", Released: true, Screenshots: []string{"https://example.test/new-shot.jpg"}}
+	changed := domain.Release{SiteID: site.ID, VideoID: "PRED-902", Title: "Original title", Source: "JavLibrary", ImageURL: "https://example.test/new-cover.jpg", Released: true, Screenshots: []string{"https://example.test/new-shot.jpg"}}
 	if created, err := s.UpsertRelease(ctx, changed); err != nil || created {
 		t.Fatalf("upsert: created=%v err=%v", created, err)
 	}
@@ -1953,7 +1952,10 @@ func TestUpsertReleaseStillBumpsUpdatedAtOnMetadataChange(t *testing.T) {
 	if err != nil || len(after) != 1 {
 		t.Fatalf("post-upsert lookup: items=%d err=%v", len(after), err)
 	}
-	if !after[0].UpdatedAt.After(initialUpdatedAt) {
-		t.Fatalf("updated_at did not advance: before=%v after=%v", initialUpdatedAt, after[0].UpdatedAt)
+	if !after[0].UpdatedAt.Equal(initialUpdatedAt) {
+		t.Fatalf("artwork-only change advanced updated_at: before=%v after=%v", initialUpdatedAt, after[0].UpdatedAt)
+	}
+	if after[0].ImageURL != changed.ImageURL || len(after[0].Screenshots) != 1 || after[0].Screenshots[0] != changed.Screenshots[0] {
+		t.Fatalf("artwork URLs were not applied: image=%q screenshots=%v", after[0].ImageURL, after[0].Screenshots)
 	}
 }
