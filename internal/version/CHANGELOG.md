@@ -7,6 +7,21 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.41] - 2026-08-29
+
+### Fixed
+
+- The historical backfill's manual controls moved into Settings ->
+  Maintenance in 1.0.40, but that also removed its only progress
+  indicator from the Jobs/Activity page, leaving no way to tell it was
+  running without switching to Settings. Added a read-only status card
+  back on the Jobs/Activity page, next to "Job progress", showing the
+  current run's state, page, and per-run counts - fed by the same
+  status poll already driving the Settings panel, so it adds no extra
+  request traffic. A "Manage in Settings -> Maintenance" button on the
+  card jumps to the full resume/priority/start/stop controls instead of
+  duplicating them.
+
 ## [1.0.40] - 2026-08-29
 
 ### Fixed
