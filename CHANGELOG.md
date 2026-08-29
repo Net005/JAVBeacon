@@ -7,6 +7,42 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.38] - 2026-08-29
+
+### Fixed
+
+- Download Activity could get stuck showing stale pre-completion progress
+  for a torrent indefinitely, even well after qBittorrent itself showed it
+  fully seeded and moved on. qBittorrent status polling ran on a single
+  goroutine and used to block entirely on that download's "download
+  completed" event pipeline (a shell step, a StashApp call, a large file
+  move) before saving anything - a slow or stuck pipeline step for any one
+  download froze status updates for every download, not just that one,
+  until the pipeline finished. Polling now saves qBittorrent-derived
+  progress/status immediately and runs the completion/removal event
+  pipeline in the background instead of blocking on it - pipelines still
+  never run concurrently with each other and still run in the order they
+  were triggered.
+- A bug triggered while polling one specific download (a bad file list, an
+  unusual pipeline config, ...) could previously take down the entire
+  application, since an unrecovered panic in any goroutine - including the
+  dedicated qBittorrent polling one - terminates the whole process, not
+  just that goroutine. Polling is now isolated per download and per poll
+  cycle, so a problem with one download is logged and the rest of Download
+  Activity keeps updating on schedule instead of the app going down.
+
+### Added
+
+- qBittorrent status polling interval is now configurable (Settings ->
+  Downloads -> Poll interval (seconds), minimum 2s, default 5s) instead of
+  a fixed 1 minute, so Download Activity tracks qBittorrent close to real
+  time. This is safe to run much faster than before: the per-tick
+  qBittorrent request is already a single batched call regardless of how
+  many downloads are active, and the one qBittorrent call that does scale
+  per download (fetching a torrent's file list) is now only made the first
+  time a download sees a torrent and once more on completion, not on every
+  single poll.
+
 ## [1.0.37] - 2026-08-29
 
 ### Fixed
