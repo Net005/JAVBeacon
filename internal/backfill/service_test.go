@@ -21,7 +21,7 @@ type fakeHistoricalScraper struct {
 func (f *fakeHistoricalScraper) HistoricalIndexes(context.Context) ([]scraper.HistoricalIndex, error) {
 	return []scraper.HistoricalIndex{{URL: "https://www.javlibrary.com/en/vl_genre.php?g=test&mode=2", Kind: "genre", Name: "Test"}}, nil
 }
-func (f *fakeHistoricalScraper) HistoricalPage(_ context.Context, _ string, page int, include func(string) bool) ([]domain.Release, []string, int, error) {
+func (f *fakeHistoricalScraper) HistoricalPage(_ context.Context, _ string, page int, include func(string) bool, _ scraper.ScrapeConcurrency) ([]domain.Release, []string, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if page > 1 {
@@ -37,6 +37,12 @@ func (f *fakeHistoricalScraper) HistoricalPage(_ context.Context, _ string, page
 	}
 	return out, ids, 1, nil
 }
+
+// PoolEnabledCount always reports "no solver configured" - existing tests
+// exercise the plain single-detail-at-a-time path, matching their behavior
+// before concurrency support existed. A dedicated test below covers
+// historicalConcurrency's cap/enabled-count arithmetic directly.
+func (f *fakeHistoricalScraper) PoolEnabledCount() int { return 0 }
 
 func waitStopped(t *testing.T, s *Service) Status {
 	t.Helper()
@@ -108,5 +114,28 @@ func TestFreshBackfillSkipsReleaseAlreadyInMainLibrary(t *testing.T) {
 	item, ok, err := st.HistoricalBackfillItem(ctx, "KNOWN-1")
 	if err != nil || !ok || item.State != "completed" || item.ReleaseDate != "2021-03-04" {
 		t.Fatalf("durable known item: %+v ok=%v err=%v", item, ok, err)
+	}
+}
+
+func TestHistoricalConcurrencyRespectsCapAndEnabledCount(t *testing.T) {
+	cases := []struct {
+		name     string
+		settings map[string]string
+		enabled  int
+		want     int
+	}{
+		{"no solver configured", map[string]string{}, 0, 1},
+		{"unset cap uses every enabled instance", map[string]string{}, 3, 3},
+		{"cap below enabled count wins", map[string]string{"byparr_max_instances_historical": "2"}, 5, 2},
+		{"cap above enabled count is a no-op", map[string]string{"byparr_max_instances_historical": "10"}, 3, 3},
+		{"zero cap means no cap", map[string]string{"byparr_max_instances_historical": "0"}, 4, 4},
+		{"invalid cap is ignored", map[string]string{"byparr_max_instances_historical": "not-a-number"}, 4, 4},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := historicalConcurrency(c.settings, c.enabled); got != c.want {
+				t.Fatalf("historicalConcurrency(%+v, %d) = %d, want %d", c.settings, c.enabled, got, c.want)
+			}
+		})
 	}
 }

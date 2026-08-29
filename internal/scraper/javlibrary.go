@@ -60,6 +60,14 @@ func (j *JavLibrary) Configure(instances []Instance, cooldown time.Duration) {
 // without needing their own reference to the pool.
 func (j *JavLibrary) Pool() *SolverPool { return j.pool }
 
+// PoolEnabledCount reports how many configured Byparr/FlareSolverr
+// instances are currently enabled, or 0 if none are configured. It's a
+// thin wrapper around Pool().EnabledCount() so packages that only depend on
+// JavLibrary through a narrow interface (e.g. internal/backfill's
+// historicalScraper) can size a concurrent worker batch without importing
+// *SolverPool into their interface.
+func (j *JavLibrary) PoolEnabledCount() int { return j.pool.EnabledCount() }
+
 // HistoricalIndex is a durable discovery edge used by the manual catalog
 // backfill. Releases are unioned across these indexes, because no single
 // rolling JavLibrary list represents the full historical catalog.
@@ -136,8 +144,12 @@ func (j *JavLibrary) HistoricalIndexes(ctx context.Context) ([]HistoricalIndex, 
 // HistoricalPage fetches exactly one date-sorted index page and enriches
 // only candidates accepted by include. IDs reports every listing entry,
 // including already-known ones, so callers can locate a saved date boundary
-// without re-fetching its detail pages.
-func (j *JavLibrary) HistoricalPage(ctx context.Context, source string, page int, include func(string) bool) (items []domain.Release, ids []string, pageLimit int, err error) {
+// without re-fetching its detail pages. concurrency bounds how many detail
+// pages within this one listing page are fetched at once (see
+// ScrapeConcurrency) - the caller sizes it against the configured Byparr
+// pool so the backfill actually uses every enabled instance instead of
+// fetching one detail page at a time.
+func (j *JavLibrary) HistoricalPage(ctx context.Context, source string, page int, include func(string) bool, concurrency ScrapeConcurrency) (items []domain.Release, ids []string, pageLimit int, err error) {
 	u, err := url.Parse(source)
 	if err != nil {
 		return nil, nil, 0, err
@@ -146,7 +158,7 @@ func (j *JavLibrary) HistoricalPage(ctx context.Context, source string, page int
 	q.Set("mode", "2")
 	q.Set("page", strconv.Itoa(max(page, 1)))
 	u.RawQuery = q.Encode()
-	items, err = j.ScrapeFiltered(ctx, u.String(), 1, include, ScrapeConcurrency{Max: 1}, func(_ int, limit, item, _ int, videoID string) {
+	items, err = j.ScrapeFiltered(ctx, u.String(), 1, include, concurrency, func(_ int, limit, item, _ int, videoID string) {
 		if limit > pageLimit {
 			pageLimit = limit
 		}
