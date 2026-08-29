@@ -973,24 +973,29 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
   main{padding-bottom:calc(76px + env(safe-area-inset-bottom))!important}
 
   .releaseDialog{
-    width:100vw!important;height:var(--dvh100,100dvh)!important;max-height:none!important;
+    width:var(--vw100,100vw)!important;max-width:var(--vw100,100vw)!important;height:var(--dvh100,100dvh)!important;max-height:none!important;
     margin:0!important;padding:calc(46px + env(safe-area-inset-top)) 10px calc(18px + env(safe-area-inset-bottom))!important;
     overflow-x:hidden!important;overflow-y:auto!important;
     background:#090b0f!important;isolation:isolate;overscroll-behavior:contain;
   }
   .releaseDialog::backdrop{background:#090b0f!important;backdrop-filter:none!important}
-  .releaseDialogInner,#releaseDetail,.releaseLayout{width:100%!important;height:auto!important;min-height:0!important;max-height:none!important}
+  .releaseDialogInner,#releaseDetail,.releaseLayout{width:100%!important;max-width:100%!important;height:auto!important;min-width:0!important;min-height:0!important;max-height:none!important}
   .releaseDialogInner{position:relative!important;overflow:visible!important;background:#090b0f!important;isolation:isolate}
   .releaseLayout{display:flex!important;flex-direction:column!important;gap:18px!important;overflow:visible!important;background:#090b0f!important}
   .releaseVisual{display:grid!important;grid-template-rows:auto auto!important;gap:10px!important;order:1}
   .releaseArt{order:1;min-height:45vh!important;touch-action:pan-y;overscroll-behavior-x:contain;contain:paint}
   .releaseArt .detailBackdrop{display:none!important}
   .releaseArt .detailCover{background:#050609}
-  .detailScreenshotCarousel{order:2;min-width:0}
-  .releaseInfo{order:2;overflow:visible!important;background:#090b0f!important}
+  .detailScreenshotCarousel{order:2;width:100%!important;max-width:100%!important;min-width:0;overflow:hidden!important}
+  .releaseInfo{order:2;width:100%!important;max-width:100%!important;min-width:0!important;overflow:visible!important;background:#090b0f!important}
+  .releaseInfo>*,.detailActionGroups,.actionGroup,.actionGroupHead,.discoverBadges,.detailMeta,.detailSources,.detailStory{max-width:100%!important;min-width:0!important}
+  .actionGroupHead{gap:8px}
+  .discoverBadges{overflow:hidden}
+  .discoverBadges .downloadPill{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .detailHeading h1,.detailMeta dd,.detailStory{overflow-wrap:anywhere}
 
   .releaseMobileClose{
-    position:fixed;z-index:12;top:0;left:0;display:grid;width:100%;height:calc(42px + env(safe-area-inset-top));
+    position:fixed;z-index:12;top:0;left:0;display:grid;width:var(--vw100,100vw);max-width:var(--vw100,100vw);height:calc(42px + env(safe-area-inset-top));
     padding:env(safe-area-inset-top) 0 0;border:0;border-radius:0;background:linear-gradient(180deg,#11151df5,#090b0fe8);place-items:center;
   }
   .releaseMobileClose span{display:block;width:46px;height:5px;border-radius:99px;background:#747d8c;box-shadow:0 1px 8px #000}
@@ -1021,34 +1026,38 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
    pane independently touch-scrollable. */
 @media (min-width:651px) and (max-width:950px) and (orientation:landscape) and (pointer:coarse){
   .releaseDialog{
-    width:100vw!important;height:var(--dvh100,100dvh)!important;max-height:none!important;margin:0!important;
+    width:var(--vw100,100vw)!important;max-width:var(--vw100,100vw)!important;height:var(--dvh100,100dvh)!important;max-height:none!important;margin:0!important;
     padding:calc(40px + env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left))!important;
     overflow:hidden!important;background:#090b0f!important;isolation:isolate
   }
   .releaseDialog::backdrop{background:#090b0f!important;backdrop-filter:none!important}
-  .releaseDialogInner,#releaseDetail{width:100%!important;height:100%!important;min-height:0!important;max-height:100%!important;overflow:hidden!important;background:#090b0f!important}
+  .releaseDialogInner,#releaseDetail{width:100%!important;max-width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;max-height:100%!important;overflow:hidden!important;background:#090b0f!important}
   .releaseLayout{
     display:grid!important;grid-template-columns:minmax(0,1.22fr) minmax(280px,.78fr)!important;gap:10px!important;
-    width:100%!important;height:100%!important;min-height:0!important;max-height:100%!important;overflow:hidden!important;background:#090b0f!important
+    width:100%!important;max-width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;max-height:100%!important;overflow:hidden!important;background:#090b0f!important
   }
-  .releaseVisual{display:grid!important;grid-template-rows:minmax(0,1fr) auto!important;gap:7px!important;min-height:0!important;height:100%!important;overflow:hidden!important}
+  .releaseVisual{display:grid!important;grid-template-rows:minmax(0,1fr) auto!important;gap:7px!important;width:100%!important;max-width:100%!important;min-width:0!important;min-height:0!important;height:100%!important;overflow:hidden!important}
   .releaseArt{min-height:0!important;height:100%!important;contain:paint;touch-action:pan-y}
   .releaseArt .detailBackdrop{display:none!important}
-  .detailScreenshotCarousel{min-height:0!important;padding:5px!important;gap:4px!important}
+  .detailScreenshotCarousel{width:100%!important;max-width:100%!important;min-width:0!important;min-height:0!important;padding:5px!important;gap:4px!important;overflow:hidden!important}
   .detailScreenshotRail{gap:5px!important}
   .detailScreenshotRail button{flex-basis:clamp(110px,24%,180px)!important;height:72px!important}
   .detailScreenshotNav{width:30px!important;height:30px!important}
   .releaseInfo{
-    display:flex!important;flex-direction:column!important;gap:8px!important;width:100%!important;height:100%!important;min-height:0!important;max-height:100%!important;
+    display:flex!important;flex-direction:column!important;gap:8px!important;width:100%!important;max-width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;max-height:100%!important;
     padding:2px 8px 18px 4px!important;overflow-x:hidden!important;overflow-y:auto!important;overscroll-behavior:contain!important;
     -webkit-overflow-scrolling:touch;scrollbar-width:thin!important;background:#090b0f!important
   }
-  .releaseInfo>*{flex:0 0 auto!important;height:auto!important;min-height:0!important;max-height:none!important}
+  .releaseInfo>*{flex:0 0 auto!important;width:100%!important;max-width:100%!important;height:auto!important;min-width:0!important;min-height:0!important;max-height:none!important}
+  .detailActionGroups,.actionGroup,.actionGroupHead,.discoverBadges,.detailMeta,.detailSources,.detailStory{max-width:100%!important;min-width:0!important}
+  .discoverBadges{overflow:hidden}
+  .discoverBadges .downloadPill{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .detailHeading h1,.detailMeta dd,.detailStory{overflow-wrap:anywhere}
   .detailHeading{padding-right:0!important}
   .detailHeading h1{-webkit-line-clamp:3!important}
   .detailStory p{-webkit-line-clamp:unset!important;display:block!important}
   .releaseMobileClose{
-    position:fixed;z-index:12;top:0;left:0;display:grid;width:100%;height:calc(36px + env(safe-area-inset-top));
+    position:fixed;z-index:12;top:0;left:0;display:grid;width:var(--vw100,100vw);max-width:var(--vw100,100vw);height:calc(36px + env(safe-area-inset-top));
     padding:env(safe-area-inset-top) 0 0;border:0;border-radius:0;background:linear-gradient(180deg,#11151df5,#090b0fe8);place-items:center
   }
   .releaseMobileClose span{display:block;width:46px;height:5px;border-radius:99px;background:#747d8c;box-shadow:0 1px 8px #000}
