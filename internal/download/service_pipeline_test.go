@@ -30,6 +30,56 @@ func (q *recordingQB) Remove(context.Context, string) error {
 	return nil
 }
 
+// waitForPipelineRun polls PipelineRun until it reaches a terminal state
+// ("completed" or "failed") or the deadline passes. runEventPipelineAsync
+// (see service.go) runs the download-completed/download-removed event
+// pipeline on a background goroutine rather than blocking the caller that
+// triggered it (pollTorrents/cleanupTorrent), so tests that used to be able
+// to inspect the run immediately after that call returned now need to wait
+// for it to actually finish first.
+func waitForPipelineRun(t *testing.T, st store.Store, downloadID int64, trigger string) domain.PipelineRun {
+	t.Helper()
+	// 10s, not the usual 5s: a timed-out shell step can legitimately take
+	// up to its configured timeout plus pipelineKillGrace (5s) to actually
+	// finish - see TestRunPipelineEventTimesOutAndRecordsFailure, which
+	// exercises exactly that.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		run, err := st.PipelineRun(context.Background(), downloadID, trigger)
+		if err == nil && (run.State == "completed" || run.State == "failed") {
+			return run
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for event pipeline run to reach a terminal state")
+	return domain.PipelineRun{}
+}
+
+// waitForDownloadPostStatus polls a download's own row (via downloadByID's
+// "completed"-status lookup, same as runEventPipelineAsync uses to apply a
+// finished pipeline's outcome) until PostStatus reaches one of want, or the
+// deadline passes. Reaching a terminal PipelineRun state (waitForPipelineRun)
+// only proves the pipeline itself finished - runEventPipelineAsync still has
+// its own follow-up store round trip afterward to persist PostStatus, which
+// this closes the small remaining race against.
+func waitForDownloadPostStatus(t *testing.T, service *Service, downloadID int64, want ...string) domain.Download {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		d, ok := service.downloadByID(context.Background(), downloadID, "completed")
+		if ok {
+			for _, w := range want {
+				if d.PostStatus == w {
+					return d
+				}
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for download %d PostStatus to reach one of %v", downloadID, want)
+	return domain.Download{}
+}
+
 func TestRenderPipelineTemplateIncludesCompletionContext(t *testing.T) {
 	download := domain.Download{ReleaseID: 42, Query: "ABC-123"}
 	torrent := Torrent{Hash: "hash-1"}
@@ -80,12 +130,15 @@ func TestCleanupRunsSuccessfulRemovalEvent(t *testing.T) {
 	qb := &recordingQB{}
 	service := New(st, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	service.cleanupTorrent(ctx, qb, &download, Torrent{Hash: "hash-2", ContentPath: "/downloads/PIPE-2"}, completedTorrentRemove)
+	// The torrent removal itself (qb.Remove) and the "completed_removed"
+	// PostStatus are set synchronously by cleanupTorrent - only the
+	// post-removal pipeline runs in the background (runEventPipelineAsync).
 	if !qb.removed || download.PostStatus != "completed_removed" {
 		t.Fatalf("removed=%v post_status=%q error=%q", qb.removed, download.PostStatus, download.Error)
 	}
-	run, err := st.PipelineRun(ctx, download.ID, pipelineDownloadRemoved)
-	if err != nil || run.State != "completed" {
-		t.Fatalf("post-removal run=%+v err=%v", run, err)
+	run := waitForPipelineRun(t, st, download.ID, pipelineDownloadRemoved)
+	if run.State != "completed" {
+		t.Fatalf("post-removal run=%+v", run)
 	}
 }
 
@@ -259,19 +312,20 @@ func TestRunPipelineEventTimesOutAndRecordsFailure(t *testing.T) {
 	service := New(st, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	started := time.Now()
 	service.cleanupTorrent(ctx, qb, &download, Torrent{Hash: "hash-timeout", ContentPath: "/downloads/PIPE-TIMEOUT"}, completedTorrentRemove)
+	// cleanupTorrent itself returns immediately - the post-removal pipeline
+	// (and its timeout) run on the shared worker in the background via
+	// runEventPipelineAsync, so this call returning quickly is expected and
+	// no longer what proves the timeout was enforced. waitForPipelineRun
+	// below, which fails the test if the run never reaches a terminal
+	// state, is what actually confirms the hung step didn't hang forever.
 	if elapsed := time.Since(started); elapsed > 10*time.Second {
-		t.Fatalf("expected the 1s configured timeout to cut this short, took %v", elapsed)
+		t.Fatalf("cleanupTorrent should return immediately now that its post-removal pipeline runs in the background, took %v", elapsed)
 	}
-	if download.PostStatus != "removed_pipeline_failed" {
-		t.Fatalf("post_status=%q error=%q, want removed_pipeline_failed", download.PostStatus, download.Error)
-	}
-	run, err := st.PipelineRun(ctx, download.ID, pipelineDownloadRemoved)
-	if err != nil {
-		t.Fatal(err)
-	}
+	run := waitForPipelineRun(t, st, download.ID, pipelineDownloadRemoved)
 	if run.State != "failed" || !strings.Contains(run.Error, "timed out") {
-		t.Fatalf("post-removal run=%+v err=%v, want a failed run recording the timeout", run, err)
+		t.Fatalf("post-removal run=%+v, want a failed run recording the timeout", run)
 	}
+	waitForDownloadPostStatus(t, service, download.ID, "removed_pipeline_failed")
 }
 
 // TestPipelineSerializedNeverRunsConcurrently covers "do not launch pipeline
@@ -582,11 +636,25 @@ func TestPollTorrentsRemovesByRatioDespiteFailedCompletionPipelineStep(t *testin
 	if err != nil || len(releases) != 1 {
 		t.Fatalf("releases=%+v err=%v", releases, err)
 	}
-	if _, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, Status: "completed"}); err != nil {
+	download, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, Status: "completed"})
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	service := New(st, 2*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// First tick: the download_completed pipeline has never run for this
+	// row, so pollTorrents kicks it off in the background
+	// (runEventPipelineAsync) and returns immediately rather than blocking
+	// on it - this is the whole point of the fix this test now also
+	// covers, so ratio-based removal itself can't happen on this same
+	// tick. Wait for that pipeline (with its failing step) to actually
+	// finish, then poll again so pollDownload's rule-based cleanup
+	// decision - the thing this test is really about - gets to run.
+	service.pollTorrents(ctx)
+	run := waitForPipelineRun(t, st, download.ID, pipelineDownloadCompleted)
+	if run.State != "failed" {
+		t.Fatalf("run=%+v, want the download_completed run itself recorded as failed for troubleshooting", run)
+	}
 	service.pollTorrents(ctx)
 
 	fake.mu.Lock()
@@ -595,17 +663,77 @@ func TestPollTorrentsRemovesByRatioDespiteFailedCompletionPipelineStep(t *testin
 	if removedCount != 1 {
 		t.Fatalf("expected qBittorrent Remove to be called once despite the failed pipeline step, got %d calls", removedCount)
 	}
+	waitForDownloadPostStatus(t, service, download.ID, "completed_removed")
+}
+
+// TestPollTorrentsDoesNotBlockOnSlowCompletionPipeline is the regression
+// test for the actual bug report this fix addresses: qBittorrent showing a
+// torrent as fully seeded/complete while Download Activity kept showing
+// stale pre-completion progress, for far longer than the poll interval,
+// because pollTorrents used to block the entire tick - and therefore every
+// other download's status update - on a slow or hung completion pipeline
+// step. It asserts two things a fully synchronous implementation could not
+// satisfy at the same time: pollTorrents returns quickly even though the
+// completion pipeline step sleeps well past that, and the freshly-polled
+// qBittorrent fields (Progress/Status) are persisted immediately rather
+// than waiting on the pipeline to finish first.
+func TestPollTorrentsDoesNotBlockOnSlowCompletionPipeline(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "poll-does-not-block.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	server, fake := newFakeQBittorrentServer(t)
+	fake.torrents = []Torrent{{Hash: "hash-slow", Name: "4k688.com@SLOW-1", State: "stalledUP", Progress: 1, Ratio: 0.1}}
+
+	if err := st.SaveSettings(ctx, map[string]string{"qb_url": server.URL, "qb_completed_action": "keep"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SavePipelineSteps(ctx, []domain.PipelineStep{
+		{Trigger: pipelineDownloadCompleted, Type: "shell", Name: "Slow post-processing", Config: []byte(`{"command":"sleep 3"}`), Enabled: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Pipeline", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "SLOW-1", Title: "Slow completion pipeline", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "SLOW-1", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("releases=%+v err=%v", releases, err)
+	}
+	download, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, Status: "downloading", Progress: 0.16})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	service := New(st, 2*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	started := time.Now()
+	service.pollTorrents(ctx)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("pollTorrents took %v - a completion pipeline step must run in the background, not block the poll tick", elapsed)
+	}
 	rows, err := st.Downloads(ctx, "completed")
 	if err != nil || len(rows) != 1 {
-		t.Fatalf("rows=%+v err=%v", rows, err)
+		t.Fatalf("rows=%+v err=%v, want the freshly-completed row persisted immediately even though its pipeline is still running", rows, err)
 	}
-	if rows[0].PostStatus != "completed_removed" {
-		t.Fatalf("post_status=%q, want completed_removed despite the failed download_completed pipeline step", rows[0].PostStatus)
+	if rows[0].Progress != 1 || rows[0].PostStatus != "processing" {
+		t.Fatalf("progress=%v post_status=%q, want progress persisted immediately and post_status \"processing\" while the background pipeline runs", rows[0].Progress, rows[0].PostStatus)
 	}
-	run, err := st.PipelineRun(ctx, rows[0].ID, pipelineDownloadCompleted)
-	if err != nil || run.State != "failed" {
-		t.Fatalf("run=%+v err=%v, want the download_completed run itself still recorded as failed for troubleshooting", run, err)
+	run := waitForPipelineRun(t, st, download.ID, pipelineDownloadCompleted)
+	if run.State != "completed" {
+		t.Fatalf("run=%+v", run)
 	}
+	// The rule-based "keep/wait-for-ratio/remove" decision (this test uses
+	// "keep") only runs once the pipeline run is terminal - like the
+	// ratio-despite-failure test above, that's a second tick's work now
+	// that the pipeline itself no longer runs inline on the first one.
+	service.pollTorrents(ctx)
+	waitForDownloadPostStatus(t, service, download.ID, "completed_retained")
 }
 
 // TestPollTorrentsRemovesFromActivityWhenTorrentDisappearsForUnknownReason
