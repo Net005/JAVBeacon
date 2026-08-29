@@ -974,7 +974,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 
   .releaseDialog{
     width:var(--vw100,100vw)!important;max-width:var(--vw100,100vw)!important;height:var(--dvh100,100dvh)!important;max-height:none!important;
-    margin:0!important;padding:calc(46px + env(safe-area-inset-top)) 10px calc(18px + env(safe-area-inset-bottom))!important;
+    margin:0!important;padding:max(10px,env(safe-area-inset-top)) 10px calc(18px + env(safe-area-inset-bottom))!important;
     overflow-x:hidden!important;overflow-y:auto!important;
     background:#090b0f!important;isolation:isolate;overscroll-behavior:contain;
   }
@@ -1027,7 +1027,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 @media (min-width:651px) and (max-width:950px) and (orientation:landscape) and (pointer:coarse){
   .releaseDialog{
     width:var(--vw100,100vw)!important;max-width:var(--vw100,100vw)!important;height:var(--dvh100,100dvh)!important;max-height:none!important;margin:0!important;
-    padding:calc(40px + env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left))!important;
+    padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left))!important;
     overflow:hidden!important;background:#090b0f!important;isolation:isolate
   }
   .releaseDialog::backdrop{background:#090b0f!important;backdrop-filter:none!important}
@@ -1061,4 +1061,22 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
     padding:env(safe-area-inset-top) 0 0;border:0;border-radius:0;background:linear-gradient(180deg,#11151df5,#090b0fe8);place-items:center
   }
   .releaseMobileClose span{display:block;width:46px;height:5px;border-radius:99px;background:#747d8c;box-shadow:0 1px 8px #000}
+}
+
+/* Touch devices cannot reveal the desktop's hover-only close chrome. Use one
+   compact floating close control on phones and iPads without spending a full
+   row of vertical space. Desktop/fine-pointer layouts remain unchanged. */
+@media (max-width:650px), (min-width:651px) and (max-width:1366px) and (pointer:coarse){
+  .releaseDialog .releaseChrome{display:none!important}
+  .releaseMobileClose{
+    position:fixed!important;z-index:45!important;top:max(8px,env(safe-area-inset-top))!important;right:max(8px,env(safe-area-inset-right))!important;left:auto!important;
+    display:grid!important;width:40px!important;max-width:40px!important;height:40px!important;margin:0!important;padding:0!important;place-items:center!important;
+    border:1px solid #ffffff52!important;border-radius:50%!important;background:#090c12a8!important;color:#fff!important;
+    box-shadow:0 5px 20px #0009!important;backdrop-filter:blur(7px)!important;-webkit-backdrop-filter:blur(7px)!important
+  }
+  .releaseMobileClose span{display:block!important;width:auto!important;height:auto!important;border:0!important;border-radius:0!important;background:none!important;box-shadow:none!important;font-size:28px!important;font-weight:300!important;line-height:.85!important}
+  .releaseMobileClose:active{transform:scale(.94)}
+}
+@media (min-width:651px) and (max-width:1366px) and (pointer:coarse){
+  .releaseInfo .detailHeading{padding-right:46px!important}
 }

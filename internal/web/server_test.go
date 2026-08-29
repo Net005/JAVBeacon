@@ -52,6 +52,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`localStorage.setItem(` + "`javbeacon.device.${name}`" + `,String(next))`,
 		`function preferencePayload(){return{...prefs,...serverDisplayDefaults}}`,
 		`for(const name of Object.keys(deviceDisplayPreferenceConfig))delete state[name]`,
+		`toast('Release filters cleared · release-day range kept')`,
 		`saveDeviceDisplayPreference('notificationCoverZoom',e.target.value)`,
 		`saveDeviceDisplayPreference('monitoredCoverZoom',e.target.value)`,
 		`saveDeviceDisplayPreference('downloadCoverZoom',e.target.value)`,
@@ -110,11 +111,20 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if count := strings.Count(string(javascript), "settingsForm.onsubmit="); count != 1 {
 		t.Fatalf("settings form has %d submit handlers, want one atomic handler", count)
 	}
+	clearStart := strings.Index(string(javascript), "function clearReleaseFilterState()")
+	clearEnd := strings.Index(string(javascript), "async function loadPresets()")
+	if clearStart < 0 || clearEnd <= clearStart {
+		t.Fatal("embedded app.js is missing the Release Library filter reset")
+	}
+	clearReleaseFilters := string(javascript)[clearStart:clearEnd]
+	if strings.Contains(clearReleaseFilters, "prefs.releasedMinDays=''") || strings.Contains(clearReleaseFilters, "prefs.releasedMaxDays=''") {
+		t.Fatal("Release Library filter reset must preserve the days-since-release range")
+	}
 	stylesheet, err := assets.ReadFile("static/app.css")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:134px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.cardMetadataRole{`, `.stashSyncProgress{`, `.sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr)`, `.sidebarFooter #appVersion{display:block;min-width:max-content`, `#toast[popover]{position:fixed!important;inset:auto 22px 22px auto!important`, `.card.returnFocus{`, `.downloadToolbar{align-items:flex-end;`, `grid-template-columns:repeat(8,minmax(0,1fr))!important`, `.releaseVisual{display:grid!important;grid-template-rows:auto auto!important`, `.releaseArt .detailBackdrop{display:none!important}`, `.screenshotLightboxStage{touch-action:pan-y`, `.releaseDialog .releaseChrome{display:none!important}`, `.mobileCoverNav{`, `(orientation:landscape) and (pointer:coarse)`, `width:var(--vw100,100vw)!important;max-width:var(--vw100,100vw)!important`, `overflow-y:auto!important;overscroll-behavior:contain!important`} {
+	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:134px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.cardMetadataRole{`, `.stashSyncProgress{`, `.sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr)`, `.sidebarFooter #appVersion{display:block;min-width:max-content`, `#toast[popover]{position:fixed!important;inset:auto 22px 22px auto!important`, `.card.returnFocus{`, `.downloadToolbar{align-items:flex-end;`, `grid-template-columns:repeat(8,minmax(0,1fr))!important`, `.releaseVisual{display:grid!important;grid-template-rows:auto auto!important`, `.releaseArt .detailBackdrop{display:none!important}`, `.screenshotLightboxStage{touch-action:pan-y`, `.releaseDialog .releaseChrome{display:none!important}`, `.mobileCoverNav{`, `(orientation:landscape) and (pointer:coarse)`, `(max-width:1366px) and (pointer:coarse)`, `top:max(8px,env(safe-area-inset-top))!important;right:max(8px,env(safe-area-inset-right))!important`, `width:var(--vw100,100vw)!important;max-width:var(--vw100,100vw)!important`, `overflow-y:auto!important;overscroll-behavior:contain!important`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("embedded app.css is missing %q", marker)
 		}
@@ -126,7 +136,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if !strings.Contains(string(markup), `aria-label="Fullscreen screenshot view"`) {
 		t.Fatal("embedded index.html is missing the fullscreen screenshot view")
 	}
-	if !strings.Contains(string(markup), `id="releaseMobileClose"`) {
+	if !strings.Contains(string(markup), `id="releaseMobileClose"`) || !strings.Contains(string(markup), `<span aria-hidden="true">×</span>`) {
 		t.Fatal("embedded index.html is missing the mobile release close target")
 	}
 	if !strings.Contains(string(markup), `id="releasedStartDate" type="date"`) {

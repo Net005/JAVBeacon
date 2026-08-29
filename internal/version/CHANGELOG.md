@@ -7,6 +7,20 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.46] - 2026-08-29
+
+### Changed
+
+- Clearing Release Library filters now preserves the persisted minimum and
+  maximum days-since-release range instead of silently resetting it.
+
+### Fixed
+
+- Release Details now shows the same compact translucent floating close button
+  on iPhone and coarse-pointer iPads, including tablet widths where the former
+  phone-only close handle was unavailable. The control uses only a small
+  top-right title inset and leaves mouse/desktop layouts unchanged.
+
 ## [1.0.45] - 2026-08-29
 
 ### Changed
