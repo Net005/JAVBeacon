@@ -7,6 +7,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.37] - 2026-08-29
+
 ### Fixed
 
 - Quick refresh now backfills Label, Studio, Director, Actress, release
