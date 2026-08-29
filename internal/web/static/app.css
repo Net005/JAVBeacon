@@ -862,8 +862,8 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .screenshotLightboxStrip button.active{opacity:1;border-color:var(--accent)}
 .screenshotLightboxStrip img{display:block;width:100%;height:100%;object-fit:cover}
 .screenshotBackfillPanel progress{width:100%;height:12px;margin:8px 0 4px;accent-color:var(--accent)}.screenshotBackfillPanel button{width:100%}
-@media(max-width:650px){.releaseVisual{display:contents}.detailScreenshotCarousel{order:1}.releaseArt{order:2}.releaseInfo{order:3}.screenshotLightboxInner{padding:14px;gap:8px}.screenshotLightboxPrev,.screenshotLightboxNext{top:50%;width:52px;height:52px;transform:translateY(-50%);font-size:27px}.screenshotLightboxPrev{left:6px}.screenshotLightboxNext{right:6px}.screenshotLightboxStrip button{flex-basis:52px;height:48px}}
-@media(min-width:651px) and (max-width:1366px) and (pointer:coarse){.screenshotLightboxPrev,.screenshotLightboxNext{top:50%;width:60px;height:60px;transform:translateY(-50%);font-size:31px}.screenshotLightboxPrev{left:clamp(12px,2vw,24px)}.screenshotLightboxNext{right:clamp(12px,2vw,24px)}}
+@media(max-width:650px){.releaseVisual{display:contents}.detailScreenshotCarousel{order:1}.releaseArt{order:2}.releaseInfo{order:3}.screenshotLightboxInner{padding:14px;gap:8px}.screenshotLightboxPrev,.screenshotLightboxNext{top:50%;width:104px;height:104px;transform:translateY(-50%);font-size:48px}.screenshotLightboxPrev{left:6px}.screenshotLightboxNext{right:6px}.screenshotLightboxStrip button{flex-basis:52px;height:48px}}
+@media(min-width:651px) and (max-width:1366px) and (pointer:coarse){.screenshotLightboxPrev,.screenshotLightboxNext{top:50%;width:120px;height:120px;transform:translateY(-50%);font-size:56px}.screenshotLightboxPrev{left:clamp(12px,2vw,24px)}.screenshotLightboxNext{right:clamp(12px,2vw,24px)}}
 .refreshModeTooltip{display:none;position:absolute;z-index:40;top:calc(100% + 8px);left:0;width:min(500px,calc(100vw - 70px));padding:6px;border:1px solid #596273;border-radius:10px;background:#11151df8;box-shadow:0 18px 45px #000d;color:var(--text);font-weight:400}
 .refreshModeInfo:hover .refreshModeTooltip,.refreshModeInfo:focus-within .refreshModeTooltip{display:block}
 .refreshModeTooltip section{padding:10px 11px}
@@ -925,6 +925,19 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .releasedRangePanel input{width:132px;padding:7px 9px}
 .releasedRangePanel input[type=number]{width:105px}
 .releasedRangePanel p{margin:0 0 2px;flex:1 1 260px;font-size:11px}
+.releaseFiltersPanel{margin:0}.releaseFiltersPanel>summary{display:none}.releaseFiltersPanel>.releaseFiltersBody{display:contents!important}
+@media (max-width:1366px) and (pointer:coarse){
+  .releaseFiltersPanel{margin:0 0 8px;border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
+  .releaseFiltersPanel>summary{display:flex;align-items:center;gap:9px;min-height:42px;padding:8px 11px;cursor:pointer;font-size:12px;font-weight:800;list-style:none;user-select:none}
+  .releaseFiltersPanel>summary::-webkit-details-marker{display:none}
+  .releaseFiltersPanel>summary small{min-width:0;margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-weight:600}
+  .releaseFiltersPanel .foldChevron{flex:none;color:var(--muted);font-size:17px;transition:transform .18s}
+  .releaseFiltersPanel[open] .foldChevron{transform:rotate(180deg)}
+  .releaseFiltersPanel>.releaseFiltersBody{display:block!important}
+  .releaseFiltersPanel:not([open])>.releaseFiltersBody{display:none!important}
+  .releaseFiltersPanel .subtabs{border:0;border-top:1px solid var(--line);border-radius:0}
+  .releaseFiltersPanel .toolbar{border-right:0;border-bottom:0;border-left:0}
+}
 .settingsSaveStatus{display:inline-block;min-height:1.3em;margin:0 12px 8px 0;font-size:12px;font-weight:700;vertical-align:middle}
 .settingsSaveStatus.saving{color:var(--muted)}
 .settingsSaveStatus.success{color:#69d6a0}
@@ -959,7 +972,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 
 /* Mobile release navigation. Everything in this block is below the desktop
    breakpoint so the established desktop detail geometry remains untouched. */
-.releaseMobileClose{display:none}
+.releaseMobileClose,.mobileCoverNav{display:none}
 @media(max-width:650px){
   aside{
     height:calc(62px + env(safe-area-inset-bottom))!important;
@@ -1007,10 +1020,38 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
   .screenshotLightboxInner{background:#020305e8}
 }
 
-/* Touch-only detail chrome: cover navigation uses its invisible 20% edge
-   targets, so the artwork stays clear of overlaid previous/next buttons. */
+/* Touch-only detail chrome keeps the desktop controls out of the way. */
 @media(max-width:650px), (min-width:651px) and (max-width:950px) and (orientation:landscape) and (pointer:coarse){
   .releaseDialog .releaseChrome{display:none!important}
+}
+
+/* Subtle cover arrows supplement whole-detail swipes and 20% cover edge taps
+   on both phones and tablets without visually dominating the artwork. */
+@media (max-width:1366px) and (pointer:coarse){
+  .releaseLayout,.screenshotLightboxInner{
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none
+  }
+  .releaseArt,.releaseInfo,.screenshotLightboxStage{
+    touch-action:pan-y pinch-zoom;overscroll-behavior-x:contain
+  }
+  .releaseDialog button,.screenshotLightbox button{
+    touch-action:manipulation;-webkit-tap-highlight-color:transparent
+  }
+  .releaseArt img,.screenshotLightbox img{-webkit-user-drag:none;user-select:none}
+  .screenshotLightboxClose{
+    position:fixed!important;z-index:6!important;top:max(10px,env(safe-area-inset-top))!important;right:max(10px,env(safe-area-inset-right))!important;
+    bottom:auto!important;left:auto!important
+  }
+  .mobileCoverNav{
+    position:absolute;z-index:4;top:50%;display:grid;width:clamp(48px,6vw,64px);height:clamp(48px,6vw,64px);
+    padding:0;transform:translateY(-50%);place-items:center;border:1px solid #ffffff2e;border-radius:50%;
+    background:#06090d33;color:#ffffffe0;font-size:clamp(26px,4vw,38px);line-height:1;opacity:.58;
+    box-shadow:0 5px 18px #0005;backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)
+  }
+  .mobileCoverNav.prev{left:clamp(8px,2vw,20px)}
+  .mobileCoverNav.next{right:clamp(8px,2vw,20px)}
+  .mobileCoverNav:active{opacity:.9;background:#0a0e1470}
+  .mobileCoverNav:disabled{opacity:.16;pointer-events:none}
 }
 
 /* A phone rotated to landscape is wider than the portrait breakpoint and was
