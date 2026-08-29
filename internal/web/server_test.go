@@ -57,6 +57,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`saveDeviceDisplayPreference('monitoredCoverZoom',e.target.value)`,
 		`saveDeviceDisplayPreference('downloadCoverZoom',e.target.value)`,
 		`screenshotSlideSeconds:2.5`,
+		`releaseFiltersOpen:false`,
 		`Number(prefs.screenshotSlideSeconds)||2.5`,
 		`/releases/${release.id}/screenshots`,
 		`const screenshotLightbox=$('#screenshotLightbox')`,
@@ -85,6 +86,8 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`class="stashSyncProgress"`,
 		`j.current_item?`,
 		`function syncReleaseTabControls()`,
+		`releaseFiltersPanel.addEventListener('toggle',()=>{prefs.releaseFiltersOpen=releaseFiltersPanel.open;savePreferences()})`,
+		`function updateReleaseFiltersSummary()`,
 		`viewportBottom>=pageHeight*.60`,
 		`releaseNavIDs.length-idx-1>25`,
 		`releaseNavFromGrid?null:releaseNavIDs`,
@@ -97,13 +100,15 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`releaseCountAbort?.abort()`,
 		`metadataOptionTimer=setTimeout(run,220)`,
 		`function wireTouchSwipe(`,
-		`const interactive=e=>e.target.closest?.('button,a,input,select,textarea')`,
+		`const interactive=e=>e.target.closest?.('button,a,input,select,textarea,.detailScreenshotRail,.screenshotLightboxStrip')`,
 		`if(dx<0)next?.();else previous?.()`,
 		`function edgeTapDirection(x,width){return x<=width*.2?-1:x>=width*.8?1:0}`,
-		`tap:({x,width})=>runEdgeTap(x,width,navigateRelease)`,
-		`wireTouchSwipe(screenshotLightboxStage`,
+		`wireTouchSwipe(layout,{next:()=>navigateRelease(1),previous:()=>navigateRelease(-1)`,
+		`wireTouchSwipe(screenshotLightboxInner`,
 		`tap:({x,width})=>runEdgeTap(x,width,navigateScreenshot)`,
-		`function wireReleaseDetailEdgeNavigation()`,
+		`function wireReleaseDetailTouchNavigation()`,
+		`class="mobileCoverNav prev"`,
+		`mobilePrev=releaseDetail.querySelector('.mobileCoverNav.prev')`,
 		`screenshotLightbox.querySelector('.screenshotLightboxClose').onclick=closeScreenshotLightbox`,
 		`$('#releaseMobileClose').onclick=()=>releaseDialog.close()`,
 		`function lockDesktopReleaseScroll(){return matchMedia('(min-width:651px) and (pointer:fine)').matches}`,
@@ -128,7 +133,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:134px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.cardMetadataRole{`, `.stashSyncProgress{`, `.sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr)`, `.sidebarFooter #appVersion{display:block;min-width:max-content`, `#toast[popover]{position:fixed!important;inset:auto 22px 22px auto!important`, `.card.returnFocus{`, `.downloadToolbar{align-items:flex-end;`, `grid-template-columns:repeat(8,minmax(0,1fr))!important`, `.releaseVisual{display:grid!important;grid-template-rows:auto auto!important`, `.releaseArt .detailBackdrop{display:none!important}`, `.screenshotLightboxStage{touch-action:pan-y`, `.releaseDialog .releaseChrome{display:none!important}`, `(orientation:landscape) and (pointer:coarse)`, `(max-width:1366px) and (pointer:coarse)`, `width:60px;height:60px`, `width:52px;height:52px`, `top:max(8px,env(safe-area-inset-top))!important;right:max(8px,env(safe-area-inset-right))!important`, `width:var(--vw100,100vw)!important;max-width:var(--vw100,100vw)!important`, `overflow-y:auto!important;overscroll-behavior:contain!important`} {
+	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:134px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.releaseFiltersPanel>summary{display:none}`, `.releaseFiltersPanel:not([open])>.releaseFiltersBody{display:none!important}`, `.cardMetadataRole{`, `.stashSyncProgress{`, `.sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr)`, `.sidebarFooter #appVersion{display:block;min-width:max-content`, `#toast[popover]{position:fixed!important;inset:auto 22px 22px auto!important`, `.card.returnFocus{`, `.downloadToolbar{align-items:flex-end;`, `grid-template-columns:repeat(8,minmax(0,1fr))!important`, `.releaseVisual{display:grid!important;grid-template-rows:auto auto!important`, `.releaseArt .detailBackdrop{display:none!important}`, `.screenshotLightboxStage{touch-action:pan-y`, `.releaseDialog .releaseChrome{display:none!important}`, `.mobileCoverNav{`, `.releaseLayout,.screenshotLightboxInner{`, `-webkit-user-select:none;user-select:none;-webkit-touch-callout:none`, `touch-action:pan-y pinch-zoom;overscroll-behavior-x:contain`, `.releaseDialog button,.screenshotLightbox button{`, `touch-action:manipulation;-webkit-tap-highlight-color:transparent`, `.screenshotLightboxClose{`, `top:max(10px,env(safe-area-inset-top))!important;right:max(10px,env(safe-area-inset-right))!important`, `(orientation:landscape) and (pointer:coarse)`, `(max-width:1366px) and (pointer:coarse)`, `width:120px;height:120px`, `width:104px;height:104px`, `top:max(8px,env(safe-area-inset-top))!important;right:max(8px,env(safe-area-inset-right))!important`, `width:var(--vw100,100vw)!important;max-width:var(--vw100,100vw)!important`, `overflow-y:auto!important;overscroll-behavior:contain!important`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("embedded app.css is missing %q", marker)
 		}
@@ -145,6 +150,9 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	}
 	if !strings.Contains(string(markup), `id="releasedStartDate" type="date"`) {
 		t.Fatal("embedded index.html is missing the persisted Released-tab start date")
+	}
+	if !strings.Contains(string(markup), `id="releaseFiltersPanel"`) || !strings.Contains(string(markup), `id="releaseFiltersSummary"`) {
+		t.Fatal("embedded index.html is missing the mobile Release Library filter fold")
 	}
 	if strings.Contains(string(markup), `<p class="eyebrow">SERVER DIAGNOSTICS</p><h2>Live application log</h2>`) || strings.Contains(string(markup), `<p class="eyebrow">STASHAPP RECOVERY</p><h2>Missing library files</h2>`) {
 		t.Fatal("embedded index.html still contains duplicate Logs or Missing Files page headings")

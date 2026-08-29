@@ -7,6 +7,36 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.48] - 2026-08-30
+
+### Added
+
+- Release Library filters and tabs now live in one compact foldable panel on
+  iPhone and iPad, shared across All, Released, Upcoming, Local, and Desired so
+  the cover grid can use more of the screen.
+- The mobile Release Library filter panel remembers its folded state through
+  page reloads, sessions, and application restarts.
+- Restored subtle translucent previous/next controls over the Release Details
+  cover on iPhone and iPad.
+- Horizontal swipes across the Release Details content now navigate releases,
+  while fullscreen screenshot swipes work across the complete viewer; moving
+  content left advances and moving it right returns to the previous item.
+
+### Changed
+
+- Fullscreen screenshot navigation buttons are now twice their previous touch
+  size on both iPhone and iPad.
+
+### Fixed
+
+- The fullscreen screenshot close button is now anchored to the safe top-right
+  viewport corner on iPhone in both portrait and landscape, matching iPad.
+- Rapid taps on mobile Release Details and screenshot controls no longer invoke
+  the browser's double-tap page zoom, while ordinary pinch zoom remains
+  available.
+- Horizontal release and screenshot swipes no longer select text, drag images,
+  or open the iOS touch callout.
+
 ## [1.0.47] - 2026-08-30
 
 ### Added
@@ -1021,7 +1051,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.47...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.48...HEAD
+[1.0.48]: https://github.com/Net005/JAVBeacon/compare/v1.0.47...v1.0.48
 [1.0.47]: https://github.com/Net005/JAVBeacon/compare/v1.0.46...v1.0.47
 [1.0.46]: https://github.com/Net005/JAVBeacon/compare/v1.0.45...v1.0.46
 [1.0.45]: https://github.com/Net005/JAVBeacon/compare/v1.0.44...v1.0.45
