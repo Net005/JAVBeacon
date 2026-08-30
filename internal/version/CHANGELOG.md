@@ -7,6 +7,32 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.53] - 2026-08-30
+
+### Added
+
+- Replaced the old text and emoji state markers with consistent outline icons:
+  a movie Watchlist, modern notification bell, and release-watcher eye.
+
+### Changed
+
+- Renamed the user-facing Desired state to Watchlist throughout the interface,
+  settings, filters, messages, documentation, schedules, and application logs.
+- On touch devices, tapping the Downloading pill now opens and closes its live
+  details without opening the torrent source; desktop clicks still open the
+  source while hover and keyboard focus expose the same details.
+- Renamed the `Updated` sorting option to `Date updated` and placed it directly
+  below `Date added` in the Release Library, Download Activity, and monitored
+  release sorting menus.
+- Reduced fullscreen screenshot navigation and close controls on phones and
+  tablets to responsive 48–64 pixel targets in portrait and landscape.
+
+### Fixed
+
+- Release Details now allows the complete Downloading telemetry card to escape
+  its compact action layout, so ETA, seeds/peers, last seen complete, and date
+  added are all visible on desktop as well as mobile.
+
 ## [1.0.52] - 2026-08-30
 
 ### Added
@@ -1154,7 +1180,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.52...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.53...HEAD
+[1.0.53]: https://github.com/Net005/JAVBeacon/compare/v1.0.52...v1.0.53
 [1.0.52]: https://github.com/Net005/JAVBeacon/compare/v1.0.51...v1.0.52
 [1.0.51]: https://github.com/Net005/JAVBeacon/compare/v1.0.50...v1.0.51
 [1.0.50]: https://github.com/Net005/JAVBeacon/compare/v1.0.49...v1.0.50

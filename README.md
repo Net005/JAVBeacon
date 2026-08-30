@@ -24,7 +24,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete version history.
 - Search Sukebei/Nyaa-compatible providers and submit vetted torrents to qBittorrent.
 - Run scheduled searches for recent and older monitored releases, with independent intervals and filename acceptance rules.
 - Use per-site RSS monitoring, duplicate prevention, torrent progress, seed/peer status, and download history.
-- Reconcile releases with StashApp, synchronize Desired tags, and scan the Stash library for missing files.
+- Reconcile releases with StashApp, synchronize Watchlist tags, and scan the Stash library for missing files.
 - Run ordered post-download and post-removal pipelines, including path mapping, shell commands, moves, and StashApp scans.
 - Cache cover artwork and JavLibrary screenshots locally, preview screenshots
   as card slideshows, and browse them from Release Details.
@@ -225,9 +225,9 @@ version is shown at the bottom of the web sidebar near **Sign out**.
 
 1. Sign in and replace the default credentials.
 2. Confirm **Settings → Scraping → Byparr / FlareSolverr** shows `http://byparr:8191/v1` for Compose, or the reachable `/v1` endpoint you configured for a standalone install. Byparr (or a compatible FlareSolverr service) is required for JavLibrary scraping.
-3. Add monitoring sources under **Sites** and choose whether each source should notify, mark releases as Desired, or automate searches. JavLibrary URLs must include `&mode=2` to include future releases.
+3. Add monitoring sources under **Sites** and choose whether each source should notify, add releases to the Watchlist, or automate searches. JavLibrary URLs must include `&mode=2` to include future releases.
 4. Open **Settings → Downloads** and configure the search URL template, accepted filename patterns, and qBittorrent connection.
-5. Optionally configure **Settings → StashApp** for local-library synchronization, Desired-tag synchronization, missing-file scans, and path remapping.
+5. Optionally configure **Settings → StashApp** for local-library synchronization, Watchlist-tag synchronization, missing-file scans, and path remapping.
 6. Review automation schedules before enabling unattended scraping or downloading.
 
 ## Configuration
