@@ -350,8 +350,8 @@ func (s *Server) routes() {
 		}
 		s.json(w, 202, s.stash.Status())
 	})
-	s.mux.HandleFunc("POST /api/jobs/stash/desired", func(w http.ResponseWriter, r *http.Request) {
-		x, e := s.stash.SyncDesired(r.Context())
+	s.mux.HandleFunc("POST /api/jobs/stash/watchlist", func(w http.ResponseWriter, r *http.Request) {
+		x, e := s.stash.SyncWatchlist(r.Context())
 		if e != nil {
 			s.problem(w, 502, e.Error())
 			return
@@ -1180,7 +1180,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &x) {
 		return
 	}
-	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "stash_desired_tag_id": true, "stash_desired_sync_enabled": true, "stash_desired_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
+	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "stash_watchlist_tag_id": true, "stash_watchlist_sync_enabled": true, "stash_watchlist_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
 	for _, kind := range monitor.JobPriorityKinds {
 		allowed[monitor.JobPrioritySettingKey(kind)] = true
 	}
@@ -1222,7 +1222,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// download_search_interval/download_search_older_interval (Monitored
-	// releases) and stash_sync_interval/stash_desired_sync_interval
+	// releases) and stash_sync_interval/stash_watchlist_sync_interval
 	// (StashApp) are plain "Run every" duration strings, same shape as
 	// refresh_interval/full_refresh_interval above but without a
 	// corresponding calendar/cron override - validated the same way (only
@@ -1231,7 +1231,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// up front instead of silently falling back to that schedule's default
 	// interval downstream, which used to look exactly like the schedule
 	// hadn't picked up the change at all.
-	for _, key := range []string{"download_search_interval", "download_search_older_interval", "stash_sync_interval", "stash_desired_sync_interval"} {
+	for _, key := range []string{"download_search_interval", "download_search_older_interval", "stash_sync_interval", "stash_watchlist_sync_interval"} {
 		if raw, ok := x[key]; ok && strings.TrimSpace(raw) != "" {
 			if parsed, err := domain.ParseScheduleDuration(strings.TrimSpace(raw)); err != nil || parsed < time.Minute {
 				s.problem(w, http.StatusUnprocessableEntity, key+": schedule must be a valid duration of at least 1 minute (e.g. \"1h\", \"30m\", \"7d\")")
@@ -1551,7 +1551,7 @@ func validReleaseDateBound(raw string) string {
 func releaseFilterFromQuery(q url.Values, settings map[string]string) domain.ReleaseFilter {
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
-	f := domain.ReleaseFilter{Search: q.Get("search"), Site: q.Get("site"), Status: q.Get("status"), Sort: q.Get("sort"), Direction: q.Get("direction"), Category: q.Get("category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), Desired: q.Get("desired") == "true", MonitorDownload: q.Get("monitor_download") == "true", HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", MinReleaseDate: validReleaseDateBound(q.Get("min_release_date")), MaxReleaseDate: validReleaseDateBound(q.Get("max_release_date")), Limit: limit, Offset: offset}
+	f := domain.ReleaseFilter{Search: q.Get("search"), Site: q.Get("site"), Status: q.Get("status"), Sort: q.Get("sort"), Direction: q.Get("direction"), Category: q.Get("category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), Watchlist: q.Get("watchlist") == "true", MonitorDownload: q.Get("monitor_download") == "true", HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", MinReleaseDate: validReleaseDateBound(q.Get("min_release_date")), MaxReleaseDate: validReleaseDateBound(q.Get("max_release_date")), Limit: limit, Offset: offset}
 	if !f.ShowNonPreferred {
 		f.IgnoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
 		f.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
@@ -1700,7 +1700,7 @@ func (s *Server) patchRelease(w http.ResponseWriter, r *http.Request) {
 		Local                      *bool   `json:"local"`
 		Notified                   *bool   `json:"notified"`
 		NotifyOnRelease            *bool   `json:"notify_on_release"`
-		Desired                    *bool   `json:"desired"`
+		Watchlist                  *bool   `json:"watchlist"`
 		MonitorDownload            *bool   `json:"monitor_download"`
 		Label                      *string `json:"label"`
 		AllowNonPreferredFilenames *bool   `json:"allow_non_preferred_filenames"`
@@ -1710,7 +1710,7 @@ func (s *Server) patchRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	n, e := id(r)
 	if e == nil {
-		e = s.store.PatchRelease(r.Context(), n, p.Released, p.Local, p.Notified, p.NotifyOnRelease, p.Desired, p.MonitorDownload, p.Label, p.AllowNonPreferredFilenames)
+		e = s.store.PatchRelease(r.Context(), n, p.Released, p.Local, p.Notified, p.NotifyOnRelease, p.Watchlist, p.MonitorDownload, p.Label, p.AllowNonPreferredFilenames)
 	}
 	if errors.Is(e, sql.ErrNoRows) {
 		s.problem(w, 404, "release not found")
@@ -1721,16 +1721,16 @@ func (s *Server) patchRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	x, _ := s.store.Release(r.Context(), n)
-	if p.Desired != nil {
-		if !*p.Desired {
-			x.DesiredSync = "not_desired"
-		} else if settingsErr := s.store.SaveSettings(r.Context(), map[string]string{"stash_desired_sync_enabled": "true"}); settingsErr != nil {
-			x.DesiredSync = "error: " + settingsErr.Error()
-		} else if state, syncErr := s.stash.SyncDesiredRelease(r.Context(), n); syncErr != nil {
-			x.DesiredSync = "error: " + syncErr.Error()
+	if p.Watchlist != nil {
+		if !*p.Watchlist {
+			x.WatchlistSync = "not_watchlist"
+		} else if settingsErr := s.store.SaveSettings(r.Context(), map[string]string{"stash_watchlist_sync_enabled": "true"}); settingsErr != nil {
+			x.WatchlistSync = "error: " + settingsErr.Error()
+		} else if state, syncErr := s.stash.SyncWatchlistRelease(r.Context(), n); syncErr != nil {
+			x.WatchlistSync = "error: " + syncErr.Error()
 			s.log.Warn("immediate Stash Watchlist sync failed", "release_id", n, "video_id", x.VideoID, "error", syncErr)
 		} else {
-			x.DesiredSync = state
+			x.WatchlistSync = state
 		}
 	}
 	s.broadcastRelease(x)

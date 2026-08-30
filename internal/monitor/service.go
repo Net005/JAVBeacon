@@ -966,7 +966,7 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 				job.Added++
 				siteAdded++
 				s.log.Info("release added", "site", site.Title, "provider", site.Name, "mode", options.Mode, "video_id", r.VideoID)
-				if site.Desired {
+				if site.Watchlist {
 					releaseID := int64(0)
 					if savedRows, findErr := s.store.Releases(ctx, domain.ReleaseFilter{Search: r.VideoID, Limit: 10}); findErr == nil {
 						for _, saved := range savedRows {
@@ -1166,7 +1166,7 @@ func (s *Service) doRefreshRelease(ctx context.Context, id int64, job *domain.Jo
 // the job's final Outcome (Phase 12) can distinguish "updated" from "no new
 // information found" instead of always claiming success. It only compares
 // the fields a detail-page Refresh can populate (see mergeJav/merge in the
-// scraper package); fields Refresh never touches (Desired, Notified, local
+// scraper package); fields Refresh never touches (Watchlist, Notified, local
 // state, and so on) are intentionally excluded. Callers should pass two
 // store-normalized reads (see refreshRelease) rather than comparing a raw
 // scrape result against a stored value.

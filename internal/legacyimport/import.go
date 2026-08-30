@@ -173,7 +173,7 @@ func Run(ctx context.Context, options Options) (Report, error) {
 			report.SitesCreated++
 			if options.Apply {
 				siteType := classes.siteType(r.SiteTitle)
-				if _, err := tx.ExecContext(ctx, `INSERT INTO sites(title,type,name,url,notify,download,desired,rss_url,enabled,created_at,updated_at) VALUES(?,?,?,?,0,0,0,'',0,?,?) ON CONFLICT(title) DO NOTHING`, r.SiteTitle, siteType, r.Source, "", time.Now().UTC(), time.Now().UTC()); err != nil {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO sites(title,type,name,url,notify,download,watchlist,rss_url,enabled,created_at,updated_at) VALUES(?,?,?,?,0,0,0,'',0,?,?) ON CONFLICT(title) DO NOTHING`, r.SiteTitle, siteType, r.Source, "", time.Now().UTC(), time.Now().UTC()); err != nil {
 					return err
 				}
 				var siteID int64
@@ -468,7 +468,7 @@ func upsert(ctx context.Context, tx *sql.Tx, siteID int64, videoID string, r res
 		productURL = "https://www.akiba-web.com/product/product.php?product_id=" + url.QueryEscape(r.ScraperID)
 	}
 	identityKey := legacyReleaseIdentity(r.Source, videoID)
-	_, err := tx.ExecContext(ctx, `INSERT INTO releases(site_id,identity_key,video_id,scraper_id,title,release_date,source,image_url,product_url,actress,director,studio,genres,duration,story,screenshots,released,is_local,notified,notify_on_release,desired,monitor_download,stash_scene_id,added_at,updated_at)
+	_, err := tx.ExecContext(ctx, `INSERT INTO releases(site_id,identity_key,video_id,scraper_id,title,release_date,source,image_url,product_url,actress,director,studio,genres,duration,story,screenshots,released,is_local,notified,notify_on_release,watchlist,monitor_download,stash_scene_id,added_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'','[]',?,?,?,0,0,0,'',?,?)
 		ON CONFLICT DO UPDATE SET
 		identity_key=COALESCE(NULLIF(releases.identity_key,''),excluded.identity_key),scraper_id=COALESCE(NULLIF(excluded.scraper_id,''),releases.scraper_id),title=COALESCE(NULLIF(excluded.title,''),releases.title),release_date=COALESCE(NULLIF(excluded.release_date,''),releases.release_date),source=COALESCE(NULLIF(excluded.source,''),releases.source),image_url=COALESCE(NULLIF(excluded.image_url,''),releases.image_url),product_url=COALESCE(NULLIF(excluded.product_url,''),releases.product_url),actress=COALESCE(NULLIF(excluded.actress,''),releases.actress),director=COALESCE(NULLIF(excluded.director,''),releases.director),studio=COALESCE(NULLIF(excluded.studio,''),releases.studio),genres=CASE WHEN excluded.genres='[]' THEN releases.genres ELSE excluded.genres END,duration=COALESCE(NULLIF(excluded.duration,''),releases.duration),released=MAX(releases.released,excluded.released),is_local=MAX(releases.is_local,excluded.is_local),notified=MAX(releases.notified,excluded.notified),added_at=MIN(releases.added_at,excluded.added_at),updated_at=MAX(releases.updated_at,excluded.updated_at)`,

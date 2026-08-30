@@ -45,6 +45,103 @@ func TestSQLiteReleaseLifecycle(t *testing.T) {
 	}
 }
 
+func TestSQLiteMigratesWatchlistNamingWithoutLosingState(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "watchlist-naming.db")
+	s, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveUser(ctx, "admin", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	retired := "des" + "ired"
+	retiredTitle := "Des" + "ired"
+	preferenceState := json.RawMessage(fmt.Sprintf(`{"%s":true,"sortField":"%s_marked","releaseShortcuts":{"toggle%s":["x"]},"monitored%sOnly":true}`, retired, retired, retiredTitle, retiredTitle))
+	if err := s.SavePreferences(ctx, preferenceState); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveFilterPreset(ctx, domain.FilterPreset{Name: "legacy", State: json.RawMessage(fmt.Sprintf(`{"%s":true}`, retired))}); err != nil {
+		t.Fatal(err)
+	}
+	site, err := s.SaveSite(ctx, domain.Site{Title: "Migration", Type: "Site", Name: "Migration", Enabled: true, Watchlist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "MIG-001", Title: "Migration", Source: "Migration", Watchlist: true}); err != nil {
+		t.Fatal(err)
+	}
+	release, found, err := s.ReleaseForSite(ctx, site.ID, "Migration", "MIG-001")
+	if err != nil || !found {
+		t.Fatalf("release lookup before migration: found=%v err=%v", found, err)
+	}
+	if err := s.SaveWatchlistSync(ctx, release.ID, "scene-1", "tag-1", "tagged"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`DROP INDEX IF EXISTS idx_releases_watchlist_date`,
+		fmt.Sprintf(`ALTER TABLE sites RENAME COLUMN watchlist TO %s`, retired),
+		fmt.Sprintf(`ALTER TABLE releases RENAME COLUMN watchlist_at TO %s_at`, retired),
+		fmt.Sprintf(`ALTER TABLE releases RENAME COLUMN watchlist TO %s`, retired),
+		fmt.Sprintf(`ALTER TABLE watchlist_sync RENAME TO %s_sync`, retired),
+		fmt.Sprintf(`INSERT INTO settings(key,value,updated_at) VALUES('stash_%s_sync_enabled','true',CURRENT_TIMESTAMP)`, retired),
+	}
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			db.Close()
+			t.Fatalf("prepare retired schema with %q: %v", statement, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err = OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	sites, err := s.Sites(ctx)
+	if err != nil || len(sites) != 1 || !sites[0].Watchlist {
+		t.Fatalf("site watchlist state was not preserved: sites=%+v err=%v", sites, err)
+	}
+	release, found, err = s.ReleaseForSite(ctx, site.ID, "Migration", "MIG-001")
+	if err != nil || !found || !release.Watchlist || release.WatchlistAt.IsZero() {
+		t.Fatalf("release watchlist state was not preserved: release=%+v err=%v", release, err)
+	}
+	if synced, err := s.WatchlistSynced(ctx, release.ID, "scene-1", "tag-1"); err != nil || !synced {
+		t.Fatalf("watchlist sync state was not preserved: synced=%v err=%v", synced, err)
+	}
+	settings, err := s.Settings(ctx)
+	if err != nil || settings["stash_watchlist_sync_enabled"] != "true" {
+		t.Fatalf("watchlist setting was not migrated: settings=%v err=%v", settings, err)
+	}
+	preferences, err := s.Preferences(ctx)
+	if err != nil || strings.Contains(string(preferences), retired) || !strings.Contains(string(preferences), "watchlist_marked") || !strings.Contains(string(preferences), "toggleWatchlist") {
+		t.Fatalf("preferences were not migrated: %s err=%v", preferences, err)
+	}
+	presets, err := s.FilterPresets(ctx)
+	if err != nil || len(presets) != 1 || strings.Contains(string(presets[0].State), retired) || !strings.Contains(string(presets[0].State), "watchlist") {
+		t.Fatalf("filter preset was not migrated: presets=%+v err=%v", presets, err)
+	}
+	for _, target := range []struct{ table, column string }{{"sites", retired}, {"releases", retired}, {"releases", retired + "_at"}} {
+		if exists, err := s.columnExists(ctx, target.table, target.column); err != nil || exists {
+			t.Fatalf("retired column remains: %s.%s exists=%v err=%v", target.table, target.column, exists, err)
+		}
+	}
+	if exists, err := s.tableExists(ctx, retired+"_sync"); err != nil || exists {
+		t.Fatalf("retired sync table remains: exists=%v err=%v", exists, err)
+	}
+}
+
 func TestReleaseCardsUseCursorPaginationAndLightweightRows(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "release-cards.db"))
@@ -453,7 +550,7 @@ func TestReleaseConditionsSupportMetadataDatesNumbersAndStates(t *testing.T) {
 	}
 	defer s.Close()
 	site, _ := s.SaveSite(ctx, domain.Site{Title: "Condition Label", Type: "Label", Name: "JavLibrary", Enabled: true})
-	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "COND-ALL", Title: "Condition release", Source: "JavLibrary", ReleaseDate: "2024-05-01", Studio: "Bright Studio", Label: "Crystal Label", Duration: "120 min", Desired: true, MonitorDownload: true}); err != nil {
+	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "COND-ALL", Title: "Condition release", Source: "JavLibrary", ReleaseDate: "2024-05-01", Studio: "Bright Studio", Label: "Crystal Label", Duration: "120 min", Watchlist: true, MonitorDownload: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "COND-OTHER", Title: "Other", Source: "JavLibrary"}); err != nil {
@@ -484,7 +581,7 @@ func TestReleaseConditionsSupportMetadataDatesNumbersAndStates(t *testing.T) {
 		"date added before":               `{"field":"added_at","op":"before","value":"2025-01-01"}`,
 		"date updated before":             `{"field":"updated_at","op":"before","value":"2024-07-01"}`,
 		"release date after":              `{"field":"release_date","op":"after","value":"2024-04-01"}`,
-		"desired":                         `{"field":"desired","value":"true"}`,
+		"watchlist":                       `{"field":"watchlist","value":"true"}`,
 		"downloaded":                      `{"field":"downloaded","value":"true"}`,
 		"download started":                `{"field":"download_started","value":"true"}`,
 		"download failed":                 `{"field":"download_failed","value":"true"}`,
@@ -498,10 +595,10 @@ func TestReleaseConditionsSupportMetadataDatesNumbersAndStates(t *testing.T) {
 			t.Fatalf("%s: matches=%v err=%v", name, matches, err)
 		}
 	}
-	falseExpr := `{"logic":"and","conditions":[{"field":"desired","value":"false"}]}`
+	falseExpr := `{"logic":"and","conditions":[{"field":"watchlist","value":"false"}]}`
 	matches, err := s.Releases(ctx, domain.ReleaseFilter{SearchExpression: falseExpr, Limit: 10})
 	if err != nil || len(matches) != 1 || matches[0].VideoID != "COND-OTHER" {
-		t.Fatalf("desired=no: matches=%v err=%v", matches, err)
+		t.Fatalf("watchlist=no: matches=%v err=%v", matches, err)
 	}
 }
 
@@ -939,7 +1036,7 @@ func TestUpsertReleasePreservesDetailMetadataOnPartialScrape(t *testing.T) {
 	}
 }
 
-func TestReleaseFiltersReverseActressNameStructuredSearchAndDesired(t *testing.T) {
+func TestReleaseFiltersReverseActressNameStructuredSearchAndWatchlist(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "filters.db"))
 	if err != nil {
@@ -950,11 +1047,11 @@ func TestReleaseFiltersReverseActressNameStructuredSearchAndDesired(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-1", Title: "Moon &Amp; Story", Actress: "Neo Akari | (Kojima Ami) | Other Actress", Studio: "M&#039;s Video Group", Genres: []string{"Drama", "Best, Omnibus"}, Story: "A &lt;b&gt;detailed&lt;/b&gt; story", Desired: true})
+	_, err = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-1", Title: "Moon &Amp; Story", Actress: "Neo Akari | (Kojima Ami) | Other Actress", Studio: "M&#039;s Video Group", Genres: []string{"Drama", "Best, Omnibus"}, Story: "A &lt;b&gt;detailed&lt;/b&gt; story", Watchlist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := s.Releases(ctx, domain.ReleaseFilter{Category: "Actress", Entries: "Akari Neo", Desired: true, Limit: 10})
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{Category: "Actress", Entries: "Akari Neo", Watchlist: true, Limit: 10})
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("reverse actress filter: rows=%d err=%v", len(rows), err)
 	}

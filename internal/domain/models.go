@@ -15,7 +15,7 @@ type Site struct {
 	Notify            bool      `json:"notify"`
 	Download          bool      `json:"download"`
 	DownloadMode      string    `json:"download_mode"`
-	Desired           bool      `json:"desired"`
+	Watchlist         bool      `json:"watchlist"`
 	RSSURL            string    `json:"rss_url"`
 	Enabled           bool      `json:"enabled"`
 	CreatedAt         time.Time `json:"created_at"`
@@ -53,11 +53,11 @@ type Release struct {
 	Local               bool     `json:"local"`
 	Notified            bool     `json:"notified"`
 	NotifyOnRelease     bool     `json:"notify_on_release"`
-	Desired             bool     `json:"desired"`
+	Watchlist           bool     `json:"watchlist"`
 	MonitorDownload     bool     `json:"monitor_download"`
 	SiteMonitorDownload bool     `json:"site_monitor_download"`
 	StashSceneID        string   `json:"stash_scene_id"`
-	DesiredSync         string   `json:"desired_sync,omitempty"`
+	WatchlistSync       string   `json:"watchlist_sync,omitempty"`
 	// DownloadStatus is computed: "downloading" when an active torrent
 	// exists for this release, "completed" when the most recent finished
 	// download for it succeeded, or "" when there is none (Phase 6A).
@@ -97,14 +97,14 @@ type Release struct {
 	// reflects when the scene was actually created in your StashApp
 	// library rather than when JAVBeacon happened to notice it.
 	StashCreatedAt time.Time `json:"stash_created_at,omitempty"`
-	// DesiredAt records when a release was (most recently) marked Desired:
-	// refreshed on every PatchRelease call that sets Desired to true (unlike
-	// StashAddedAt's "set once" pattern, re-marking something Desired after
+	// WatchlistAt records when a release was (most recently) marked Watchlist:
+	// refreshed on every PatchRelease call that sets Watchlist to true (unlike
+	// StashAddedAt's "set once" pattern, re-marking something Watchlist after
 	// unmarking it is a deliberate user action that should bubble it back to
-	// the top), and left untouched when Desired is cleared. It powers the
-	// Release Library's "Desired" tab default sort (newest marked first) via
-	// the desired_marked sort option.
-	DesiredAt time.Time `json:"desired_at,omitempty"`
+	// the top), and left untouched when Watchlist is cleared. It powers the
+	// Release Library's "Watchlist" tab default sort (newest marked first) via
+	// the watchlist_marked sort option.
+	WatchlistAt time.Time `json:"watchlist_at,omitempty"`
 	// StashReleaseDate is the release's `date` field as recorded on its
 	// matched StashApp scene, kept in sync opportunistically during a local-
 	// library sync. It exists to fill in a release date for display when
@@ -146,7 +146,7 @@ type Release struct {
 // this alone", not "clear it".
 //
 // Deliberately excluded: Local, Notified, StashSceneID, StashAddedAt,
-// StashCreatedAt, StashReleaseDate, DesiredAt, and DownloadedAt. Those are derived from real external
+// StashCreatedAt, StashReleaseDate, WatchlistAt, and DownloadedAt. Those are derived from real external
 // state (an actual download, an actual StashApp sync) rather than being
 // facts about the release itself, so hand-editing them here would let the
 // UI claim something happened (a download, a library sync) that didn't -
@@ -167,7 +167,7 @@ type ReleaseEdit struct {
 	Actress         *string    `json:"actress"`
 	Genres          *[]string  `json:"genres"`
 	Released        *bool      `json:"released"`
-	Desired         *bool      `json:"desired"`
+	Watchlist       *bool      `json:"watchlist"`
 	MonitorDownload *bool      `json:"monitor_download"`
 	NotifyOnRelease *bool      `json:"notify_on_release"`
 	AddedAt         *time.Time `json:"added_at"`
@@ -176,7 +176,7 @@ type ReleaseEdit struct {
 
 type ReleaseFilter struct {
 	Search, Site, Source, Status, Sort, Direction, Category, Entries, SearchExpression string
-	Desired, HideLocal, MonitorDownload, UsePreferred                                  bool
+	Watchlist, HideLocal, MonitorDownload, UsePreferred                                bool
 	Limit, Offset                                                                      int
 	// ShowNonPreferred, when false (the default), tells Releases/ReleasesCount
 	// to exclude any release matching an ignore rule (see IgnoreTags and
@@ -244,7 +244,7 @@ type DownloadFilter struct {
 	// FilenamePatternExcluded, when true, restricts DownloadActivity to
 	// downloads submitted despite not being a normal accepted-filename
 	// match (TODO-2.0 Task A) - see Download.FilenamePatternExcluded. Like
-	// ReleaseFilter's other one-way toggles (Desired, HideLocal, ...),
+	// ReleaseFilter's other one-way toggles (Watchlist, HideLocal, ...),
 	// false means "don't filter on this" rather than "must be false".
 	FilenamePatternExcluded bool
 	Stalled                 bool

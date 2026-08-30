@@ -21,7 +21,7 @@ var scheduleDurationTokenPattern = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)(d|w)`
 //
 // Every scheduled-job interval setting (the Quick/Full/New Release Only
 // scrape schedules, Download monitoring's recent/older search schedules,
-// and StashApp's local-library/Desired-tag sync schedules) parses through
+// and StashApp's local-library/Watchlist-tag sync schedules) parses through
 // this instead of calling time.ParseDuration directly, so they all accept
 // the same set of units consistently. Before this existed, typing "7d" into
 // one of these fields looked accepted (the raw text was saved and echoed

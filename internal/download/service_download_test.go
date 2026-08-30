@@ -140,18 +140,18 @@ func TestDownloadForcedOverrideBypassesFilenameRejection(t *testing.T) {
 	}
 }
 
-func TestSiteDesiredRuleDoesNotRetroactivelyChangeExistingRelease(t *testing.T) {
+func TestSiteWatchlistRuleDoesNotRetroactivelyChangeExistingRelease(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "site-desired.db"))
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "site-watchlist.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	site, err := st.SaveSite(ctx, domain.Site{Title: "Future Desired", Type: "Site", Name: "JavLibrary", Desired: true, Enabled: true})
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Future Watchlist", Type: "Site", Name: "JavLibrary", Watchlist: true, Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-100", Title: "Existing", Source: "JavLibrary", Desired: false})
+	_, err = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-100", Title: "Existing", Source: "JavLibrary", Watchlist: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestSiteDesiredRuleDoesNotRetroactivelyChangeExistingRelease(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unchanged.Desired {
-		t.Fatal("site-level Desired rule changed an existing release")
+	if unchanged.Watchlist {
+		t.Fatal("site-level Watchlist rule changed an existing release")
 	}
 }

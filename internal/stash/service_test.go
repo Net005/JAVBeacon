@@ -70,18 +70,18 @@ func TestFetchLeavesDatesEmptyWhenSceneOmitsDate(t *testing.T) {
 	}
 }
 
-func TestSyncDesiredReleaseAddsTagAndPreservesExistingTags(t *testing.T) {
+func TestSyncWatchlistReleaseAddsTagAndPreservesExistingTags(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "stash.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": "https://stash.example", "stash_desired_tag_id": "desired", "stash_api_key": "secret"}); err != nil {
+	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": "https://stash.example", "stash_watchlist_tag_id": "watchlist", "stash_api_key": "secret"}); err != nil {
 		t.Fatal(err)
 	}
 	site, _ := st.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: true})
-	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-1", Title: "Desired", Source: "GIGA", Desired: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-1", Title: "Watchlist", Source: "GIGA", Watchlist: true})
 	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
 	if err := st.SetStashState(ctx, releases[0].ID, true, "scene-1"); err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func TestSyncDesiredReleaseAddsTagAndPreservesExistingTags(t *testing.T) {
 	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(r.Body)
 		query := string(body)
-		response := `{"data":{"findTag":{"id":"desired"}}}`
+		response := `{"data":{"findTag":{"id":"watchlist"}}}`
 		if strings.Contains(query, "findScene") {
 			response = `{"data":{"findScene":{"tags":[{"id":"keep"}]}}}`
 		}
@@ -101,30 +101,30 @@ func TestSyncDesiredReleaseAddsTagAndPreservesExistingTags(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
 	})
-	state, err := s.SyncDesiredRelease(ctx, releases[0].ID)
+	state, err := s.SyncWatchlistRelease(ctx, releases[0].ID)
 	if err != nil || state != "tagged" {
 		t.Fatalf("state=%q err=%v", state, err)
 	}
-	if !strings.Contains(mutation, `\"keep\"`) || !strings.Contains(mutation, `\"desired\"`) {
+	if !strings.Contains(mutation, `\"keep\"`) || !strings.Contains(mutation, `\"watchlist\"`) {
 		t.Fatalf("mutation did not preserve/add tags: %s", mutation)
 	}
-	if synced, err := st.DesiredSynced(ctx, releases[0].ID, "scene-1", "desired"); err != nil || !synced {
+	if synced, err := st.WatchlistSynced(ctx, releases[0].ID, "scene-1", "watchlist"); err != nil || !synced {
 		t.Fatalf("synced=%v err=%v", synced, err)
 	}
 }
 
-func TestLocalSyncDoesNotRunDesiredTagSync(t *testing.T) {
+func TestLocalSyncDoesNotRunWatchlistTagSync(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "stash.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": "https://stash.example", "stash_desired_tag_id": "desired", "stash_desired_sync_enabled": "true"}); err != nil {
+	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": "https://stash.example", "stash_watchlist_tag_id": "watchlist", "stash_watchlist_sync_enabled": "true"}); err != nil {
 		t.Fatal(err)
 	}
 	site, _ := st.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: true})
-	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-1", Title: "Desired", Source: "GIGA", Desired: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-1", Title: "Watchlist", Source: "GIGA", Watchlist: true})
 
 	requests := 0
 	s := New(st, time.Second, slog.Default(), nil, nil)
@@ -140,7 +140,7 @@ func TestLocalSyncDoesNotRunDesiredTagSync(t *testing.T) {
 	s.run(ctx)
 	// Three local-library requests: scene discovery, the required created_at
 	// timestamps used by Added Locally, and optional playback statistics. None
-	// belong to the Desired tag sync, which is what this test guards against.
+	// belong to the Watchlist tag sync, which is what this test guards against.
 	if requests != 3 {
 		t.Fatalf("local sync made %d Stash requests, want scene discovery + created-at + playback-stat requests", requests)
 	}

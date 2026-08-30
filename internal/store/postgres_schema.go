@@ -49,7 +49,7 @@ import (
 //     (sites, releases, filter_presets, job_history, downloads,
 //     path_mappings, pipeline_steps, pipeline_logs, notifications) use
 //     it; tables with a fixed, foreign-key-derived, or composite primary
-//     key (users, user_preferences, sessions, settings, desired_sync,
+//     key (users, user_preferences, sessions, settings, watchlist_sync,
 //     release_actresses, release_tags, release_sites, pipeline_runs) do
 //     not.
 //
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS sites (
 	updated_at TIMESTAMPTZ NOT NULL,
 	download INTEGER NOT NULL DEFAULT 0,
 	download_mode TEXT NOT NULL DEFAULT '',
-	desired INTEGER NOT NULL DEFAULT 0,
+	watchlist INTEGER NOT NULL DEFAULT 0,
 	rss_url TEXT NOT NULL DEFAULT '',
 	last_scraped_at TIMESTAMPTZ,
 	last_scrape_pages INTEGER NOT NULL DEFAULT 0,
@@ -113,8 +113,8 @@ CREATE TABLE IF NOT EXISTS releases (
 	is_local INTEGER NOT NULL DEFAULT 0,
 	notified INTEGER NOT NULL DEFAULT 0,
 	notify_on_release INTEGER NOT NULL DEFAULT 0,
-	desired INTEGER NOT NULL DEFAULT 0,
-	desired_at TIMESTAMPTZ,
+	watchlist INTEGER NOT NULL DEFAULT 0,
+	watchlist_at TIMESTAMPTZ,
 	monitor_download INTEGER NOT NULL DEFAULT 0,
 	site_monitor_download INTEGER NOT NULL DEFAULT 0,
 	identity_key TEXT NOT NULL DEFAULT '',
@@ -292,7 +292,7 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_release_created ON notifications(release_id,created_at DESC);
 
-CREATE TABLE IF NOT EXISTS desired_sync (
+CREATE TABLE IF NOT EXISTS watchlist_sync (
 	release_id BIGINT PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE,
 	stash_scene_id TEXT NOT NULL,
 	tag_id TEXT NOT NULL,
@@ -461,12 +461,14 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 	// Date"/"Last Played" fields, best-effort-populated from a matched
 	// StashApp scene alongside stash_release_date.
 	for _, statement := range []string{
+		`ALTER TABLE sites ADD COLUMN IF NOT EXISTS watchlist INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS watchlist INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS o_counter INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS play_count INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS last_played_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS last_o_count_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS screenshots_checked_at TIMESTAMPTZ`,
-		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS desired_at TIMESTAMPTZ`,
+		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS watchlist_at TIMESTAMPTZ`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS stash_created_at TIMESTAMPTZ`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS is_preferred INTEGER NOT NULL DEFAULT 1`,
 	} {
@@ -474,22 +476,25 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 			return err
 		}
 	}
+	if err := s.migrateWatchlistNaming(ctx); err != nil {
+		return err
+	}
 	for _, statement := range []string{
 		`CREATE INDEX IF NOT EXISTS idx_releases_preferred ON releases(is_preferred,id)`,
 		`CREATE INDEX IF NOT EXISTS idx_releases_local_created ON releases(is_local,stash_created_at DESC,id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_releases_desired_date ON releases(desired,desired_at DESC,id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_releases_watchlist_date ON releases(watchlist,watchlist_at DESC,id DESC)`,
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err
 		}
 	}
-	// Backfill desired_at for releases already marked Desired before this
-	// column existed, so the Release Library's Desired-tab "when marked as
-	// desired" sort has something to sort by right after upgrade instead of
-	// every pre-existing Desired release tying at NULL. updated_at is the
-	// closest available approximation of when desired was last toggled true
+	// Backfill watchlist_at for releases already marked Watchlist before this
+	// column existed, so the Release Library's Watchlist-tab "when marked as
+	// watchlist" sort has something to sort by right after upgrade instead of
+	// every pre-existing Watchlist release tying at NULL. updated_at is the
+	// closest available approximation of when watchlist was last toggled true
 	// for these rows.
-	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET desired_at=updated_at WHERE desired=1 AND desired_at IS NULL`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET watchlist_at=updated_at WHERE watchlist=1 AND watchlist_at IS NULL`); err != nil {
 		return err
 	}
 	// Backfill stash_created_at the same way the SQLite migration does - see
