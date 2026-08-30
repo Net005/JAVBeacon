@@ -7,6 +7,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.50] - 2026-08-30
+
 ### Added
 
 - Release Details now shows a hover-triggered screenshot slideshow on the
