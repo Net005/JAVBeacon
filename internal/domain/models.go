@@ -640,3 +640,53 @@ type ScheduleForecast struct {
 	Interval string      `json:"interval,omitempty"`
 	NextRuns []time.Time `json:"next_runs,omitempty"`
 }
+
+// SiteGroupScheduleSite is one monitoring site's configured scrape mode
+// within a SiteGroupSchedule.
+type SiteGroupScheduleSite struct {
+	SiteID int64  `json:"site_id"`
+	Mode   string `json:"mode"` // "quick", "full", or "new"
+}
+
+// SiteGroupSchedule is one user-defined, independently named scrape
+// schedule that runs a chosen scrape mode against a chosen subset of
+// monitoring sites, each site free to use its own mode. Unlike the three
+// built-in Quick/Full/New schedules (which always scan every enabled
+// site), any number of these can be configured - see
+// internal/monitor.expandSiteGroupSchedules for how each one is expanded
+// into one synthetic per-site schedule and merged into the normal
+// scheduling loop. ScheduleMode/Interval/StartTime/Weekdays/Cron mirror
+// the timing fields the three built-in schedules already expose in
+// Settings (basic/advanced/cron - see monitor.normalizeScheduleMode).
+// Stored as a JSON array in the "site_group_schedules" setting (see
+// ParseSiteGroupSchedules), following the same JSON-blob-in-one-setting
+// pattern as byparr_instances (internal/scraper.ParseInstances).
+type SiteGroupSchedule struct {
+	ID           int64                   `json:"id"`
+	Name         string                  `json:"name"`
+	Enabled      bool                    `json:"enabled"`
+	Priority     int                     `json:"priority"`
+	ScheduleMode string                  `json:"schedule_mode"`
+	Interval     string                  `json:"interval"`
+	StartTime    string                  `json:"start_time"`
+	Weekdays     string                  `json:"weekdays"`
+	Cron         string                  `json:"cron"`
+	Pages        int                     `json:"pages"`
+	Sites        []SiteGroupScheduleSite `json:"sites"`
+}
+
+// ParseSiteGroupSchedules decodes the JSON array stored in the
+// site_group_schedules setting. Tolerant of empty/invalid input (returns
+// nil), matching scraper.ParseInstances' precedent for JSON-encoded list
+// settings - validation of well-formedness belongs at the point the
+// setting is saved (PUT /api/settings), not here.
+func ParseSiteGroupSchedules(raw string) []SiteGroupSchedule {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var groups []SiteGroupSchedule
+	if e := json.Unmarshal([]byte(raw), &groups); e != nil {
+		return nil
+	}
+	return groups
+}

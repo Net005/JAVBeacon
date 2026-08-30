@@ -95,6 +95,14 @@ const (
 	PriorityKindSiteRefresh        = "site_refresh"
 	PriorityKindUpdateDetails      = "update_details"
 	PriorityKindScreenshotBackfill = "screenshot_backfill"
+	// PriorityKindScheduledSiteGroup labels a site-group schedule's queued/
+	// running jobs for job-history and log purposes. It has no settings-
+	// driven default (not listed in JobPriorityKinds, so Settings never
+	// exposes a "job_priority_scheduled_site_group" field) because a
+	// site-group schedule's priority always comes from its own configured
+	// Priority via resolvePriority's override argument - see
+	// expandSiteGroupSchedules.
+	PriorityKindScheduledSiteGroup = "scheduled_site_group"
 )
 
 var priorityKindDefaults = map[string]int{
@@ -1205,6 +1213,16 @@ func (s *Service) emit(release domain.Release) {
 var scheduleMaxSleepChunk = 30 * time.Second
 
 type scrapeSchedule struct {
+	// id uniquely identifies this schedule for every internal per-schedule
+	// map (lastAttempt, lastCalendarMinute, basicNext, basicSignature,
+	// s.scheduleNextAttempt) - the three built-in schedules default it to
+	// their mode (quick/full/new), preserving those maps' existing keys
+	// exactly. A site-group schedule (see expandSiteGroupSchedules) sets it
+	// to something unique per group+site instead, since several of those
+	// can share the same mode (e.g. two different named schedules both
+	// scraping the same site in "quick" mode) - using mode as the map key
+	// for those would silently merge their independent timing state.
+	id              string
 	mode            string
 	title           string
 	enabledKey      string
@@ -1217,6 +1235,18 @@ type scrapeSchedule struct {
 	priorityKind    string
 	fallback        time.Duration
 	defaultEnabled  bool
+	// siteID scopes this schedule to one monitoring site (site-group
+	// schedules only - see expandSiteGroupSchedules); zero means "every
+	// enabled site", matching the three built-in schedules' existing
+	// behavior.
+	siteID int64
+	// priorityOverride, when non-zero, is passed as resolvePriority's
+	// override argument (which always short-circuits its settings lookup -
+	// see resolvePriority's doc comment) instead of 0, so a site-group
+	// schedule's configured priority is used verbatim rather than falling
+	// through to a job_priority_* setting. Zero for the three built-ins,
+	// which keep using their configured/default priorityKind lookup.
+	priorityOverride int
 }
 
 type dueScrape struct {
@@ -1231,13 +1261,97 @@ type dueScrape struct {
 // predicts their next run times), so the two can never disagree about which
 // setting keys or defaults a given schedule uses.
 func quickScrapeSchedule(fallback time.Duration) scrapeSchedule {
-	return scrapeSchedule{mode: "quick", title: "Quick refresh · all enabled sites", enabledKey: "quick_refresh_enabled", scheduleModeKey: "quick_refresh_schedule_mode", intervalKey: "refresh_interval", startTimeKey: "quick_refresh_start_time", weekdaysKey: "quick_refresh_weekdays", cronKey: "quick_refresh_cron", priorityKind: PriorityKindScheduledQuick, fallback: fallback, defaultEnabled: true}
+	return scrapeSchedule{id: "quick", mode: "quick", title: "Quick refresh · all enabled sites", enabledKey: "quick_refresh_enabled", scheduleModeKey: "quick_refresh_schedule_mode", intervalKey: "refresh_interval", startTimeKey: "quick_refresh_start_time", weekdaysKey: "quick_refresh_weekdays", cronKey: "quick_refresh_cron", priorityKind: PriorityKindScheduledQuick, fallback: fallback, defaultEnabled: true}
 }
 func fullScrapeSchedule(fallback time.Duration) scrapeSchedule {
-	return scrapeSchedule{mode: "full", title: "Full refresh · all enabled sites", enabledKey: "full_refresh_enabled", scheduleModeKey: "full_refresh_schedule_mode", intervalKey: "full_refresh_interval", startTimeKey: "full_refresh_start_time", weekdaysKey: "full_refresh_weekdays", cronKey: "full_refresh_cron", pagesKey: "full_refresh_page_limit", priorityKind: PriorityKindScheduledFull, fallback: fallback}
+	return scrapeSchedule{id: "full", mode: "full", title: "Full refresh · all enabled sites", enabledKey: "full_refresh_enabled", scheduleModeKey: "full_refresh_schedule_mode", intervalKey: "full_refresh_interval", startTimeKey: "full_refresh_start_time", weekdaysKey: "full_refresh_weekdays", cronKey: "full_refresh_cron", pagesKey: "full_refresh_page_limit", priorityKind: PriorityKindScheduledFull, fallback: fallback}
 }
 func newReleaseScrapeSchedule(fallback time.Duration) scrapeSchedule {
-	return scrapeSchedule{mode: "new", title: "New releases only · all enabled sites", enabledKey: "new_release_refresh_enabled", scheduleModeKey: "new_release_refresh_schedule_mode", intervalKey: "new_release_refresh_interval", startTimeKey: "new_release_refresh_start_time", weekdaysKey: "new_release_refresh_weekdays", cronKey: "new_release_refresh_cron", pagesKey: "new_release_refresh_page_limit", priorityKind: PriorityKindScheduledNew, fallback: fallback, defaultEnabled: true}
+	return scrapeSchedule{id: "new", mode: "new", title: "New releases only · all enabled sites", enabledKey: "new_release_refresh_enabled", scheduleModeKey: "new_release_refresh_schedule_mode", intervalKey: "new_release_refresh_interval", startTimeKey: "new_release_refresh_start_time", weekdaysKey: "new_release_refresh_weekdays", cronKey: "new_release_refresh_cron", pagesKey: "new_release_refresh_page_limit", priorityKind: PriorityKindScheduledNew, fallback: fallback, defaultEnabled: true}
+}
+
+// siteGroupSchedulePrefix + groupID + ":" + siteID is both the synthetic
+// schedule id expandSiteGroupSchedules assigns each site-group×site pair
+// and the prefix for that pair's synthetic settings keys, so the two can
+// never drift apart.
+const siteGroupSchedulePrefix = "sitegroup:"
+
+// expandSiteGroupSchedules parses the site_group_schedules setting and
+// turns every enabled group's every configured site into one synthetic
+// scrapeSchedule, so runScrapeSchedules/ScheduleForecast's existing,
+// already-in-production timing logic (calendarScheduleMatches/
+// nextBasicRun/nextAdvancedRuns/nextCalendarRuns/normalizeScheduleMode)
+// handles them exactly like the three built-in schedules, with zero
+// special-casing: each synthetic schedule's enabledKey/scheduleModeKey/
+// intervalKey/etc simply point at synthetic keys written into augmented,
+// a copy-on-write clone of settings (so the common case of zero group
+// schedules costs nothing beyond the ParseSiteGroupSchedules call). A
+// group's site referencing a monitoring site that no longer exists is
+// silently skipped rather than erroring, since the site may have been
+// deleted after the schedule was configured.
+func (s *Service) expandSiteGroupSchedules(ctx context.Context, settings map[string]string) (map[string]string, []scrapeSchedule) {
+	groups := domain.ParseSiteGroupSchedules(settings["site_group_schedules"])
+	if len(groups) == 0 {
+		return settings, nil
+	}
+	sites, err := s.store.Sites(ctx)
+	if err != nil {
+		s.log.Error("site group schedules could not be expanded", "error", err)
+		return settings, nil
+	}
+	siteTitles := make(map[int64]string, len(sites))
+	for _, site := range sites {
+		siteTitles[site.ID] = site.Title
+	}
+	augmented := make(map[string]string, len(settings))
+	for k, v := range settings {
+		augmented[k] = v
+	}
+	var extra []scrapeSchedule
+	for _, group := range groups {
+		if !group.Enabled {
+			continue
+		}
+		for _, groupSite := range group.Sites {
+			siteTitle, known := siteTitles[groupSite.SiteID]
+			if !known {
+				continue
+			}
+			mode := groupSite.Mode
+			if mode != "quick" && mode != "full" && mode != "new" {
+				continue
+			}
+			id := fmt.Sprintf("%s%d:%d", siteGroupSchedulePrefix, group.ID, groupSite.SiteID)
+			prefix := id + ":"
+			augmented[prefix+"enabled"] = "true"
+			augmented[prefix+"schedule_mode"] = group.ScheduleMode
+			augmented[prefix+"interval"] = group.Interval
+			augmented[prefix+"start_time"] = group.StartTime
+			augmented[prefix+"weekdays"] = group.Weekdays
+			augmented[prefix+"cron"] = group.Cron
+			extra = append(extra, scrapeSchedule{
+				id:               id,
+				mode:             mode,
+				title:            group.Name + " · " + siteTitle,
+				enabledKey:       prefix + "enabled",
+				scheduleModeKey:  prefix + "schedule_mode",
+				intervalKey:      prefix + "interval",
+				startTimeKey:     prefix + "start_time",
+				weekdaysKey:      prefix + "weekdays",
+				cronKey:          prefix + "cron",
+				priorityKind:     PriorityKindScheduledSiteGroup,
+				fallback:         time.Hour,
+				defaultEnabled:   true,
+				siteID:           groupSite.SiteID,
+				priorityOverride: group.Priority,
+			})
+			if group.Pages > 0 {
+				augmented[prefix+"pages"] = strconv.Itoa(group.Pages)
+				extra[len(extra)-1].pagesKey = prefix + "pages"
+			}
+		}
+	}
+	return augmented, extra
 }
 
 // runScrapeSchedules is the one coordinator for scheduled scrape scans. A
@@ -1252,10 +1366,25 @@ func (s *Service) runScrapeSchedules(ctx context.Context, schedules []scrapeSche
 	basicSignature := make(map[string]string, len(schedules))
 	for {
 		settings, _ := s.store.Settings(ctx)
+		settings, groupSchedules := s.expandSiteGroupSchedules(ctx, settings)
+		allSchedules := schedules
+		if len(groupSchedules) > 0 {
+			allSchedules = append(append([]scrapeSchedule{}, schedules...), groupSchedules...)
+		}
 		now := time.Now()
-		due := make([]dueScrape, 0, len(schedules))
+		due := make([]dueScrape, 0, len(allSchedules))
 		nextSleep := scheduleMaxSleepChunk
-		for _, schedule := range schedules {
+		for _, schedule := range allSchedules {
+			// A schedule literal that leaves id unset (as every caller did
+			// before id existed - see quickScrapeSchedule and friends, and
+			// this package's own tests that build scrapeSchedule literals
+			// directly) still behaves exactly as before: id defaults to
+			// mode, which is what every per-schedule map below used as its
+			// key prior to expandSiteGroupSchedules needing a key that can
+			// be unique even when several schedules share the same mode.
+			if schedule.id == "" {
+				schedule.id = schedule.mode
+			}
 			enabled := schedule.defaultEnabled
 			if raw, ok := settings[schedule.enabledKey]; ok {
 				enabled = raw == "true"
@@ -1279,8 +1408,8 @@ func (s *Service) runScrapeSchedules(ctx context.Context, schedules []scrapeSche
 						pages = s.pages
 					}
 				}
-				priority := s.resolvePriority(ctx, schedule.priorityKind, 0)
-				due = append(due, dueScrape{priority: priority, options: RefreshOptions{Mode: schedule.mode, Title: schedule.title, Pages: pages, Scheduled: true, Kind: schedule.priorityKind, Priority: priority}})
+				priority := s.resolvePriority(ctx, schedule.priorityKind, schedule.priorityOverride)
+				due = append(due, dueScrape{priority: priority, options: RefreshOptions{SiteID: schedule.siteID, Mode: schedule.mode, Title: schedule.title, Pages: pages, Scheduled: true, Kind: schedule.priorityKind, Priority: priority}})
 			}
 			if mode == "cron" || mode == "advanced" {
 				minuteKey := now.Format("200601021504")
@@ -1290,33 +1419,33 @@ func (s *Service) runScrapeSchedules(ctx context.Context, schedules []scrapeSche
 				}
 				matches, err := calendarScheduleMatches(now, settings[schedule.startTimeKey], settings[schedule.weekdaysKey], cronText)
 				if err != nil {
-					s.log.Error("invalid scheduled scrape timing", "mode", schedule.mode, "error", err)
-				} else if matches && lastCalendarMinute[schedule.mode] != minuteKey {
-					lastCalendarMinute[schedule.mode] = minuteKey
-					if mode == "cron" || lastAttempt[schedule.mode].IsZero() || now.Sub(lastAttempt[schedule.mode]) >= interval {
-						lastAttempt[schedule.mode] = now
+					s.log.Error("invalid scheduled scrape timing", "schedule", schedule.id, "mode", schedule.mode, "error", err)
+				} else if matches && lastCalendarMinute[schedule.id] != minuteKey {
+					lastCalendarMinute[schedule.id] = minuteKey
+					if mode == "cron" || lastAttempt[schedule.id].IsZero() || now.Sub(lastAttempt[schedule.id]) >= interval {
+						lastAttempt[schedule.id] = now
 						queue()
 					}
 				}
 				continue
 			}
 			signature := interval.String() + "|" + strings.TrimSpace(settings[schedule.startTimeKey])
-			if basicSignature[schedule.mode] != signature || basicNext[schedule.mode].IsZero() {
-				basicSignature[schedule.mode] = signature
-				basicNext[schedule.mode] = nextBasicRun(now, interval, settings[schedule.startTimeKey])
+			if basicSignature[schedule.id] != signature || basicNext[schedule.id].IsZero() {
+				basicSignature[schedule.id] = signature
+				basicNext[schedule.id] = nextBasicRun(now, interval, settings[schedule.startTimeKey])
 			}
-			if !now.Before(basicNext[schedule.mode]) {
+			if !now.Before(basicNext[schedule.id]) {
 				queue()
-				for !basicNext[schedule.mode].After(now) {
-					basicNext[schedule.mode] = basicNext[schedule.mode].Add(interval)
+				for !basicNext[schedule.id].After(now) {
+					basicNext[schedule.id] = basicNext[schedule.id].Add(interval)
 				}
 			}
-			remaining := basicNext[schedule.mode].Sub(now)
+			remaining := basicNext[schedule.id].Sub(now)
 			s.mu.Lock()
 			if s.scheduleNextAttempt == nil {
 				s.scheduleNextAttempt = map[string]time.Time{}
 			}
-			s.scheduleNextAttempt[schedule.mode] = basicNext[schedule.mode]
+			s.scheduleNextAttempt[schedule.id] = basicNext[schedule.id]
 			s.mu.Unlock()
 			if remaining < nextSleep {
 				nextSleep = remaining
@@ -1427,19 +1556,28 @@ const defaultFullRefreshFallback = 24 * time.Hour
 // check time for it.
 func (s *Service) ScheduleForecast(ctx context.Context) []domain.ScheduleForecast {
 	settings, _ := s.store.Settings(ctx)
+	settings, groupSchedules := s.expandSiteGroupSchedules(ctx, settings)
 	now := time.Now()
 	schedules := []scrapeSchedule{
 		quickScrapeSchedule(s.scrapeFallback),
 		newReleaseScrapeSchedule(s.scrapeFallback),
 		fullScrapeSchedule(defaultFullRefreshFallback),
 	}
-	forecasts := make([]domain.ScheduleForecast, 0, len(schedules))
-	for _, schedule := range schedules {
+	forecasts := make([]domain.ScheduleForecast, 0, len(schedules)+len(groupSchedules))
+	allSchedules := append(append([]scrapeSchedule{}, schedules...), groupSchedules...)
+	for _, schedule := range allSchedules {
+		if schedule.id == "" {
+			schedule.id = schedule.mode
+		}
 		enabled := schedule.defaultEnabled
 		if raw, ok := settings[schedule.enabledKey]; ok {
 			enabled = raw == "true"
 		}
-		forecast := domain.ScheduleForecast{Group: "Scheduled scrapes", Name: schedule.title, Enabled: enabled}
+		group := "Scheduled scrapes"
+		if strings.HasPrefix(schedule.id, siteGroupSchedulePrefix) {
+			group = "Site group schedules"
+		}
+		forecast := domain.ScheduleForecast{Group: group, Name: schedule.title, Enabled: enabled}
 		interval := schedule.fallback
 		if parsed, err := domain.ParseScheduleDuration(settings[schedule.intervalKey]); err == nil && parsed >= time.Minute {
 			interval = parsed
@@ -1464,7 +1602,7 @@ func (s *Service) ScheduleForecast(ctx context.Context) []domain.ScheduleForecas
 		forecast.Interval = "basic: " + interval.String()
 		if enabled && interval > 0 {
 			s.mu.RLock()
-			next, tracked := s.scheduleNextAttempt[schedule.mode]
+			next, tracked := s.scheduleNextAttempt[schedule.id]
 			s.mu.RUnlock()
 			if tracked {
 				runs := make([]time.Time, 0, scheduleForecastRunCount)
