@@ -7,6 +7,23 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Release Details now shows a hover-triggered screenshot slideshow on the
+  cover, matching the Release Library grid's cards but with its own
+  configurable hover delay (default 0.5s) and playback speed, looping
+  endlessly while hovered.
+- Release Details navigation shows a subtle "N of M" position indicator
+  above the cover, so it stays clear during Next/Previous navigation how
+  many releases remain in the current list.
+- Added Site group schedules: any number of independently named scrape
+  schedules, each covering a chosen subset of monitoring sites with its own
+  Quick/Full/New mode per site, alongside the existing Quick refresh, Full
+  refresh, and New Release Only schedules.
+- Add Monitoring Site can now auto-detect the Category and ID from a pasted
+  JavLibrary URL and auto-generates the Source URL from Category and ID,
+  while still allowing the URL to be edited by hand.
+
 ## [1.0.49] - 2026-08-30
 
 ### Added
