@@ -7,6 +7,41 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.49] - 2026-08-30
+
+### Added
+
+- Added a temporary Release Library search endpoint at `/search?q=...` for
+  browser keyword and custom-search integrations. It opens the All tab, fills
+  the general wildcard field, applies the query for that visit, and leaves the
+  user's saved filters unchanged.
+- Added automatic OpenSearch discovery on both the main interface and login
+  page, allowing Firefox to detect JAVBeacon as an installable search engine.
+
+### Changed
+
+- Release-card Actress, Studio, and Label metadata now uses people, building,
+  and imprint icons instead of ACT/STU/LBL badges, with stable grid columns so
+  long actress names cannot overlap the other metadata.
+- On touch devices, the fullscreen screenshot close button now matches the
+  size of its previous/next controls, and the Release Details close button
+  matches its cover navigation controls.
+- Unauthenticated browser searches now return to their original query after
+  sign-in instead of opening the default Release Library state.
+
+### Fixed
+
+- Release Details and fullscreen screenshot swipes no longer scroll the
+  Release Library behind the active overlay; the library's exact position is
+  restored when Release Details closes.
+- Horizontal touch gestures are captured before completion so diagonal or
+  fast swipe momentum cannot escape into the background page.
+- Restored the Release Library filter toolbar on desktop while retaining the
+  remembered fold state on iPhone and iPad only.
+- Temporary URL searches can no longer be written into saved preferences by a
+  delayed initialization save.
+- Aligned the Release Library result counter to the page-title text baseline.
+
 ## [1.0.48] - 2026-08-30
 
 ### Added
@@ -1051,7 +1086,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.48...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.49...HEAD
+[1.0.49]: https://github.com/Net005/JAVBeacon/compare/v1.0.48...v1.0.49
 [1.0.48]: https://github.com/Net005/JAVBeacon/compare/v1.0.47...v1.0.48
 [1.0.47]: https://github.com/Net005/JAVBeacon/compare/v1.0.46...v1.0.47
 [1.0.46]: https://github.com/Net005/JAVBeacon/compare/v1.0.45...v1.0.46
