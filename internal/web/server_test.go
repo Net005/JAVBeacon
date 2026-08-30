@@ -142,6 +142,17 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`viewportBottom>=pageHeight*.60`,
 		`releaseNavIDs.length-idx-1>25`,
 		`releaseNavFromGrid?null:releaseNavIDs`,
+		`function addReleaseMediaIndicators()`,
+		`class="releaseNavPosition mediaPosition"`,
+		`class="detailScreenshotPosition mediaPosition"`,
+		`screenshotPosition.textContent=` + "`" + `${position+1} of ${state.indexes.length}` + "`" + ``,
+		`screenshotLightboxCount.textContent=` + "`" + `${state.position+1} of ${count}` + "`" + ``,
+		`position=releaseDetail.querySelector('.releaseNavPosition')`,
+		`selected.find(s=>Number(s.site_id)===Number(site.id))`,
+		`x.site_group_schedules=JSON.stringify(siteGroupSchedulesFromForm())`,
+		`data-sgs-forecast`,
+		`Number(row.site_group_schedule_id)===id`,
+		`slice(0,3)`,
 		`function focusReleaseCard(id)`,
 		`returnToGrid=releaseNavFromGrid&&!releasesView.hidden`,
 		`Values above 500 are supported`,
@@ -173,6 +184,28 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	}
 	if count := strings.Count(string(javascript), "settingsForm.onsubmit="); count != 1 {
 		t.Fatalf("settings form has %d submit handlers, want one atomic handler", count)
+	}
+	script := string(javascript)
+	loadAll := strings.Index(script, "async function loadAll()")
+	if loadAll < 0 {
+		t.Fatal("embedded app.js is missing startup orchestration")
+	}
+	loadSites := strings.Index(script[loadAll:], "loadSites()")
+	loadSettings := strings.Index(script[loadAll:], "loadSettings()")
+	if loadSites < 0 || loadSettings < 0 || loadSites >= loadSettings {
+		t.Fatal("startup must load monitoring sites before rendering site group schedules")
+	}
+	serializerStart := strings.Index(script, "function siteGroupSchedulesFromForm()")
+	if serializerStart < 0 {
+		t.Fatal("embedded app.js is missing the site group schedule serializer")
+	}
+	serializerEnd := strings.Index(script[serializerStart:], "async function loadSites()")
+	if serializerEnd < 0 {
+		t.Fatal("embedded app.js is missing the site group schedule serializer")
+	}
+	serializer := script[serializerStart : serializerStart+serializerEnd]
+	if strings.Contains(serializer, "if(!chosenSites.length)return null") {
+		t.Fatal("site group schedule serializer must not silently discard schedules without rendered site choices")
 	}
 	clearStart := strings.Index(string(javascript), "function clearReleaseFilterState()")
 	clearEnd := strings.Index(string(javascript), "async function loadPresets()")
@@ -262,7 +295,7 @@ func TestEmbeddedFrontendIncludesManualHistoricalBackfillProgress(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{"JavLibrary historical backfill", "historicalBackfillResume", "Historical overall", "/jobs/javlibrary-historical-backfill", "placeholder=\"500\""} {
+	for _, marker := range []string{"JavLibrary historical backfill", "historicalBackfillResume", "Historical overall", "/jobs/javlibrary-historical-backfill", "placeholder=\"500\"", "validDate(j.finished_at)?' · last stopped '"} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("embedded historical backfill UI is missing %q", marker)
 		}

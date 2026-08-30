@@ -72,6 +72,12 @@ func New(st store.Store, jav historicalScraper, log *slog.Logger) *Service {
 		}
 		s.status.State = stats.State
 		s.status.Historical = stats
+		// The durable backfill state's update time is the last stop time after a
+		// restart. Without restoring it, time.Time's JSON zero value reaches the
+		// UI as year 1 even though the job has a persisted terminal state.
+		if stats.State != "" && stats.State != "idle" && stats.State != "running" {
+			s.status.FinishedAt = stats.UpdatedAt
+		}
 	}
 	return s
 }

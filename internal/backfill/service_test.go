@@ -117,6 +117,23 @@ func TestFreshBackfillSkipsReleaseAlreadyInMainLibrary(t *testing.T) {
 	}
 }
 
+func TestNewRestoresHistoricalBackfillStopTime(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "restored-status.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err = st.SetHistoricalBackfillState(ctx, "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+
+	status := New(st, &fakeHistoricalScraper{}, slog.Default()).Status(ctx)
+	if status.State != "cancelled" || status.FinishedAt.IsZero() {
+		t.Fatalf("restored status did not include its stop time: %+v", status)
+	}
+}
+
 func TestHistoricalConcurrencyRespectsCapAndEnabledCount(t *testing.T) {
 	cases := []struct {
 		name     string

@@ -634,11 +634,12 @@ type Notification struct {
 // schedule is disabled, has no valid interval/calendar configuration yet,
 // or (calendar mode only) no match was found within the forecast horizon.
 type ScheduleForecast struct {
-	Group    string      `json:"group"`
-	Name     string      `json:"name"`
-	Enabled  bool        `json:"enabled"`
-	Interval string      `json:"interval,omitempty"`
-	NextRuns []time.Time `json:"next_runs,omitempty"`
+	Group               string      `json:"group"`
+	Name                string      `json:"name"`
+	Enabled             bool        `json:"enabled"`
+	Interval            string      `json:"interval,omitempty"`
+	NextRuns            []time.Time `json:"next_runs,omitempty"`
+	SiteGroupScheduleID int64       `json:"site_group_schedule_id,omitempty"`
 }
 
 // SiteGroupScheduleSite is one monitoring site's configured scrape mode

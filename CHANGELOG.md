@@ -7,6 +7,27 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.51] - 2026-08-30
+
+### Added
+
+- Site group schedule cards now show their next three scheduled runs directly
+  beside their controls, including a combined forecast when the group contains
+  multiple monitoring sites.
+- Release Details now shows consistent, subtle position indicators for both
+  release navigation and the cover-area screenshot slideshow, while the
+  fullscreen screenshot viewer uses the same "N of M" presentation.
+
+### Fixed
+
+- Site group schedules now load monitoring sites before their settings are
+  rendered, preserve selected sites when saved, and restore selections when an
+  existing schedule is edited.
+- Restored the missing Release Details navigation position indicator and
+  stopped brief release-ID changes in the browser title during navigation.
+- Historical backfill restores its persisted last-stop timestamp after an app
+  restart and no longer renders an unset timestamp as `1-1-1`.
+
 ## [1.0.50] - 2026-08-30
 
 ### Added
@@ -1105,7 +1126,9 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.49...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.51...HEAD
+[1.0.51]: https://github.com/Net005/JAVBeacon/compare/v1.0.50...v1.0.51
+[1.0.50]: https://github.com/Net005/JAVBeacon/compare/v1.0.49...v1.0.50
 [1.0.49]: https://github.com/Net005/JAVBeacon/compare/v1.0.48...v1.0.49
 [1.0.48]: https://github.com/Net005/JAVBeacon/compare/v1.0.47...v1.0.48
 [1.0.47]: https://github.com/Net005/JAVBeacon/compare/v1.0.46...v1.0.47
