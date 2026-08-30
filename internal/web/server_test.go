@@ -39,6 +39,49 @@ func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
 	}
 }
 
+func TestBrowserSearchEndpointServesApplicationShell(t *testing.T) {
+	s := &Server{mux: http.NewServeMux()}
+	s.routes()
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/search?q=ABP-123", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `id="releasesView"`) {
+		t.Fatal("browser search endpoint did not serve the application shell")
+	}
+}
+
+func TestOpenSearchDescriptorUsesForwardedHTTPSHost(t *testing.T) {
+	s := &Server{mux: http.NewServeMux()}
+	s.routes()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/opensearch.xml", nil)
+	req.Host = "jav.example.test"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	s.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/opensearchdescription+xml") {
+		t.Fatalf("content type = %q", got)
+	}
+	if !strings.Contains(rec.Body.String(), `template="https://jav.example.test/search?q={searchTerms}"`) {
+		t.Fatalf("descriptor = %s", rec.Body.String())
+	}
+}
+
+func TestOpenSearchDescriptorIsAvailableWithoutAuthentication(t *testing.T) {
+	s := &Server{mux: http.NewServeMux()}
+	s.routes()
+	handler := s.security(s.mux)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/opensearch.xml", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
 func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	javascript, err := assets.ReadFile("static/app.js")
 	if err != nil {
@@ -82,11 +125,19 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`Power user · cron expression`,
 		"validDate(j.finished_at)?`Last scan: ${fullDateTime(j.finished_at)}${counts}`:'Not scanned yet.'",
 		`function cardMetadataGroup(role,category,values)`,
+		`function cardMetadataIcon(role)`,
+		`aria-label="${attr(role)}"`,
 		`${filterButton(x.label,'Label')||'—'}`,
 		`class="stashSyncProgress"`,
 		`j.current_item?`,
 		`function syncReleaseTabControls()`,
-		`releaseFiltersPanel.addEventListener('toggle',()=>{prefs.releaseFiltersOpen=releaseFiltersPanel.open;savePreferences()})`,
+		`releaseFiltersPanel.addEventListener('toggle',()=>{if(releaseFiltersProgrammaticOpen===releaseFiltersPanel.open)`,
+		`function syncReleaseFiltersFold(){const open=!releaseFiltersFoldMedia.matches||!!prefs.releaseFiltersOpen;`,
+		`function applyTemporaryLibrarySearch()`,
+		`location.pathname!=='/search'`,
+		`get('q')`,
+		`if(!applyTemporaryLibrarySearch())applyTemporaryMetadataFilter()`,
+		`function savePreferences(){const payload=preferencePayload();`,
 		`function updateReleaseFiltersSummary()`,
 		`viewportBottom>=pageHeight*.60`,
 		`releaseNavIDs.length-idx-1>25`,
@@ -100,6 +151,9 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`releaseCountAbort?.abort()`,
 		`metadataOptionTimer=setTimeout(run,220)`,
 		`function wireTouchSwipe(`,
+		`el.addEventListener('pointermove'`,
+		`lockReleaseBackgroundScroll()`,
+		`releaseDialog.addEventListener('close',unlockReleaseBackgroundScroll)`,
 		`const interactive=e=>e.target.closest?.('button,a,input,select,textarea,.detailScreenshotRail,.screenshotLightboxStrip')`,
 		`if(dx<0)next?.();else previous?.()`,
 		`function edgeTapDirection(x,width){return x<=width*.2?-1:x>=width*.8?1:0}`,
@@ -133,7 +187,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:134px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.releaseFiltersPanel>summary{display:none}`, `.releaseFiltersPanel:not([open])>.releaseFiltersBody{display:none!important}`, `.cardMetadataRole{`, `.stashSyncProgress{`, `.sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr)`, `.sidebarFooter #appVersion{display:block;min-width:max-content`, `#toast[popover]{position:fixed!important;inset:auto 22px 22px auto!important`, `.card.returnFocus{`, `.downloadToolbar{align-items:flex-end;`, `grid-template-columns:repeat(8,minmax(0,1fr))!important`, `.releaseVisual{display:grid!important;grid-template-rows:auto auto!important`, `.releaseArt .detailBackdrop{display:none!important}`, `.screenshotLightboxStage{touch-action:pan-y`, `.releaseDialog .releaseChrome{display:none!important}`, `.mobileCoverNav{`, `.releaseLayout,.screenshotLightboxInner{`, `-webkit-user-select:none;user-select:none;-webkit-touch-callout:none`, `touch-action:pan-y pinch-zoom;overscroll-behavior-x:contain`, `.releaseDialog button,.screenshotLightbox button{`, `touch-action:manipulation;-webkit-tap-highlight-color:transparent`, `.screenshotLightboxClose{`, `top:max(10px,env(safe-area-inset-top))!important;right:max(10px,env(safe-area-inset-right))!important`, `(orientation:landscape) and (pointer:coarse)`, `(max-width:1366px) and (pointer:coarse)`, `width:120px;height:120px`, `width:104px;height:104px`, `top:max(8px,env(safe-area-inset-top))!important;right:max(8px,env(safe-area-inset-right))!important`, `width:var(--vw100,100vw)!important;max-width:var(--vw100,100vw)!important`, `overflow-y:auto!important;overscroll-behavior:contain!important`} {
+	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:134px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.releaseFiltersPanel>summary{display:none}`, `.releaseFiltersPanel:not([open])>.releaseFiltersBody{display:none!important}`, `.cardMetadataRole{`, `.stashSyncProgress{`, `.sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr)`, `.sidebarFooter #appVersion{display:block;min-width:max-content`, `#toast[popover]{position:fixed!important;inset:auto 22px 22px auto!important`, `.card.returnFocus{`, `.titleRow{align-items:baseline}`, `.downloadToolbar{align-items:flex-end;`, `grid-template-columns:repeat(8,minmax(0,1fr))!important`, `.releaseVisual{display:grid!important;grid-template-rows:auto auto!important`, `.releaseArt .detailBackdrop{display:none!important}`, `.screenshotLightboxStage{touch-action:pan-y`, `.releaseDialog .releaseChrome{display:none!important}`, `.mobileCoverNav{`, `.releaseLayout,.screenshotLightboxInner{`, `-webkit-user-select:none;user-select:none;-webkit-touch-callout:none`, `touch-action:pan-y pinch-zoom;overscroll-behavior-x:contain`, `.releaseDialog button,.screenshotLightbox button{`, `touch-action:manipulation;-webkit-tap-highlight-color:transparent`, `.screenshotLightboxClose{`, `.screenshotLightboxClose{width:104px;height:104px;font-size:48px}`, `.screenshotLightboxClose{width:120px;height:120px;font-size:56px}`, `top:max(10px,env(safe-area-inset-top))!important;right:max(10px,env(safe-area-inset-right))!important`, `(orientation:landscape) and (pointer:coarse)`, `(max-width:1366px) and (pointer:coarse)`, `width:120px;height:120px`, `width:104px;height:104px`, `width:clamp(48px,6vw,64px)!important`, `top:max(8px,env(safe-area-inset-top))!important;right:max(8px,env(safe-area-inset-right))!important`, `width:var(--vw100,100vw)!important;max-width:var(--vw100,100vw)!important`, `overflow-y:auto!important;overscroll-behavior:contain!important`, `body.releaseOverlayOpen{position:fixed!important`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("embedded app.css is missing %q", marker)
 		}
@@ -151,8 +205,18 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if !strings.Contains(string(markup), `id="releasedStartDate" type="date"`) {
 		t.Fatal("embedded index.html is missing the persisted Released-tab start date")
 	}
-	if !strings.Contains(string(markup), `id="releaseFiltersPanel"`) || !strings.Contains(string(markup), `id="releaseFiltersSummary"`) {
+	if !strings.Contains(string(markup), `id="releaseFiltersPanel" class="releaseFiltersPanel" open`) || !strings.Contains(string(markup), `id="releaseFiltersSummary"`) {
 		t.Fatal("embedded index.html is missing the mobile Release Library filter fold")
+	}
+	if !strings.Contains(string(markup), `rel="search" type="application/opensearchdescription+xml" href="/opensearch.xml"`) {
+		t.Fatal("embedded index.html is missing Firefox/OpenSearch discovery")
+	}
+	loginMarkup, err := assets.ReadFile("static/login.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(loginMarkup), `rel="search" type="application/opensearchdescription+xml" href="/opensearch.xml"`) {
+		t.Fatal("embedded login.html is missing Firefox/OpenSearch discovery")
 	}
 	if strings.Contains(string(markup), `<p class="eyebrow">SERVER DIAGNOSTICS</p><h2>Live application log</h2>`) || strings.Contains(string(markup), `<p class="eyebrow">STASHAPP RECOVERY</p><h2>Missing library files</h2>`) {
 		t.Fatal("embedded index.html still contains duplicate Logs or Missing Files page headings")

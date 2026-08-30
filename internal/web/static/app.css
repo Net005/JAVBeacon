@@ -862,8 +862,8 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .screenshotLightboxStrip button.active{opacity:1;border-color:var(--accent)}
 .screenshotLightboxStrip img{display:block;width:100%;height:100%;object-fit:cover}
 .screenshotBackfillPanel progress{width:100%;height:12px;margin:8px 0 4px;accent-color:var(--accent)}.screenshotBackfillPanel button{width:100%}
-@media(max-width:650px){.releaseVisual{display:contents}.detailScreenshotCarousel{order:1}.releaseArt{order:2}.releaseInfo{order:3}.screenshotLightboxInner{padding:14px;gap:8px}.screenshotLightboxPrev,.screenshotLightboxNext{top:50%;width:104px;height:104px;transform:translateY(-50%);font-size:48px}.screenshotLightboxPrev{left:6px}.screenshotLightboxNext{right:6px}.screenshotLightboxStrip button{flex-basis:52px;height:48px}}
-@media(min-width:651px) and (max-width:1366px) and (pointer:coarse){.screenshotLightboxPrev,.screenshotLightboxNext{top:50%;width:120px;height:120px;transform:translateY(-50%);font-size:56px}.screenshotLightboxPrev{left:clamp(12px,2vw,24px)}.screenshotLightboxNext{right:clamp(12px,2vw,24px)}}
+@media(max-width:650px){.releaseVisual{display:contents}.detailScreenshotCarousel{order:1}.releaseArt{order:2}.releaseInfo{order:3}.screenshotLightboxInner{padding:14px;gap:8px}.screenshotLightboxPrev,.screenshotLightboxNext{top:50%;width:104px;height:104px;transform:translateY(-50%);font-size:48px}.screenshotLightboxClose{width:104px;height:104px;font-size:48px}.screenshotLightboxPrev{left:6px}.screenshotLightboxNext{right:6px}.screenshotLightboxStrip button{flex-basis:52px;height:48px}}
+@media(min-width:651px) and (max-width:1366px) and (pointer:coarse){.screenshotLightboxPrev,.screenshotLightboxNext{top:50%;width:120px;height:120px;transform:translateY(-50%);font-size:56px}.screenshotLightboxClose{width:120px;height:120px;font-size:56px}.screenshotLightboxPrev{left:clamp(12px,2vw,24px)}.screenshotLightboxNext{right:clamp(12px,2vw,24px)}}
 .refreshModeTooltip{display:none;position:absolute;z-index:40;top:calc(100% + 8px);left:0;width:min(500px,calc(100vw - 70px));padding:6px;border:1px solid #596273;border-radius:10px;background:#11151df8;box-shadow:0 18px 45px #000d;color:var(--text);font-weight:400}
 .refreshModeInfo:hover .refreshModeTooltip,.refreshModeInfo:focus-within .refreshModeTooltip{display:block}
 .refreshModeTooltip section{padding:10px 11px}
@@ -952,17 +952,23 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .compactViewHead{min-height:40px;margin:-7px 0 8px;gap:12px}
 .compactViewHead>p{margin:0}
 .logsView>.compactViewHead+.logPanel{height:calc(100% - 40px)}
-.cardMetadata{display:flex;height:20px;gap:5px;align-items:center}
-.cardMetadataGroup{display:flex;align-items:center;min-width:0;flex:1;gap:3px;overflow:hidden}
-.cardMetadataGroup.actress{flex:1.35}
-.cardMetadataRole{flex:none;padding:1px 3px;border:1px solid #596273;border-radius:4px;background:#202631;color:#dce4ef;font-size:7px;font-weight:900;letter-spacing:.35px;line-height:1.35}
-.cardMetadataGroup.actress .cardMetadataRole{border-color:#8e4957;background:#341d24;color:#ffc3cc}
-.cardMetadataGroup.studio .cardMetadataRole{border-color:#3d7288;background:#172c36;color:#a9ddec}
-.cardMetadataGroup.label .cardMetadataRole{border-color:#876b36;background:#322817;color:#efd28f}
+.cardMetadata{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(0,1fr);height:auto;min-height:20px;gap:8px;align-items:center}
+.cardMetadataGroup{display:flex;align-items:center;min-width:0;gap:4px;overflow:hidden}
+.cardMetadataGroup.actress{grid-column:1}.cardMetadataGroup.studio{grid-column:2}.cardMetadataGroup.label{grid-column:3}
+.cardMetadataRole{display:grid;flex:none;width:16px;height:16px;padding:0;place-items:center;border:0;background:none}
+.cardMetadataRole svg{display:block;width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.cardMetadataGroup.actress .cardMetadataRole{color:#e47b8b}
+.cardMetadataGroup.studio .cardMetadataRole{color:#65bad5}
+.cardMetadataGroup.label .cardMetadataRole{color:#dfb85d}
 .cardMetadataValues{display:flex;align-items:center;min-width:0;gap:3px;overflow:hidden}
 .cardMetadataValues button{flex:0 0 auto;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cardMetadataValues i{color:#5f6672;font-style:normal}
 .stashSyncSummary{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.stashSyncSummary p{margin-bottom:6px}.stashSyncSummary small{overflow:hidden;color:#8e98a7;text-overflow:ellipsis;white-space:nowrap}.stashSyncProgress{width:100%;height:12px;margin:4px 0 7px;overflow:hidden;border:0;border-radius:99px;accent-color:var(--accent)}.errorText{color:#ff8e9b}
+
+/* Align the count pill's text with the page title. Centering their outer
+   boxes made the smaller label appear raised at larger interface scales. */
+.titleRow{align-items:baseline}
+.headerCount{line-height:1.2}
 
 /* Keep dynamically-added Download Activity filters on one control baseline. */
 .downloadToolbar{align-items:flex-end;column-gap:10px;row-gap:10px}
@@ -973,6 +979,11 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 /* Mobile release navigation. Everything in this block is below the desktop
    breakpoint so the established desktop detail geometry remains untouched. */
 .releaseMobileClose,.mobileCoverNav{display:none}
+/* Native modal dialogs still allow scroll chaining into the document on
+   iOS-derived browsers. Freeze the library at its saved scroll offset for
+   the full Release Details lifecycle; JavaScript restores it on close. */
+html.releaseOverlayOpen,body.releaseOverlayOpen{overflow:hidden!important;overscroll-behavior:none!important}
+body.releaseOverlayOpen{position:fixed!important;inset:0!important;width:100%!important}
 @media(max-width:650px){
   aside{
     height:calc(62px + env(safe-area-inset-bottom))!important;
@@ -1104,11 +1115,11 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
   .releaseDialog .releaseChrome{display:none!important}
   .releaseMobileClose{
     position:fixed!important;z-index:45!important;top:max(8px,env(safe-area-inset-top))!important;right:max(8px,env(safe-area-inset-right))!important;left:auto!important;
-    display:grid!important;width:40px!important;max-width:40px!important;height:40px!important;margin:0!important;padding:0!important;place-items:center!important;
+    display:grid!important;width:clamp(48px,6vw,64px)!important;max-width:64px!important;height:clamp(48px,6vw,64px)!important;margin:0!important;padding:0!important;place-items:center!important;
     border:1px solid #ffffff52!important;border-radius:50%!important;background:#090c12a8!important;color:#fff!important;
     box-shadow:0 5px 20px #0009!important;backdrop-filter:blur(7px)!important;-webkit-backdrop-filter:blur(7px)!important
   }
-  .releaseMobileClose span{display:block!important;width:auto!important;height:auto!important;border:0!important;border-radius:0!important;background:none!important;box-shadow:none!important;font-size:28px!important;font-weight:300!important;line-height:.85!important}
+  .releaseMobileClose span{display:block!important;width:auto!important;height:auto!important;border:0!important;border-radius:0!important;background:none!important;box-shadow:none!important;font-size:clamp(26px,4vw,38px)!important;font-weight:300!important;line-height:.85!important}
   .releaseMobileClose:active{transform:scale(.94)}
 }
 @media (min-width:651px) and (max-width:1366px) and (pointer:coarse){

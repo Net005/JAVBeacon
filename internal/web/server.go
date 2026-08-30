@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"html"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -151,6 +152,23 @@ func (s *Server) routes() {
 			return
 		}
 		http.ServeFileFS(w, r, assets, "static/index.html")
+	})
+	s.mux.HandleFunc("GET /search", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, assets, "static/index.html")
+	})
+	s.mux.HandleFunc("GET /opensearch.xml", func(w http.ResponseWriter, r *http.Request) {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		if forwarded := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])); forwarded == "http" || forwarded == "https" {
+			scheme = forwarded
+		}
+		base := scheme + "://" + r.Host
+		searchURL := html.EscapeString(base + "/search?q={searchTerms}")
+		iconURL := html.EscapeString(base + "/assets/favicon.ico")
+		w.Header().Set("Content-Type", "application/opensearchdescription+xml; charset=utf-8")
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><OpenSearchDescription xmlns="http://a9.com/-/spec/opensearch/1.1/"><ShortName>JAVBeacon</ShortName><Description>Search the JAVBeacon Release Library</Description><InputEncoding>UTF-8</InputEncoding><Image height="16" width="16" type="image/x-icon">` + iconURL + `</Image><Url type="text/html" method="get" template="` + searchURL + `"/></OpenSearchDescription>`))
 	})
 	s.mux.HandleFunc("GET /release/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err != nil {
@@ -994,7 +1012,7 @@ func (s *Server) security(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "same-origin")
-		public := r.URL.Path == "/login" || r.URL.Path == "/api/auth/login" || strings.HasPrefix(r.URL.Path, "/assets/")
+		public := r.URL.Path == "/login" || r.URL.Path == "/opensearch.xml" || r.URL.Path == "/api/auth/login" || strings.HasPrefix(r.URL.Path, "/assets/")
 		if !public {
 			cookie, _ := r.Cookie("javbeacon_session")
 			token := ""
@@ -1006,7 +1024,7 @@ func (s *Server) security(next http.Handler) http.Handler {
 				if strings.HasPrefix(r.URL.Path, "/api/") {
 					s.problem(w, http.StatusUnauthorized, "authentication required")
 				} else {
-					http.Redirect(w, r, "/login", http.StatusSeeOther)
+					http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 				}
 				return
 			}
