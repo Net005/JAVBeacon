@@ -7,6 +7,7 @@
   <link rel="icon" href="/assets/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png">
+  <link rel="search" type="application/opensearchdescription+xml" href="/opensearch.xml" title="JAVBeacon">
   <link rel="stylesheet" href="/assets/app.css">
   <style>
     body.loginPage { display:grid; grid-template-columns:minmax(0,1fr); place-items:center; width:100%; min-height:100dvh; margin:0; padding:16px; overflow-x:hidden; background:radial-gradient(circle at 50% 0,#351116,#090b10 58%); }
@@ -33,8 +34,9 @@
     <button class="primary">Sign in</button>
   </form>
   <script>
-    addEventListener('pageshow',()=>fetch('/api/auth/me',{cache:'no-store'}).then(r=>{if(r.ok)location.replace('/')}).catch(()=>{}));
-    document.querySelector('form').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('button'),error=e.target.querySelector('.error');b.disabled=true;error.textContent='';const f=new FormData(e.target);try{const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:f.get('username'),password:f.get('password')})});if(!r.ok)throw Error((await r.json()).error||'Sign in failed');location.href='/'}catch(x){error.textContent=x.message;b.disabled=false}}
+    const requestedPath=()=>{const next=new URLSearchParams(location.search).get('next')||'';return next.startsWith('/')&&!next.startsWith('//')?next:'/'};
+    addEventListener('pageshow',()=>fetch('/api/auth/me',{cache:'no-store'}).then(r=>{if(r.ok)location.replace(requestedPath())}).catch(()=>{}));
+    document.querySelector('form').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('button'),error=e.target.querySelector('.error');b.disabled=true;error.textContent='';const f=new FormData(e.target);try{const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:f.get('username'),password:f.get('password')})});if(!r.ok)throw Error((await r.json()).error||'Sign in failed');location.href=requestedPath()}catch(x){error.textContent=x.message;b.disabled=false}}
   </script>
 </body>
 </html>
