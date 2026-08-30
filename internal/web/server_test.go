@@ -153,7 +153,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`function wireTouchSwipe(`,
 		`el.addEventListener('pointermove'`,
 		`lockReleaseBackgroundScroll()`,
-		`releaseDialog.addEventListener('close',unlockReleaseBackgroundScroll)`,
+		`releaseDialog.addEventListener('close',()=>{unlockReleaseBackgroundScroll();stopDetailScreenshots()})`,
 		`const interactive=e=>e.target.closest?.('button,a,input,select,textarea,.detailScreenshotRail,.screenshotLightboxStrip')`,
 		`if(dx<0)next?.();else previous?.()`,
 		`function edgeTapDirection(x,width){return x<=width*.2?-1:x>=width*.8?1:0}`,
@@ -802,5 +802,51 @@ func TestNotificationSortOptionsAndTabDefaults(t *testing.T) {
 	wantDefaults := "notificationDefaultSort={new_release:'release',local_available:'local_available',downloaded:'downloaded',download_started:'download_started',download_failed:'notification'}"
 	if !strings.Contains(script, wantDefaults) {
 		t.Fatal("notification tabs do not have the requested event-date defaults")
+	}
+}
+
+// TestSettingsRejectsInvalidSiteGroupSchedules covers the site_group_schedules
+// validation block added for the new per-site-group scrape schedule feature
+// (see domain.SiteGroupSchedule and internal/monitor's
+// expandSiteGroupSchedules). Every case here is rejected before the settings
+// handler ever reaches s.covers/s.monitor, so a minimal *Server (store only)
+// is enough - PUT /api/settings validates in order: JSON parses, each
+// schedule has a name, has at least one site, every site has a valid
+// quick/full/new mode, priority is 1-999, schedule mode is
+// basic/advanced/cron, advanced requires a start time, and cron requires a
+// cron expression.
+func TestSettingsRejectsInvalidSiteGroupSchedules(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "site-group-schedule-validation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{store: st, log: slog.Default()}
+	for _, c := range []struct {
+		name string
+		raw  string
+	}{
+		{"invalid json", `not json`},
+		{"missing name", `[{"enabled":true,"priority":10,"sites":[{"site_id":1,"mode":"quick"}]}]`},
+		{"no sites", `[{"name":"Favorites","enabled":true,"priority":10,"sites":[]}]`},
+		{"bad site mode", `[{"name":"Favorites","enabled":true,"priority":10,"sites":[{"site_id":1,"mode":"bogus"}]}]`},
+		{"priority out of range", `[{"name":"Favorites","enabled":true,"priority":0,"sites":[{"site_id":1,"mode":"quick"}]}]`},
+		{"bad schedule mode", `[{"name":"Favorites","enabled":true,"priority":10,"schedule_mode":"weird","sites":[{"site_id":1,"mode":"quick"}]}]`},
+		{"advanced without start time", `[{"name":"Favorites","enabled":true,"priority":10,"schedule_mode":"advanced","sites":[{"site_id":1,"mode":"quick"}]}]`},
+		{"cron without expression", `[{"name":"Favorites","enabled":true,"priority":10,"schedule_mode":"cron","sites":[{"site_id":1,"mode":"quick"}]}]`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			encoded, err := json.Marshal(c.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := `{"site_group_schedules":` + string(encoded) + `}`
+			req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+			rec := httptest.NewRecorder()
+			s.settings(rec, req)
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status=%d body=%s, want 422", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
