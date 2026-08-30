@@ -876,7 +876,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .screenshotLightboxClose:hover,.screenshotLightboxPrev:hover:not(:disabled),.screenshotLightboxNext:hover:not(:disabled){background:#1b232fef;border-color:var(--accent)}
 .screenshotLightboxPrev:disabled,.screenshotLightboxNext:disabled{opacity:.3;cursor:not-allowed}
 .screenshotLightboxClose{top:16px;right:16px;font-size:18px}.screenshotLightboxPrev{left:16px;top:calc(50% - 23px)}.screenshotLightboxNext{right:16px;top:calc(50% - 23px)}
-#screenshotLightboxCount{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);margin:0;padding:5px 10px;border-radius:999px;background:#111720e8;color:#dce1ea;font-size:11px;font-weight:800;cursor:default}
+#screenshotLightboxCount{position:absolute;z-index:3;top:10px;left:50%;bottom:auto;transform:translateX(-50%);margin:0;padding:5px 10px;border:1px solid #ffffff18;border-radius:999px;background:#111720b8;color:#dce1eacc;font-size:11px;font-weight:700;letter-spacing:.2px;box-shadow:0 5px 16px #0007;backdrop-filter:blur(5px);cursor:default}
 .screenshotLightboxStrip{display:flex;justify-content:center;gap:8px;min-height:0;overflow-x:auto;scrollbar-width:none;padding:2px;cursor:grab}
 .screenshotLightboxStrip.dragging{cursor:grabbing}
 .screenshotLightboxStrip:empty{display:none}
@@ -962,6 +962,19 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
   .releaseFiltersPanel .subtabs{border:0;border-top:1px solid var(--line);border-radius:0}
   .releaseFiltersPanel .toolbar{border-right:0;border-bottom:0;border-left:0}
 }
+
+/* Release-list and slideshow positions live with the artwork rather than the
+   small top-right control cluster. This keeps them centered and visible at
+   every desktop/mobile layout while remaining quiet over the media. */
+.releaseChrome>.releaseNavPosition{display:none!important}
+.releaseArt .mediaPosition{
+  position:absolute!important;z-index:5!important;top:10px!important;left:50%!important;right:auto!important;bottom:auto!important;
+  transform:translateX(-50%)!important;margin:0!important;padding:5px 10px!important;border:1px solid #ffffff18!important;border-radius:999px!important;
+  background:#111720b8!important;color:#dce1eacc!important;font-size:11px!important;font-weight:700!important;letter-spacing:.2px!important;
+  line-height:1.2!important;white-space:nowrap!important;box-shadow:0 5px 16px #0007!important;backdrop-filter:blur(5px)!important;
+  pointer-events:none!important;opacity:1!important
+}
+.releaseArt .mediaPosition[hidden]{display:none!important}
 .settingsSaveStatus{display:inline-block;min-height:1.3em;margin:0 12px 8px 0;font-size:12px;font-weight:700;vertical-align:middle}
 .settingsSaveStatus.saving{color:var(--muted)}
 .settingsSaveStatus.success{color:#69d6a0}
@@ -974,6 +987,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .byparrInstanceRow input[data-byparr-priority]{min-width:0}
 .byparrInstanceRow label.check{white-space:nowrap;margin:0}
 .siteGroupScheduleCard{padding:14px;margin:10px 0;border:1px solid var(--line);border-radius:10px;background:var(--surface2)}
+.siteGroupScheduleForecast{margin:8px 0 10px;padding:7px 10px;border-left:2px solid #58677b;background:#0b1017;border-radius:0 7px 7px 0;font-size:11px;line-height:1.45}
 .siteGroupScheduleCard>[data-sgs-remove]{margin-top:12px;width:100%}
 .siteGroupScheduleSites{max-height:220px;overflow:auto;padding:4px 2px;border:1px solid var(--line);border-radius:8px;background:#0d1016}
 .siteGroupScheduleCategory{margin:0;padding:8px 10px;border:0;border-bottom:1px solid var(--line)}

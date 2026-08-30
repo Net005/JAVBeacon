@@ -1240,6 +1240,10 @@ type scrapeSchedule struct {
 	// enabled site", matching the three built-in schedules' existing
 	// behavior.
 	siteID int64
+	// siteGroupScheduleID links per-site synthetic schedules back to their
+	// parent Settings card so the UI can show one live next-three-runs
+	// forecast for the whole named group.
+	siteGroupScheduleID int64
 	// priorityOverride, when non-zero, is passed as resolvePriority's
 	// override argument (which always short-circuits its settings lookup -
 	// see resolvePriority's doc comment) instead of 0, so a site-group
@@ -1330,20 +1334,21 @@ func (s *Service) expandSiteGroupSchedules(ctx context.Context, settings map[str
 			augmented[prefix+"weekdays"] = group.Weekdays
 			augmented[prefix+"cron"] = group.Cron
 			extra = append(extra, scrapeSchedule{
-				id:               id,
-				mode:             mode,
-				title:            group.Name + " · " + siteTitle,
-				enabledKey:       prefix + "enabled",
-				scheduleModeKey:  prefix + "schedule_mode",
-				intervalKey:      prefix + "interval",
-				startTimeKey:     prefix + "start_time",
-				weekdaysKey:      prefix + "weekdays",
-				cronKey:          prefix + "cron",
-				priorityKind:     PriorityKindScheduledSiteGroup,
-				fallback:         time.Hour,
-				defaultEnabled:   true,
-				siteID:           groupSite.SiteID,
-				priorityOverride: group.Priority,
+				id:                  id,
+				mode:                mode,
+				title:               group.Name + " · " + siteTitle,
+				enabledKey:          prefix + "enabled",
+				scheduleModeKey:     prefix + "schedule_mode",
+				intervalKey:         prefix + "interval",
+				startTimeKey:        prefix + "start_time",
+				weekdaysKey:         prefix + "weekdays",
+				cronKey:             prefix + "cron",
+				priorityKind:        PriorityKindScheduledSiteGroup,
+				fallback:            time.Hour,
+				defaultEnabled:      true,
+				siteID:              groupSite.SiteID,
+				siteGroupScheduleID: group.ID,
+				priorityOverride:    group.Priority,
 			})
 			if group.Pages > 0 {
 				augmented[prefix+"pages"] = strconv.Itoa(group.Pages)
@@ -1577,7 +1582,7 @@ func (s *Service) ScheduleForecast(ctx context.Context) []domain.ScheduleForecas
 		if strings.HasPrefix(schedule.id, siteGroupSchedulePrefix) {
 			group = "Site group schedules"
 		}
-		forecast := domain.ScheduleForecast{Group: group, Name: schedule.title, Enabled: enabled}
+		forecast := domain.ScheduleForecast{Group: group, Name: schedule.title, Enabled: enabled, SiteGroupScheduleID: schedule.siteGroupScheduleID}
 		interval := schedule.fallback
 		if parsed, err := domain.ParseScheduleDuration(settings[schedule.intervalKey]); err == nil && parsed >= time.Minute {
 			interval = parsed

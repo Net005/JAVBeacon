@@ -192,4 +192,10 @@ func TestScheduleForecastIncludesEnabledSiteGroupSchedules(t *testing.T) {
 	if found.Group != "Site group schedules" || !found.Enabled {
 		t.Fatalf("unexpected forecast entry: %+v", found)
 	}
+	if found.SiteGroupScheduleID != groups[0].ID {
+		t.Fatalf("site group schedule id = %d, want %d", found.SiteGroupScheduleID, groups[0].ID)
+	}
+	if len(found.NextRuns) != scheduleForecastRunCount {
+		t.Fatalf("next runs = %d, want %d: %+v", len(found.NextRuns), scheduleForecastRunCount, found.NextRuns)
+	}
 }
