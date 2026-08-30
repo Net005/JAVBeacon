@@ -212,6 +212,14 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`download_added_at`,
 		`class="downloadPillWrap"`,
 		`const x=await api('/releases/'+id)`,
+		`function closeDownloadTelemetry(except=null)`,
+		`wrap.classList.toggle('telemetryOpen',opening)`,
+		`e.stopImmediatePropagation()`,
+		`function actionIcon(kind)`,
+		`function decorateActionButtons(root=document)`,
+		`actionIcon('watchlist')`,
+		`actionIcon('notification')`,
+		`actionIcon('monitor')`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("Release Details download telemetry is missing %q", marker)
@@ -260,7 +268,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if !strings.Contains(string(stylesheet), `.releaseArt .detailCover{color:transparent;font-size:0;text-indent:-9999px}`) {
 		t.Fatal("Release Details cover must hide image fallback text while navigation loads the next cover")
 	}
-	for _, marker := range []string{`.downloadPillTelemetry{`, `.downloadPillWrap:hover .downloadPillTelemetry`, `grid-template-columns:repeat(2,minmax(118px,1fr))`} {
+	for _, marker := range []string{`.downloadPillTelemetry{`, `.downloadPillWrap:hover .downloadPillTelemetry`, `.downloadPillWrap.telemetryOpen .downloadPillTelemetry`, `.detailActionGroups:has(.downloadPillWrap)`, `grid-template-columns:repeat(2,minmax(118px,1fr))`, `.actionIcon svg{`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("Release Details download telemetry styling is missing %q", marker)
 		}
@@ -271,6 +279,11 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	}
 	if !strings.Contains(string(markup), `aria-label="Fullscreen screenshot view"`) {
 		t.Fatal("embedded index.html is missing the fullscreen screenshot view")
+	}
+	for _, marker := range []string{`data-desired="true">Watchlist`, `Added to Watchlist`, `<option value="added">Date added</option><option value="updated">Date updated</option>`} {
+		if !strings.Contains(string(markup), marker) {
+			t.Fatalf("embedded index.html is missing Watchlist/sort terminology %q", marker)
+		}
 	}
 	if !strings.Contains(string(markup), `id="releaseMobileClose"`) || !strings.Contains(string(markup), `<span aria-hidden="true">×</span>`) {
 		t.Fatal("embedded index.html is missing the mobile release close target")

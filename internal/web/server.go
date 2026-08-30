@@ -1728,7 +1728,7 @@ func (s *Server) patchRelease(w http.ResponseWriter, r *http.Request) {
 			x.DesiredSync = "error: " + settingsErr.Error()
 		} else if state, syncErr := s.stash.SyncDesiredRelease(r.Context(), n); syncErr != nil {
 			x.DesiredSync = "error: " + syncErr.Error()
-			s.log.Warn("immediate Stash Desired sync failed", "release_id", n, "video_id", x.VideoID, "error", syncErr)
+			s.log.Warn("immediate Stash Watchlist sync failed", "release_id", n, "video_id", x.VideoID, "error", syncErr)
 		} else {
 			x.DesiredSync = state
 		}

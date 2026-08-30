@@ -558,7 +558,7 @@ func (s *Service) desiredConfig(ctx context.Context) (base, key, tagID string, e
 	key = settings["stash_api_key"]
 	tagID = strings.TrimSpace(settings["stash_desired_tag_id"])
 	if base == "" || tagID == "" {
-		return "", "", "", errors.New("StashApp Base URL and Desired tag ID are required")
+		return "", "", "", errors.New("StashApp Base URL and Watchlist tag ID are required")
 	}
 	return base, key, tagID, nil
 }
@@ -575,7 +575,7 @@ func (s *Service) verifyDesiredTag(ctx context.Context, base, key, tagID string)
 		return e
 	}
 	if payload.Data.FindTag == nil {
-		return errors.New("configured Desired tag does not exist in StashApp")
+		return errors.New("configured Watchlist tag does not exist in StashApp")
 	}
 	return nil
 }
@@ -724,9 +724,9 @@ func (s *Service) DesiredSchedule(ctx context.Context) {
 			if settings["stash_desired_sync_enabled"] == "true" && strings.TrimSpace(settings["stash_desired_tag_id"]) != "" {
 				result, syncErr := s.SyncDesired(ctx)
 				if syncErr != nil {
-					s.log.Error("scheduled Stash Desired sync failed", "error", syncErr)
+					s.log.Error("scheduled Stash Watchlist sync failed", "error", syncErr)
 				} else {
-					s.log.Info("scheduled Stash Desired sync completed", "checked", result.Checked, "updated", result.Updated, "skipped", result.Skipped)
+					s.log.Info("scheduled Stash Watchlist sync completed", "checked", result.Checked, "updated", result.Updated, "skipped", result.Skipped)
 				}
 			}
 			remaining = interval
@@ -767,7 +767,7 @@ func (s *Service) ScheduleForecast(ctx context.Context) []domain.ScheduleForecas
 	desiredEnabled := settings["stash_desired_sync_enabled"] == "true" && strings.TrimSpace(settings["stash_desired_tag_id"]) != ""
 	return []domain.ScheduleForecast{
 		s.intervalScheduleForecast("sync", "Local library sync", syncEnabled, settings["stash_sync_interval"]),
-		s.intervalScheduleForecast("desired_sync", "Desired-tag sync", desiredEnabled, settings["stash_desired_sync_interval"]),
+		s.intervalScheduleForecast("desired_sync", "Watchlist-tag sync", desiredEnabled, settings["stash_desired_sync_interval"]),
 	}
 }
 
