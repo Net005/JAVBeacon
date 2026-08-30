@@ -513,6 +513,30 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
     padding:0!important;
     pointer-events:auto!important;
   }
+  /* Subtle, always-on readout of where you are in the navigable list -
+     deliberately NOT part of the navBtn/close hover-reveal system below, so
+     it stays legible without requiring a hover. Centered on the dialog
+     (which is always full viewport width), not on releaseChrome's own
+     narrow corner box, using a viewport unit rather than a percentage. */
+  .releaseNavPosition{
+    position:absolute!important;
+    top:10px!important;
+    left:50vw!important;
+    transform:translateX(-50%)!important;
+    z-index:29!important;
+    padding:5px 11px!important;
+    border-radius:999px!important;
+    background:#12151ca6!important;
+    border:1px solid #2b303bb0!important;
+    color:var(--muted)!important;
+    font-size:10px!important;
+    font-weight:700!important;
+    letter-spacing:.3px!important;
+    white-space:nowrap!important;
+    pointer-events:none!important;
+    transition:opacity .15s ease!important;
+  }
+  .releaseChrome.titleCollision .releaseNavPosition{opacity:0!important}
   .releaseChrome .navBtn,
   .releaseChrome .close{
     position:static!important;
@@ -949,6 +973,15 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .byparrInstanceRow input[data-byparr-url]{min-width:0}
 .byparrInstanceRow input[data-byparr-priority]{min-width:0}
 .byparrInstanceRow label.check{white-space:nowrap;margin:0}
+.siteGroupScheduleCard{padding:14px;margin:10px 0;border:1px solid var(--line);border-radius:10px;background:var(--surface2)}
+.siteGroupScheduleCard>[data-sgs-remove]{margin-top:12px;width:100%}
+.siteGroupScheduleSites{max-height:220px;overflow:auto;padding:4px 2px;border:1px solid var(--line);border-radius:8px;background:#0d1016}
+.siteGroupScheduleCategory{margin:0;padding:8px 10px;border:0;border-bottom:1px solid var(--line)}
+.siteGroupScheduleCategory:last-child{border-bottom:0}
+.siteGroupScheduleCategory legend{padding:0 0 4px;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:1px}
+.siteGroupScheduleSiteRow{display:flex!important;align-items:center;gap:8px;margin:4px 0}
+.siteGroupScheduleSiteRow span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.siteGroupScheduleSiteRow select{width:auto;padding:4px 6px}
 .compactViewHead{min-height:40px;margin:-7px 0 8px;gap:12px}
 .compactViewHead>p{margin:0}
 .logsView>.compactViewHead+.logPanel{height:calc(100% - 40px)}
