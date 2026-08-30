@@ -272,7 +272,7 @@ type migrationTestIDs struct {
 // one of the tables migrationTables copies (sites, releases and their
 // actress/tag/site relationships, settings, users, sessions, preferences,
 // filter presets, job history, downloads, path mappings, pipeline
-// steps/runs/logs, notifications, desired sync), mirroring
+// steps/runs/logs, notifications, watchlist sync), mirroring
 // internal/store's own TestPostgresStoreFullLifecycle so the transfer test
 // below exercises real, relationship-carrying data rather than a single
 // trivial row.
@@ -345,7 +345,7 @@ func buildTestMigrationSource(t *testing.T) (path string, ids migrationTestIDs) 
 	if _, e := src.CreateNotification(ctx, release.ID, "download_started", "started"); e != nil {
 		t.Fatal(e)
 	}
-	if e := src.SaveDesiredSync(ctx, release.ID, "scene1", "tag1", "ok"); e != nil {
+	if e := src.SaveWatchlistSync(ctx, release.ID, "scene1", "tag1", "ok"); e != nil {
 		t.Fatal(e)
 	}
 	if e := src.SetSiteReleaseMonitoring(ctx, site.ID, true); e != nil {
@@ -412,7 +412,7 @@ func resetMigrationTarget(t *testing.T, cfg store.PostgresConfig) {
 		t.Fatalf("preparing target schema for test reset: %v", e)
 	}
 	defer st.Close()
-	if _, e := st.DB().ExecContext(ctx, `TRUNCATE sites, releases, settings, users, sessions, user_preferences, filter_presets, job_history, download_search_runs, downloads, path_mappings, pipeline_steps, pipeline_logs, notifications, desired_sync, release_actresses, release_tags, release_sites, pipeline_runs RESTART IDENTITY CASCADE`); e != nil {
+	if _, e := st.DB().ExecContext(ctx, `TRUNCATE sites, releases, settings, users, sessions, user_preferences, filter_presets, job_history, download_search_runs, downloads, path_mappings, pipeline_steps, pipeline_logs, notifications, watchlist_sync, release_actresses, release_tags, release_sites, pipeline_runs RESTART IDENTITY CASCADE`); e != nil {
 		t.Fatalf("truncating target for test reset: %v", e)
 	}
 }

@@ -139,7 +139,7 @@ func ReplaceSites(ctx context.Context, options SiteOptions) (SiteReport, error) 
 			if updated.IsZero() {
 				updated = now
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO sites(title,type,name,url,notify,download,desired,rss_url,enabled,created_at,updated_at) VALUES(?,?,?,?,?,0,0,'',1,?,?)`, row.Title, row.Type, row.Name, row.URL, row.Notify, now, updated); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO sites(title,type,name,url,notify,download,watchlist,rss_url,enabled,created_at,updated_at) VALUES(?,?,?,?,?,0,0,'',1,?,?)`, row.Title, row.Type, row.Name, row.URL, row.Notify, now, updated); err != nil {
 				return report, err
 			}
 		}

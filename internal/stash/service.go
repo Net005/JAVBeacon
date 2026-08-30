@@ -71,7 +71,7 @@ type Status struct {
 	Error       string    `json:"error,omitempty"`
 }
 
-type DesiredStatus struct {
+type WatchlistStatus struct {
 	Checked int    `json:"checked"`
 	Updated int    `json:"updated"`
 	Skipped int    `json:"skipped"`
@@ -79,18 +79,18 @@ type DesiredStatus struct {
 }
 
 type Service struct {
-	store     store.Store
-	client    *http.Client
-	log       *slog.Logger
-	mu        sync.RWMutex
-	desiredMu sync.Mutex
-	status    Status
+	store       store.Store
+	client      *http.Client
+	log         *slog.Logger
+	mu          sync.RWMutex
+	watchlistMu sync.Mutex
+	status      Status
 
 	// jav and downloads back the TODO-2.0 Phase 2 "Missing Library Files"
 	// recovery flow (missing.go): jav scrapes a matched-but-unretrieved
 	// scene's JavLibrary URL into a full release, and downloads drives the
 	// "Monitor + Download + search" bulk action. Both may be nil in tests
-	// that only exercise the pre-existing local/desired sync behavior above.
+	// that only exercise the pre-existing local/watchlist sync behavior above.
 	jav       *scraper.JavLibrary
 	downloads *download.Service
 
@@ -104,7 +104,7 @@ type Service struct {
 	applyStatus ApplyStatus
 
 	// scheduleNextAttempt tracks, per schedule loop below ("sync",
-	// "desired_sync"), the wall-clock time that loop will next actually
+	// "watchlist_sync"), the wall-clock time that loop will next actually
 	// check whether it's due to run - kept live (updated every loop
 	// iteration, not just when the schedule fires) so ScheduleForecast can
 	// report an accurate "next run" without re-deriving the loop's own
@@ -113,7 +113,7 @@ type Service struct {
 	scheduleNextAttempt map[string]time.Time
 }
 
-// scheduleMaxSleepChunk bounds how long Schedule/DesiredSchedule ever sleep
+// scheduleMaxSleepChunk bounds how long Schedule/WatchlistSchedule ever sleep
 // in one time.NewTimer wait, so a settings change (interval edited, or a
 // schedule enabled/disabled) is picked up within this long at worst instead
 // of only after whatever stale interval the loop last computed - mirrors
@@ -487,29 +487,29 @@ func (s *Service) fetchPlaybackStatsQuery(ctx context.Context, url, apiKey, quer
 	return out, nil
 }
 
-func (s *Service) SyncDesired(ctx context.Context) (DesiredStatus, error) {
-	s.desiredMu.Lock()
-	defer s.desiredMu.Unlock()
-	return s.syncDesired(ctx)
+func (s *Service) SyncWatchlist(ctx context.Context) (WatchlistStatus, error) {
+	s.watchlistMu.Lock()
+	defer s.watchlistMu.Unlock()
+	return s.syncWatchlist(ctx)
 }
 
-func (s *Service) syncDesired(ctx context.Context) (DesiredStatus, error) {
-	var out DesiredStatus
-	base, key, tagID, e := s.desiredConfig(ctx)
+func (s *Service) syncWatchlist(ctx context.Context) (WatchlistStatus, error) {
+	var out WatchlistStatus
+	base, key, tagID, e := s.watchlistConfig(ctx)
 	if e != nil {
 		return out, e
 	}
-	if e = s.verifyDesiredTag(ctx, base, key, tagID); e != nil {
+	if e = s.verifyWatchlistTag(ctx, base, key, tagID); e != nil {
 		return out, e
 	}
 	for offset := 0; ; offset += 500 {
-		rows, e := s.store.Releases(ctx, domain.ReleaseFilter{Desired: true, Limit: 500, Offset: offset})
+		rows, e := s.store.Releases(ctx, domain.ReleaseFilter{Watchlist: true, Limit: 500, Offset: offset})
 		if e != nil {
 			return out, e
 		}
 		for _, r := range rows {
 			out.Checked++
-			state, syncErr := s.syncDesiredRelease(ctx, r, base, key, tagID)
+			state, syncErr := s.syncWatchlistRelease(ctx, r, base, key, tagID)
 			if syncErr != nil {
 				return out, syncErr
 			}
@@ -526,44 +526,44 @@ func (s *Service) syncDesired(ctx context.Context) (DesiredStatus, error) {
 	return out, nil
 }
 
-func (s *Service) SyncDesiredRelease(ctx context.Context, releaseID int64) (string, error) {
-	s.desiredMu.Lock()
-	defer s.desiredMu.Unlock()
+func (s *Service) SyncWatchlistRelease(ctx context.Context, releaseID int64) (string, error) {
+	s.watchlistMu.Lock()
+	defer s.watchlistMu.Unlock()
 	r, e := s.store.Release(ctx, releaseID)
 	if e != nil {
 		return "", e
 	}
-	if !r.Desired {
-		return "not_desired", nil
+	if !r.Watchlist {
+		return "not_watchlist", nil
 	}
-	base, key, tagID, e := s.desiredConfig(ctx)
+	base, key, tagID, e := s.watchlistConfig(ctx)
 	if e != nil {
 		return "", e
 	}
 	if !r.Local || r.StashSceneID == "" {
 		return "pending_scene", nil
 	}
-	if e = s.verifyDesiredTag(ctx, base, key, tagID); e != nil {
+	if e = s.verifyWatchlistTag(ctx, base, key, tagID); e != nil {
 		return "", e
 	}
-	return s.syncDesiredRelease(ctx, r, base, key, tagID)
+	return s.syncWatchlistRelease(ctx, r, base, key, tagID)
 }
 
-func (s *Service) desiredConfig(ctx context.Context) (base, key, tagID string, err error) {
+func (s *Service) watchlistConfig(ctx context.Context) (base, key, tagID string, err error) {
 	settings, err := s.store.Settings(ctx)
 	if err != nil {
 		return "", "", "", err
 	}
 	base = strings.TrimRight(strings.TrimSpace(settings["stash_base_url"]), "/")
 	key = settings["stash_api_key"]
-	tagID = strings.TrimSpace(settings["stash_desired_tag_id"])
+	tagID = strings.TrimSpace(settings["stash_watchlist_tag_id"])
 	if base == "" || tagID == "" {
 		return "", "", "", errors.New("StashApp Base URL and Watchlist tag ID are required")
 	}
 	return base, key, tagID, nil
 }
 
-func (s *Service) verifyDesiredTag(ctx context.Context, base, key, tagID string) error {
+func (s *Service) verifyWatchlistTag(ctx context.Context, base, key, tagID string) error {
 	var payload struct {
 		Data struct {
 			FindTag *struct {
@@ -580,11 +580,11 @@ func (s *Service) verifyDesiredTag(ctx context.Context, base, key, tagID string)
 	return nil
 }
 
-func (s *Service) syncDesiredRelease(ctx context.Context, r domain.Release, base, key, tagID string) (string, error) {
+func (s *Service) syncWatchlistRelease(ctx context.Context, r domain.Release, base, key, tagID string) (string, error) {
 	if !r.Local || r.StashSceneID == "" {
 		return "pending_scene", nil
 	}
-	if done, _ := s.store.DesiredSynced(ctx, r.ID, r.StashSceneID, tagID); done {
+	if done, _ := s.store.WatchlistSynced(ctx, r.ID, r.StashSceneID, tagID); done {
 		return "already_synced", nil
 	}
 	var scene struct {
@@ -606,7 +606,7 @@ func (s *Service) syncDesiredRelease(ctx context.Context, r domain.Release, base
 	for _, tag := range scene.Data.FindScene.Tags {
 		tags = append(tags, tag.ID)
 		if tag.ID == tagID {
-			_ = s.store.SaveDesiredSync(ctx, r.ID, r.StashSceneID, tagID, "tag already present")
+			_ = s.store.SaveWatchlistSync(ctx, r.ID, r.StashSceneID, tagID, "tag already present")
 			return "already_tagged", nil
 		}
 	}
@@ -619,7 +619,7 @@ func (s *Service) syncDesiredRelease(ctx context.Context, r domain.Release, base
 	if e := s.graphql(ctx, base, key, `mutation { sceneUpdate(input: {id: "`+escapeGraphQL(r.StashSceneID)+`", tag_ids: [`+strings.Join(quoted, ",")+`]}) { id } }`, &mutation); e != nil {
 		return "", e
 	}
-	if e := s.store.SaveDesiredSync(ctx, r.ID, r.StashSceneID, tagID, "tag added"); e != nil {
+	if e := s.store.SaveWatchlistSync(ctx, r.ID, r.StashSceneID, tagID, "tag added"); e != nil {
 		return "", e
 	}
 	return "tagged", nil
@@ -709,11 +709,11 @@ func (s *Service) startScheduledLocalSync(ctx context.Context, settings map[stri
 	return true
 }
 
-func (s *Service) DesiredSchedule(ctx context.Context) {
+func (s *Service) WatchlistSchedule(ctx context.Context) {
 	lastAttempt := time.Now()
 	for {
 		settings, _ := s.store.Settings(ctx)
-		interval, err := domain.ParseScheduleDuration(settings["stash_desired_sync_interval"])
+		interval, err := domain.ParseScheduleDuration(settings["stash_watchlist_sync_interval"])
 		if err != nil || interval < time.Minute {
 			interval = 6 * time.Hour
 		}
@@ -721,8 +721,8 @@ func (s *Service) DesiredSchedule(ctx context.Context) {
 		remaining := interval - now.Sub(lastAttempt)
 		if remaining <= 0 {
 			lastAttempt = now
-			if settings["stash_desired_sync_enabled"] == "true" && strings.TrimSpace(settings["stash_desired_tag_id"]) != "" {
-				result, syncErr := s.SyncDesired(ctx)
+			if settings["stash_watchlist_sync_enabled"] == "true" && strings.TrimSpace(settings["stash_watchlist_tag_id"]) != "" {
+				result, syncErr := s.SyncWatchlist(ctx)
 				if syncErr != nil {
 					s.log.Error("scheduled Stash Watchlist sync failed", "error", syncErr)
 				} else {
@@ -735,7 +735,7 @@ func (s *Service) DesiredSchedule(ctx context.Context) {
 		if s.scheduleNextAttempt == nil {
 			s.scheduleNextAttempt = map[string]time.Time{}
 		}
-		s.scheduleNextAttempt["desired_sync"] = now.Add(remaining)
+		s.scheduleNextAttempt["watchlist_sync"] = now.Add(remaining)
 		s.mu.Unlock()
 		sleep := remaining
 		if sleep <= 0 || sleep > scheduleMaxSleepChunk {
@@ -756,18 +756,18 @@ func (s *Service) DesiredSchedule(ctx context.Context) {
 // download.scheduleForecastRunCount so every panel shows the same count.
 const scheduleForecastRunCount = 3
 
-// ScheduleForecast reports the StashApp local-library and Desired-tag sync
+// ScheduleForecast reports the StashApp local-library and Watchlist-tag sync
 // schedules' current enabled/interval state plus their next
 // scheduleForecastRunCount predicted run times, reading the live
-// scheduleNextAttempt time Schedule/DesiredSchedule last computed so it can
+// scheduleNextAttempt time Schedule/WatchlistSchedule last computed so it can
 // never drift from what those loops will actually do next.
 func (s *Service) ScheduleForecast(ctx context.Context) []domain.ScheduleForecast {
 	settings, _ := s.store.Settings(ctx)
 	syncEnabled := settings["stash_local_sync_enabled"] == "true" && settings["stash_base_url"] != ""
-	desiredEnabled := settings["stash_desired_sync_enabled"] == "true" && strings.TrimSpace(settings["stash_desired_tag_id"]) != ""
+	watchlistEnabled := settings["stash_watchlist_sync_enabled"] == "true" && strings.TrimSpace(settings["stash_watchlist_tag_id"]) != ""
 	return []domain.ScheduleForecast{
 		s.intervalScheduleForecast("sync", "Local library sync", syncEnabled, settings["stash_sync_interval"]),
-		s.intervalScheduleForecast("desired_sync", "Watchlist-tag sync", desiredEnabled, settings["stash_desired_sync_interval"]),
+		s.intervalScheduleForecast("watchlist_sync", "Watchlist-tag sync", watchlistEnabled, settings["stash_watchlist_sync_interval"]),
 	}
 }
 

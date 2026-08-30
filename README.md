@@ -20,7 +20,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete version history.
 
 - Monitor GIGA/Akiba and JavLibrary sources for new and updated releases.
 - Browse a responsive cover library with structured filters for actresses, studios, labels, tags, dates, duration, and release state.
-- Track upcoming, desired, local, downloading, completed, failed, and missing releases.
+- Track upcoming, watchlist, local, downloading, completed, failed, and missing releases.
 - Search Sukebei/Nyaa-compatible providers and submit vetted torrents to qBittorrent.
 - Run scheduled searches for recent and older monitored releases, with independent intervals and filename acceptance rules.
 - Use per-site RSS monitoring, duplicate prevention, torrent progress, seed/peer status, and download history.

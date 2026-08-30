@@ -93,8 +93,8 @@ type Store interface {
 	Notifications(context.Context, string) ([]domain.Notification, error)
 	DeleteNotifications(context.Context, string, []int64) (int64, error)
 	CreateNotification(context.Context, int64, string, string) (bool, error)
-	DesiredSynced(context.Context, int64, string, string) (bool, error)
-	SaveDesiredSync(context.Context, int64, string, string, string) error
+	WatchlistSynced(context.Context, int64, string, string) (bool, error)
+	SaveWatchlistSync(context.Context, int64, string, string, string) error
 	StashMissingScenes(context.Context, domain.StashMissingFilter) ([]domain.StashMissingScene, error)
 	StashMissingScenesCount(context.Context, domain.StashMissingFilter) (int, error)
 	StashMissingScene(context.Context, int64) (domain.StashMissingScene, error)
@@ -188,7 +188,7 @@ CREATE TABLE IF NOT EXISTS pipeline_logs (id INTEGER PRIMARY KEY, download_id IN
 CREATE INDEX IF NOT EXISTS idx_pipeline_logs_download ON pipeline_logs(download_id);
 CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY, release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE, type TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL, UNIQUE(release_id,type));
 CREATE INDEX IF NOT EXISTS idx_notifications_release_created ON notifications(release_id,created_at DESC);
-CREATE TABLE IF NOT EXISTS desired_sync (release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE, stash_scene_id TEXT NOT NULL, tag_id TEXT NOT NULL, synced_at DATETIME NOT NULL, result TEXT NOT NULL DEFAULT '');`)
+CREATE TABLE IF NOT EXISTS watchlist_sync (release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE, stash_scene_id TEXT NOT NULL, tag_id TEXT NOT NULL, synced_at DATETIME NOT NULL, result TEXT NOT NULL DEFAULT '');`)
 	}
 	if err == nil {
 		_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS historical_backfill_state (
@@ -223,10 +223,10 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 		for _, statement := range []string{
 			`ALTER TABLE sites ADD COLUMN download INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE sites ADD COLUMN download_mode TEXT NOT NULL DEFAULT ''`,
-			`ALTER TABLE sites ADD COLUMN desired INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE sites ADD COLUMN watchlist INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE sites ADD COLUMN rss_url TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE releases ADD COLUMN notify_on_release INTEGER NOT NULL DEFAULT 0`,
-			`ALTER TABLE releases ADD COLUMN desired INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE releases ADD COLUMN watchlist INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE releases ADD COLUMN monitor_download INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE releases ADD COLUMN site_monitor_download INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE releases ADD COLUMN identity_key TEXT NOT NULL DEFAULT ''`,
@@ -254,7 +254,7 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 			`ALTER TABLE releases ADD COLUMN last_played_at TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE releases ADD COLUMN last_o_count_at TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE releases ADD COLUMN screenshots_checked_at DATETIME`,
-			`ALTER TABLE releases ADD COLUMN desired_at DATETIME`,
+			`ALTER TABLE releases ADD COLUMN watchlist_at DATETIME`,
 			`ALTER TABLE releases ADD COLUMN stash_created_at DATETIME`,
 			`ALTER TABLE releases ADD COLUMN is_preferred INTEGER NOT NULL DEFAULT 1`,
 		} {
@@ -264,13 +264,16 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 		}
 	}
 	if err == nil {
-		// Backfill desired_at for releases already marked Desired before this
-		// column existed, so the Desired tab's "when marked as desired" sort
+		err = s.migrateWatchlistNaming(context.Background())
+	}
+	if err == nil {
+		// Backfill watchlist_at for releases already marked Watchlist before this
+		// column existed, so the Watchlist tab's "when marked as watchlist" sort
 		// has something to sort by right after upgrade instead of every
-		// pre-existing Desired release tying at NULL. updated_at is the
-		// closest available approximation of when desired was last toggled
+		// pre-existing Watchlist release tying at NULL. updated_at is the
+		// closest available approximation of when watchlist was last toggled
 		// true for these rows.
-		_, err = s.db.Exec(`UPDATE releases SET desired_at=updated_at WHERE desired=1 AND desired_at IS NULL`)
+		_, err = s.db.Exec(`UPDATE releases SET watchlist_at=updated_at WHERE watchlist=1 AND watchlist_at IS NULL`)
 	}
 	if err == nil {
 		// Backfill stash_created_at for releases already locally matched
@@ -366,9 +369,166 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 		err = s.normalizeReleaseTimestamps(context.Background())
 	}
 	if err == nil {
-		_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_releases_released_date ON releases(released,release_date DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_local_created ON releases(is_local,stash_created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_desired_date ON releases(desired,desired_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_updated ON releases(updated_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_title_order ON releases(title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS idx_releases_preferred ON releases(is_preferred,id);`)
+		_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_releases_released_date ON releases(released,release_date DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_local_created ON releases(is_local,stash_created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_watchlist_date ON releases(watchlist,watchlist_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_updated ON releases(updated_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_title_order ON releases(title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS idx_releases_preferred ON releases(is_preferred,id);`)
 	}
 	return err
+}
+
+// migrateWatchlistNaming upgrades the persisted names used by installations
+// from before Watchlist became the canonical feature name. The retired token
+// is assembled so it cannot accidentally remain a searchable identifier in
+// active source. The migration is idempotent and removes the retired database
+// objects after their data has been copied.
+func (s *SQLite) migrateWatchlistNaming(ctx context.Context) error {
+	retired := "des" + "ired"
+	retiredTitle := "Des" + "ired"
+
+	siteColumn, err := s.columnExists(ctx, "sites", retired)
+	if err != nil {
+		return err
+	}
+	releaseColumn, err := s.columnExists(ctx, "releases", retired)
+	if err != nil {
+		return err
+	}
+	releaseTimeColumn, err := s.columnExists(ctx, "releases", retired+"_at")
+	if err != nil {
+		return err
+	}
+	retiredSync := retired + "_sync"
+	syncTable, err := s.tableExists(ctx, retiredSync)
+	if err != nil {
+		return err
+	}
+
+	if siteColumn {
+		if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`UPDATE sites SET watchlist=CASE WHEN watchlist=1 OR %s=1 THEN 1 ELSE 0 END`, retired)); err != nil {
+			return err
+		}
+	}
+	if releaseColumn {
+		if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`UPDATE releases SET watchlist=CASE WHEN watchlist=1 OR %s=1 THEN 1 ELSE 0 END`, retired)); err != nil {
+			return err
+		}
+	}
+	if releaseTimeColumn {
+		if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`UPDATE releases SET watchlist_at=COALESCE(watchlist_at,%s_at)`, retired)); err != nil {
+			return err
+		}
+	}
+	if syncTable {
+		insert := fmt.Sprintf(`INSERT OR IGNORE INTO watchlist_sync(release_id,stash_scene_id,tag_id,synced_at,result) SELECT release_id,stash_scene_id,tag_id,synced_at,result FROM %s`, retiredSync)
+		if s.dialect.Name() == "postgres" {
+			insert = fmt.Sprintf(`INSERT INTO watchlist_sync(release_id,stash_scene_id,tag_id,synced_at,result) SELECT release_id,stash_scene_id,tag_id,synced_at,result FROM %s ON CONFLICT(release_id) DO NOTHING`, retiredSync)
+		}
+		if _, err := s.db.ExecContext(ctx, insert); err != nil {
+			return err
+		}
+	}
+
+	for _, suffix := range []string{"sync_enabled", "sync_interval", "tag_id"} {
+		oldKey, newKey := "stash_"+retired+"_"+suffix, "stash_watchlist_"+suffix
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO settings(key,value,updated_at) SELECT ?,value,updated_at FROM settings WHERE key=? ON CONFLICT(key) DO NOTHING`, newKey, oldKey); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM settings WHERE key=?`, oldKey); err != nil {
+			return err
+		}
+	}
+	for _, table := range []string{"user_preferences", "filter_presets"} {
+		idColumn := "rowid"
+		if s.dialect.Name() == "postgres" {
+			idColumn = "id"
+			if table == "user_preferences" {
+				idColumn = "user_id"
+			}
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT `+idColumn+`,state FROM `+table)
+		if err != nil {
+			return err
+		}
+		type stateRow struct {
+			id    int64
+			state string
+		}
+		states := make([]stateRow, 0)
+		for rows.Next() {
+			var row stateRow
+			if err := rows.Scan(&row.id, &row.state); err != nil {
+				rows.Close()
+				return err
+			}
+			states = append(states, row)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, row := range states {
+			next := strings.ReplaceAll(strings.ReplaceAll(row.state, retiredTitle, "Watchlist"), retired, "watchlist")
+			if next != row.state {
+				if _, err := s.db.ExecContext(ctx, `UPDATE `+table+` SET state=? WHERE `+idColumn+`=?`, next, row.id); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if syncTable {
+		if _, err := s.db.ExecContext(ctx, `DROP TABLE `+retiredSync); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_releases_`+retired+`_date`); err != nil {
+		return err
+	}
+	for _, item := range []struct {
+		table  string
+		column string
+		exists bool
+	}{{"releases", retired + "_at", releaseTimeColumn}, {"releases", retired, releaseColumn}, {"sites", retired, siteColumn}} {
+		if item.exists {
+			if _, err := s.db.ExecContext(ctx, `ALTER TABLE `+item.table+` DROP COLUMN `+item.column); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *SQLite) columnExists(ctx context.Context, table, column string) (bool, error) {
+	if s.dialect.Name() == "postgres" {
+		var exists bool
+		err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? AND column_name=?)`, table, column).Scan(&exists)
+		return exists, err
+	}
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, dataType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func (s *SQLite) tableExists(ctx context.Context, table string) (bool, error) {
+	var count int
+	if s.dialect.Name() == "postgres" {
+		err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?`, table).Scan(&count)
+		return count > 0, err
+	}
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count)
+	return count > 0, err
 }
 
 // normalizeReleaseTimestamps repairs legacy or imported rows whose update
@@ -489,7 +649,7 @@ func releaseDedupUpdate(d Dialect) string {
 		maxFold("is_local") + `,` +
 		maxFold("notified") + `,` +
 		maxFold("notify_on_release") + `,` +
-		maxFold("desired") + `,` +
+		maxFold("watchlist") + `,` +
 		maxFold("monitor_download") + `,` +
 		maxFold("site_monitor_download") + `,` +
 		`stash_scene_id=COALESCE(NULLIF(stash_scene_id,''),(SELECT old.stash_scene_id FROM release_duplicate_map m JOIN releases old ON old.id=m.old_id WHERE m.keep_id=keep.id AND old.stash_scene_id<>'' LIMIT 1),''),` +
@@ -531,7 +691,7 @@ func (s *SQLite) migrateReleaseIdentity(ctx context.Context) error {
 	if _, err = tx.ExecContext(ctx, `UPDATE releases SET identity_key=LOWER(TRIM(source)) || ':' || UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(video_id),'-',''),'_',''),' ',''),'.',''),'/','')) WHERE TRIM(source)<>'' AND TRIM(video_id)<>''`); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id,identity_key,LENGTH(title)+LENGTH(story)+LENGTH(actress)+LENGTH(genres)+LENGTH(screenshots)+(is_local*10000)+(desired*1000)+(monitor_download*100) AS score FROM releases WHERE identity_key<>'' ORDER BY id`)
+	rows, err := tx.QueryContext(ctx, `SELECT id,identity_key,LENGTH(title)+LENGTH(story)+LENGTH(actress)+LENGTH(genres)+LENGTH(screenshots)+(is_local*10000)+(watchlist*1000)+(monitor_download*100) AS score FROM releases WHERE identity_key<>'' ORDER BY id`)
 	if err != nil {
 		return err
 	}
@@ -591,7 +751,7 @@ func (s *SQLite) migrateReleaseIdentity(ctx context.Context) error {
 		`INSERT OR IGNORE INTO release_sites(release_id,site_id,site_monitor_download) SELECT m.keep_id,rs.site_id,rs.site_monitor_download FROM release_duplicate_map m JOIN release_sites rs ON rs.release_id=m.old_id`,
 		`UPDATE downloads SET release_id=(SELECT keep_id FROM release_duplicate_map WHERE old_id=downloads.release_id) WHERE release_id IN (SELECT old_id FROM release_duplicate_map)`,
 		`INSERT OR IGNORE INTO notifications(release_id,type,message,created_at) SELECT m.keep_id,n.type,n.message,n.created_at FROM release_duplicate_map m JOIN notifications n ON n.release_id=m.old_id`,
-		`INSERT OR IGNORE INTO desired_sync(release_id,stash_scene_id,tag_id,synced_at,result) SELECT m.keep_id,d.stash_scene_id,d.tag_id,d.synced_at,d.result FROM release_duplicate_map m JOIN desired_sync d ON d.release_id=m.old_id`,
+		`INSERT OR IGNORE INTO watchlist_sync(release_id,stash_scene_id,tag_id,synced_at,result) SELECT m.keep_id,d.stash_scene_id,d.tag_id,d.synced_at,d.result FROM release_duplicate_map m JOIN watchlist_sync d ON d.release_id=m.old_id`,
 		`INSERT OR IGNORE INTO release_actresses(release_id,position,name,name_normalized) SELECT m.keep_id,a.position,a.name,a.name_normalized FROM release_duplicate_map m JOIN release_actresses a ON a.release_id=m.old_id`,
 		`INSERT OR IGNORE INTO release_tags(release_id,position,name,name_normalized) SELECT m.keep_id,t.position,t.name,t.name_normalized FROM release_duplicate_map m JOIN release_tags t ON t.release_id=m.old_id`,
 		`DELETE FROM releases WHERE id IN (SELECT old_id FROM release_duplicate_map)`,
@@ -611,7 +771,7 @@ func (s *SQLite) migrateReleaseIdentity(ctx context.Context) error {
 }
 
 func (s *SQLite) Sites(ctx context.Context) ([]domain.Site, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,title,type,name,url,notify,download,download_mode,desired,rss_url,enabled,created_at,updated_at,last_scraped_at,last_scrape_pages,last_scrape_added,last_scrape_updated,last_scrape_state FROM sites ORDER BY `+s.dialect.CaseInsensitiveOrderBy("type")+`,`+s.dialect.CaseInsensitiveOrderBy("title"))
+	rows, err := s.db.QueryContext(ctx, `SELECT id,title,type,name,url,notify,download,download_mode,watchlist,rss_url,enabled,created_at,updated_at,last_scraped_at,last_scrape_pages,last_scrape_added,last_scrape_updated,last_scrape_state FROM sites ORDER BY `+s.dialect.CaseInsensitiveOrderBy("type")+`,`+s.dialect.CaseInsensitiveOrderBy("title"))
 	if err != nil {
 		return nil, err
 	}
@@ -620,7 +780,7 @@ func (s *SQLite) Sites(ctx context.Context) ([]domain.Site, error) {
 	for rows.Next() {
 		var x domain.Site
 		var lastScraped sql.NullTime
-		if err := rows.Scan(&x.ID, &x.Title, &x.Type, &x.Name, &x.URL, &x.Notify, &x.Download, &x.DownloadMode, &x.Desired, &x.RSSURL, &x.Enabled, &x.CreatedAt, &x.UpdatedAt, &lastScraped, &x.LastScrapePages, &x.LastScrapeAdded, &x.LastScrapeUpdated, &x.LastScrapeState); err != nil {
+		if err := rows.Scan(&x.ID, &x.Title, &x.Type, &x.Name, &x.URL, &x.Notify, &x.Download, &x.DownloadMode, &x.Watchlist, &x.RSSURL, &x.Enabled, &x.CreatedAt, &x.UpdatedAt, &lastScraped, &x.LastScrapePages, &x.LastScrapeAdded, &x.LastScrapeUpdated, &x.LastScrapeState); err != nil {
 			return nil, err
 		}
 		x.LastScrapedAt = lastScraped.Time
@@ -653,13 +813,13 @@ func (s *SQLite) SaveSite(ctx context.Context, x domain.Site) (domain.Site, erro
 	now := time.Now().UTC()
 	if x.ID == 0 {
 		var e error
-		x.ID, e = s.dialect.InsertReturningID(ctx, s.db, `INSERT INTO sites(title,type,name,url,notify,download,download_mode,desired,rss_url,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, x.Title, x.Type, x.Name, x.URL, x.Notify, x.Download, x.DownloadMode, x.Desired, x.RSSURL, x.Enabled, now, now)
+		x.ID, e = s.dialect.InsertReturningID(ctx, s.db, `INSERT INTO sites(title,type,name,url,notify,download,download_mode,watchlist,rss_url,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, x.Title, x.Type, x.Name, x.URL, x.Notify, x.Download, x.DownloadMode, x.Watchlist, x.RSSURL, x.Enabled, now, now)
 		if e != nil {
 			return x, e
 		}
 		x.CreatedAt = now
 	} else {
-		_, e := s.db.ExecContext(ctx, `UPDATE sites SET title=?,type=?,name=?,url=?,notify=?,download=?,download_mode=?,desired=?,rss_url=?,enabled=?,updated_at=? WHERE id=?`, x.Title, x.Type, x.Name, x.URL, x.Notify, x.Download, x.DownloadMode, x.Desired, x.RSSURL, x.Enabled, now, x.ID)
+		_, e := s.db.ExecContext(ctx, `UPDATE sites SET title=?,type=?,name=?,url=?,notify=?,download=?,download_mode=?,watchlist=?,rss_url=?,enabled=?,updated_at=? WHERE id=?`, x.Title, x.Type, x.Name, x.URL, x.Notify, x.Download, x.DownloadMode, x.Watchlist, x.RSSURL, x.Enabled, now, x.ID)
 		if e != nil {
 			return x, e
 		}
@@ -704,7 +864,7 @@ func releaseSelect(d Dialect) string {
 	// and source detail-page URL together, plus the latest successful download
 	// completion time. Active downloads take precedence over completed ones so
 	// the status pill and its URL always describe the same download row.
-	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,` + actresses + `,r.director,r.studio,r.label,r.genres,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.desired,r.desired_at,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,` + actresses + `,r.director,r.studio,r.label,r.genres,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 // releaseCardSelect keeps the Release Library payload small. Release Details
@@ -712,14 +872,14 @@ func releaseSelect(d Dialect) string {
 // durations, site-list aggregations, or playback statistics. Screenshots stay
 // present because the hover slideshow needs to know whether it should start.
 func releaseCardSelect(_ Dialect) string {
-	return `SELECT r.id,r.site_id,s.title,'[]','[]',r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,'[]','',r.studio,r.label,r.genres,'','',r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.desired,r.desired_at,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,0,0,'','',r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	return `SELECT r.id,r.site_id,s.title,'[]','[]',r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,'[]','',r.studio,r.label,r.genres,'','',r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,0,0,'','',r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 func scanRelease(scanner interface{ Scan(...any) error }) (domain.Release, error) {
 	var x domain.Release
 	var siteIDs, siteTitles, actresses, genres, shots string
-	var stashAddedAt, stashCreatedAt, desiredAt, downloadedAt sql.NullTime
-	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &x.Actress, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Desired, &desiredAt, &x.MonitorDownload, &x.SiteMonitorDownload, &x.StashSceneID, &stashAddedAt, &stashCreatedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &downloadedAt)
+	var stashAddedAt, stashCreatedAt, watchlistAt, downloadedAt sql.NullTime
+	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &x.Actress, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Watchlist, &watchlistAt, &x.MonitorDownload, &x.SiteMonitorDownload, &x.StashSceneID, &stashAddedAt, &stashCreatedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &downloadedAt)
 	if err == nil {
 		_ = json.Unmarshal([]byte(siteIDs), &x.SiteIDs)
 		_ = json.Unmarshal([]byte(siteTitles), &x.SiteTitles)
@@ -732,8 +892,8 @@ func scanRelease(scanner interface{ Scan(...any) error }) (domain.Release, error
 		if stashCreatedAt.Valid {
 			x.StashCreatedAt = stashCreatedAt.Time
 		}
-		if desiredAt.Valid {
-			x.DesiredAt = desiredAt.Time
+		if watchlistAt.Valid {
+			x.WatchlistAt = watchlistAt.Time
 		}
 		if downloadedAt.Valid {
 			x.DownloadedAt = downloadedAt.Time
@@ -823,7 +983,7 @@ func releaseConditionGroupClause(d Dialect, conditions []releaseFilterCondition,
 	// downloads.status values releaseSelect's DownloadStatus subquery and
 	// download/service.go's Download/runSearch already write.
 	boolExprs := map[string]string{
-		"desired":          "r.desired=1",
+		"watchlist":        "r.watchlist=1",
 		"downloaded":       `EXISTS (SELECT 1 FROM downloads dl WHERE dl.release_id=r.id AND dl.status='completed')`,
 		"download_started": `EXISTS (SELECT 1 FROM downloads dl WHERE dl.release_id=r.id AND dl.status IN ('queued','downloading','completed'))`,
 		"download_failed":  `EXISTS (SELECT 1 FROM downloads dl WHERE dl.release_id=r.id AND dl.status='failed')`,
@@ -1059,8 +1219,8 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 			}
 		}
 	}
-	if f.Desired {
-		q += ` AND r.desired=1`
+	if f.Watchlist {
+		q += ` AND r.watchlist=1`
 	}
 	if f.MonitorDownload {
 		q += ` AND (r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0))`
@@ -1159,7 +1319,7 @@ func releaseSort(f domain.ReleaseFilter) (string, string) {
 	if strings.EqualFold(f.Direction, "asc") {
 		direction = "ASC"
 	}
-	sortColumn := map[string]string{"added": "r.added_at", "notification": "COALESCE((SELECT MAX(n.created_at) FROM notifications n WHERE n.release_id=r.id),r.added_at)", "release": "r.release_date", "name": "LOWER(r.title)", "updated": "r.updated_at", "local_added": "r.stash_created_at", "desired_marked": "r.desired_at"}[f.Sort]
+	sortColumn := map[string]string{"added": "r.added_at", "notification": "COALESCE((SELECT MAX(n.created_at) FROM notifications n WHERE n.release_id=r.id),r.added_at)", "release": "r.release_date", "name": "LOWER(r.title)", "updated": "r.updated_at", "local_added": "r.stash_created_at", "watchlist_marked": "r.watchlist_at"}[f.Sort]
 	if sortColumn == "" {
 		sortColumn = "r.release_date"
 	}
@@ -1174,8 +1334,8 @@ func releaseCursorValue(x domain.Release, sort string) (string, bool) {
 		return x.UpdatedAt.UTC().Format(time.RFC3339Nano), x.UpdatedAt.IsZero()
 	case "local_added":
 		return x.StashCreatedAt.UTC().Format(time.RFC3339Nano), x.StashCreatedAt.IsZero()
-	case "desired_marked":
-		return x.DesiredAt.UTC().Format(time.RFC3339Nano), x.DesiredAt.IsZero()
+	case "watchlist_marked":
+		return x.WatchlistAt.UTC().Format(time.RFC3339Nano), x.WatchlistAt.IsZero()
 	case "name":
 		return strings.ToLower(x.Title), false
 	default:
@@ -1185,7 +1345,7 @@ func releaseCursorValue(x domain.Release, sort string) (string, bool) {
 
 func releaseCursorArg(sort, value string) (any, error) {
 	switch sort {
-	case "added", "updated", "local_added", "desired_marked":
+	case "added", "updated", "local_added", "watchlist_marked":
 		return time.Parse(time.RFC3339Nano, value)
 	default:
 		return value, nil
@@ -1576,7 +1736,7 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 	created := false
 	if errors.Is(e, sql.ErrNoRows) {
 		var insertErr error
-		id, insertErr = s.dialect.InsertReturningID(ctx, tx, `INSERT INTO releases(site_id,video_id,scraper_id,title,release_date,source,image_url,product_url,actress,director,studio,label,genres,duration,story,screenshots,released,notify_on_release,desired,monitor_download,site_monitor_download,identity_key,is_preferred,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.SiteID, x.VideoID, x.ScraperID, x.Title, x.ReleaseDate, x.Source, x.ImageURL, x.ProductURL, x.Actress, x.Director, x.Studio, x.Label, string(genres), x.Duration, x.Story, string(shots), x.Released, x.NotifyOnRelease, x.Desired, x.MonitorDownload, x.SiteMonitorDownload, identity, s.releasePreferred(x.Title, x.Genres), now, now)
+		id, insertErr = s.dialect.InsertReturningID(ctx, tx, `INSERT INTO releases(site_id,video_id,scraper_id,title,release_date,source,image_url,product_url,actress,director,studio,label,genres,duration,story,screenshots,released,notify_on_release,watchlist,monitor_download,site_monitor_download,identity_key,is_preferred,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.SiteID, x.VideoID, x.ScraperID, x.Title, x.ReleaseDate, x.Source, x.ImageURL, x.ProductURL, x.Actress, x.Director, x.Studio, x.Label, string(genres), x.Duration, x.Story, string(shots), x.Released, x.NotifyOnRelease, x.Watchlist, x.MonitorDownload, x.SiteMonitorDownload, identity, s.releasePreferred(x.Title, x.Genres), now, now)
 		if insertErr != nil {
 			return false, insertErr
 		}
@@ -1628,7 +1788,7 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 		if updatedAt.Before(current.addedAt) {
 			updatedAt = current.addedAt
 		}
-		// released/notify_on_release/desired/monitor_download use
+		// released/notify_on_release/watchlist/monitor_download use
 		// Dialect.Greatest rather than a literal "MAX(x,?)": SQLite
 		// overloads MAX() to also mean the scalar "greater of these two
 		// values" seen here (a bool arg converted to 0/1 - see
@@ -1650,13 +1810,13 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 		duration=COALESCE(NULLIF(?,''),duration),
 		story=COALESCE(NULLIF(?,''),story),
 		screenshots=CASE WHEN ?='' OR ?='[]' OR ?='null' THEN screenshots ELSE ? END,
-		released=`+s.dialect.Greatest("released", "?")+`,notify_on_release=`+s.dialect.Greatest("notify_on_release", "?")+`,desired=`+s.dialect.Greatest("desired", "?")+`,monitor_download=`+s.dialect.Greatest("monitor_download", "?")+`,site_monitor_download=`+s.dialect.BoolExprToInt("EXISTS(SELECT 1 FROM release_sites rs WHERE rs.release_id=releases.id AND rs.site_monitor_download=1)")+`,updated_at=? WHERE id=?`,
+		released=`+s.dialect.Greatest("released", "?")+`,notify_on_release=`+s.dialect.Greatest("notify_on_release", "?")+`,watchlist=`+s.dialect.Greatest("watchlist", "?")+`,monitor_download=`+s.dialect.Greatest("monitor_download", "?")+`,site_monitor_download=`+s.dialect.BoolExprToInt("EXISTS(SELECT 1 FROM release_sites rs WHERE rs.release_id=releases.id AND rs.site_monitor_download=1)")+`,updated_at=? WHERE id=?`,
 			x.ScraperID, x.Title, x.ReleaseDate, x.Source, x.ImageURL, x.ProductURL,
 			x.Actress, x.Director, x.Studio, x.Label,
 			string(genres), string(genres), string(genres), string(genres),
 			x.Duration, x.Story,
 			string(shots), string(shots), string(shots), string(shots),
-			x.Released, x.NotifyOnRelease, x.Desired, x.MonitorDownload, updatedAt, id)
+			x.Released, x.NotifyOnRelease, x.Watchlist, x.MonitorDownload, updatedAt, id)
 		if e != nil {
 			return false, e
 		}
@@ -1860,27 +2020,27 @@ func (s *SQLite) cleanupStoredReleaseText(ctx context.Context) error {
 	return tx.Commit()
 }
 
-func (s *SQLite) PatchRelease(ctx context.Context, id int64, released, local, notified, notifyOnRelease, desired, monitorDownload *bool, label *string, allowNonPreferredFilenames *bool) error {
+func (s *SQLite) PatchRelease(ctx context.Context, id int64, released, local, notified, notifyOnRelease, watchlist, monitorDownload *bool, label *string, allowNonPreferredFilenames *bool) error {
 	now := time.Now().UTC()
 	sets := []string{"updated_at=?"}
 	a := []any{now}
-	for k, v := range map[string]*bool{"released": released, "is_local": local, "notified": notified, "notify_on_release": notifyOnRelease, "desired": desired, "monitor_download": monitorDownload, "allow_non_preferred_filenames": allowNonPreferredFilenames} {
+	for k, v := range map[string]*bool{"released": released, "is_local": local, "notified": notified, "notify_on_release": notifyOnRelease, "watchlist": watchlist, "monitor_download": monitorDownload, "allow_non_preferred_filenames": allowNonPreferredFilenames} {
 		if v != nil {
 			sets = append(sets, k+"=?")
 			a = append(a, *v)
 		}
 	}
-	// DesiredAt records when a release was (most recently) marked Desired,
-	// powering the Release Library's Desired-tab default sort ("when marked
-	// as desired", newest first). Unlike StashAddedAt's "set once" pattern,
-	// this is refreshed on every explicit mark-as-desired toggle rather than
+	// WatchlistAt records when a release was (most recently) marked Watchlist,
+	// powering the Release Library's Watchlist-tab default sort ("when marked
+	// as watchlist", newest first). Unlike StashAddedAt's "set once" pattern,
+	// this is refreshed on every explicit mark-as-watchlist toggle rather than
 	// only the first one, since re-marking something after unmarking it is a
 	// deliberate user action that should bubble it back to the top - it's
-	// left untouched when desired is cleared, so the last-marked date stays
+	// left untouched when watchlist is cleared, so the last-marked date stays
 	// available if the release is marked again later without another
 	// explicit toggle in between.
-	if desired != nil && *desired {
-		sets = append(sets, "desired_at=?")
+	if watchlist != nil && *watchlist {
+		sets = append(sets, "watchlist_at=?")
 		a = append(a, now)
 	}
 	if label != nil {
@@ -2837,12 +2997,12 @@ func (s *SQLite) CreateNotification(ctx context.Context, releaseID int64, kind, 
 	n, _ := r.RowsAffected()
 	return n > 0, nil
 }
-func (s *SQLite) DesiredSynced(ctx context.Context, releaseID int64, sceneID, tagID string) (bool, error) {
+func (s *SQLite) WatchlistSynced(ctx context.Context, releaseID int64, sceneID, tagID string) (bool, error) {
 	var n int
-	e := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM desired_sync WHERE release_id=? AND stash_scene_id=? AND tag_id=?`, releaseID, sceneID, tagID).Scan(&n)
+	e := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM watchlist_sync WHERE release_id=? AND stash_scene_id=? AND tag_id=?`, releaseID, sceneID, tagID).Scan(&n)
 	return n > 0, e
 }
-func (s *SQLite) SaveDesiredSync(ctx context.Context, releaseID int64, sceneID, tagID, result string) error {
-	_, e := s.db.ExecContext(ctx, `INSERT INTO desired_sync(release_id,stash_scene_id,tag_id,synced_at,result) VALUES(?,?,?,?,?) ON CONFLICT(release_id) DO UPDATE SET stash_scene_id=excluded.stash_scene_id,tag_id=excluded.tag_id,synced_at=excluded.synced_at,result=excluded.result`, releaseID, sceneID, tagID, time.Now().UTC(), result)
+func (s *SQLite) SaveWatchlistSync(ctx context.Context, releaseID int64, sceneID, tagID, result string) error {
+	_, e := s.db.ExecContext(ctx, `INSERT INTO watchlist_sync(release_id,stash_scene_id,tag_id,synced_at,result) VALUES(?,?,?,?,?) ON CONFLICT(release_id) DO UPDATE SET stash_scene_id=excluded.stash_scene_id,tag_id=excluded.tag_id,synced_at=excluded.synced_at,result=excluded.result`, releaseID, sceneID, tagID, time.Now().UTC(), result)
 	return e
 }

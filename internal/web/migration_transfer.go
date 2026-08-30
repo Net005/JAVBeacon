@@ -102,7 +102,7 @@ var migrationTables = []migrationTableSpec{
 	{"pipeline_logs", []string{"id"}, "id"},
 	{"pipeline_runs", []string{"download_id", "trigger"}, ""},
 	{"notifications", []string{"id"}, "id"},
-	{"desired_sync", []string{"release_id"}, ""},
+	{"watchlist_sync", []string{"release_id"}, ""},
 	{"sessions", []string{"token"}, ""},
 	{"user_preferences", []string{"user_id"}, ""},
 	{"filter_presets", []string{"id"}, "id"},
@@ -128,7 +128,7 @@ const migrationBatchSize = 200
 var migrationSampleQueries = []struct{ Description, Query string }{
 	{"releases marked released", `SELECT count(*) FROM releases WHERE released=1`},
 	{"releases marked local", `SELECT count(*) FROM releases WHERE is_local=1`},
-	{"releases desired for download", `SELECT count(*) FROM releases WHERE desired=1`},
+	{"releases watchlist for download", `SELECT count(*) FROM releases WHERE watchlist=1`},
 	{"sites with monitoring enabled", `SELECT count(*) FROM sites WHERE enabled=1`},
 	{"downloads with a completed post-processing status", `SELECT count(*) FROM downloads WHERE post_status='completed'`},
 }
@@ -150,7 +150,7 @@ var migrationOrphanQueries = []struct{ Description, Query string }{
 	{"pipeline_logs with an unknown step", `SELECT count(*) FROM pipeline_logs pl LEFT JOIN pipeline_steps ps ON ps.id=pl.step_id WHERE pl.step_id IS NOT NULL AND ps.id IS NULL`},
 	{"pipeline_runs with an unknown download", `SELECT count(*) FROM pipeline_runs pr LEFT JOIN downloads d ON d.id=pr.download_id WHERE d.id IS NULL`},
 	{"notifications with an unknown release", `SELECT count(*) FROM notifications n LEFT JOIN releases r ON r.id=n.release_id WHERE r.id IS NULL`},
-	{"desired_sync with an unknown release", `SELECT count(*) FROM desired_sync ds LEFT JOIN releases r ON r.id=ds.release_id WHERE r.id IS NULL`},
+	{"watchlist_sync with an unknown release", `SELECT count(*) FROM watchlist_sync ds LEFT JOIN releases r ON r.id=ds.release_id WHERE r.id IS NULL`},
 	{"sessions with an unknown user", `SELECT count(*) FROM sessions se LEFT JOIN users u ON u.id=se.user_id WHERE u.id IS NULL`},
 	{"filter_presets with an unknown user", `SELECT count(*) FROM filter_presets fp LEFT JOIN users u ON u.id=fp.user_id WHERE u.id IS NULL`},
 	{"user_preferences with an unknown user", `SELECT count(*) FROM user_preferences up LEFT JOIN users u ON u.id=up.user_id WHERE u.id IS NULL`},

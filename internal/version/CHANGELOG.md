@@ -7,6 +7,19 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.54] - 2026-08-30
+
+### Changed
+
+- Completed the Watchlist rename throughout the application internals,
+  including domain models, API fields and endpoints, database columns and
+  tables, StashApp synchronization, schedules, filter state, keyboard
+  shortcuts, tests, styles, and documentation.
+- Existing SQLite and PostgreSQL installations automatically migrate all
+  Watchlist marks, timestamps, Stash sync history, settings, preferences, and
+  saved filters to the canonical names during startup, then remove the retired
+  database objects without losing state.
+
 ## [1.0.53] - 2026-08-30
 
 ### Added
@@ -1180,7 +1193,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.53...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.54...HEAD
+[1.0.54]: https://github.com/Net005/JAVBeacon/compare/v1.0.53...v1.0.54
 [1.0.53]: https://github.com/Net005/JAVBeacon/compare/v1.0.52...v1.0.53
 [1.0.52]: https://github.com/Net005/JAVBeacon/compare/v1.0.51...v1.0.52
 [1.0.51]: https://github.com/Net005/JAVBeacon/compare/v1.0.50...v1.0.51

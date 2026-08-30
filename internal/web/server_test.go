@@ -280,7 +280,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if !strings.Contains(string(markup), `aria-label="Fullscreen screenshot view"`) {
 		t.Fatal("embedded index.html is missing the fullscreen screenshot view")
 	}
-	for _, marker := range []string{`data-desired="true">Watchlist`, `Added to Watchlist`, `<option value="added">Date added</option><option value="updated">Date updated</option>`} {
+	for _, marker := range []string{`data-watchlist="true">Watchlist`, `Added to Watchlist`, `<option value="added">Date added</option><option value="updated">Date updated</option>`} {
 		if !strings.Contains(string(markup), marker) {
 			t.Fatalf("embedded index.html is missing Watchlist/sort terminology %q", marker)
 		}

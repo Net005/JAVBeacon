@@ -69,7 +69,7 @@ func envOrDefault(key, def string) string {
 // audit checklist: releases with their actress/tag/site relationships,
 // filtering/search, upsert-not-duplicate, settings/users/sessions/
 // preferences/filter presets, job history, downloads and download activity,
-// path mappings, the pipeline steps/run/log tables, notifications, desired
+// path mappings, the pipeline steps/run/log tables, notifications, watchlist
 // sync, and site-level monitoring recompute. This is the PostgreSQL
 // counterpart to the SQLite coverage in store_test.go - it does not
 // duplicate that file's assertions field-by-field, just confirms every
@@ -93,7 +93,7 @@ func TestPostgresStoreFullLifecycle(t *testing.T) {
 	// leaving it dirty for the next run. Truncate first, then close, both
 	// in this one callback, so the ordering is explicit.
 	t.Cleanup(func() {
-		s.db.ExecContext(context.Background(), `TRUNCATE sites, releases, settings, users, sessions, user_preferences, filter_presets, job_history, download_search_runs, downloads, path_mappings, pipeline_steps, pipeline_logs, notifications, desired_sync, release_actresses, release_tags, release_sites, pipeline_runs RESTART IDENTITY CASCADE`)
+		s.db.ExecContext(context.Background(), `TRUNCATE sites, releases, settings, users, sessions, user_preferences, filter_presets, job_history, download_search_runs, downloads, path_mappings, pipeline_steps, pipeline_logs, notifications, watchlist_sync, release_actresses, release_tags, release_sites, pipeline_runs RESTART IDENTITY CASCADE`)
 		s.Close()
 	})
 
@@ -220,7 +220,7 @@ func TestPostgresStoreFullLifecycle(t *testing.T) {
 		t.Fatalf("logs=%v err=%v", logs, err)
 	}
 
-	// notifications / desired sync
+	// notifications / watchlist sync
 	created3, err := s.CreateNotification(ctx, items[0].ID, "download_started", "started")
 	if err != nil || !created3 {
 		t.Fatalf("created3=%v err=%v", created3, err)
@@ -229,10 +229,10 @@ func TestPostgresStoreFullLifecycle(t *testing.T) {
 	if err != nil || len(notifications) != 1 || notifications[0].Release == nil {
 		t.Fatalf("notifications=%v err=%v", notifications, err)
 	}
-	if err := s.SaveDesiredSync(ctx, items[0].ID, "scene1", "tag1", "ok"); err != nil {
+	if err := s.SaveWatchlistSync(ctx, items[0].ID, "scene1", "tag1", "ok"); err != nil {
 		t.Fatal(err)
 	}
-	synced, err := s.DesiredSynced(ctx, items[0].ID, "scene1", "tag1")
+	synced, err := s.WatchlistSynced(ctx, items[0].ID, "scene1", "tag1")
 	if err != nil || !synced {
 		t.Fatalf("synced=%v err=%v", synced, err)
 	}
