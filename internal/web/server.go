@@ -1679,6 +1679,19 @@ func (s *Server) release(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, 400, e.Error())
 		return
 	}
+	if downloads, ok := s.store.(interface {
+		LatestReleaseDownload(context.Context, int64) (domain.Download, error)
+	}); ok {
+		if download, err := downloads.LatestReleaseDownload(r.Context(), n); err == nil {
+			x.DownloadStatus = download.Status
+			x.DownloadSourceReference = download.SourceReference
+			x.DownloadSeeds = download.Seeds
+			x.DownloadPeers = download.Peers
+			x.DownloadETASeconds = download.ETASeconds
+			x.DownloadSeenComplete = download.SeenComplete
+			x.DownloadAddedAt = download.AddedAt
+		}
+	}
 	s.json(w, 200, x)
 }
 func (s *Server) patchRelease(w http.ResponseWriter, r *http.Request) {

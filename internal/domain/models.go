@@ -66,6 +66,15 @@ type Release struct {
 	// same download row selected for DownloadStatus. It lets every status pill
 	// open the exact external result that is downloading or was downloaded.
 	DownloadSourceReference string `json:"download_source_reference,omitempty"`
+	// Download telemetry belongs to the same active/completed download row as
+	// DownloadStatus and is populated for the single-release detail endpoint.
+	// Keeping it out of the library-card query avoids extra work across large
+	// result sets while still giving Release Details current qBittorrent data.
+	DownloadSeeds        int       `json:"download_seeds"`
+	DownloadPeers        int       `json:"download_peers"`
+	DownloadETASeconds   int64     `json:"download_eta_seconds"`
+	DownloadSeenComplete int64     `json:"download_seen_complete"`
+	DownloadAddedAt      time.Time `json:"download_added_at,omitempty"`
 	// DownloadedAt is computed, mirroring DownloadStatus: the completion
 	// timestamp of the most recent successful download, or the zero value
 	// when this release has never finished downloading (TODO-2.0 card/detail

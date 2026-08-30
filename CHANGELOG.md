@@ -7,6 +7,34 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.52] - 2026-08-30
+
+### Added
+
+- Release Details now exposes live torrent telemetry from its compact
+  Downloading pill: ETA, seeds/peers, last-seen-complete time, and date added
+  appear in a clear hover/focus panel without crowding the main controls.
+- On iPhone and iPad, tapping the center of the Release Details cover starts
+  its screenshot slideshow; tapping the center again stops it and restores the
+  cover. Existing swipes and outer-edge navigation zones remain unchanged.
+- Release Details updates the browser tab title to the active release ID and
+  title, including during rapid next/previous navigation.
+
+### Changed
+
+- Release Library and Release Details slideshow intervals and the Release
+  Details hover delay are now remembered independently per browser/device,
+  alongside the existing per-device interface and cover sizing preferences.
+- Download telemetry is fetched only for the open release, keeping large
+  Release Library searches and card queries free of additional per-row work.
+
+### Fixed
+
+- Prevented Firefox from briefly flashing the next release ID at the top-left
+  of the cover while its image loads during Release Details navigation.
+- Guarded asynchronous Release Details rendering and browser-title updates so
+  a slower previous request cannot overwrite the currently active release.
+
 ## [1.0.51] - 2026-08-30
 
 ### Added
@@ -1126,7 +1154,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detect and replace JavLibrary's temporary `NOW PRINTING` artwork instead of
   caching or displaying it as a real release cover.
 
-[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.51...HEAD
+[Unreleased]: https://github.com/Net005/JAVBeacon/compare/v1.0.52...HEAD
+[1.0.52]: https://github.com/Net005/JAVBeacon/compare/v1.0.51...v1.0.52
 [1.0.51]: https://github.com/Net005/JAVBeacon/compare/v1.0.50...v1.0.51
 [1.0.50]: https://github.com/Net005/JAVBeacon/compare/v1.0.49...v1.0.50
 [1.0.49]: https://github.com/Net005/JAVBeacon/compare/v1.0.48...v1.0.49
