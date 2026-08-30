@@ -99,6 +99,9 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`saveDeviceDisplayPreference('notificationCoverZoom',e.target.value)`,
 		`saveDeviceDisplayPreference('monitoredCoverZoom',e.target.value)`,
 		`saveDeviceDisplayPreference('downloadCoverZoom',e.target.value)`,
+		`saveDeviceDisplayPreference('screenshotSlideSeconds',screenshotSlideSeconds.value)`,
+		`saveDeviceDisplayPreference('releaseDetailSlideshowDelaySeconds',releaseDetailSlideshowDelaySeconds.value)`,
+		`saveDeviceDisplayPreference('releaseDetailSlideshowSeconds',releaseDetailSlideshowSeconds.value)`,
 		`screenshotSlideSeconds:2.5`,
 		`releaseFiltersOpen:false`,
 		`Number(prefs.screenshotSlideSeconds)||2.5`,
@@ -172,6 +175,10 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`wireTouchSwipe(screenshotLightboxInner`,
 		`tap:({x,width})=>runEdgeTap(x,width,navigateScreenshot)`,
 		`function wireReleaseDetailTouchNavigation()`,
+		`function toggleDetailScreenshots(art)`,
+		`if(e.pointerType==='touch')return`,
+		`if(pointerType!=='touch')return false`,
+		`toggleDetailScreenshots(tappedArt)`,
 		`class="mobileCoverNav prev"`,
 		`mobilePrev=releaseDetail.querySelector('.mobileCoverNav.prev')`,
 		`screenshotLightbox.querySelector('.screenshotLightboxClose').onclick=closeScreenshotLightbox`,
@@ -184,6 +191,31 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	}
 	if count := strings.Count(string(javascript), "settingsForm.onsubmit="); count != 1 {
 		t.Fatalf("settings form has %d submit handlers, want one atomic handler", count)
+	}
+	for _, marker := range []string{
+		`function releaseDocumentTitle(x)`,
+		`parts.filter(Boolean).join(' · ')+' — JAVBeacon'`,
+		`if(activeReleaseID!==id)return`,
+		`document.title=releaseDocumentTitle(x)`,
+		`activeReleaseData=null;document.title='JAVBeacon'`,
+	} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("Release Details browser-title behavior is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{
+		`function downloadPillTelemetry(x)`,
+		`download_eta_seconds`,
+		`download_seeds`,
+		`download_peers`,
+		`download_seen_complete`,
+		`download_added_at`,
+		`class="downloadPillWrap"`,
+		`const x=await api('/releases/'+id)`,
+	} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("Release Details download telemetry is missing %q", marker)
+		}
 	}
 	script := string(javascript)
 	loadAll := strings.Index(script, "async function loadAll()")
@@ -223,6 +255,14 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	for _, marker := range []string{`.detailScreenshotRail{`, `.detailScreenshotNav{`, `height:134px`, `.screenshotLightboxInner{`, `.screenshotLightboxStrip button.active{`, `backdrop-filter:blur(10px)`, `.releasedRangeControls{`, `.releaseFiltersPanel>summary{display:none}`, `.releaseFiltersPanel:not([open])>.releaseFiltersBody{display:none!important}`, `.cardMetadataRole{`, `.stashSyncProgress{`, `.sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr)`, `.sidebarFooter #appVersion{display:block;min-width:max-content`, `#toast[popover]{position:fixed!important;inset:auto 22px 22px auto!important`, `.card.returnFocus{`, `.titleRow{align-items:baseline}`, `.downloadToolbar{align-items:flex-end;`, `grid-template-columns:repeat(8,minmax(0,1fr))!important`, `.releaseVisual{display:grid!important;grid-template-rows:auto auto!important`, `.releaseArt .detailBackdrop{display:none!important}`, `.screenshotLightboxStage{touch-action:pan-y`, `.releaseDialog .releaseChrome{display:none!important}`, `.mobileCoverNav{`, `.releaseLayout,.screenshotLightboxInner{`, `-webkit-user-select:none;user-select:none;-webkit-touch-callout:none`, `touch-action:pan-y pinch-zoom;overscroll-behavior-x:contain`, `.releaseDialog button,.screenshotLightbox button{`, `touch-action:manipulation;-webkit-tap-highlight-color:transparent`, `.screenshotLightboxClose{`, `.screenshotLightboxClose{width:104px;height:104px;font-size:48px}`, `.screenshotLightboxClose{width:120px;height:120px;font-size:56px}`, `top:max(10px,env(safe-area-inset-top))!important;right:max(10px,env(safe-area-inset-right))!important`, `(orientation:landscape) and (pointer:coarse)`, `(max-width:1366px) and (pointer:coarse)`, `width:120px;height:120px`, `width:104px;height:104px`, `width:clamp(48px,6vw,64px)!important`, `top:max(8px,env(safe-area-inset-top))!important;right:max(8px,env(safe-area-inset-right))!important`, `width:var(--vw100,100vw)!important;max-width:var(--vw100,100vw)!important`, `overflow-y:auto!important;overscroll-behavior:contain!important`, `body.releaseOverlayOpen{position:fixed!important`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("embedded app.css is missing %q", marker)
+		}
+	}
+	if !strings.Contains(string(stylesheet), `.releaseArt .detailCover{color:transparent;font-size:0;text-indent:-9999px}`) {
+		t.Fatal("Release Details cover must hide image fallback text while navigation loads the next cover")
+	}
+	for _, marker := range []string{`.downloadPillTelemetry{`, `.downloadPillWrap:hover .downloadPillTelemetry`, `grid-template-columns:repeat(2,minmax(118px,1fr))`} {
+		if !strings.Contains(string(stylesheet), marker) {
+			t.Fatalf("Release Details download telemetry styling is missing %q", marker)
 		}
 	}
 	markup, err := assets.ReadFile("static/index.html")
@@ -502,6 +542,46 @@ func TestDownloadListReturnsPaginatedItemsAndTotal(t *testing.T) {
 	}
 	if body.Total != 2 || len(body.Items) != 1 {
 		t.Fatalf("body=%+v, want total=2 items=1", body)
+	}
+}
+
+func TestReleaseDetailsIncludesLatestDownloadTelemetry(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "release-download-telemetry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "ETA-1", Title: "Download telemetry", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "ETA-1"})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release lookup: items=%d err=%v", len(releases), err)
+	}
+	releaseID := releases[0].ID
+	if _, err = st.SaveDownload(ctx, domain.Download{ReleaseID: releaseID, Status: "downloading", SourceReference: "https://sukebei.nyaa.si/view/321", Seeds: 18, Peers: 7, ETASeconds: 456, SeenComplete: 1700000000}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{store: st, log: slog.Default()}
+	req := httptest.NewRequest(http.MethodGet, "/api/releases/"+strconv.FormatInt(releaseID, 10), nil)
+	req.SetPathValue("id", strconv.FormatInt(releaseID, 10))
+	rec := httptest.NewRecorder()
+	s.release(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body domain.Release
+	if err = json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.DownloadStatus != "downloading" || body.DownloadSeeds != 18 || body.DownloadPeers != 7 || body.DownloadETASeconds != 456 || body.DownloadSeenComplete != 1700000000 || body.DownloadAddedAt.IsZero() {
+		t.Fatalf("release download telemetry response: %+v", body)
 	}
 }
 

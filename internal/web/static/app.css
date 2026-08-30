@@ -1172,3 +1172,24 @@ body.releaseOverlayOpen{position:fixed!important;inset:0!important;width:100%!im
 @media (min-width:651px) and (max-width:1366px) and (pointer:coarse){
   .releaseInfo .detailHeading{padding-right:46px!important}
 }
+
+/* Firefox paints an image's alt text at the replaced element's top-left while
+   the next cover is still loading. Keep that transient fallback invisible so
+   rapid Release Details navigation does not flash the next release ID. */
+.releaseArt .detailCover{color:transparent;font-size:0;text-indent:-9999px}
+
+/* Keep the status pill concise; the four live download facts appear in a
+   compact 2x2 hover/focus card in Release Details. */
+.downloadPillWrap{position:relative;display:inline-flex;max-width:100%}
+.downloadPillTelemetry{
+  position:absolute;z-index:35;top:calc(100% + 8px);right:0;display:grid;grid-template-columns:repeat(2,minmax(118px,1fr));gap:1px;
+  width:min(300px,calc(var(--vw100,100vw) - 48px));padding:6px;border:1px solid #435466;border-radius:10px;background:#0a0e14f5;
+  box-shadow:0 14px 38px #000d;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);opacity:0;visibility:hidden;
+  transform:translateY(-4px);transition:opacity .14s ease,transform .14s ease,visibility .14s;pointer-events:none
+}
+.downloadPillTelemetry>span{display:grid;gap:1px;min-width:0;padding:7px 8px;border-radius:6px;background:#121923}
+.downloadPillTelemetry small{color:#8995a5;font-size:9px;font-weight:750;letter-spacing:.3px;text-transform:uppercase}
+.downloadPillTelemetry b{overflow:hidden;color:#e5edf7;font-size:11px;font-weight:750;line-height:1.35;text-overflow:ellipsis;white-space:nowrap}
+.downloadPillWrap:hover .downloadPillTelemetry,.downloadPillWrap:focus-within .downloadPillTelemetry{opacity:1;visibility:visible;transform:none}
+.discoverBadges{overflow:visible!important}
+@media(max-width:650px){.downloadPillTelemetry{grid-template-columns:1fr;min-width:220px}}

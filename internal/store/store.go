@@ -2488,6 +2488,25 @@ func (s *SQLite) Downloads(ctx context.Context, status string) ([]domain.Downloa
 	return scanDownloads(rows)
 }
 
+// LatestReleaseDownload returns the same active-first row represented by a
+// release's download status pill. It is intentionally a single-release lookup
+// used by Release Details; library-card queries stay lean at large scale.
+func (s *SQLite) LatestReleaseDownload(ctx context.Context, releaseID int64) (domain.Download, error) {
+	rows, err := s.db.QueryContext(ctx, downloadSelect+` WHERE d.release_id=? AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1`, releaseID)
+	if err != nil {
+		return domain.Download{}, err
+	}
+	defer rows.Close()
+	items, err := scanDownloads(rows)
+	if err != nil {
+		return domain.Download{}, err
+	}
+	if len(items) == 0 {
+		return domain.Download{}, sql.ErrNoRows
+	}
+	return items[0], nil
+}
+
 // DownloadActivity is the paginated, filterable counterpart of Downloads
 // used by the Download Activity table (Phase 4B): it returns one page of
 // results plus the total number of matching rows, ignoring f.Limit/Offset

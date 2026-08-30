@@ -856,9 +856,13 @@ func TestReleaseDownloadedAtAndStashAddedAt(t *testing.T) {
 		t.Fatalf("expected no stash_added_at yet: %+v", got)
 	}
 
-	dl, err := s.SaveDownload(ctx, domain.Download{ReleaseID: got.ID, Provider: "Sukebei", Query: "DATE-1", Status: "downloading"})
+	dl, err := s.SaveDownload(ctx, domain.Download{ReleaseID: got.ID, Provider: "Sukebei", Query: "DATE-1", Status: "downloading", SourceReference: "https://sukebei.nyaa.si/view/123", Seeds: 23, Peers: 4, ETASeconds: 321, SeenComplete: 1700000000})
 	if err != nil {
 		t.Fatal(err)
+	}
+	latest, err := s.LatestReleaseDownload(ctx, got.ID)
+	if err != nil || latest.ID != dl.ID || latest.Seeds != 23 || latest.Peers != 4 || latest.ETASeconds != 321 || latest.SeenComplete != 1700000000 || latest.AddedAt.IsZero() {
+		t.Fatalf("latest release download telemetry: %+v err=%v", latest, err)
 	}
 	if got := fetch(); !got.DownloadedAt.IsZero() {
 		t.Fatalf("still downloading: expected no downloaded_at yet: %+v", got)
