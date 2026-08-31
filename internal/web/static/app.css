@@ -1217,7 +1217,7 @@ body.releaseOverlayOpen{position:fixed!important;inset:0!important;width:100%!im
 
 /* Download Monitoring navigation and always-available activity controls. */
 .downloadSchedulePanel{margin-bottom:14px}
-.downloadScheduleGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.downloadScheduleGrid{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
 .downloadScheduleGrid>.automationPanel{margin:0}
 .downloadActivityBar{display:flex!important}
 .downloadQuickSort{display:flex;align-items:center;gap:7px;margin-left:auto;color:var(--muted);font-size:11px;white-space:nowrap}
@@ -1242,6 +1242,24 @@ body.releaseOverlayOpen{position:fixed!important;inset:0!important;width:100%!im
 .stateActions .notifyButton.on{border-color:#c9962c;background:#68490d;color:#fff0be;box-shadow:inset 0 0 0 1px #f0bd4a33}
 .stateActions .monitorButton{border-color:#38626c;background:#132126;color:#91c9d6}
 .stateActions .monitorButton.on{border-color:#45b7cc;background:#154f5b;color:#d4f8ff;box-shadow:inset 0 0 0 1px #62d5ea33}
+
+/* Release Library cards mirror the same fixed labels, checkbox state and
+   active/inactive color language as Release Details. */
+.card{container-type:inline-size}
+.releaseStates .stateButton{gap:5px;transition:background .15s,border-color .15s,color .15s,box-shadow .15s}
+.releaseStates .stateToggleIcon{width:15px;height:15px;filter:none!important;opacity:1!important}
+.releaseStates .stateButton>span:last-child{min-width:0;overflow:hidden;font-size:10px;line-height:1.2;text-overflow:ellipsis;white-space:nowrap;filter:none;opacity:1}
+.releaseStates .watchlistButton{border-color:#6f4650;background:#24181d;color:#dfa6ae}
+.releaseStates .watchlistButton.on{border-color:#d06a7a!important;background:#6b2834!important;color:#ffe4e8!important;box-shadow:inset 0 0 0 1px #ed829233!important}
+.releaseStates .notifyButton{border-color:#6c5a36;background:#211c13;color:#dfc48b}
+.releaseStates .notifyButton.on{border-color:#c9962c!important;background:#68490d!important;color:#fff0be!important;box-shadow:inset 0 0 0 1px #f0bd4a33!important}
+.releaseStates .monitorButton{border-color:#38626c;background:#132126;color:#91c9d6}
+.releaseStates .monitorButton.on{border-color:#45b7cc!important;background:#154f5b!important;color:#d4f8ff!important;box-shadow:inset 0 0 0 1px #62d5ea33!important}
+.cardMenu>div button,.cardMenu>div a{display:flex;align-items:center;gap:8px}
+.cardMenu>div .actionIcon{width:17px;height:17px;font-size:17px}
+.cardMenu>div .downloadAction{border-color:#d64c5d;background:#792331;color:#fff}
+.cardMenu>div .updateAction{border-color:#526273;color:#d9e6f5}
+@container (max-width:430px){.releaseStates{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 @media(max-width:900px){
   .downloadScheduleGrid{grid-template-columns:1fr}
