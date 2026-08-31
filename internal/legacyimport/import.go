@@ -481,10 +481,7 @@ func upsert(ctx context.Context, tx *sql.Tx, siteID int64, videoID string, r res
 	if err := tx.QueryRowContext(ctx, `SELECT id,actress,genres FROM releases WHERE identity_key=?`, identityKey).Scan(&releaseID, &effectiveActress, &effectiveGenres); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO release_sites(release_id,site_id,site_monitor_download) SELECT ?,id,(download_mode='all') FROM sites WHERE id=? ON CONFLICT(release_id,site_id) DO UPDATE SET site_monitor_download=excluded.site_monitor_download`, releaseID, siteID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE releases SET site_monitor_download=EXISTS(SELECT 1 FROM release_sites rs WHERE rs.release_id=releases.id AND rs.site_monitor_download=1) WHERE id=?`, releaseID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO release_sites(release_id,site_id,site_monitor_download) SELECT ?,id,0 FROM sites WHERE id=? ON CONFLICT(release_id,site_id) DO NOTHING`, releaseID, siteID); err != nil {
 		return err
 	}
 	var effectiveTags []string

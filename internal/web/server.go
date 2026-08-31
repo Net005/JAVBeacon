@@ -218,6 +218,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/sites", s.saveSite)
 	s.mux.HandleFunc("PUT /api/sites/{id}", s.saveSite)
 	s.mux.HandleFunc("DELETE /api/sites/{id}", s.deleteSite)
+	s.mux.HandleFunc("GET /api/sites/{id}/releases", s.siteReleases)
 	s.mux.HandleFunc("GET /api/releases", s.releases)
 	s.mux.HandleFunc("GET /api/releases/count", s.releasesCount)
 	s.mux.HandleFunc("GET /api/release-filter-options", s.releaseFilterOptions)
@@ -1502,15 +1503,26 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, 409, e.Error())
 		return
 	}
-	if e := s.store.SetSiteReleaseMonitoring(r.Context(), saved.ID, saved.DownloadMode == "all"); e != nil {
-		s.problem(w, 500, e.Error())
-		return
-	}
 	code := 200
 	if r.Method == http.MethodPost {
 		code = 201
 	}
 	s.json(w, code, saved)
+}
+
+func (s *Server) siteReleases(w http.ResponseWriter, r *http.Request) {
+	siteID, err := id(r)
+	if err != nil {
+		s.problem(w, http.StatusBadRequest, "invalid site id")
+		return
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	rows, err := s.store.Releases(r.Context(), domain.ReleaseFilter{SiteID: siteID, Sort: "release", Direction: "desc", Limit: 500, Offset: max(offset, 0), ShowNonPreferred: true})
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, rows)
 }
 func (s *Server) deleteSite(w http.ResponseWriter, r *http.Request) {
 	n, e := id(r)

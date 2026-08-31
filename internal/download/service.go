@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -850,49 +849,18 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 	}(selected)
 	return job, nil
 }
-func (s *Service) Auto(ctx context.Context, r domain.Release) {
-	if settings, e := s.store.Settings(ctx); e == nil {
-		if ignored, reason := releaseIgnored(r, domain.ParseIgnoreList(settings["ignore_tags"]), domain.ParseIgnoreList(settings["ignore_titles"])); ignored {
-			s.log.Info("skipping automatic download of ignored release", "release_id", r.ID, "video_id", r.VideoID, "reason", reason)
-			return
-		}
-	}
-	sites, e := s.store.Sites(ctx)
-	if e != nil {
-		return
-	}
-	enabled := false
-	for _, site := range sites {
-		if hasReleaseSite(r, site.ID) {
-			enabled = enabled || site.Download
-			if site.Notify && !r.NotifyOnRelease {
-				v := true
-				_ = s.store.PatchRelease(ctx, r.ID, nil, nil, nil, &v, nil, nil, nil, nil)
-			}
-		}
-	}
-	if !enabled {
-		return
-	}
-	rows, e := s.search(ctx, r, "Automatic Search")
-	if e != nil {
-		return
-	}
-	for _, result := range rows {
-		if result.Accepted {
-			_, _ = s.Download(ctx, r, result, "Automatic Search", "")
-			return
-		}
-	}
-}
+
+// Auto is intentionally inert. It remains only as source compatibility for
+// extensions compiled against older releases; site discovery no longer
+// searches or downloads anything automatically.
+func (s *Service) Auto(context.Context, domain.Release) {}
 
 // SearchAndDownloadNow searches immediately and downloads a result,
-// bypassing the per-site scheduled-search "Download" gate used by Auto. It
-// exists for hand-picked bulk actions (e.g. TODO-2.0 Phase 2's StashApp
+// for hand-picked actions (e.g. TODO-2.0 Phase 2's StashApp
 // missing-library recovery "Monitor + Download + search" action) where the
 // user has explicitly asked, release by release, for search and download
 // right now rather than enrolling the release in the periodic scheduled
-// sweep that Auto governs. It returns whether a download was actually
+// sweep. It returns whether a download was actually
 // started, so a caller driving a bulk run can tally "found X releases"
 // results for the person without polling download history.
 //
@@ -1346,41 +1314,6 @@ func (s *Service) NotificationSchedule(ctx context.Context) {
 			s.scheduleNextAttempt = map[string]time.Time{}
 		}
 		s.scheduleNextAttempt["notification"] = now.Add(remaining)
-		s.mu.Unlock()
-		sleep := remaining
-		if sleep <= 0 || sleep > scheduleMaxSleepChunk {
-			sleep = scheduleMaxSleepChunk
-		}
-		timer := time.NewTimer(sleep)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
-	}
-}
-func (s *Service) RSSSchedule(ctx context.Context) {
-	lastAttempt := time.Now()
-	s.pollRSS(ctx)
-	for {
-		wait := 5 * time.Minute
-		settings, _ := s.store.Settings(ctx)
-		if d, e := time.ParseDuration(settings["rss_interval"]); e == nil && d >= time.Minute {
-			wait = d
-		}
-		now := time.Now()
-		remaining := wait - now.Sub(lastAttempt)
-		if remaining <= 0 {
-			lastAttempt = now
-			s.pollRSS(ctx)
-			remaining = wait
-		}
-		s.mu.Lock()
-		if s.scheduleNextAttempt == nil {
-			s.scheduleNextAttempt = map[string]time.Time{}
-		}
-		s.scheduleNextAttempt["rss"] = now.Add(remaining)
 		s.mu.Unlock()
 		sleep := remaining
 		if sleep <= 0 || sleep > scheduleMaxSleepChunk {
@@ -1938,62 +1871,4 @@ func (s *Service) TestPipelineStep(ctx context.Context, step domain.PipelineStep
 	}
 	s.log.Info("pipeline step test passed", "pipeline_step", step.Name, "pipeline_step_type", step.Type, "pipeline_trigger", trigger, "output", result)
 	return string(output), nil
-}
-
-func (s *Service) pollRSS(ctx context.Context) {
-	sites, e := s.store.Sites(ctx)
-	if e != nil {
-		return
-	}
-	provider, e := s.provider(ctx)
-	if e != nil {
-		return
-	}
-	nyaa, ok := provider.(*Nyaa)
-	if !ok {
-		return
-	}
-	for _, site := range sites {
-		if !site.Download || site.RSSURL == "" {
-			continue
-		}
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, site.RSSURL, nil)
-		resp, e := s.client.Do(req)
-		if e != nil {
-			continue
-		}
-		var feed struct {
-			Items []struct {
-				Title     string `xml:"title"`
-				Link      string `xml:"link"`
-				GUID      string `xml:"guid"`
-				Enclosure struct {
-					URL string `xml:"url,attr"`
-				} `xml:"enclosure"`
-			} `xml:"channel>item"`
-		}
-		e = xml.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&feed)
-		resp.Body.Close()
-		if e != nil {
-			continue
-		}
-		for _, item := range feed.Items {
-			detailURL, directURL := item.GUID, item.Enclosure.URL
-			if directURL == "" {
-				directURL = item.Link
-			}
-			result := nyaa.resolveResult(ctx, item.Title, detailURL, directURL)
-			releases, _ := s.store.Releases(ctx, domain.ReleaseFilter{Search: result.Title, Limit: 20})
-			for _, r := range releases {
-				if !hasReleaseSite(r, site.ID) || !strings.Contains(canonical(result.Title), canonical(r.VideoID)) {
-					continue
-				}
-				if !result.Accepted {
-					s.log.Debug("RSS torrent rejected by filename patterns", "site", site.Title, "video_id", r.VideoID, "filename", result.Title, "reason", result.Reason)
-					continue
-				}
-				_, _ = s.Download(ctx, r, result, "Provider RSS", site.RSSURL)
-			}
-		}
-	}
 }

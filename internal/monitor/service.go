@@ -710,6 +710,16 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 		job.SiteTitle, job.Provider = site.Title, site.Name
 		job.Page, job.PageLimit, job.Item, job.PageItems, job.Remaining, job.VideoID, job.Error = 0, pages, 0, 0, 0, "", ""
 		sitePages, siteAdded, siteUpdated := 0, 0, 0
+		// A site's first completed page scrape establishes its baseline only.
+		// Automatic future monitoring is eligible from the following scrape,
+		// using the newest release date that existed before this run began.
+		baselineDate, hasBaseline, baselineErr := s.store.LatestReleaseDateForSite(ctx, site.ID)
+		baselineRunUsable := site.LastScrapeState == "completed" || site.LastScrapeState == "partial"
+		futureMonitoringReady := site.AutoMonitorFuture && !site.LastScrapedAt.IsZero() && site.LastScrapePages >= 1 && baselineRunUsable && hasBaseline
+		if baselineErr != nil {
+			futureMonitoringReady = false
+			s.log.Warn("future release monitoring baseline unavailable", "site", site.Title, "site_id", site.ID, "error", baselineErr)
+		}
 		recordSiteScrape := func(state string) {
 			if recordErr := s.store.RecordSiteScrape(context.Background(), site.ID, time.Now().UTC(), sitePages, siteAdded, siteUpdated, state); recordErr != nil {
 				s.log.Warn("site scrape summary could not be saved", "site", site.Title, "site_id", site.ID, "state", state, "error", recordErr)
@@ -842,7 +852,20 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 				return
 			}
 			r.SiteID = site.ID
-			r.SiteMonitorDownload = site.DownloadMode == "all"
+			knownForSite, knownErr := s.store.ReleaseExistsForSite(ctx, site.ID, r.Source, r.VideoID)
+			if knownErr != nil {
+				job.Error = knownErr.Error()
+				s.log.Warn("release/site association check failed", "site", site.Title, "video_id", r.VideoID, "error", knownErr)
+			}
+			newForSite := knownErr == nil && !knownForSite
+			if newForSite && site.Notify {
+				r.NotifyOnRelease = true
+			}
+			if shouldAutoMonitorFutureRelease(futureMonitoringReady, newForSite, baselineDate, r.ReleaseDate) {
+				r.MonitorDownload = true
+				r.MonitorReason = "site_future"
+				r.MonitorSiteID = site.ID
+			}
 			if options.ReleaseID != 0 {
 				existing, e := s.store.Release(ctx, options.ReleaseID)
 				if e != nil || !strings.EqualFold(existing.VideoID, r.VideoID) {
@@ -992,6 +1015,9 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 				siteUpdated++
 				s.log.Info("release updated", "site", site.Title, "provider", site.Name, "mode", options.Mode, "video_id", r.VideoID)
 			}
+			if newForSite && r.MonitorDownload && r.MonitorReason == "site_future" {
+				s.log.Info("new release enrolled in monitoring by site rule", "site", site.Title, "site_id", site.ID, "video_id", r.VideoID, "release_date", r.ReleaseDate, "baseline_date", baselineDate)
+			}
 			s.mu.RLock()
 			listeners := append([]func(domain.Release){}, s.listeners...)
 			s.mu.RUnlock()
@@ -1015,6 +1041,10 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 		recordSiteScrape(siteState)
 		s.log.Info("site refresh completed", "site", site.Title, "provider", site.Name, "added", siteAdded, "updated", siteUpdated, "duration", time.Since(siteStarted).Round(time.Millisecond))
 	}
+}
+
+func shouldAutoMonitorFutureRelease(ready, newForSite bool, baselineDate, releaseDate string) bool {
+	return ready && newForSite && baselineDate != "" && releaseDate != "" && releaseDate >= baselineDate
 }
 
 // refreshRelease is the queued path: manual "Update details" and any other

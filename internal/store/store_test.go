@@ -1164,23 +1164,24 @@ func TestReleaseFilterIgnoreTagsAndTitlesHideMatchesByDefault(t *testing.T) {
 	}
 }
 
-func TestSiteMonitoringIsIndependentFromExplicitReleaseMonitoring(t *testing.T) {
+func TestExplicitMonitoringIsClearedWhenReleaseBecomesLocal(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "site-monitoring.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	site, err := s.SaveSite(ctx, domain.Site{Title: "Neo Akari", Type: "Actress", Name: "JavLibrary", DownloadMode: "all", Enabled: true})
-	if err != nil || !site.Download || site.DownloadMode != "all" {
+	site, err := s.SaveSite(ctx, domain.Site{Title: "Neo Akari", Type: "Actress", Name: "JavLibrary", AutoMonitorFuture: true, Enabled: true})
+	if err != nil || !site.AutoMonitorFuture {
 		t.Fatalf("site mode: site=%+v err=%v", site, err)
 	}
 	_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-1", Title: "Missing", Source: "JavLibrary"})
-	if err := s.SetSiteReleaseMonitoring(ctx, site.ID, true); err != nil {
+	rows, _ := s.Releases(ctx, domain.ReleaseFilter{Search: "TEST-1", Limit: 10})
+	if err := s.SetReleaseMonitoring(ctx, rows[0].ID, true, "site_future", site.ID); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := s.Releases(ctx, domain.ReleaseFilter{MonitorDownload: true, Limit: 10})
-	if err != nil || len(rows) != 1 || !rows[0].MonitorDownload || !rows[0].SiteMonitorDownload {
+	rows, err = s.Releases(ctx, domain.ReleaseFilter{MonitorDownload: true, Limit: 10})
+	if err != nil || len(rows) != 1 || !rows[0].MonitorDownload || rows[0].MonitorReason != "site_future" {
 		t.Fatalf("site-managed monitoring: rows=%+v err=%v", rows, err)
 	}
 	releaseID := rows[0].ID
@@ -1191,20 +1192,49 @@ func TestSiteMonitoringIsIndependentFromExplicitReleaseMonitoring(t *testing.T) 
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("local release remained in inherited missing-release monitoring: rows=%+v err=%v", rows, err)
 	}
-	if err := s.SetStashState(ctx, releaseID, false, ""); err != nil {
+	stored, err := s.Release(ctx, releaseID)
+	if err != nil || stored.MonitorDownload || stored.MonitorReason != "" {
+		t.Fatalf("local transition did not clear monitoring: release=%+v err=%v", stored, err)
+	}
+}
+
+func TestSiteMonitoringRedesignMigration(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "site-monitoring-migration.db"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	rows, _ = s.Releases(ctx, domain.ReleaseFilter{MonitorDownload: true, Limit: 10})
-	trueValue := true
-	if err := s.PatchRelease(ctx, rows[0].ID, nil, nil, nil, nil, nil, &trueValue, nil, nil); err != nil {
+	defer s.Close()
+	future, _ := s.SaveSite(ctx, domain.Site{Title: "Future", Type: "Site", Name: "JavLibrary", Enabled: true})
+	all, _ := s.SaveSite(ctx, domain.Site{Title: "All", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: all.ID, VideoID: "OLD-1", Title: "Old", Source: "JavLibrary"})
+	rows, _ := s.Releases(ctx, domain.ReleaseFilter{Search: "OLD-1", Limit: 10})
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM settings WHERE key='site_monitoring_redesign_v1'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetSiteReleaseMonitoring(ctx, site.ID, false); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE sites SET download=1,download_mode='future' WHERE id=?`, future.ID); err != nil {
 		t.Fatal(err)
 	}
-	rows, err = s.Releases(ctx, domain.ReleaseFilter{MonitorDownload: true, Limit: 10})
-	if err != nil || len(rows) != 1 || !rows[0].MonitorDownload || rows[0].SiteMonitorDownload {
-		t.Fatalf("explicit monitoring was not preserved: rows=%+v err=%v", rows, err)
+	if _, err := s.db.ExecContext(ctx, `UPDATE sites SET download=1,download_mode='all' WHERE id=?`, all.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET site_monitor_download=1 WHERE id=?`, rows[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.migrateSiteMonitoringRedesign(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sites, _ := s.Sites(ctx)
+	byID := map[int64]domain.Site{}
+	for _, site := range sites {
+		byID[site.ID] = site
+	}
+	if !byID[future.ID].AutoMonitorFuture || byID[all.ID].AutoMonitorFuture {
+		t.Fatalf("future migration mismatch: future=%+v all=%+v", byID[future.ID], byID[all.ID])
+	}
+	migrated, err := s.Release(ctx, rows[0].ID)
+	if err != nil || !migrated.MonitorDownload || migrated.MonitorReason != "migrated_site" {
+		t.Fatalf("existing inherited monitoring was not materialized: release=%+v err=%v", migrated, err)
 	}
 }
 
@@ -1235,12 +1265,12 @@ func TestReleaseIdentityDeduplicatesAcrossSitesAndPreservesAssociations(t *testi
 			t.Fatalf("site %q association missing: rows=%+v err=%v", siteTitle, filtered, filterErr)
 		}
 	}
-	if err := s.SetSiteReleaseMonitoring(ctx, second.ID, true); err != nil {
+	if err := s.SetReleaseMonitoring(ctx, rows[0].ID, true, "site_future", second.ID); err != nil {
 		t.Fatal(err)
 	}
 	monitored, _ := s.Releases(ctx, domain.ReleaseFilter{MonitorDownload: true, Limit: 10})
-	if len(monitored) != 1 || !monitored[0].SiteMonitorDownload {
-		t.Fatalf("associated site monitoring not inherited: %+v", monitored)
+	if len(monitored) != 1 || monitored[0].MonitorReason != "site_future" || monitored[0].MonitorSiteID != second.ID {
+		t.Fatalf("site-origin monitoring not recorded: %+v", monitored)
 	}
 	if err := s.DeleteSite(ctx, first.ID); err != nil {
 		t.Fatal(err)
