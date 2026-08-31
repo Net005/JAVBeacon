@@ -7,6 +7,37 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.60] - 2026-09-01
+
+### Added
+
+- Release Details actress and tag rows now preserve complete values, showing
+  overflow on desktop hover or from a compact mobile overflow control.
+- Release Details site names now open the corresponding Monitoring Sites entry
+  in a new tab, scroll it into view, and highlight it temporarily.
+- Browser Back and Forward now restore main application views and previously
+  visited releases without losing the Release Library context.
+- Saving a newly created monitoring site now offers to queue an immediate Full
+  refresh through the site's online end.
+
+### Changed
+
+- The Release Details "Monitoring sites" metadata label is now the more compact
+  "Sites" label.
+- Studio, Label, and Sites now use the same complete-value controls and
+  responsive overflow treatment as Actresses and Tags.
+- The Release Details download action now uses the Search icon and compact
+  "+ Download" label for consistent alignment without text clipping.
+- Site-group schedules now explain that their page limit is a maximum and that
+  New releases only stops early after a page with no unseen releases.
+- StashApp local-library sync logging now reports job start, completion, and
+  errors without emitting repetitive per-batch progress entries.
+
+### Fixed
+
+- Release Details no longer displays an empty Story block when no description
+  is available.
+
 ## [1.0.59] - 2026-08-31
 
 ### Added
