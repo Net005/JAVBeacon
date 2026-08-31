@@ -910,8 +910,8 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 					// Details or a Full refresh happens to reach the same release.
 					// Each field is only set on fill when existingRelease's own
 					// value is empty; UpsertReleaseKeepUpdatedAt's
-					// COALESCE(NULLIF(?,''),column) then leaves every other column
-					// exactly as it already was. Screenshots are always
+					// selective scalar/relationship updates then leave every other
+					// value exactly as it already was. Screenshots are always
 					// added/repaired unconditionally to match the current page -
 					// a missing screenshot is an asset gap, not a metadata
 					// judgment call - and the cover above is likewise always
@@ -931,6 +931,7 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 					}
 					if existingRelease.Actress == "" {
 						fill.Actress = r.Actress
+						fill.Actresses = r.Actresses
 					}
 					if existingRelease.ReleaseDate == "" {
 						fill.ReleaseDate = r.ReleaseDate

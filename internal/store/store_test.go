@@ -1110,6 +1110,30 @@ func TestReleaseFiltersReverseActressNameStructuredSearchAndWatchlist(t *testing
 	}
 }
 
+func TestStructuredActressListPreservesNamesContainingCommas(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "structured-actresses.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "Structured cast", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Surname, Given", "Second Actress"}
+	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "CAST-1", Source: "JavLibrary", Title: "Structured cast", Actresses: want}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{Search: "Surname, Given", Limit: 10})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("search rows=%d err=%v", len(rows), err)
+	}
+	if fmt.Sprint(rows[0].Actresses) != fmt.Sprint(want) {
+		t.Fatalf("structured actress boundary was lost: got=%v want=%v", rows[0].Actresses, want)
+	}
+}
+
 // TestReleaseFilterIgnoreTagsAndTitlesHideMatchesByDefault covers the
 // Release Library's "ignore rules" feature: IgnoreTags/IgnoreTitles (only
 // populated by the HTTP handler when the "Show non-preferred" toggle is
@@ -1379,7 +1403,7 @@ func TestLocalNotificationBackfillRunsOnce(t *testing.T) {
 	}
 }
 
-func TestReleaseMetadataBackfillsWhenRelationshipsAreMissing(t *testing.T) {
+func TestLegacyReleaseMetadataMigratesLosslesslyAndDropsDuplicateColumns(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "backfill.db")
 	s, err := OpenSQLite(path)
@@ -1387,11 +1411,20 @@ func TestReleaseMetadataBackfillsWhenRelationshipsAreMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	site, _ := s.SaveSite(ctx, domain.Site{Title: "Backfill", Type: "Site", Name: "JavLibrary", Enabled: true})
-	_, err = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "BACK-1", Title: "Backfill", Actress: "One Actress, Two Actress", Genres: []string{"Drama", "Best, Omnibus"}})
+	_, err = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "BACK-1", Title: "Backfill"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(`DELETE FROM release_actresses; DELETE FROM release_tags`); err != nil {
+	// Recreate the two columns from a pre-normalization database and remove
+	// the relationship rows/settings so reopening exercises the real upgrade
+	// path rather than the current write path.
+	if _, err := s.db.Exec(`ALTER TABLE releases ADD COLUMN actress TEXT NOT NULL DEFAULT '';
+		ALTER TABLE releases ADD COLUMN genres TEXT NOT NULL DEFAULT '[]';
+		UPDATE releases SET actress='One Actress, Two Actress',genres='["Drama","Best, Omnibus"]' WHERE video_id='BACK-1';
+		DELETE FROM release_actresses; DELETE FROM release_tags;
+		INSERT INTO release_actresses(release_id,position,name,name_normalized) SELECT id,0,'One Actress','one actress' FROM releases WHERE video_id='BACK-1';
+		INSERT INTO release_tags(release_id,position,name,name_normalized) SELECT id,0,'Drama','drama' FROM releases WHERE video_id='BACK-1';
+		DELETE FROM settings WHERE key IN ('metadata_text_cleanup_v1','normalized_release_metadata_v1')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -1402,11 +1435,17 @@ func TestReleaseMetadataBackfillsWhenRelationshipsAreMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	var actresses, tags int
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM release_actresses`).Scan(&actresses)
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM release_tags`).Scan(&tags)
-	if actresses != 2 || tags != 2 {
-		t.Fatalf("backfilled metadata rows: actresses=%d tags=%d", actresses, tags)
+	got, present, err := s.ReleaseForSite(ctx, site.ID, "", "BACK-1")
+	if err != nil || !present {
+		t.Fatalf("migrated release=%+v present=%v err=%v", got, present, err)
+	}
+	if fmt.Sprint(got.Actresses) != "[One Actress Two Actress]" || fmt.Sprint(got.Genres) != "[Drama Best, Omnibus]" {
+		t.Fatalf("lossy normalized metadata: actresses=%v tags=%v", got.Actresses, got.Genres)
+	}
+	for _, column := range []string{"actress", "genres"} {
+		if exists, err := s.columnExists(ctx, "releases", column); err != nil || exists {
+			t.Fatalf("legacy column %q still exists=%v err=%v", column, exists, err)
+		}
 	}
 }
 

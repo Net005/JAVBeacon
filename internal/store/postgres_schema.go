@@ -101,11 +101,9 @@ CREATE TABLE IF NOT EXISTS releases (
 	source TEXT NOT NULL,
 	image_url TEXT NOT NULL DEFAULT '',
 	product_url TEXT NOT NULL DEFAULT '',
-	actress TEXT NOT NULL DEFAULT '',
 	director TEXT NOT NULL DEFAULT '',
 	studio TEXT NOT NULL DEFAULT '',
 	label TEXT NOT NULL DEFAULT '',
-	genres TEXT NOT NULL DEFAULT '[]',
 	duration TEXT NOT NULL DEFAULT '',
 	story TEXT NOT NULL DEFAULT '',
 	screenshots TEXT NOT NULL DEFAULT '[]',
@@ -146,12 +144,10 @@ CREATE INDEX IF NOT EXISTS idx_releases_studio_order ON releases(LOWER(studio),i
 CREATE INDEX IF NOT EXISTS idx_releases_label_order ON releases(LOWER(label),id);
 CREATE INDEX IF NOT EXISTS idx_releases_video_id_trgm ON releases USING gin(video_id gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_releases_title_trgm ON releases USING gin(title gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_releases_actress_trgm ON releases USING gin(actress gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_releases_studio_trgm ON releases USING gin(studio gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_releases_label_trgm ON releases USING gin(label gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_releases_studio_filter_trgm ON releases USING gin(LOWER(studio) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_releases_label_filter_trgm ON releases USING gin(LOWER(label) gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_releases_genres_trgm ON releases USING gin(genres gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_releases_story_trgm ON releases USING gin(story gin_trgm_ops);
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -326,6 +322,7 @@ CREATE TABLE IF NOT EXISTS release_actresses (
 	PRIMARY KEY(release_id, name_normalized)
 );
 CREATE INDEX IF NOT EXISTS idx_release_actresses_name ON release_actresses(name_normalized, release_id);
+CREATE INDEX IF NOT EXISTS idx_release_actresses_release_position ON release_actresses(release_id, position);
 CREATE INDEX IF NOT EXISTS idx_release_actresses_name_trgm ON release_actresses USING gin(name_normalized gin_trgm_ops);
 
 CREATE TABLE IF NOT EXISTS release_tags (
@@ -336,6 +333,7 @@ CREATE TABLE IF NOT EXISTS release_tags (
 	PRIMARY KEY(release_id, name_normalized)
 );
 CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized, release_id);
+CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(release_id, position);
 CREATE INDEX IF NOT EXISTS idx_release_tags_name_trgm ON release_tags USING gin(name_normalized gin_trgm_ops);
 
 CREATE TABLE IF NOT EXISTS release_sites (
@@ -515,13 +513,16 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 	if err := s.migrateSiteMonitoringRedesign(ctx); err != nil {
 		return err
 	}
-	if err := s.migrateReleaseIdentity(ctx); err != nil {
+	if err := s.cleanupStoredReleaseText(ctx); err != nil {
 		return err
 	}
 	if err := s.backfillReleaseMetadata(ctx); err != nil {
 		return err
 	}
-	if err := s.cleanupStoredReleaseText(ctx); err != nil {
+	if err := s.migrateReleaseIdentity(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateNormalizedReleaseMetadata(ctx); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE sites SET download_mode='future' WHERE download=1 AND download_mode=''`); err != nil {

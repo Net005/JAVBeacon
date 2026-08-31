@@ -164,7 +164,7 @@ func (s *SQLite) DB() *sql.DB { return s.db }
 func (s *SQLite) migrate() error {
 	_, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY, title TEXT NOT NULL UNIQUE, type TEXT NOT NULL DEFAULT 'Site', name TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', notify INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL);
-CREATE TABLE IF NOT EXISTS releases (id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, video_id TEXT NOT NULL, scraper_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, release_date TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, image_url TEXT NOT NULL DEFAULT '', product_url TEXT NOT NULL DEFAULT '', actress TEXT NOT NULL DEFAULT '', director TEXT NOT NULL DEFAULT '', studio TEXT NOT NULL DEFAULT '', genres TEXT NOT NULL DEFAULT '[]', duration TEXT NOT NULL DEFAULT '', story TEXT NOT NULL DEFAULT '', screenshots TEXT NOT NULL DEFAULT '[]', screenshots_checked_at DATETIME, released INTEGER NOT NULL DEFAULT 0, is_local INTEGER NOT NULL DEFAULT 0, notified INTEGER NOT NULL DEFAULT 0, added_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(site_id, video_id));
+CREATE TABLE IF NOT EXISTS releases (id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, video_id TEXT NOT NULL, scraper_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, release_date TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, image_url TEXT NOT NULL DEFAULT '', product_url TEXT NOT NULL DEFAULT '', director TEXT NOT NULL DEFAULT '', studio TEXT NOT NULL DEFAULT '', duration TEXT NOT NULL DEFAULT '', story TEXT NOT NULL DEFAULT '', screenshots TEXT NOT NULL DEFAULT '[]', screenshots_checked_at DATETIME, released INTEGER NOT NULL DEFAULT 0, is_local INTEGER NOT NULL DEFAULT 0, notified INTEGER NOT NULL DEFAULT 0, added_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(site_id, video_id));
 	CREATE INDEX IF NOT EXISTS idx_releases_date ON releases(release_date); CREATE INDEX IF NOT EXISTS idx_releases_added ON releases(added_at); CREATE INDEX IF NOT EXISTS idx_releases_site ON releases(site_id);`)
 	if err == nil {
 		_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME NOT NULL)`)
@@ -211,14 +211,13 @@ CREATE TABLE IF NOT EXISTS watchlist_sync (release_id INTEGER PRIMARY KEY REFERE
 		_, err = s.db.Exec(`
 CREATE TABLE IF NOT EXISTS release_actresses (release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE, position INTEGER NOT NULL, name TEXT NOT NULL, name_normalized TEXT NOT NULL, PRIMARY KEY(release_id,name_normalized));
 CREATE INDEX IF NOT EXISTS idx_release_actresses_name ON release_actresses(name_normalized,release_id);
+CREATE INDEX IF NOT EXISTS idx_release_actresses_release_position ON release_actresses(release_id,position);
 CREATE TABLE IF NOT EXISTS release_tags (release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE, position INTEGER NOT NULL, name TEXT NOT NULL, name_normalized TEXT NOT NULL, PRIMARY KEY(release_id,name_normalized));
-CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized,release_id);`)
+CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized,release_id);
+CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(release_id,position);`)
 	}
 	if err == nil {
 		if _, alterErr := s.db.Exec(`ALTER TABLE releases ADD COLUMN studio TEXT NOT NULL DEFAULT ''`); alterErr != nil && !strings.Contains(strings.ToLower(alterErr.Error()), "duplicate column") {
-			return alterErr
-		}
-		if _, alterErr := s.db.Exec(`ALTER TABLE releases ADD COLUMN genres TEXT NOT NULL DEFAULT '[]'`); alterErr != nil && !strings.Contains(strings.ToLower(alterErr.Error()), "duplicate column") {
 			return alterErr
 		}
 		for _, statement := range []string{
@@ -355,13 +354,16 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 		CREATE INDEX IF NOT EXISTS idx_stash_missing_lastscan ON stash_missing_scenes(last_scan_at);`)
 	}
 	if err == nil {
-		err = s.migrateReleaseIdentity(context.Background())
+		err = s.cleanupStoredReleaseText(context.Background())
 	}
 	if err == nil {
 		err = s.backfillReleaseMetadata(context.Background())
 	}
 	if err == nil {
-		err = s.cleanupStoredReleaseText(context.Background())
+		err = s.migrateReleaseIdentity(context.Background())
+	}
+	if err == nil {
+		err = s.migrateNormalizedReleaseMetadata(context.Background())
 	}
 	if err == nil {
 		_, err = s.db.Exec(`UPDATE sites SET download_mode='future' WHERE download=1 AND download_mode=''`)
@@ -741,7 +743,7 @@ func (s *SQLite) migrateReleaseIdentity(ctx context.Context) error {
 	if _, err = tx.ExecContext(ctx, `UPDATE releases SET identity_key=LOWER(TRIM(source)) || ':' || UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(video_id),'-',''),'_',''),' ',''),'.',''),'/','')) WHERE TRIM(source)<>'' AND TRIM(video_id)<>''`); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id,identity_key,LENGTH(title)+LENGTH(story)+LENGTH(actress)+LENGTH(genres)+LENGTH(screenshots)+(is_local*10000)+(watchlist*1000)+(monitor_download*100) AS score FROM releases WHERE identity_key<>'' ORDER BY id`)
+	rows, err := tx.QueryContext(ctx, `SELECT id,identity_key,LENGTH(title)+LENGTH(story)+COALESCE((SELECT SUM(LENGTH(name)) FROM release_actresses WHERE release_id=releases.id),0)+COALESCE((SELECT SUM(LENGTH(name)) FROM release_tags WHERE release_id=releases.id),0)+LENGTH(screenshots)+(is_local*10000)+(watchlist*1000)+(monitor_download*100) AS score FROM releases WHERE identity_key<>'' ORDER BY id`)
 	if err != nil {
 		return err
 	}
@@ -907,27 +909,31 @@ func releaseSelect(d Dialect) string {
 	// and source detail-page URL together, plus the latest successful download
 	// completion time. Active downloads take precedence over completed ones so
 	// the status pill and its URL always describe the same download row.
-	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,` + actresses + `,r.director,r.studio,r.label,r.genres,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	tags := d.JSONArrayAgg("name", "SELECT name FROM release_tags WHERE release_id=r.id ORDER BY position")
+	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,r.director,r.studio,r.label,` + tags + `,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 // releaseCardSelect keeps the Release Library payload small. Release Details
 // fetches the full row on demand, so cards do not need stories, directors,
 // durations, site-list aggregations, or playback statistics. Screenshots stay
 // present because the hover slideshow needs to know whether it should start.
-func releaseCardSelect(_ Dialect) string {
-	return `SELECT r.id,r.site_id,s.title,'[]','[]',r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,'[]','',r.studio,r.label,r.genres,'','',r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,0,0,'','',r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+func releaseCardSelect(d Dialect) string {
+	actresses := d.JSONArrayAgg("name", "SELECT name FROM release_actresses WHERE release_id=r.id ORDER BY position")
+	tags := d.JSONArrayAgg("name", "SELECT name FROM release_tags WHERE release_id=r.id ORDER BY position")
+	return `SELECT r.id,r.site_id,s.title,'[]','[]',r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,'',r.studio,r.label,` + tags + `,'','',r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,0,0,'','',r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 func scanRelease(scanner interface{ Scan(...any) error }) (domain.Release, error) {
 	var x domain.Release
 	var siteIDs, siteTitles, actresses, genres, shots string
 	var stashAddedAt, stashCreatedAt, watchlistAt, downloadedAt sql.NullTime
-	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &x.Actress, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Watchlist, &watchlistAt, &x.MonitorDownload, &x.MonitorReason, &x.MonitorSiteID, &x.MonitorSiteTitle, &x.StashSceneID, &stashAddedAt, &stashCreatedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &downloadedAt)
+	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Watchlist, &watchlistAt, &x.MonitorDownload, &x.MonitorReason, &x.MonitorSiteID, &x.MonitorSiteTitle, &x.StashSceneID, &stashAddedAt, &stashCreatedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &downloadedAt)
 	if err == nil {
 		_ = json.Unmarshal([]byte(siteIDs), &x.SiteIDs)
 		_ = json.Unmarshal([]byte(siteTitles), &x.SiteTitles)
 		_ = json.Unmarshal([]byte(actresses), &x.Actresses)
 		_ = json.Unmarshal([]byte(genres), &x.Genres)
+		x.Actress = strings.Join(x.Actresses, ", ")
 		_ = json.Unmarshal([]byte(shots), &x.Screenshots)
 		if stashAddedAt.Valid {
 			x.StashAddedAt = stashAddedAt.Time
@@ -1001,7 +1007,7 @@ func releaseConditionGroupClause(d Dialect, conditions []releaseFilterCondition,
 	}
 	parts := []string{}
 	var a []any
-	columns := map[string]string{"title": "r.title", "tag": "r.genres", "actress": "r.actress", "description": "r.story", "studio": "r.studio", "label": "r.label"}
+	columns := map[string]string{"title": "r.title", "tag": "metadata", "actress": "metadata", "description": "r.story", "studio": "r.studio", "label": "r.label"}
 	// timestampColumns are the two pre-existing DATETIME/TIMESTAMPTZ columns
 	// (never blank - both are NOT NULL and set on every insert), so their
 	// before/after comparison skips the "<>''" empty-string guard that the
@@ -1177,7 +1183,7 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		// dialect helper, leaving the rest silently case-sensitive on
 		// PostgreSQL (whose LIKE always is) even though SQLite deployments
 		// never showed a symptom.
-		q += ` AND (` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.actress") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR ` + d.CaseInsensitiveLike("r.genres") + ` OR EXISTS (SELECT 1 FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE rss.release_id=r.id AND ` + d.CaseInsensitiveLike("ss.title") + `)`
+		q += ` AND (` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name") + `) OR EXISTS (SELECT 1 FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE rss.release_id=r.id AND ` + d.CaseInsensitiveLike("ss.title") + `)`
 		v := "%" + f.Search + "%"
 		a = append(a, v, v, v, v, v, v, v)
 		if reversed := reverseTwoWordName(f.Search); reversed != "" {
@@ -1229,7 +1235,7 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 	}
 	if f.Category != "" && f.Entries != "" {
 		entries := parseFilterEntries(f.Entries)
-		column := map[string]string{"actress": "r.actress", "maker": "r.studio", "label": "label", "studio": "r.studio", "tag": "r.genres"}[strings.ToLower(f.Category)]
+		column := map[string]string{"actress": "metadata", "maker": "r.studio", "label": "label", "studio": "r.studio", "tag": "metadata"}[strings.ToLower(f.Category)]
 		if column != "" {
 			filterParts := []string{}
 			filterArgs := []any{}
@@ -1760,9 +1766,7 @@ func (s *SQLite) UpsertReleaseKeepUpdatedAt(ctx context.Context, x domain.Releas
 }
 
 func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUpdatedAt bool) (bool, error) {
-	if len(x.Actresses) > 0 {
-		x.Actress = strings.Join(uniqueMetadataValues(x.Actresses), ", ")
-	}
+	actresses := releaseActressValues(x)
 	x.VideoID = cleanText(x.VideoID)
 	x.ScraperID = cleanText(x.ScraperID)
 	x.Title = cleanText(x.Title)
@@ -1770,7 +1774,7 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 	x.Source = cleanText(x.Source)
 	x.ImageURL = cleanText(x.ImageURL)
 	x.ProductURL = domain.NormalizeJavLibraryURL(cleanText(x.ProductURL))
-	x.Actress = normalizeActressList(x.Actress)
+	x.Actress = strings.Join(actresses, ", ")
 	x.Director = cleanText(x.Director)
 	x.Studio = cleanText(x.Studio)
 	x.Label = cleanText(x.Label)
@@ -1780,7 +1784,6 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 	x.Screenshots = uniqueMetadataValues(x.Screenshots)
 	identity := releaseIdentity(x.Source, x.VideoID)
 	now := time.Now().UTC()
-	genres, _ := json.Marshal(x.Genres)
 	shots, _ := json.Marshal(x.Screenshots)
 	tx, e := s.db.BeginTx(ctx, nil)
 	if e != nil {
@@ -1793,12 +1796,14 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 		e = tx.QueryRowContext(ctx, `SELECT id FROM releases WHERE site_id=? AND video_id=?`, x.SiteID, x.VideoID).Scan(&id)
 	}
 	created := false
+	effectiveActresses := actresses
+	effectiveTags := x.Genres
 	if errors.Is(e, sql.ErrNoRows) {
 		var insertErr error
 		if x.MonitorDownload && x.MonitorReason == "" {
 			x.MonitorReason = "manual"
 		}
-		id, insertErr = s.dialect.InsertReturningID(ctx, tx, `INSERT INTO releases(site_id,video_id,scraper_id,title,release_date,source,image_url,product_url,actress,director,studio,label,genres,duration,story,screenshots,released,notify_on_release,watchlist,monitor_download,monitor_reason,monitor_site_id,site_monitor_download,identity_key,is_preferred,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.SiteID, x.VideoID, x.ScraperID, x.Title, x.ReleaseDate, x.Source, x.ImageURL, x.ProductURL, x.Actress, x.Director, x.Studio, x.Label, string(genres), x.Duration, x.Story, string(shots), x.Released, x.NotifyOnRelease, x.Watchlist, x.MonitorDownload, x.MonitorReason, x.MonitorSiteID, false, identity, s.releasePreferred(x.Title, x.Genres), now, now)
+		id, insertErr = s.dialect.InsertReturningID(ctx, tx, `INSERT INTO releases(site_id,video_id,scraper_id,title,release_date,source,image_url,product_url,director,studio,label,duration,story,screenshots,released,notify_on_release,watchlist,monitor_download,monitor_reason,monitor_site_id,site_monitor_download,identity_key,is_preferred,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.SiteID, x.VideoID, x.ScraperID, x.Title, x.ReleaseDate, x.Source, x.ImageURL, x.ProductURL, x.Director, x.Studio, x.Label, x.Duration, x.Story, string(shots), x.Released, x.NotifyOnRelease, x.Watchlist, x.MonitorDownload, x.MonitorReason, x.MonitorSiteID, false, identity, s.releasePreferred(x.Title, x.Genres), now, now)
 		if insertErr != nil {
 			return false, insertErr
 		}
@@ -1817,17 +1822,28 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 		// scrape happened to see the same row again.
 		var current struct {
 			scraperID, title, releaseDate, source, imageURL, productURL string
-			actress, director, studio, label, genres, duration, story   string
-			screenshots                                                 string
+			director, studio, label, duration, story                    string
+			screenshots, actresses, tags                                string
 			released                                                    bool
 			addedAt, updatedAt                                          time.Time
 		}
-		if e = tx.QueryRowContext(ctx, `SELECT scraper_id,title,release_date,source,image_url,product_url,actress,director,studio,label,genres,duration,story,screenshots,released,added_at,updated_at FROM releases WHERE id=?`, id).Scan(
+		actressAggregate := s.dialect.JSONArrayAgg("name", "SELECT name FROM release_actresses WHERE release_id=releases.id ORDER BY position")
+		tagAggregate := s.dialect.JSONArrayAgg("name", "SELECT name FROM release_tags WHERE release_id=releases.id ORDER BY position")
+		if e = tx.QueryRowContext(ctx, `SELECT scraper_id,title,release_date,source,image_url,product_url,director,studio,label,duration,story,screenshots,released,added_at,updated_at,`+actressAggregate+`,`+tagAggregate+` FROM releases WHERE id=?`, id).Scan(
 			&current.scraperID, &current.title, &current.releaseDate, &current.source, &current.imageURL, &current.productURL,
-			&current.actress, &current.director, &current.studio, &current.label, &current.genres, &current.duration,
-			&current.story, &current.screenshots, &current.released, &current.addedAt, &current.updatedAt,
+			&current.director, &current.studio, &current.label, &current.duration, &current.story, &current.screenshots,
+			&current.released, &current.addedAt, &current.updatedAt, &current.actresses, &current.tags,
 		); e != nil {
 			return false, e
+		}
+		var currentActresses, currentTags []string
+		_ = json.Unmarshal([]byte(current.actresses), &currentActresses)
+		_ = json.Unmarshal([]byte(current.tags), &currentTags)
+		if len(effectiveActresses) == 0 {
+			effectiveActresses = currentActresses
+		}
+		if len(effectiveTags) == 0 {
+			effectiveTags = currentTags
 		}
 		changedText := func(incoming, stored string) bool { return incoming != "" && incoming != stored }
 		// Cover and screenshot changes are cache/artwork maintenance, not
@@ -1836,9 +1852,9 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 		metadataChanged := changedText(x.ScraperID, current.scraperID) || changedText(x.Title, current.title) ||
 			changedText(x.ReleaseDate, current.releaseDate) || changedText(x.Source, current.source) ||
 			changedText(x.ProductURL, current.productURL) ||
-			changedText(x.Actress, current.actress) || changedText(x.Director, current.director) ||
+			(len(actresses) > 0 && !metadataValuesEqual(actresses, currentActresses)) || changedText(x.Director, current.director) ||
 			changedText(x.Studio, current.studio) || changedText(x.Label, current.label) ||
-			(string(genres) != "[]" && string(genres) != "null" && string(genres) != current.genres) ||
+			(len(x.Genres) > 0 && !metadataValuesEqual(x.Genres, currentTags)) ||
 			changedText(x.Duration, current.duration) || changedText(x.Story, current.story) ||
 			(x.Released && !current.released)
 		updatedAt := current.updatedAt
@@ -1864,18 +1880,15 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 		source=COALESCE(NULLIF(?,''),source),
 		image_url=COALESCE(NULLIF(?,''),image_url),
 		product_url=COALESCE(NULLIF(?,''),product_url),
-		actress=COALESCE(NULLIF(?,''),actress),
 		director=COALESCE(NULLIF(?,''),director),
 		studio=COALESCE(NULLIF(?,''),studio),
 		label=COALESCE(NULLIF(?,''),label),
-		genres=CASE WHEN ?='' OR ?='[]' OR ?='null' THEN genres ELSE ? END,
 		duration=COALESCE(NULLIF(?,''),duration),
 		story=COALESCE(NULLIF(?,''),story),
 		screenshots=CASE WHEN ?='' OR ?='[]' OR ?='null' THEN screenshots ELSE ? END,
 		released=`+s.dialect.Greatest("released", "?")+`,notify_on_release=`+s.dialect.Greatest("notify_on_release", "?")+`,watchlist=`+s.dialect.Greatest("watchlist", "?")+`,monitor_download=`+s.dialect.Greatest("monitor_download", "?")+`,monitor_reason=CASE WHEN ?=1 THEN COALESCE(NULLIF(?,''),'manual') ELSE monitor_reason END,monitor_site_id=CASE WHEN ?=1 THEN ? ELSE monitor_site_id END,updated_at=? WHERE id=?`,
 			x.ScraperID, x.Title, x.ReleaseDate, x.Source, x.ImageURL, x.ProductURL,
-			x.Actress, x.Director, x.Studio, x.Label,
-			string(genres), string(genres), string(genres), string(genres),
+			x.Director, x.Studio, x.Label,
 			x.Duration, x.Story,
 			string(shots), string(shots), string(shots), string(shots),
 			x.Released, x.NotifyOnRelease, x.Watchlist, x.MonitorDownload, x.MonitorDownload, x.MonitorReason, x.MonitorDownload, x.MonitorSiteID, updatedAt, id)
@@ -1883,13 +1896,21 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 			return false, e
 		}
 	}
-	var effectiveActress, effectiveGenres, effectiveTitle string
-	if e = tx.QueryRowContext(ctx, `SELECT actress,genres,title FROM releases WHERE id=?`, id).Scan(&effectiveActress, &effectiveGenres, &effectiveTitle); e != nil {
+	var effectiveTitle string
+	if e = tx.QueryRowContext(ctx, `SELECT title FROM releases WHERE id=?`, id).Scan(&effectiveTitle); e != nil {
 		return false, e
 	}
-	var effectiveTags []string
-	_ = json.Unmarshal([]byte(effectiveGenres), &effectiveTags)
-	if e = SyncReleaseMetadata(ctx, tx, id, effectiveActress, effectiveTags); e != nil {
+	if created || len(actresses) > 0 {
+		if e = syncReleaseActresses(ctx, tx, id, effectiveActresses); e != nil {
+			return false, e
+		}
+	}
+	if created || len(x.Genres) > 0 {
+		if e = syncReleaseTags(ctx, tx, id, effectiveTags); e != nil {
+			return false, e
+		}
+	}
+	if e != nil {
 		return false, e
 	}
 	if _, e = tx.ExecContext(ctx, `UPDATE releases SET is_preferred=? WHERE id=?`, s.releasePreferred(effectiveTitle, effectiveTags), id); e != nil {
@@ -1958,23 +1979,46 @@ func uniqueMetadataValues(values []string) []string {
 	return out
 }
 
+func releaseActressValues(x domain.Release) []string {
+	if len(x.Actresses) > 0 {
+		return uniqueMetadataValues(x.Actresses)
+	}
+	return splitActressValues(x.Actress)
+}
+
+func metadataValuesEqual(a, b []string) bool {
+	a = uniqueMetadataValues(a)
+	b = uniqueMetadataValues(b)
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 type metadataExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
-// SyncReleaseMetadata keeps normalized many-to-many metadata in step with the
-// compatibility display fields returned by the release API.
-func SyncReleaseMetadata(ctx context.Context, exec metadataExecer, releaseID int64, actress string, tags []string) error {
+func syncReleaseActresses(ctx context.Context, exec metadataExecer, releaseID int64, actresses []string) error {
 	if _, err := exec.ExecContext(ctx, `DELETE FROM release_actresses WHERE release_id=?`, releaseID); err != nil {
 		return err
 	}
-	if _, err := exec.ExecContext(ctx, `DELETE FROM release_tags WHERE release_id=?`, releaseID); err != nil {
-		return err
-	}
-	for position, name := range splitActressValues(actress) {
+	for position, name := range uniqueMetadataValues(actresses) {
 		if _, err := exec.ExecContext(ctx, `INSERT INTO release_actresses(release_id,position,name,name_normalized) VALUES(?,?,?,?)`, releaseID, position, name, strings.ToLower(name)); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func syncReleaseTags(ctx context.Context, exec metadataExecer, releaseID int64, tags []string) error {
+	if _, err := exec.ExecContext(ctx, `DELETE FROM release_tags WHERE release_id=?`, releaseID); err != nil {
+		return err
 	}
 	for position, name := range uniqueMetadataValues(tags) {
 		if _, err := exec.ExecContext(ctx, `INSERT INTO release_tags(release_id,position,name,name_normalized) VALUES(?,?,?,?)`, releaseID, position, name, strings.ToLower(name)); err != nil {
@@ -1984,20 +2028,63 @@ func SyncReleaseMetadata(ctx context.Context, exec metadataExecer, releaseID int
 	return nil
 }
 
+// SyncReleaseActresses replaces one release's ordered actress relationships.
+func SyncReleaseActresses(ctx context.Context, exec metadataExecer, releaseID int64, actresses []string) error {
+	return syncReleaseActresses(ctx, exec, releaseID, actresses)
+}
+
+// SyncReleaseTags replaces one release's ordered tag relationships.
+func SyncReleaseTags(ctx context.Context, exec metadataExecer, releaseID int64, tags []string) error {
+	return syncReleaseTags(ctx, exec, releaseID, tags)
+}
+
+// SyncReleaseMetadata replaces both normalized relationship sets. Callers
+// performing partial updates should use the selective helpers above so an
+// omitted field never erases metadata learned by an earlier detail scrape.
+func SyncReleaseMetadata(ctx context.Context, exec metadataExecer, releaseID int64, actresses, tags []string) error {
+	if err := syncReleaseActresses(ctx, exec, releaseID, actresses); err != nil {
+		return err
+	}
+	return syncReleaseTags(ctx, exec, releaseID, tags)
+}
+
 func (s *SQLite) backfillReleaseMetadata(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.actress,r.genres FROM releases r WHERE (r.actress<>'' AND NOT EXISTS (SELECT 1 FROM release_actresses a WHERE a.release_id=r.id)) OR (r.genres NOT IN ('','[]','null') AND NOT EXISTS (SELECT 1 FROM release_tags t WHERE t.release_id=r.id))`)
+	hasActress, err := s.columnExists(ctx, "releases", "actress")
+	if err != nil {
+		return err
+	}
+	hasGenres, err := s.columnExists(ctx, "releases", "genres")
+	if err != nil {
+		return err
+	}
+	if !hasActress && !hasGenres {
+		return nil
+	}
+	actressExpr, genresExpr := `''`, `'[]'`
+	conditions := []string{}
+	if hasActress {
+		actressExpr = "r.actress"
+		conditions = append(conditions, `r.actress<>''`)
+	}
+	if hasGenres {
+		genresExpr = "r.genres"
+		conditions = append(conditions, `r.genres NOT IN ('','[]','null')`)
+	}
+	actressAggregate := s.dialect.JSONArrayAgg("name", "SELECT name FROM release_actresses WHERE release_id=r.id ORDER BY position")
+	tagAggregate := s.dialect.JSONArrayAgg("name", "SELECT name FROM release_tags WHERE release_id=r.id ORDER BY position")
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,`+actressExpr+`,`+genresExpr+`,`+actressAggregate+`,`+tagAggregate+` FROM releases r WHERE `+strings.Join(conditions, ` OR `))
 	if err != nil {
 		return err
 	}
 	type pendingMetadata struct {
-		id      int64
-		actress string
-		genres  string
+		id                            int64
+		actress, genres               string
+		currentActresses, currentTags string
 	}
 	pending := []pendingMetadata{}
 	for rows.Next() {
 		var item pendingMetadata
-		if err := rows.Scan(&item.id, &item.actress, &item.genres); err != nil {
+		if err := rows.Scan(&item.id, &item.actress, &item.genres, &item.currentActresses, &item.currentTags); err != nil {
 			rows.Close()
 			return err
 		}
@@ -2015,18 +2102,70 @@ func (s *SQLite) backfillReleaseMetadata(ctx context.Context) error {
 	}
 	defer tx.Rollback()
 	for _, item := range pending {
-		var tags []string
-		_ = json.Unmarshal([]byte(item.genres), &tags)
-		if err := SyncReleaseMetadata(ctx, tx, item.id, item.actress, tags); err != nil {
-			return err
+		var tags, currentActresses, currentTags []string
+		if json.Unmarshal([]byte(item.genres), &tags) != nil {
+			tags = splitMetadataValues(item.genres, false)
+		}
+		_ = json.Unmarshal([]byte(item.currentActresses), &currentActresses)
+		_ = json.Unmarshal([]byte(item.currentTags), &currentTags)
+		if hasActress && item.actress != "" {
+			seen := metadataValueSet(currentActresses)
+			position := len(currentActresses)
+			for _, name := range splitActressValues(item.actress) {
+				if seen[strings.ToLower(name)] {
+					continue
+				}
+				if _, err := tx.ExecContext(ctx, `INSERT INTO release_actresses(release_id,position,name,name_normalized) VALUES(?,?,?,?) ON CONFLICT(release_id,name_normalized) DO NOTHING`, item.id, position, name, strings.ToLower(name)); err != nil {
+					return err
+				}
+				seen[strings.ToLower(name)] = true
+				position++
+			}
+		}
+		if hasGenres && item.genres != "" && item.genres != "[]" && item.genres != "null" {
+			seen := metadataValueSet(currentTags)
+			position := len(currentTags)
+			for _, name := range uniqueMetadataValues(tags) {
+				if seen[strings.ToLower(name)] {
+					continue
+				}
+				if _, err := tx.ExecContext(ctx, `INSERT INTO release_tags(release_id,position,name,name_normalized) VALUES(?,?,?,?) ON CONFLICT(release_id,name_normalized) DO NOTHING`, item.id, position, name, strings.ToLower(name)); err != nil {
+					return err
+				}
+				seen[strings.ToLower(name)] = true
+				position++
+			}
 		}
 	}
 	return tx.Commit()
 }
 
+func metadataValueSet(values []string) map[string]bool {
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		seen[strings.ToLower(cleanText(value))] = true
+	}
+	return seen
+}
+
 func (s *SQLite) cleanupStoredReleaseText(ctx context.Context) error {
 	var completed int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM settings WHERE key='metadata_text_cleanup_v1'`).Scan(&completed); err != nil || completed > 0 {
+		return err
+	}
+	hasActress, err := s.columnExists(ctx, "releases", "actress")
+	if err != nil {
+		return err
+	}
+	hasGenres, err := s.columnExists(ctx, "releases", "genres")
+	if err != nil {
+		return err
+	}
+	// Fresh and already-normalized databases have no compatibility columns.
+	// Their normalized values are cleaned as they are inserted, so this legacy
+	// one-time cleanup has nothing to do.
+	if !hasActress || !hasGenres {
+		_, err = s.db.ExecContext(ctx, `INSERT INTO settings(key,value,updated_at) VALUES('metadata_text_cleanup_v1','true',?) ON CONFLICT(key) DO UPDATE SET value='true',updated_at=excluded.updated_at`, time.Now().UTC())
 		return err
 	}
 	// LIKE (not SQLite's instr()) so this one-time backfill query runs
@@ -2061,7 +2200,9 @@ func (s *SQLite) cleanupStoredReleaseText(ctx context.Context) error {
 	defer tx.Rollback()
 	for _, x := range items {
 		var tags, shots []string
-		_ = json.Unmarshal([]byte(x.genres), &tags)
+		if json.Unmarshal([]byte(x.genres), &tags) != nil {
+			tags = splitMetadataValues(x.genres, false)
+		}
 		_ = json.Unmarshal([]byte(x.shots), &shots)
 		tags = uniqueMetadataValues(tags)
 		shots = uniqueMetadataValues(shots)
@@ -2071,7 +2212,7 @@ func (s *SQLite) cleanupStoredReleaseText(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE releases SET video_id=?,scraper_id=?,title=?,release_date=?,source=?,image_url=?,product_url=?,actress=?,director=?,studio=?,genres=?,duration=?,story=?,screenshots=? WHERE id=?`, cleanText(x.videoID), cleanText(x.scraperID), cleanText(x.title), cleanText(x.releaseDate), cleanText(x.source), cleanText(x.imageURL), cleanText(x.productURL), actress, cleanText(x.director), cleanText(x.studio), string(genresJSON), cleanText(x.duration), cleanText(x.story), string(shotsJSON), x.id); err != nil {
 			return err
 		}
-		if err := SyncReleaseMetadata(ctx, tx, x.id, actress, tags); err != nil {
+		if err := SyncReleaseMetadata(ctx, tx, x.id, splitActressValues(actress), tags); err != nil {
 			return err
 		}
 	}
@@ -2080,6 +2221,56 @@ func (s *SQLite) cleanupStoredReleaseText(ctx context.Context) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// migrateNormalizedReleaseMetadata makes the normalized relationship tables
+// the sole persisted source of actress and tag data. It deliberately runs
+// after backfill and text cleanup, verifies every non-empty legacy value has a
+// relationship row, and only then removes the duplicate columns.
+func (s *SQLite) migrateNormalizedReleaseMetadata(ctx context.Context) error {
+	hasActress, err := s.columnExists(ctx, "releases", "actress")
+	if err != nil {
+		return err
+	}
+	hasGenres, err := s.columnExists(ctx, "releases", "genres")
+	if err != nil {
+		return err
+	}
+	if hasActress {
+		var missing int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM releases r WHERE TRIM(r.actress)<>'' AND NOT EXISTS (SELECT 1 FROM release_actresses a WHERE a.release_id=r.id)`).Scan(&missing); err != nil {
+			return err
+		}
+		if missing > 0 {
+			return fmt.Errorf("refusing to remove releases.actress: %d releases were not normalized", missing)
+		}
+	}
+	if hasGenres {
+		var missing int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM releases r WHERE r.genres NOT IN ('','[]','null') AND NOT EXISTS (SELECT 1 FROM release_tags t WHERE t.release_id=r.id)`).Scan(&missing); err != nil {
+			return err
+		}
+		if missing > 0 {
+			return fmt.Errorf("refusing to remove releases.genres: %d releases were not normalized", missing)
+		}
+	}
+	for _, index := range []string{"idx_releases_actress_trgm", "idx_releases_genres_trgm"} {
+		if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS `+index); err != nil {
+			return err
+		}
+	}
+	if hasActress {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE releases DROP COLUMN actress`); err != nil {
+			return err
+		}
+	}
+	if hasGenres {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE releases DROP COLUMN genres`); err != nil {
+			return err
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO settings(key,value,updated_at) VALUES('normalized_release_metadata_v1','true',?) ON CONFLICT(key) DO UPDATE SET value='true',updated_at=excluded.updated_at`, time.Now().UTC())
+	return err
 }
 
 func (s *SQLite) PatchRelease(ctx context.Context, id int64, released, local, notified, notifyOnRelease, watchlist, monitorDownload *bool, label *string, allowNonPreferredFilenames *bool) error {
