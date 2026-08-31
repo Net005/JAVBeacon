@@ -1330,15 +1330,28 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 .statusItems .downloadPillWrap{min-width:0}
 .statusItems .downloadPill.inline{margin-left:0}
 .statusItems .releaseStatusInfo{height:100%;min-height:34px}
-.detailValueList{display:flex;align-items:center;min-width:0;gap:6px;overflow:hidden}
-.detailValueList button{flex:0 1 auto;min-width:0;overflow:hidden;padding:2px 5px!important;border:1px solid #42313a!important;border-radius:5px!important;background:#181218!important;color:#ee6878!important;font-size:inherit!important;line-height:1.2!important;text-overflow:ellipsis;white-space:nowrap}
-.detailValueList i{flex:0 0 3px;width:3px;height:3px;border-radius:50%;background:#687382;box-shadow:0 0 0 2px #202630}
+.detailValueOverflow{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:5px;width:100%;min-width:0}
+.detailValueOverflow:not(.hasOverflow){grid-template-columns:minmax(0,1fr);gap:0}
+.detailValuePreview{display:flex;align-items:center;min-width:0;gap:6px;overflow:hidden}
+.detailValueEntry{display:inline-flex;flex:0 0 auto;align-items:center;gap:6px;min-width:max-content}
+.detailValueEntry i,.detailSiteSeparator{flex:0 0 3px;width:3px;height:3px;border-radius:50%;background:#687382;box-shadow:0 0 0 2px #202630}
+.detailValueOverflow button,.detailValuePopover button,.detailValueOverflow .detailSiteLink{flex:0 0 auto;max-width:none;overflow:visible;padding:2px 5px!important;border:1px solid #42313a!important;border-radius:5px!important;background:#181218!important;color:#ee6878!important;font-size:inherit!important;line-height:1.2!important;text-overflow:clip;white-space:nowrap}
+.detailValueMore{width:31px!important;min-width:31px!important;padding-inline:4px!important;color:#bbc4d0!important;letter-spacing:1px}
+.detailValuePopover{position:absolute;top:calc(100% + 6px);right:0;z-index:90;display:none;max-width:min(560px,calc(var(--vw100,100vw) - 48px));max-height:170px;overflow:auto;flex-wrap:wrap;gap:6px;padding:9px;border:1px solid #424b58;border-radius:8px;background:#11151cf5;box-shadow:0 14px 38px #000c}
+.detailValueOverflow.open .detailValuePopover{display:flex}
+.detailMeta:has(.detailValueOverflow.open){position:relative;z-index:75;overflow:visible!important}
+.detailSiteLink{display:inline-flex;align-items:center;gap:4px;text-decoration:none;white-space:nowrap}
+.detailSiteLink:hover{color:#ff9aa6;text-decoration:underline;text-underline-offset:3px}
+.detailSiteLink span{font-size:.78em;opacity:.72}
+#siteList .row.siteTargetHighlight{position:relative;z-index:2;border-color:#ef5366;background:linear-gradient(100deg,#3c1820,#171a21 48%);box-shadow:0 0 0 2px #ef536655,0 0 30px #ef536644;animation:siteTargetPulse 1s ease-in-out 2}
+@keyframes siteTargetPulse{50%{border-color:#ff8795;box-shadow:0 0 0 3px #ef536677,0 0 38px #ef536666}}
 .detailMeta dt,.detailMeta dd{padding-block:5px!important;line-height:1.25!important}
 .detailMeta dt{font-size:11.5px!important}
 .detailMeta dd{font-size:13px!important}
 
 @media (min-width:651px){
   .releaseInfo{grid-template-rows:88px 178px auto 38px minmax(70px,1fr)!important}
+  .releaseInfo.noStory{grid-template-rows:88px 178px auto 38px!important;align-content:start!important}
   .detailActionGroups{display:flex!important;flex-direction:column;height:178px!important;min-height:178px!important;max-height:178px!important}
   .actionGroup{height:auto!important;min-height:49px!important;flex:1 1 0;align-content:stretch!important}
   .statusGroup{flex:0 0 52px}
@@ -1349,6 +1362,7 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 
 @media (min-width:651px) and (max-height:820px){
   .releaseInfo{grid-template-rows:72px 148px auto 32px minmax(54px,1fr)!important}
+  .releaseInfo.noStory{grid-template-rows:72px 148px auto 32px!important}
   .detailActionGroups{height:148px!important;min-height:148px!important;max-height:148px!important;gap:4px!important}
   .actionGroup{min-height:42px!important;padding:4px 6px!important;gap:4px!important}
   .statusGroup{flex-basis:45px}
@@ -1362,6 +1376,11 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
   .actionGroupTitle{grid-column:1/-1;min-height:25px;padding:0 4px 5px;border-right:0;border-bottom:1px solid #2f3641}
   .statusGroup{grid-template-columns:1fr!important}
   .statusItems{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .detailValueList{flex-wrap:wrap;overflow:visible}
   .detailMeta dt,.detailMeta dd{padding-block:7px!important}
+  .detailValuePopover{position:fixed;top:50%;right:14px;left:14px;max-width:none;max-height:48vh;transform:translateY(-50%);padding:12px}
+}
+
+@media(hover:hover) and (pointer:fine){
+  .detailValueOverflow.hasOverflow:hover .detailValuePopover{display:flex}
+  .detailMeta:has(.detailValueOverflow.hasOverflow:hover){position:relative;z-index:75;overflow:visible!important}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -110,6 +111,10 @@ func TestExpandSiteGroupSchedulesBuildsOnePerEnabledSiteAndSkipsInvalidEntries(t
 	if first.pagesKey == "" || augmented[first.pagesKey] != "3" {
 		t.Fatalf("synthetic pages key not populated: key=%q value=%q", first.pagesKey, augmented[first.pagesKey])
 	}
+	pages, err := strconv.Atoi(augmented[first.pagesKey])
+	if err != nil || pages != groups[0].Pages {
+		t.Fatalf("scheduled page limit = %d (error %v), want configured group limit %d", pages, err, groups[0].Pages)
+	}
 	wantIDB := fmt.Sprintf("sitegroup:1:%d", sites[1].ID)
 	second, ok := byID[wantIDB]
 	if !ok || second.mode != "new" || second.title != "Favorites · Actress B" {
@@ -140,23 +145,28 @@ func TestRunScrapeSchedulesKeysStateByIDNotMode(t *testing.T) {
 	defer st.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Millisecond)
 	defer cancel()
-	if err := st.SaveSettings(ctx, map[string]string{"a_enabled": "true", "b_enabled": "true"}); err != nil {
+	if err := st.SaveSettings(ctx, map[string]string{"a_enabled": "true", "b_enabled": "true", "a_pages": "10", "b_pages": "7"}); err != nil {
 		t.Fatal(err)
 	}
 	service := &Service{store: st, log: slog.Default(), worker: true}
 	service.runScrapeSchedules(ctx, []scrapeSchedule{
-		{id: "a", mode: "quick", title: "A", enabledKey: "a_enabled", priorityKind: PriorityKindScheduledQuick, fallback: 10 * time.Millisecond, siteID: 1},
-		{id: "b", mode: "quick", title: "B", enabledKey: "b_enabled", priorityKind: PriorityKindScheduledQuick, fallback: 10 * time.Millisecond, siteID: 2},
+		{id: "a", mode: "quick", title: "A", enabledKey: "a_enabled", pagesKey: "a_pages", priorityKind: PriorityKindScheduledQuick, fallback: 10 * time.Millisecond, siteID: 1},
+		{id: "b", mode: "quick", title: "B", enabledKey: "b_enabled", pagesKey: "b_pages", priorityKind: PriorityKindScheduledQuick, fallback: 10 * time.Millisecond, siteID: 2},
 	})
 	if len(service.queue) != 2 {
 		t.Fatalf("queued scans = %+v, want both same-mode schedules queued independently", service.queue)
 	}
 	titles := map[string]bool{}
+	pageLimits := map[string]int{}
 	for _, queued := range service.queue {
 		titles[queued.Title] = true
+		pageLimits[queued.Title] = queued.Pages
 	}
 	if !titles["A"] || !titles["B"] {
 		t.Fatalf("queued scans = %+v, want both A and B", service.queue)
+	}
+	if pageLimits["A"] != 10 || pageLimits["B"] != 7 {
+		t.Fatalf("queued page limits = %+v, want each schedule's configured maximum", pageLimits)
 	}
 }
 

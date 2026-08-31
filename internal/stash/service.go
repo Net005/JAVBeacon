@@ -225,14 +225,10 @@ func (s *Service) run(ctx context.Context) {
 	result.Total = total
 	result.Phase = "Matching releases"
 	s.publishStatus(result)
-	s.log.Info("Stash local release sync matching started", "scenes", scenes, "identifiers", len(ids), "releases", total)
 	advanceProgress := func() {
 		result.Processed++
 		if result.Processed%25 == 0 || result.Processed == result.Total {
 			s.publishStatus(result)
-		}
-		if result.Processed%500 == 0 || result.Processed == result.Total {
-			s.log.Info("Stash local release sync progress", "processed", result.Processed, "total", result.Total, "matched", result.Matched, "updated", result.Updated, "current_item", result.CurrentItem)
 		}
 	}
 	for offset := 0; ; offset += 500 {
@@ -705,7 +701,6 @@ func (s *Service) startScheduledLocalSync(ctx context.Context, settings map[stri
 		s.log.Warn("scheduled Stash local-library sync not started", "error", err)
 		return false
 	}
-	s.log.Info("scheduled Stash local-library sync started")
 	return true
 }
 
