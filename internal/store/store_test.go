@@ -1997,11 +1997,11 @@ func TestDownloadActivitySeenCompleteStalledFilterAndSwarmSort(t *testing.T) {
 	releaseID := releases[0].ID
 	now := time.Now()
 	for _, row := range []domain.Download{
-		{ReleaseID: releaseID, Query: "NEVER", Status: "downloading", Seeds: 0, SeenComplete: 0},
-		{ReleaseID: releaseID, Query: "OLD", Status: "downloading", Seeds: 0, SeenComplete: now.Add(-10 * 24 * time.Hour).Unix()},
-		{ReleaseID: releaseID, Query: "RECENT", Status: "downloading", Seeds: 0, SeenComplete: now.Add(-2 * 24 * time.Hour).Unix()},
-		{ReleaseID: releaseID, Query: "NO-COMPLETE", Status: "downloading", Seeds: 8, Peers: 2, SeenComplete: 0},
-		{ReleaseID: releaseID, Query: "SEEDED", Status: "downloading", Seeds: 8, Peers: 3, SeenComplete: now.Add(-20 * 24 * time.Hour).Unix()},
+		{ReleaseID: releaseID, Query: "NEVER", Status: "downloading", Seeds: 0, SeenComplete: 0, ETASeconds: 900, Progress: .1},
+		{ReleaseID: releaseID, Query: "OLD", Status: "downloading", Seeds: 0, SeenComplete: now.Add(-10 * 24 * time.Hour).Unix(), ETASeconds: 600, Progress: .2},
+		{ReleaseID: releaseID, Query: "RECENT", Status: "downloading", Seeds: 0, SeenComplete: now.Add(-2 * 24 * time.Hour).Unix(), ETASeconds: 300, Progress: .3},
+		{ReleaseID: releaseID, Query: "NO-COMPLETE", Status: "downloading", Seeds: 8, Peers: 2, SeenComplete: 0, ETASeconds: 120, Progress: .8},
+		{ReleaseID: releaseID, Query: "SEEDED", Status: "downloading", Seeds: 8, Peers: 3, SeenComplete: now.Add(-20 * 24 * time.Hour).Unix(), ETASeconds: 60, Progress: .9},
 	} {
 		if _, err := s.SaveDownload(ctx, row); err != nil {
 			t.Fatal(err)
@@ -2037,6 +2037,14 @@ func TestDownloadActivitySeenCompleteStalledFilterAndSwarmSort(t *testing.T) {
 	sorted, _, err := s.DownloadActivity(ctx, domain.DownloadFilter{Status: "downloading", Sort: "seeds", Direction: "desc", Limit: 10})
 	if err != nil || len(sorted) != 5 || sorted[0].Query != "SEEDED" || sorted[0].SeenComplete == 0 {
 		t.Fatalf("seed sort / seen-complete round trip failed: rows=%+v err=%v", sorted, err)
+	}
+	byETA, _, err := s.DownloadActivity(ctx, domain.DownloadFilter{Status: "downloading", Sort: "eta", Direction: "asc", Limit: 10})
+	if err != nil || len(byETA) != 5 || byETA[0].Query != "SEEDED" {
+		t.Fatalf("ETA sort failed: rows=%+v err=%v", byETA, err)
+	}
+	byProgress, _, err := s.DownloadActivity(ctx, domain.DownloadFilter{Status: "downloading", Sort: "progress", Direction: "desc", Limit: 10})
+	if err != nil || len(byProgress) != 5 || byProgress[0].Query != "SEEDED" {
+		t.Fatalf("progress sort failed: rows=%+v err=%v", byProgress, err)
 	}
 }
 
