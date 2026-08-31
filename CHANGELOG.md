@@ -7,6 +7,18 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.61] - 2026-09-01
+
+### Changed
+
+- Release Details Downloading and StashApp status controls now match the
+  rectangular geometry, sizing, and primary typography of the action buttons.
+
+### Fixed
+
+- Download submission notifications now remain visible above the Search &
+  Download dialog instead of being hidden behind the modal.
+
 ## [1.0.60] - 2026-09-01
 
 ### Added
