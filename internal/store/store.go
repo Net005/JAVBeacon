@@ -34,6 +34,7 @@ type Store interface {
 	ReleaseExistsForSite(context.Context, int64, string, string) (bool, error)
 	ReleaseForSite(context.Context, int64, string, string) (domain.Release, bool, error)
 	ReleaseKnown(context.Context, string, string) (string, bool, error)
+	LatestReleaseDateForSite(context.Context, int64) (string, bool, error)
 	UpsertRelease(context.Context, domain.Release) (bool, error)
 	// UpsertReleaseKeepUpdatedAt behaves exactly like UpsertRelease except it
 	// never bumps updated_at on an existing release, whatever changed - used
@@ -43,7 +44,7 @@ type Store interface {
 	UpsertReleaseKeepUpdatedAt(context.Context, domain.Release) (bool, error)
 	PatchRelease(context.Context, int64, *bool, *bool, *bool, *bool, *bool, *bool, *string, *bool) error
 	BulkSetReleaseFlags(context.Context, []int64, *bool, *bool) (int64, error)
-	SetSiteReleaseMonitoring(context.Context, int64, bool) error
+	SetReleaseMonitoring(context.Context, int64, bool, string, int64) error
 	SetStashState(context.Context, int64, bool, string) error
 	SetStashReleaseDate(context.Context, int64, string) error
 	SetStashCreatedAt(context.Context, int64, time.Time) error
@@ -223,12 +224,15 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 		for _, statement := range []string{
 			`ALTER TABLE sites ADD COLUMN download INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE sites ADD COLUMN download_mode TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE sites ADD COLUMN auto_monitor_future INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE sites ADD COLUMN watchlist INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE sites ADD COLUMN rss_url TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE releases ADD COLUMN notify_on_release INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE releases ADD COLUMN watchlist INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE releases ADD COLUMN monitor_download INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE releases ADD COLUMN site_monitor_download INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE releases ADD COLUMN monitor_reason TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE releases ADD COLUMN monitor_site_id INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE releases ADD COLUMN identity_key TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE releases ADD COLUMN stash_scene_id TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE pipeline_logs ADD COLUMN configuration TEXT NOT NULL DEFAULT '{}'`,
@@ -297,6 +301,9 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 			PRIMARY KEY(release_id,site_id)
 		);
 		CREATE INDEX IF NOT EXISTS idx_release_sites_site ON release_sites(site_id,release_id);`)
+	}
+	if err == nil {
+		err = s.migrateSiteMonitoringRedesign(context.Background())
 	}
 	if err == nil {
 		_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_runs (
@@ -372,6 +379,49 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_name ON release_tags(name_normalized
 		_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_releases_released_date ON releases(released,release_date DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_local_created ON releases(is_local,stash_created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_watchlist_date ON releases(watchlist,watchlist_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_updated ON releases(updated_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_title_order ON releases(title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS idx_releases_preferred ON releases(is_preferred,id);`)
 	}
 	return err
+}
+
+// migrateSiteMonitoringRedesign converts the retired site-level automatic
+// download modes into explicit release monitoring. Only the old "future"
+// mode enables the replacement rule; "all" has no equivalent, but releases
+// it already enrolled remain monitored so an upgrade never silently drops a
+// user's existing queue. The old columns remain as inert compatibility data
+// for database transfers from older versions and are cleared after copying.
+func (s *SQLite) migrateSiteMonitoringRedesign(ctx context.Context) error {
+	var complete string
+	if err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='site_monitoring_redesign_v1'`).Scan(&complete); err == nil && complete == "true" {
+		return nil
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	if _, err = tx.ExecContext(ctx, `UPDATE sites SET auto_monitor_future=1 WHERE download_mode='future' OR (download=1 AND download_mode='')`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE releases SET monitor_download=1,monitor_reason=CASE WHEN monitor_reason='' THEN 'migrated_site' ELSE monitor_reason END,monitor_site_id=CASE WHEN monitor_site_id=0 THEN site_id ELSE monitor_site_id END WHERE site_monitor_download=1 OR EXISTS(SELECT 1 FROM release_sites rs WHERE rs.release_id=releases.id AND rs.site_monitor_download=1)`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE releases SET monitor_reason='manual' WHERE monitor_download=1 AND monitor_reason=''`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE sites SET download=0,download_mode=''`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE releases SET site_monitor_download=0`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE release_sites SET site_monitor_download=0`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO settings(key,value,updated_at) VALUES('site_monitoring_redesign_v1','true',?) ON CONFLICT(key) DO UPDATE SET value='true',updated_at=excluded.updated_at`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // migrateWatchlistNaming upgrades the persisted names used by installations
@@ -771,7 +821,7 @@ func (s *SQLite) migrateReleaseIdentity(ctx context.Context) error {
 }
 
 func (s *SQLite) Sites(ctx context.Context) ([]domain.Site, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,title,type,name,url,notify,download,download_mode,watchlist,rss_url,enabled,created_at,updated_at,last_scraped_at,last_scrape_pages,last_scrape_added,last_scrape_updated,last_scrape_state FROM sites ORDER BY `+s.dialect.CaseInsensitiveOrderBy("type")+`,`+s.dialect.CaseInsensitiveOrderBy("title"))
+	rows, err := s.db.QueryContext(ctx, `SELECT id,title,type,name,url,notify,auto_monitor_future,watchlist,rss_url,enabled,created_at,updated_at,last_scraped_at,last_scrape_pages,last_scrape_added,last_scrape_updated,last_scrape_state FROM sites ORDER BY `+s.dialect.CaseInsensitiveOrderBy("type")+`,`+s.dialect.CaseInsensitiveOrderBy("title"))
 	if err != nil {
 		return nil, err
 	}
@@ -780,7 +830,7 @@ func (s *SQLite) Sites(ctx context.Context) ([]domain.Site, error) {
 	for rows.Next() {
 		var x domain.Site
 		var lastScraped sql.NullTime
-		if err := rows.Scan(&x.ID, &x.Title, &x.Type, &x.Name, &x.URL, &x.Notify, &x.Download, &x.DownloadMode, &x.Watchlist, &x.RSSURL, &x.Enabled, &x.CreatedAt, &x.UpdatedAt, &lastScraped, &x.LastScrapePages, &x.LastScrapeAdded, &x.LastScrapeUpdated, &x.LastScrapeState); err != nil {
+		if err := rows.Scan(&x.ID, &x.Title, &x.Type, &x.Name, &x.URL, &x.Notify, &x.AutoMonitorFuture, &x.Watchlist, &x.RSSURL, &x.Enabled, &x.CreatedAt, &x.UpdatedAt, &lastScraped, &x.LastScrapePages, &x.LastScrapeAdded, &x.LastScrapeUpdated, &x.LastScrapeState); err != nil {
 			return nil, err
 		}
 		x.LastScrapedAt = lastScraped.Time
@@ -803,23 +853,16 @@ func (s *SQLite) RecordSiteScrape(ctx context.Context, siteID int64, finishedAt 
 }
 func (s *SQLite) SaveSite(ctx context.Context, x domain.Site) (domain.Site, error) {
 	x.URL = domain.NormalizeJavLibraryURL(x.URL)
-	if x.DownloadMode == "" && x.Download {
-		x.DownloadMode = "future"
-	}
-	if x.DownloadMode != "future" && x.DownloadMode != "all" {
-		x.DownloadMode = ""
-	}
-	x.Download = x.DownloadMode != ""
 	now := time.Now().UTC()
 	if x.ID == 0 {
 		var e error
-		x.ID, e = s.dialect.InsertReturningID(ctx, s.db, `INSERT INTO sites(title,type,name,url,notify,download,download_mode,watchlist,rss_url,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, x.Title, x.Type, x.Name, x.URL, x.Notify, x.Download, x.DownloadMode, x.Watchlist, x.RSSURL, x.Enabled, now, now)
+		x.ID, e = s.dialect.InsertReturningID(ctx, s.db, `INSERT INTO sites(title,type,name,url,notify,auto_monitor_future,watchlist,rss_url,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, x.Title, x.Type, x.Name, x.URL, x.Notify, x.AutoMonitorFuture, x.Watchlist, x.RSSURL, x.Enabled, now, now)
 		if e != nil {
 			return x, e
 		}
 		x.CreatedAt = now
 	} else {
-		_, e := s.db.ExecContext(ctx, `UPDATE sites SET title=?,type=?,name=?,url=?,notify=?,download=?,download_mode=?,watchlist=?,rss_url=?,enabled=?,updated_at=? WHERE id=?`, x.Title, x.Type, x.Name, x.URL, x.Notify, x.Download, x.DownloadMode, x.Watchlist, x.RSSURL, x.Enabled, now, x.ID)
+		_, e := s.db.ExecContext(ctx, `UPDATE sites SET title=?,type=?,name=?,url=?,notify=?,auto_monitor_future=?,watchlist=?,rss_url=?,enabled=?,updated_at=? WHERE id=?`, x.Title, x.Type, x.Name, x.URL, x.Notify, x.AutoMonitorFuture, x.Watchlist, x.RSSURL, x.Enabled, now, x.ID)
 		if e != nil {
 			return x, e
 		}
@@ -864,7 +907,7 @@ func releaseSelect(d Dialect) string {
 	// and source detail-page URL together, plus the latest successful download
 	// completion time. Active downloads take precedence over completed ones so
 	// the status pill and its URL always describe the same download row.
-	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,` + actresses + `,r.director,r.studio,r.label,r.genres,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,` + actresses + `,r.director,r.studio,r.label,r.genres,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 // releaseCardSelect keeps the Release Library payload small. Release Details
@@ -872,14 +915,14 @@ func releaseSelect(d Dialect) string {
 // durations, site-list aggregations, or playback statistics. Screenshots stay
 // present because the hover slideshow needs to know whether it should start.
 func releaseCardSelect(_ Dialect) string {
-	return `SELECT r.id,r.site_id,s.title,'[]','[]',r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,'[]','',r.studio,r.label,r.genres,'','',r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0)),r.site_monitor_download,r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,0,0,'','',r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	return `SELECT r.id,r.site_id,s.title,'[]','[]',r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,r.actress,'[]','',r.studio,r.label,r.genres,'','',r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,0,0,'','',r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 func scanRelease(scanner interface{ Scan(...any) error }) (domain.Release, error) {
 	var x domain.Release
 	var siteIDs, siteTitles, actresses, genres, shots string
 	var stashAddedAt, stashCreatedAt, watchlistAt, downloadedAt sql.NullTime
-	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &x.Actress, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Watchlist, &watchlistAt, &x.MonitorDownload, &x.SiteMonitorDownload, &x.StashSceneID, &stashAddedAt, &stashCreatedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &downloadedAt)
+	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &x.Actress, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Watchlist, &watchlistAt, &x.MonitorDownload, &x.MonitorReason, &x.MonitorSiteID, &x.MonitorSiteTitle, &x.StashSceneID, &stashAddedAt, &stashCreatedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &downloadedAt)
 	if err == nil {
 		_ = json.Unmarshal([]byte(siteIDs), &x.SiteIDs)
 		_ = json.Unmarshal([]byte(siteTitles), &x.SiteTitles)
@@ -988,7 +1031,7 @@ func releaseConditionGroupClause(d Dialect, conditions []releaseFilterCondition,
 		"download_started": `EXISTS (SELECT 1 FROM downloads dl WHERE dl.release_id=r.id AND dl.status IN ('queued','downloading','completed'))`,
 		"download_failed":  `EXISTS (SELECT 1 FROM downloads dl WHERE dl.release_id=r.id AND dl.status='failed')`,
 		"local":            "r.is_local=1",
-		"monitored":        "(r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0))",
+		"monitored":        "r.monitor_download=1",
 	}
 	for _, condition := range conditions {
 		field := strings.ToLower(condition.Field)
@@ -1180,6 +1223,10 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		q += ` AND EXISTS (SELECT 1 FROM release_sites rsf JOIN sites sf ON sf.id=rsf.site_id WHERE rsf.release_id=r.id AND sf.title=?)`
 		a = append(a, f.Site)
 	}
+	if f.SiteID != 0 {
+		q += ` AND EXISTS (SELECT 1 FROM release_sites rsf WHERE rsf.release_id=r.id AND rsf.site_id=?)`
+		a = append(a, f.SiteID)
+	}
 	if f.Category != "" && f.Entries != "" {
 		entries := parseFilterEntries(f.Entries)
 		column := map[string]string{"actress": "r.actress", "maker": "r.studio", "label": "label", "studio": "r.studio", "tag": "r.genres"}[strings.ToLower(f.Category)]
@@ -1223,7 +1270,7 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		q += ` AND r.watchlist=1`
 	}
 	if f.MonitorDownload {
-		q += ` AND (r.monitor_download=1 OR (r.site_monitor_download=1 AND r.is_local=0))`
+		q += ` AND r.monitor_download=1`
 	}
 	if f.AllowNonPreferredFilenames != nil {
 		q += ` AND r.allow_non_preferred_filenames=?`
@@ -1650,6 +1697,18 @@ func (s *SQLite) ReleaseExistsForSite(ctx context.Context, siteID int64, source,
 	return exists, err
 }
 
+func (s *SQLite) LatestReleaseDateForSite(ctx context.Context, siteID int64) (string, bool, error) {
+	var date sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT MAX(r.release_date) FROM releases r JOIN release_sites rs ON rs.release_id=r.id WHERE rs.site_id=? AND r.release_date<>''`, siteID).Scan(&date)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return date.String, date.Valid && date.String != "", nil
+}
+
 // ReleaseForSite returns the full release row for this site+source+videoID,
 // if one exists - the same identity_key+site join as ReleaseExistsForSite,
 // but returning the release itself rather than a bool. Quick refresh (see
@@ -1736,7 +1795,10 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 	created := false
 	if errors.Is(e, sql.ErrNoRows) {
 		var insertErr error
-		id, insertErr = s.dialect.InsertReturningID(ctx, tx, `INSERT INTO releases(site_id,video_id,scraper_id,title,release_date,source,image_url,product_url,actress,director,studio,label,genres,duration,story,screenshots,released,notify_on_release,watchlist,monitor_download,site_monitor_download,identity_key,is_preferred,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.SiteID, x.VideoID, x.ScraperID, x.Title, x.ReleaseDate, x.Source, x.ImageURL, x.ProductURL, x.Actress, x.Director, x.Studio, x.Label, string(genres), x.Duration, x.Story, string(shots), x.Released, x.NotifyOnRelease, x.Watchlist, x.MonitorDownload, x.SiteMonitorDownload, identity, s.releasePreferred(x.Title, x.Genres), now, now)
+		if x.MonitorDownload && x.MonitorReason == "" {
+			x.MonitorReason = "manual"
+		}
+		id, insertErr = s.dialect.InsertReturningID(ctx, tx, `INSERT INTO releases(site_id,video_id,scraper_id,title,release_date,source,image_url,product_url,actress,director,studio,label,genres,duration,story,screenshots,released,notify_on_release,watchlist,monitor_download,monitor_reason,monitor_site_id,site_monitor_download,identity_key,is_preferred,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.SiteID, x.VideoID, x.ScraperID, x.Title, x.ReleaseDate, x.Source, x.ImageURL, x.ProductURL, x.Actress, x.Director, x.Studio, x.Label, string(genres), x.Duration, x.Story, string(shots), x.Released, x.NotifyOnRelease, x.Watchlist, x.MonitorDownload, x.MonitorReason, x.MonitorSiteID, false, identity, s.releasePreferred(x.Title, x.Genres), now, now)
 		if insertErr != nil {
 			return false, insertErr
 		}
@@ -1746,7 +1808,7 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 	if e != nil {
 		return false, e
 	}
-	if _, e = tx.ExecContext(ctx, `INSERT INTO release_sites(release_id,site_id,site_monitor_download) VALUES(?,?,?) ON CONFLICT(release_id,site_id) DO UPDATE SET site_monitor_download=excluded.site_monitor_download`, id, x.SiteID, x.SiteMonitorDownload); e != nil {
+	if _, e = tx.ExecContext(ctx, `INSERT INTO release_sites(release_id,site_id,site_monitor_download) VALUES(?,?,0) ON CONFLICT(release_id,site_id) DO NOTHING`, id, x.SiteID); e != nil {
 		return false, e
 	}
 	if !created {
@@ -1810,13 +1872,13 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 		duration=COALESCE(NULLIF(?,''),duration),
 		story=COALESCE(NULLIF(?,''),story),
 		screenshots=CASE WHEN ?='' OR ?='[]' OR ?='null' THEN screenshots ELSE ? END,
-		released=`+s.dialect.Greatest("released", "?")+`,notify_on_release=`+s.dialect.Greatest("notify_on_release", "?")+`,watchlist=`+s.dialect.Greatest("watchlist", "?")+`,monitor_download=`+s.dialect.Greatest("monitor_download", "?")+`,site_monitor_download=`+s.dialect.BoolExprToInt("EXISTS(SELECT 1 FROM release_sites rs WHERE rs.release_id=releases.id AND rs.site_monitor_download=1)")+`,updated_at=? WHERE id=?`,
+		released=`+s.dialect.Greatest("released", "?")+`,notify_on_release=`+s.dialect.Greatest("notify_on_release", "?")+`,watchlist=`+s.dialect.Greatest("watchlist", "?")+`,monitor_download=`+s.dialect.Greatest("monitor_download", "?")+`,monitor_reason=CASE WHEN ?=1 THEN COALESCE(NULLIF(?,''),'manual') ELSE monitor_reason END,monitor_site_id=CASE WHEN ?=1 THEN ? ELSE monitor_site_id END,updated_at=? WHERE id=?`,
 			x.ScraperID, x.Title, x.ReleaseDate, x.Source, x.ImageURL, x.ProductURL,
 			x.Actress, x.Director, x.Studio, x.Label,
 			string(genres), string(genres), string(genres), string(genres),
 			x.Duration, x.Story,
 			string(shots), string(shots), string(shots), string(shots),
-			x.Released, x.NotifyOnRelease, x.Watchlist, x.MonitorDownload, updatedAt, id)
+			x.Released, x.NotifyOnRelease, x.Watchlist, x.MonitorDownload, x.MonitorDownload, x.MonitorReason, x.MonitorDownload, x.MonitorSiteID, updatedAt, id)
 		if e != nil {
 			return false, e
 		}
@@ -2043,6 +2105,14 @@ func (s *SQLite) PatchRelease(ctx context.Context, id int64, released, local, no
 		sets = append(sets, "watchlist_at=?")
 		a = append(a, now)
 	}
+	if monitorDownload != nil {
+		sets = append(sets, "monitor_reason=?", "monitor_site_id=0")
+		if *monitorDownload {
+			a = append(a, "manual")
+		} else {
+			a = append(a, "")
+		}
+	}
 	if label != nil {
 		sets = append(sets, "label=?")
 		a = append(a, *label)
@@ -2072,6 +2142,12 @@ func (s *SQLite) BulkSetReleaseFlags(ctx context.Context, ids []int64, monitorDo
 	if monitorDownload != nil {
 		sets = append(sets, "monitor_download=?")
 		a = append(a, *monitorDownload)
+		sets = append(sets, "monitor_reason=?", "monitor_site_id=0")
+		if *monitorDownload {
+			a = append(a, "manual")
+		} else {
+			a = append(a, "")
+		}
 	}
 	if allowNonPreferredFilenames != nil {
 		sets = append(sets, "allow_non_preferred_filenames=?")
@@ -2088,19 +2164,20 @@ func (s *SQLite) BulkSetReleaseFlags(ctx context.Context, ids []int64, monitorDo
 	}
 	return r.RowsAffected()
 }
-func (s *SQLite) SetSiteReleaseMonitoring(ctx context.Context, siteID int64, enabled bool) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+func (s *SQLite) SetReleaseMonitoring(ctx context.Context, id int64, enabled bool, reason string, siteID int64) error {
+	if !enabled {
+		reason, siteID = "", 0
+	} else if strings.TrimSpace(reason) == "" {
+		reason = "manual"
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE releases SET monitor_download=?,monitor_reason=?,monitor_site_id=?,updated_at=? WHERE id=?`, enabled, reason, siteID, time.Now().UTC(), id)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `UPDATE release_sites SET site_monitor_download=? WHERE site_id=?`, enabled, siteID); err != nil {
-		return err
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE releases SET site_monitor_download=`+s.dialect.BoolExprToInt("EXISTS(SELECT 1 FROM release_sites rs WHERE rs.release_id=releases.id AND rs.site_monitor_download=1)")+`,updated_at=? WHERE id IN (SELECT release_id FROM release_sites WHERE site_id=?)`, time.Now().UTC(), siteID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return nil
 }
 func (s *SQLite) SetStashState(ctx context.Context, id int64, local bool, sceneID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2113,7 +2190,7 @@ func (s *SQLite) SetStashState(ctx context.Context, id int64, local bool, sceneI
 	// (previously empty, now not) and left untouched on every later sync of
 	// the same release, so it reflects when the release was first added to
 	// StashApp rather than the most recent sync time (TODO-2.0).
-	result, err := tx.ExecContext(ctx, `UPDATE releases SET is_local=?,stash_scene_id=?,updated_at=?,stash_added_at=CASE WHEN ?<>'' AND stash_added_at IS NULL THEN ? ELSE stash_added_at END WHERE id=?`, local, sceneID, now, sceneID, now, id)
+	result, err := tx.ExecContext(ctx, `UPDATE releases SET is_local=?,stash_scene_id=?,updated_at=?,stash_added_at=CASE WHEN ?<>'' AND stash_added_at IS NULL THEN ? ELSE stash_added_at END,monitor_download=CASE WHEN is_local=0 AND ?=1 THEN 0 ELSE monitor_download END,monitor_reason=CASE WHEN is_local=0 AND ?=1 THEN '' ELSE monitor_reason END,monitor_site_id=CASE WHEN is_local=0 AND ?=1 THEN 0 ELSE monitor_site_id END WHERE id=?`, local, sceneID, now, sceneID, now, local, local, local, id)
 	if err != nil {
 		return err
 	}

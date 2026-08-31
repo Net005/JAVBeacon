@@ -7,14 +7,18 @@ import (
 )
 
 type Site struct {
-	ID                int64     `json:"id"`
-	Title             string    `json:"title"`
-	Type              string    `json:"type"`
-	Name              string    `json:"name"`
-	URL               string    `json:"url"`
-	Notify            bool      `json:"notify"`
-	Download          bool      `json:"download"`
-	DownloadMode      string    `json:"download_mode"`
+	ID                int64  `json:"id"`
+	Title             string `json:"title"`
+	Type              string `json:"type"`
+	Name              string `json:"name"`
+	URL               string `json:"url"`
+	Notify            bool   `json:"notify"`
+	AutoMonitorFuture bool   `json:"auto_monitor_future"`
+	// Retained only as compile-time compatibility for extensions built
+	// against the old Go model. SaveSite ignores these fields and the API does
+	// not serialize them.
+	Download          bool      `json:"-"`
+	DownloadMode      string    `json:"-"`
 	Watchlist         bool      `json:"watchlist"`
 	RSSURL            string    `json:"rss_url"`
 	Enabled           bool      `json:"enabled"`
@@ -55,7 +59,10 @@ type Release struct {
 	NotifyOnRelease     bool     `json:"notify_on_release"`
 	Watchlist           bool     `json:"watchlist"`
 	MonitorDownload     bool     `json:"monitor_download"`
-	SiteMonitorDownload bool     `json:"site_monitor_download"`
+	MonitorReason       string   `json:"monitor_reason,omitempty"`
+	MonitorSiteID       int64    `json:"monitor_site_id,omitempty"`
+	MonitorSiteTitle    string   `json:"monitor_site_title,omitempty"`
+	SiteMonitorDownload bool     `json:"-"`
 	StashSceneID        string   `json:"stash_scene_id"`
 	WatchlistSync       string   `json:"watchlist_sync,omitempty"`
 	// DownloadStatus is computed: "downloading" when an active torrent
@@ -176,6 +183,7 @@ type ReleaseEdit struct {
 
 type ReleaseFilter struct {
 	Search, Site, Source, Status, Sort, Direction, Category, Entries, SearchExpression string
+	SiteID                                                                             int64
 	Watchlist, HideLocal, MonitorDownload, UsePreferred                                bool
 	Limit, Offset                                                                      int
 	// ShowNonPreferred, when false (the default), tells Releases/ReleasesCount

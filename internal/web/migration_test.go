@@ -348,7 +348,7 @@ func buildTestMigrationSource(t *testing.T) (path string, ids migrationTestIDs) 
 	if e := src.SaveWatchlistSync(ctx, release.ID, "scene1", "tag1", "ok"); e != nil {
 		t.Fatal(e)
 	}
-	if e := src.SetSiteReleaseMonitoring(ctx, site.ID, true); e != nil {
+	if e := src.SetReleaseMonitoring(ctx, release.ID, true, "manual", 0); e != nil {
 		t.Fatal(e)
 	}
 	if e := src.SetStashState(ctx, release.ID, true, "scene123"); e != nil {

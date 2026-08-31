@@ -7,6 +7,41 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.55] - 2026-08-31
+
+### Added
+
+- Monitoring Sites can now automatically enroll genuinely new future releases
+  in scheduled monitoring after a safe first-scrape baseline has been
+  established. Releases first associated with the site on later runs qualify
+  only when their release date matches or exceeds the site's prior newest date.
+- Added per-site Bulk monitoring with cover previews, release IDs and dates,
+  multi-selection, and actions to monitor or stop monitoring selected releases.
+- Monitored-release results now explain whether monitoring was set manually,
+  migrated from a former site rule, or created by future-release monitoring for
+  a named site.
+
+### Changed
+
+- Removed Monitoring Sites' automatic Search + Download modes and their runtime
+  download behavior. Site discovery can now enroll releases for the existing
+  monitored-release scheduler without immediately searching or downloading.
+- Existing sites configured for the former Future Releases mode migrate to
+  Automatically monitor future releases. Previously enrolled releases remain
+  explicitly monitored so upgrades do not discard the existing queue.
+- Completed the Watchlist terminology cleanup across source, UI, persisted
+  models, documentation, and changelog text, while retaining lossless migration
+  support for installations created with the retired naming.
+
+### Fixed
+
+- StashApp local-library sync now clears monitoring when a release transitions
+  from unavailable locally to locally available, preventing accidental
+  redownloads.
+- Newly added Monitoring Sites establish their release-date baseline without
+  enrolling existing page-one results, and wait until a later scrape before
+  automatic future-release monitoring can activate.
+
 ## [1.0.54] - 2026-08-30
 
 ### Changed
@@ -29,7 +64,7 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Renamed the user-facing Desired state to Watchlist throughout the interface,
+- Renamed the former watch-state terminology to Watchlist throughout the interface,
   settings, filters, messages, documentation, schedules, and application logs.
 - On touch devices, tapping the Downloading pill now opens and closes its live
   details without opening the torrent source; desktop clicks still open the
@@ -154,7 +189,7 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Release Library filters and tabs now live in one compact foldable panel on
-  iPhone and iPad, shared across All, Released, Upcoming, Local, and Desired so
+  iPhone and iPad, shared across All, Released, Upcoming, Local, and Watchlist so
   the cover grid can use more of the screen.
 - The mobile Release Library filter panel remembers its folded state through
   page reloads, sessions, and application restarts.
@@ -683,9 +718,9 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Release Library now remembers a separate sort order per tab. All defaults
   to Date Added (newest first), Released and Upcoming default to Release
   date (newest first), Local defaults to a new "Added to StashApp (local)"
-  sort (newest first), and Desired defaults to a new "Marked Desired" sort
-  (newest first) tracking when each release was most recently marked
-  desired. Changing the sort on one tab no longer affects the others.
+  sort (newest first), and Watchlist defaults to a new "Added to Watchlist"
+  sort (newest first) tracking when each release was most recently added.
+  Changing the sort on one tab no longer affects the others.
 - The Upcoming tab gained a foldable "Upcoming window" panel, matching the
   Released tab's date-range panel, letting you cap upcoming releases to a
   configurable number of days from today. The chosen window (and whether the
@@ -795,7 +830,7 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- StashApp sync's Local library sync and Desired-tag sync now show their own
+- StashApp sync's Local library sync and Watchlist-tag sync now show their own
   enabled/interval state and next 3 predicted run times directly under
   Settings → StashApp's own controls, the same way Settings → Scraping does
   for the scrape schedules.
@@ -805,7 +840,7 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   released between X and Y", or "...released up to X" with no minimum set),
   computed from those two settings.
 - The card "Actions" menu (Search, Search & Download, Update details, Open
-  detail) moved from its own full-width row into the Notify/Desired/Monitor
+  detail) moved from its own full-width row into the Notify/Watchlist/Monitor
   button row, as a compact "⋯ Actions" trigger, to save vertical space on
   every card.
 - Release Library cards now show as many tag chips as fit on one line
@@ -960,7 +995,7 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   monitoring showing each configurable background schedule's enabled state
   and next 3 predicted run times, covering Monitored releases search
   (recent and older), Quick/Full/New scheduled scrapes, and StashApp local
-  library and Desired-tag sync.
+  library and Watchlist-tag sync.
 - Job progress now shows a "Site X of Y monitoring sites" progress bar while
   a scheduled or manual all-sites scrape works through the enabled site
   list, instead of only ever showing progress within whichever single site

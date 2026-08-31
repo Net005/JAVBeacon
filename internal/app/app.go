@@ -277,7 +277,6 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 	mon.ApplySettings(context.Background())
 	downloadService := download.New(st, cfg.RequestTimeout, log)
 	stashSync := stash.New(st, cfg.RequestTimeout, log, javlibrary, downloadService)
-	mon.OnRelease(func(r domain.Release) { downloadService.Auto(context.Background(), r) })
 	authService := auth.New(st)
 	username, password := os.Getenv("JAVBEACON_INITIAL_USERNAME"), os.Getenv("JAVBEACON_INITIAL_PASSWORD")
 	if username == "" {
@@ -400,7 +399,6 @@ func (a *App) Run(ctx context.Context) error {
 	go a.downloads.SearchSchedule(ctx)
 	go a.downloads.OlderSearchSchedule(ctx)
 	go a.downloads.NotificationSchedule(ctx)
-	go a.downloads.RSSSchedule(ctx)
 	errs := make(chan error, 1)
 	go func() {
 		a.log.Info("JAVBeacon web server started", "address", a.cfg.ListenAddress, "database", databaseDescription(a.cfg))

@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS sites (
 	updated_at TIMESTAMPTZ NOT NULL,
 	download INTEGER NOT NULL DEFAULT 0,
 	download_mode TEXT NOT NULL DEFAULT '',
+	auto_monitor_future INTEGER NOT NULL DEFAULT 0,
 	watchlist INTEGER NOT NULL DEFAULT 0,
 	rss_url TEXT NOT NULL DEFAULT '',
 	last_scraped_at TIMESTAMPTZ,
@@ -117,6 +118,8 @@ CREATE TABLE IF NOT EXISTS releases (
 	watchlist_at TIMESTAMPTZ,
 	monitor_download INTEGER NOT NULL DEFAULT 0,
 	site_monitor_download INTEGER NOT NULL DEFAULT 0,
+	monitor_reason TEXT NOT NULL DEFAULT '',
+	monitor_site_id BIGINT NOT NULL DEFAULT 0,
 	identity_key TEXT NOT NULL DEFAULT '',
 	stash_scene_id TEXT NOT NULL DEFAULT '',
 	stash_added_at TIMESTAMPTZ,
@@ -462,6 +465,7 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 	// StashApp scene alongside stash_release_date.
 	for _, statement := range []string{
 		`ALTER TABLE sites ADD COLUMN IF NOT EXISTS watchlist INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sites ADD COLUMN IF NOT EXISTS auto_monitor_future INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS watchlist INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS o_counter INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS play_count INTEGER NOT NULL DEFAULT 0`,
@@ -471,6 +475,8 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS watchlist_at TIMESTAMPTZ`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS stash_created_at TIMESTAMPTZ`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS is_preferred INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS monitor_reason TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS monitor_site_id BIGINT NOT NULL DEFAULT 0`,
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err
@@ -504,6 +510,9 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		return err
 	}
 	if err := s.removeScheduledDownloads(); err != nil {
+		return err
+	}
+	if err := s.migrateSiteMonitoringRedesign(ctx); err != nil {
 		return err
 	}
 	if err := s.migrateReleaseIdentity(ctx); err != nil {

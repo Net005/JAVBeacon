@@ -237,10 +237,8 @@ func TestPostgresStoreFullLifecycle(t *testing.T) {
 		t.Fatalf("synced=%v err=%v", synced, err)
 	}
 
-	// site monitoring / stash state - exercises BoolExprToInt a second way
-	// (SetSiteReleaseMonitoring's release-level recompute) plus
-	// convertBoolArgs (the plain bool arguments both calls bind).
-	if err := s.SetSiteReleaseMonitoring(ctx, site.ID, true); err != nil {
+	// explicit monitoring / stash state also exercises bool argument conversion.
+	if err := s.SetReleaseMonitoring(ctx, items[0].ID, true, "manual", 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetStashState(ctx, items[0].ID, true, "scene123"); err != nil {
