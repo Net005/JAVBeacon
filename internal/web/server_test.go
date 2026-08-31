@@ -246,6 +246,8 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`['eta','ETA'],['progress','Percentage']`,
 		`function rememberDownloadSort()`,
 		`releaseToastNode.className='releaseToast'`,
+		`searchDialogToastNode.className='releaseToast searchDialogToast'`,
+		`searchDialog?.open?searchDialogToastNode`,
 		`function patchNotificationReleaseState(id,kind,value)`,
 		`class="stateButton compactActionMenu"`,
 	} {
@@ -307,7 +309,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 			t.Fatalf("Release Details download telemetry styling is missing %q", marker)
 		}
 	}
-	for _, marker := range []string{`.releaseStatusInfo{`, `.releaseStatusInfo.downloaded{`, `.releaseStatusInfo.local{`, `.releaseToast{`, `.releaseToast.show{`} {
+	for _, marker := range []string{`.releaseStatusInfo{`, `.releaseStatusInfo.downloaded{`, `.releaseStatusInfo.local{`, `.releaseToast{`, `.releaseToast.show{`, `.statusItems .downloadPill.inline{width:100%;min-height:34px`, `.statusItems .releaseStatusInfo b{font-size:11px}`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("Release Details status/notification styling is missing %q", marker)
 		}
