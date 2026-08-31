@@ -167,7 +167,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`function wireTouchSwipe(`,
 		`el.addEventListener('pointermove'`,
 		`lockReleaseBackgroundScroll()`,
-		`releaseDialog.addEventListener('close',()=>{unlockReleaseBackgroundScroll();stopDetailScreenshots()})`,
+		`releaseDialog.addEventListener('close',()=>{unlockReleaseBackgroundScroll();stopDetailScreenshots();`,
 		`const interactive=e=>e.target.closest?.('button,a,input,select,textarea,.detailScreenshotRail,.screenshotLightboxStrip')`,
 		`if(dx<0)next?.();else previous?.()`,
 		`function edgeTapDirection(x,width){return x<=width*.2?-1:x>=width*.8?1:0}`,
@@ -239,7 +239,8 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`function initializeAppHistory()`,
 		`function closeReleaseDetails()`,
 		`window.addEventListener('popstate'`,
-		`history.pushState({javbeacon:true,view:prefs.activeMenu||'releases',releaseID:id}`,
+		`releaseID:id,releaseDepth}`,
+		`history.go(-releaseDepth)`,
 		`title:'Scan the new monitoring site?'`,
 		`mode:'full',pages:0,all_pages:true,kind:'manual_full'`,
 		`function downloadSortTab(){return downloadStatus==='downloading'?'downloading':'other'}`,
@@ -260,6 +261,9 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	}
 	if strings.Contains(string(javascript), "restoreToastHost") {
 		t.Fatal("Release Details notifications must not reparent the global toast")
+	}
+	if strings.Contains(string(javascript), "function closeReleaseDetails(){if(history.state?.javbeacon&&history.state.releaseID){history.back()") {
+		t.Fatal("explicitly closing Release Details must not step back through earlier release entries")
 	}
 	script := string(javascript)
 	loadAll := strings.Index(script, "async function loadAll()")
