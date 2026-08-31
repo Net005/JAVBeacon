@@ -2983,7 +2983,7 @@ func (s *SQLite) DownloadActivity(ctx context.Context, f domain.DownloadFilter) 
 	if strings.EqualFold(f.Direction, "asc") {
 		direction = "ASC"
 	}
-	sortColumn := map[string]string{"added": "d.added_at", "status": "d.status", "seeds": "d.seeds", "peers": "d.peers", "seen_complete": "d.seen_complete"}[f.Sort]
+	sortColumn := map[string]string{"added": "d.added_at", "status": "d.status", "seeds": "d.seeds", "peers": "d.peers", "seen_complete": "d.seen_complete", "eta": "d.eta_seconds", "progress": "d.progress"}[f.Sort]
 	if sortColumn == "" {
 		sortColumn = "d.updated_at"
 	}

@@ -7,6 +7,25 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.59] - 2026-08-31
+
+### Added
+
+- Download Activity can sort active downloads by ETA or completion percentage.
+
+### Changed
+
+- Release Details now places Downloading, Downloaded, and StashApp availability
+  in a dedicated compact Status section above Discover and Tracking.
+- Status, Discover, and Tracking use integrated section headers with denser,
+  consistently aligned controls on desktop and mobile.
+- Release metadata rows are shorter with slightly larger text, and recovered
+  vertical space is used to show more of the release story.
+- Actress and tag values are presented as individually readable controls with
+  subtle separators instead of running together.
+- Downloading remembers its sort field and direction independently from the
+  Completed, Stalled, and Failed activity tabs.
+
 ## [1.0.58] - 2026-08-31
 
 ### Changed
