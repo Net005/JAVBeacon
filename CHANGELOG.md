@@ -7,6 +7,14 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.62] - 2026-09-01
+
+### Fixed
+
+- Explicitly closing Release Details now exits directly to its originating
+  view instead of stepping backward through previously viewed releases, while
+  browser Back and Forward continue to navigate the release history.
+
 ## [1.0.61] - 2026-09-01
 
 ### Changed
