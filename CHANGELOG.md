@@ -7,6 +7,27 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.57] - 2026-08-31
+
+### Changed
+
+- Stacked the recent and older monitored-search schedule cards vertically and
+  moved Schedule to the final Download Monitoring tab position.
+- Release Library cards now use the same Watchlist, Notification, and
+  Monitoring labels, checkbox states, colors, ordering, and icon language as
+  Release Details.
+- Release Library action menus now use matching icons and emphasis for Search,
+  Search & Download, Update details, and Open detail.
+- Narrow Release Library cards arrange state controls in two columns to keep
+  their labels legible.
+
+### Fixed
+
+- Bottom-right notifications shown inside Release Details no longer disturb or
+  temporarily hide the screenshot area.
+- Prevented monitored-search schedule status and control text from becoming
+  compressed and mangled in the side-by-side layout.
+
 ## [1.0.56] - 2026-08-31
 
 ### Added
