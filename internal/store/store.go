@@ -2768,7 +2768,7 @@ func (s *SQLite) DownloadActivity(ctx context.Context, f domain.DownloadFilter) 
 		where += ` AND d.filename_pattern_excluded=1`
 	}
 	if f.Stalled {
-		where += ` AND d.seeds=0`
+		where += ` AND (d.seeds=0 OR d.seen_complete=0)`
 	}
 	switch f.SeenComplete {
 	case "never":
