@@ -411,9 +411,9 @@ func TestJavLibraryCapturedMultiActressAndTags(t *testing.T) {
 
 func assertMIZD181Metadata(t *testing.T, got domain.Release) {
 	t.Helper()
-	actresses := strings.Split(got.Actress, ", ")
+	actresses := got.Actresses
 	if len(actresses) != 7 || !containsFold(actresses, "Neo Akari") || !containsFold(actresses, "Kojima Ami") {
-		t.Fatalf("multi-actress scrape: %q", got.Actress)
+		t.Fatalf("multi-actress scrape: structured=%v display=%q", got.Actresses, got.Actress)
 	}
 	if len(got.Genres) != 8 || !containsFold(got.Genres, "Restraint") || !containsFold(got.Genres, "Best, Omnibus") {
 		t.Fatalf("multi-tag scrape: %v", got.Genres)

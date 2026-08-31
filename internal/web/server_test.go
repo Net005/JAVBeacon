@@ -220,10 +220,21 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`actionIcon('watchlist')`,
 		`actionIcon('notification')`,
 		`actionIcon('monitor')`,
+		`class="releaseStatusInfo downloaded"`,
+		`class="releaseStatusInfo local"`,
+		`releaseToastNode.className='releaseToast'`,
+		`function patchNotificationReleaseState(id,kind,value)`,
+		`class="stateButton compactActionMenu"`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("Release Details download telemetry is missing %q", marker)
 		}
+	}
+	if strings.Contains(string(javascript), "These options search for and redownload a copy.") {
+		t.Fatal("Release Details still includes the redundant redownload explanation")
+	}
+	if strings.Contains(string(javascript), "restoreToastHost") {
+		t.Fatal("Release Details notifications must not reparent the global toast")
 	}
 	script := string(javascript)
 	loadAll := strings.Index(script, "async function loadAll()")
@@ -271,6 +282,16 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	for _, marker := range []string{`.downloadPillTelemetry{`, `.downloadPillWrap:hover .downloadPillTelemetry`, `.downloadPillWrap.telemetryOpen .downloadPillTelemetry`, `.detailActionGroups:has(.downloadPillWrap)`, `grid-template-columns:repeat(2,minmax(118px,1fr))`, `.actionIcon svg{`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("Release Details download telemetry styling is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{`.releaseStatusInfo{`, `.releaseStatusInfo.downloaded{`, `.releaseStatusInfo.local{`, `.releaseToast{`, `.releaseToast.show{`} {
+		if !strings.Contains(string(stylesheet), marker) {
+			t.Fatalf("Release Details status/notification styling is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{`.releaseStates,.notificationCard .releaseStates{grid-template-columns:repeat(3,minmax(0,1fr)) auto}`, `.releaseStates>.cardMenu>.compactActionMenu{`} {
+		if !strings.Contains(string(stylesheet), marker) {
+			t.Fatalf("compact cover-card actions styling is missing %q", marker)
 		}
 	}
 	markup, err := assets.ReadFile("static/index.html")

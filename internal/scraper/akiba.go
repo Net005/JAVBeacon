@@ -327,7 +327,17 @@ func (a *Akiba) detail(ctx context.Context, raw string, stage ...DetailStage) (d
 		v := nodeText(dd)
 		switch {
 		case strings.Contains(label, "actress") || hasClass(dd, "yaku"):
-			r.Actress = v
+			for _, a := range findAll(dd, func(n *html.Node) bool { return n.Data == "a" }) {
+				r.Actresses = appendUnique(r.Actresses, nodeText(a))
+			}
+			if len(r.Actresses) == 0 {
+				for _, name := range strings.FieldsFunc(v, func(r rune) bool {
+					return r == ',' || r == '|' || r == '/' || r == '、'
+				}) {
+					r.Actresses = appendUnique(r.Actresses, strings.TrimSpace(name))
+				}
+			}
+			r.Actress = strings.Join(r.Actresses, ", ")
 		case strings.Contains(label, "director"):
 			r.Director = v
 		case strings.Contains(label, "time"):
@@ -376,6 +386,7 @@ func merge(dst *domain.Release, src domain.Release) {
 		dst.ReleaseDate = src.ReleaseDate
 	}
 	dst.Actress = src.Actress
+	dst.Actresses = src.Actresses
 	dst.Director = src.Director
 	dst.Studio = src.Studio
 	dst.Genres = src.Genres

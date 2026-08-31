@@ -589,7 +589,8 @@ func parseJavLibraryDetail(doc *html.Node, raw string) domain.Release {
 		}
 	}
 	if n := first(doc, func(n *html.Node) bool { return attr(n, "id") == "video_cast" }); n != nil {
-		r.Actress = strings.Join(javLibraryCastNames(n), ", ")
+		r.Actresses = javLibraryCastNames(n)
+		r.Actress = strings.Join(r.Actresses, ", ")
 	} else {
 		var names []string
 		for _, n := range findAll(doc, func(n *html.Node) bool { return hasClass(n, "cast") }) {
@@ -597,7 +598,8 @@ func parseJavLibraryDetail(doc *html.Node, raw string) domain.Release {
 				names = appendUnique(names, name)
 			}
 		}
-		r.Actress = strings.Join(names, ", ")
+		r.Actresses = names
+		r.Actress = strings.Join(r.Actresses, ", ")
 	}
 	if r.Director == "" {
 		if n := first(doc, func(n *html.Node) bool { return hasClass(n, "director") }); n != nil {
@@ -702,6 +704,7 @@ func mergeJav(dst *domain.Release, src domain.Release) {
 	dst.Duration = src.Duration
 	dst.Director = src.Director
 	dst.Actress = src.Actress
+	dst.Actresses = src.Actresses
 	dst.Studio = src.Studio
 	dst.Label = src.Label
 	dst.Genres = src.Genres

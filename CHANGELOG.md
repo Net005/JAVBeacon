@@ -7,6 +7,38 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.58] - 2026-08-31
+
+### Changed
+
+- Actress and genre/tag metadata now lives exclusively in ordered normalized
+  relationship tables. Existing SQLite and PostgreSQL installations backfill
+  and verify those relationships before the duplicate release columns are
+  removed.
+- JAVLibrary and Akiba/GIGA detail parsing now carries structured actress lists
+  through refreshes and legacy imports, preserving individual performers and
+  names containing commas.
+- Release Details presents Downloaded and In StashApp states as compact,
+  readable information controls and no longer shows the redundant redownload
+  explanation.
+- Release Library and notification cards use the same Watchlist, Notification,
+  and Monitoring controls as Release Details, with a compact icon-only actions
+  menu to preserve card space.
+- Added and Updated metadata rows now use consistent sizing in Release Details.
+
+### Fixed
+
+- Partial listing refreshes no longer risk clearing structured actress or tag
+  relationships learned from a detail scrape.
+- Release Details notifications now use a stable overlay instead of moving the
+  global toast inside the dialog, preventing the screenshot area from blinking
+  or briefly reflowing.
+
+### Performance
+
+- Added release-and-position indexes for ordered actress/tag reads while
+  retaining normalized-name indexes for Release Library search and filters.
+
 ## [1.0.57] - 2026-08-31
 
 ### Changed
