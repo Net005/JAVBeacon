@@ -7,6 +7,36 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.56] - 2026-08-31
+
+### Added
+
+- Download Activity now has a Stalled only filter covering torrents with zero
+  seeders or no recorded last-seen-complete time.
+- Download Activity supports substantially larger cover previews for easier
+  identification.
+
+### Changed
+
+- Moved the recent and older monitored-search schedules into a dedicated
+  Schedule tab under Download Monitoring.
+- Renamed the monitoring tabs to Monitored releases and Download search
+  history for clearer navigation.
+- Download Activity keeps its date sorting controls visible beside Clear
+  selection instead of hiding them inside the foldable filter panel.
+- Release Details uses compact, aligned Search, Search & Download, and Update
+  details actions, plus consistently labelled Watchlist, Notification, and
+  Monitoring state buttons with clear checked and unchecked styling.
+- Release Details now presents Added and Updated timestamps as separate
+  metadata rows.
+
+### Fixed
+
+- Kept Search & Download on one line on mobile and normalized action icon size,
+  text alignment, and spacing across the Release Details action rows.
+- Kept the mobile Release Details close control inside browser safe areas so it
+  no longer clips against the top or right viewport edge.
+
 ## [1.0.55] - 2026-08-31
 
 ### Added

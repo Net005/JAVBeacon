@@ -1214,3 +1214,44 @@ body.releaseOverlayOpen{position:fixed!important;inset:0!important;width:100%!im
   .screenshotLightboxPrev{left:max(8px,env(safe-area-inset-left))!important}
   .screenshotLightboxNext,.screenshotLightboxClose{right:max(8px,env(safe-area-inset-right))!important}
 }
+
+/* Download Monitoring navigation and always-available activity controls. */
+.downloadSchedulePanel{margin-bottom:14px}
+.downloadScheduleGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.downloadScheduleGrid>.automationPanel{margin:0}
+.downloadActivityBar{display:flex!important}
+.downloadQuickSort{display:flex;align-items:center;gap:7px;margin-left:auto;color:var(--muted);font-size:11px;white-space:nowrap}
+.downloadQuickSort select{min-width:132px}
+.downloadQuickSort button{min-width:40px;padding-inline:10px}
+.downloadTable.bulkSelectable .downloadTableRow{min-height:max(96px,calc(var(--download-cover) * .676 + 20px))}
+
+/* Release Details action controls use one consistent icon/text baseline and
+   explicit checkbox state. Disabled controls keep a restrained color tint;
+   enabled controls use the same hue at stronger contrast. */
+.actionGroup>button{display:flex;align-items:center;justify-content:center;gap:7px;white-space:nowrap;line-height:1.2}
+.actionGroup:not(.stateActions){grid-template-columns:minmax(0,.8fr) minmax(0,1.25fr) minmax(0,1fr)}
+.downloadAction{font-size:10.5px!important}
+.actionGroup>button>span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.actionGroup>button>.actionIcon{font-size:16px}
+.stateActions button{transition:background .15s,border-color .15s,color .15s,box-shadow .15s}
+.stateToggleIcon{display:inline-grid;flex:0 0 auto;width:18px;height:18px;place-items:center}
+.stateToggleIcon svg{display:block;width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.stateActions .watchlistButton{border-color:#6f4650;background:#24181d;color:#dfa6ae}
+.stateActions .watchlistButton.on{border-color:#d06a7a;background:#6b2834;color:#ffe4e8;box-shadow:inset 0 0 0 1px #ed829233}
+.stateActions .notifyButton{border-color:#6c5a36;background:#211c13;color:#dfc48b}
+.stateActions .notifyButton.on{border-color:#c9962c;background:#68490d;color:#fff0be;box-shadow:inset 0 0 0 1px #f0bd4a33}
+.stateActions .monitorButton{border-color:#38626c;background:#132126;color:#91c9d6}
+.stateActions .monitorButton.on{border-color:#45b7cc;background:#154f5b;color:#d4f8ff;box-shadow:inset 0 0 0 1px #62d5ea33}
+
+@media(max-width:900px){
+  .downloadScheduleGrid{grid-template-columns:1fr}
+  .downloadQuickSort{width:100%;margin-left:0;justify-content:flex-end}
+  .actionGroup>button{gap:5px;font-size:clamp(9px,2.8vw,11px)!important}
+  .actionGroup>button>.actionIcon,.stateToggleIcon{width:16px;height:16px;font-size:16px}
+}
+
+/* Keep the mobile close target safely inside the visual viewport, including
+   Safari/Firefox safe areas and interface scaling. */
+@media (max-width:650px), (min-width:651px) and (max-width:1366px) and (pointer:coarse){
+  .releaseMobileClose{top:max(14px,env(safe-area-inset-top))!important;right:max(16px,env(safe-area-inset-right))!important}
+}

@@ -1961,6 +1961,7 @@ func TestDownloadActivitySeenCompleteStalledFilterAndSwarmSort(t *testing.T) {
 		{ReleaseID: releaseID, Query: "NEVER", Status: "downloading", Seeds: 0, SeenComplete: 0},
 		{ReleaseID: releaseID, Query: "OLD", Status: "downloading", Seeds: 0, SeenComplete: now.Add(-10 * 24 * time.Hour).Unix()},
 		{ReleaseID: releaseID, Query: "RECENT", Status: "downloading", Seeds: 0, SeenComplete: now.Add(-2 * 24 * time.Hour).Unix()},
+		{ReleaseID: releaseID, Query: "NO-COMPLETE", Status: "downloading", Seeds: 8, Peers: 2, SeenComplete: 0},
 		{ReleaseID: releaseID, Query: "SEEDED", Status: "downloading", Seeds: 8, Peers: 3, SeenComplete: now.Add(-20 * 24 * time.Hour).Unix()},
 	} {
 		if _, err := s.SaveDownload(ctx, row); err != nil {
@@ -1971,18 +1972,18 @@ func TestDownloadActivitySeenCompleteStalledFilterAndSwarmSort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 3 || len(stalled) != 3 {
-		t.Fatalf("stalled rows=%+v total=%d, want every zero-seed download", stalled, total)
+	if total != 4 || len(stalled) != 4 {
+		t.Fatalf("stalled rows=%+v total=%d, want every zero-seed or never-complete download", stalled, total)
 	}
 	seen := map[string]bool{}
 	for _, row := range stalled {
 		seen[row.Query] = true
 	}
-	if !seen["NEVER"] || !seen["OLD"] || !seen["RECENT"] {
-		t.Fatalf("stalled rows=%+v, want NEVER, OLD, and RECENT", stalled)
+	if !seen["NEVER"] || !seen["OLD"] || !seen["RECENT"] || !seen["NO-COMPLETE"] {
+		t.Fatalf("stalled rows=%+v, want NEVER, OLD, RECENT, and NO-COMPLETE", stalled)
 	}
 	never, total, err := s.DownloadActivity(ctx, domain.DownloadFilter{SeenComplete: "never", Limit: 10})
-	if err != nil || total != 1 || len(never) != 1 || never[0].Query != "NEVER" {
+	if err != nil || total != 2 || len(never) != 2 {
 		t.Fatalf("never-seen-complete rows=%+v total=%d err=%v", never, total, err)
 	}
 	cutoff := now.Add(-7 * 24 * time.Hour).Unix()
@@ -1995,7 +1996,7 @@ func TestDownloadActivitySeenCompleteStalledFilterAndSwarmSort(t *testing.T) {
 		t.Fatalf("after-date rows=%+v total=%d err=%v, want RECENT", newer, total, err)
 	}
 	sorted, _, err := s.DownloadActivity(ctx, domain.DownloadFilter{Status: "downloading", Sort: "seeds", Direction: "desc", Limit: 10})
-	if err != nil || len(sorted) != 4 || sorted[0].Query != "SEEDED" || sorted[0].SeenComplete == 0 {
+	if err != nil || len(sorted) != 5 || sorted[0].Query != "SEEDED" || sorted[0].SeenComplete == 0 {
 		t.Fatalf("seed sort / seen-complete round trip failed: rows=%+v err=%v", sorted, err)
 	}
 }
