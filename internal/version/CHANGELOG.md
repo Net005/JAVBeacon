@@ -7,6 +7,32 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.66] - 2026-09-01
+
+### Added
+
+- Docker deployments now apply configurable `PUID` and `PGID` ownership to the
+  JAVBeacon application-data mount before starting; the legacy `GUID` spelling
+  remains accepted as a group-ID fallback.
+
+### Changed
+
+- Release Details now preloads detail data, covers, screenshot indexes, and the
+  first screenshots for eight nearby releases in each direction.
+- Job History uses larger, more readable typography and spacing, with Duration
+  displayed in its own dedicated column.
+
+### Fixed
+
+- Existing and newly created files under `/app/data` now receive the requested
+  Docker user/group ownership and group-writable permissions, preventing host
+  permission errors for matching users such as `1000:1000`.
+- Opening and closing Release Details no longer incurs smooth-scroll or costly
+  desktop background-repaint delays.
+- Navigating to an uncached release keeps the current details visible until the
+  next release and its imagery are ready, eliminating the black refresh and
+  flicker during Previous/Next navigation.
+
 ## [1.0.65] - 2026-09-01
 
 ### Changed

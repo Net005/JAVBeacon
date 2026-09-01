@@ -477,7 +477,7 @@ function focusReleaseCard(id){
   if(!card)return;
   card.classList.remove('returnFocus');
   card.focus({preventScroll:true});
-  card.scrollIntoView({behavior:'smooth',block:'center',inline:'nearest'});
+  card.scrollIntoView({behavior:'auto',block:'center',inline:'nearest'});
   requestAnimationFrame(()=>card.classList.add('returnFocus'));
   setTimeout(()=>card.classList.remove('returnFocus'),2200);
 }
@@ -519,9 +519,38 @@ function applyTemporaryLibrarySearch(){
   if(query)toast(`Temporary library search: ${query} (not saved)`);
   return true
 }
-const cardScreenshotTimers=new WeakMap(),localScreenshotCache=new Map();
+const cardScreenshotTimers=new WeakMap(),localScreenshotCache=new Map(),releaseDetailCache=new Map(),releaseDetailRequests=new Map(),releaseAssetCache=new Map();
 function screenshotURL(releaseID,index){return `/screenshots/${releaseID}/${index}`}
-function releaseByID(id){return activeReleaseData?.id===id?activeReleaseData:releases.find(x=>x.id===id)||notificationRows.find(n=>n.release?.id===id)?.release||null}
+function releaseByID(id){return activeReleaseData?.id===id?activeReleaseData:releaseDetailCache.get(Number(id))||releases.find(x=>x.id===id)||notificationRows.find(n=>n.release?.id===id)?.release||null}
+function cacheReleaseDetail(x){
+  if(!x?.id)return x;
+  releaseDetailCache.set(Number(x.id),x);
+  const i=releases.findIndex(r=>r.id===x.id);
+  if(i>=0)releases[i]=x;
+  return x
+}
+function fetchReleaseDetail(id){
+  id=Number(id);
+  if(releaseDetailCache.has(id))return Promise.resolve(releaseDetailCache.get(id));
+  if(!releaseDetailRequests.has(id)){
+    const request=api('/releases/'+id).then(cacheReleaseDetail).finally(()=>releaseDetailRequests.delete(id));
+    releaseDetailRequests.set(id,request)
+  }
+  return releaseDetailRequests.get(id)
+}
+function preloadReleaseImage(url){
+  if(!url)return Promise.resolve();
+  if(releaseAssetCache.has(url))return releaseAssetCache.get(url);
+  const request=new Promise(resolve=>{const image=new Image();const done=()=>resolve();image.onload=()=>{const decoded=image.decode?.();if(decoded)decoded.catch(()=>{}).finally(done);else done()};image.onerror=done;image.src=url});
+  releaseAssetCache.set(url,request);
+  return request
+}
+async function preloadReleaseAssets(x){
+  if(!x?.id)return;
+  await preloadReleaseImage(`/covers/${x.id}`);
+  const indexes=await localScreenshotIndexes(x);
+  await Promise.all(indexes.slice(0,3).map(index=>preloadReleaseImage(screenshotURL(x.id,index))))
+}
 function localScreenshotIndexes(release){if(!release?.screenshots?.length)return Promise.resolve([]);if(!localScreenshotCache.has(release.id)){const request=api(`/releases/${release.id}/screenshots`).then(x=>(x.indexes||[]).filter(i=>Number.isInteger(i)&&i>=0&&i<release.screenshots.length)).catch(()=>{localScreenshotCache.delete(release.id);return[]});localScreenshotCache.set(release.id,request)}return localScreenshotCache.get(release.id)}
 function stopCardScreenshots(cover){const state=cardScreenshotTimers.get(cover);if(!state)return;clearInterval(state.timer);for(const img of cover.querySelectorAll('.coverBackdrop,.coverImage'))img.src=state.cover;cover.classList.remove('showingScreenshots');cardScreenshotTimers.delete(cover)}
 async function startCardScreenshots(cover){if(cover.dataset.hasScreenshots!=='true'||cardScreenshotTimers.has(cover))return;const release=releaseByID(Number(cover.dataset.releaseId));if(!release?.screenshots?.length)return;const state={position:0,indexes:[],cover:`/covers/${release.id}`,timer:0};cardScreenshotTimers.set(cover,state);state.indexes=await localScreenshotIndexes(release);if(cardScreenshotTimers.get(cover)!==state||!state.indexes.length){stopCardScreenshots(cover);return}const show=()=>{const index=state.indexes[state.position],url=screenshotURL(release.id,index);for(const img of cover.querySelectorAll('.coverBackdrop,.coverImage'))img.src=url;cover.classList.add('showingScreenshots');state.position=(state.position+1)%state.indexes.length};show();state.timer=setInterval(show,Math.max(0.1,Math.min(30,Number(prefs.screenshotSlideSeconds)||2.5))*1000)}
@@ -534,7 +563,7 @@ function toggleDetailScreenshots(art){if(detailScreenshotDelayTimer||detailScree
 document.addEventListener('pointerover',e=>{if(e.pointerType==='touch')return;const art=e.target.closest('.releaseArt');if(art&&!art.contains(e.relatedTarget))startDetailScreenshots(art)});
 document.addEventListener('pointerout',e=>{if(e.pointerType==='touch')return;const art=e.target.closest('.releaseArt');if(art&&!art.contains(e.relatedTarget))stopDetailScreenshots()});
 const inPlaceReleasePatchFields=new Set(['watchlist','notify_on_release','monitor_download']),pendingInPlaceReleasePatches=new Map();
-function updateRelease(x,renderActiveDetail=true){if(renderActiveDetail)localScreenshotCache.delete(x.id);const i=releases.findIndex(r=>r.id===x.id);if(i>=0){releases[i]=x;renderReleases()}if(releaseDialog.open&&activeReleaseID===x.id){activeReleaseData=x;if(renderActiveDetail)renderReleaseDetail(x);else syncReleaseDetailStateControls(x)}}
+function updateRelease(x,renderActiveDetail=true){if(renderActiveDetail)localScreenshotCache.delete(x.id);if(releaseDetailCache.has(Number(x.id))||activeReleaseID===x.id)releaseDetailCache.set(Number(x.id),x);const i=releases.findIndex(r=>r.id===x.id);if(i>=0){releases[i]=x;renderReleases()}if(releaseDialog.open&&activeReleaseID===x.id){activeReleaseData=x;if(renderActiveDetail)renderReleaseDetail(x);else syncReleaseDetailStateControls(x)}}
 let releaseStreamReloadTimer=0,releaseStreamDirty=false;
 function scheduleReleaseStreamReload(){releaseStreamDirty=true;if(releasesView.hidden)return;clearTimeout(releaseStreamReloadTimer);releaseStreamReloadTimer=setTimeout(()=>{releaseStreamReloadTimer=0;releaseStreamDirty=false;loadReleases().catch(e=>toast(e.message))},500)}
 function handleStreamRelease(x){const pending=pendingInPlaceReleasePatches.get(x.id),inPlace=!!pending&&Object.entries(pending).every(([key,value])=>x[key]===value);if(inPlace)pendingInPlaceReleasePatches.delete(x.id);else localScreenshotCache.delete(x.id);if(releaseDialog.open&&activeReleaseID===x.id){activeReleaseData=x;if(inPlace)syncReleaseDetailStateControls(x);else renderReleaseDetail(x)}scheduleReleaseStreamReload()}
@@ -695,20 +724,22 @@ releaseDialog.addEventListener('cancel',event=>{event.preventDefault();event.sto
 document.addEventListener('keydown',event=>{if(!releaseDialog.open||!shortcutMatches('close',event.key)||$$('dialog[open]').some(dialog=>dialog!==releaseDialog))return;const target=document.activeElement,editable=target&&(target.tagName==='INPUT'||target.tagName==='TEXTAREA'||target.tagName==='SELECT'||target.isContentEditable);if(editable)return;event.preventDefault();event.stopImmediatePropagation();closeReleaseDetails()},true);
 window.addEventListener('popstate',async event=>{handlingAppHistory=true;try{const state=event.state||{},match=location.pathname.match(/^\/release\/(\d+)\/?$/),releaseID=Number(state.releaseID||(match&&match[1]))||0,view=appHistoryViews.has(state.view)?state.view:(viewFromLocation()||'releases');switchView(view,false,false);if(releaseID){const navigable=releaseNavIDs.includes(releaseID);await openRelease(releaseID,navigable,navigable&&!releaseNavFromGrid?releaseNavIDs:null,false)}else{if(releaseDialog.open)releaseDialog.close();document.title='JAVBeacon'}}finally{handlingAppHistory=false}});
 document.addEventListener('keydown',e=>{if(!screenshotLightbox.open)return;if(shortcutMatches('nextItem',e.key)){e.preventDefault();e.stopImmediatePropagation();navigateScreenshot(1)}else if(shortcutMatches('prevItem',e.key)){e.preventDefault();e.stopImmediatePropagation();navigateScreenshot(-1)}else if(shortcutMatches('close',e.key)){e.preventDefault();e.stopImmediatePropagation();closeScreenshotLightbox()}},true);
-let releaseBackgroundScrollY=0;
+let releaseBackgroundScrollY=0,releaseBackgroundFixed=false;
 function lockReleaseBackgroundScroll(){
   if(document.body.classList.contains('releaseOverlayOpen'))return;
   releaseBackgroundScrollY=window.scrollY;
+  releaseBackgroundFixed=matchMedia('(max-width:650px),(pointer:coarse)').matches;
   document.documentElement.classList.add('releaseOverlayOpen');
   document.body.classList.add('releaseOverlayOpen');
-  document.body.style.top=`-${releaseBackgroundScrollY}px`;
+  if(releaseBackgroundFixed)document.body.style.top=`-${releaseBackgroundScrollY}px`;
 }
 function unlockReleaseBackgroundScroll(){
   if(!document.body.classList.contains('releaseOverlayOpen'))return;
   document.documentElement.classList.remove('releaseOverlayOpen');
   document.body.classList.remove('releaseOverlayOpen');
   document.body.style.top='';
-  window.scrollTo(0,releaseBackgroundScrollY);
+  if(releaseBackgroundFixed)window.scrollTo(0,releaseBackgroundScrollY);
+  releaseBackgroundFixed=false;
 }
 function releaseDocumentTitle(x){const id=String(x?.video_id||'').trim(),title=String(displayTitle(x)||'').trim(),parts=[id];if(title&&title.toLowerCase()!==id.toLowerCase())parts.push(title);return parts.filter(Boolean).length?parts.filter(Boolean).join(' · ')+' — JAVBeacon':'JAVBeacon'}
 const appHistoryViews=new Set(['releases','monitoring','notifications','missing','sites','activity','logs','settings']);
@@ -722,17 +753,77 @@ function initializeAppHistory(){
 }
 let releaseOpenRequest=0;
 function closeReleaseDetails(){releaseOpenRequest++;const state=history.state||{},releaseDepth=Math.max(0,Number(state.releaseDepth)||0);if(releaseDialog.open)releaseDialog.close();if(state.javbeacon&&state.releaseID&&releaseDepth>0){history.go(-releaseDepth);return}const view=appHistoryViews.has(state.view)?state.view:(prefs.activeMenu||'releases');history.replaceState({javbeacon:true,view},'',appViewURL(view))}
-function animateReleaseDetailSwap(){if(matchMedia('(prefers-reduced-motion:reduce)').matches)return;releaseDetail.getAnimations?.().forEach(animation=>animation.cancel());releaseDetail.animate?.([{opacity:.78,transform:'translateY(2px)'},{opacity:1,transform:'none'}],{duration:130,easing:'cubic-bezier(.2,.7,.3,1)'})}
-async function openRelease(id,navigable=false,navigationIDs=null,recordHistory=true){const request=++releaseOpenRequest,wasOpen=releaseDialog.open,previousID=activeReleaseID;activeReleaseID=id;releaseNavFromGrid=navigable&&!Array.isArray(navigationIDs);releaseNavIDs=navigable?(Array.isArray(navigationIDs)?navigationIDs:releases.map(r=>r.id)):[];const cached=releaseByID(id);if(cached){activeReleaseData=cached;renderReleaseDetail(cached);document.title=releaseDocumentTitle(cached)}else{activeReleaseData=null;releaseDetail.innerHTML='<div class="releaseDetailLoading" role="status">Loading release…</div>';document.title='Loading release — JAVBeacon'}if(recordHistory&&!handlingAppHistory&&Number(history.state?.releaseID)!==Number(id)){const releaseDepth=Math.max(0,Number(history.state?.releaseDepth)||0)+1;history.pushState({javbeacon:true,view:prefs.activeMenu||'releases',releaseID:id,releaseDepth},'',`/release/${id}`)}const chrome=releaseDialogInner?.querySelector('.releaseChrome');chrome?.classList.add('collisionPending');chrome?.classList.remove('chromePointerActive');if(!releaseDialog.open){lockReleaseBackgroundScroll();releaseDialog.showModal()}if(wasOpen&&previousID!==id&&cached)animateReleaseDetailSwap();updateReleaseNav();releaseDialog.scrollTop=0;releaseDialogInner.scrollTop=0;releaseDetail.scrollTop=0;queueReleaseChromeCollision();requestAnimationFrame(resetReleaseChromePointerVisibility);prefetchReleaseNavigation();try{const x=await api('/releases/'+id);if(request!==releaseOpenRequest||activeReleaseID!==id)return;const i=releases.findIndex(r=>r.id===id);if(i>=0)releases[i]=x;activeReleaseData=x;document.title=releaseDocumentTitle(x);if(cached)syncReleaseDetailStateControls(x);else{renderReleaseDetail(x);animateReleaseDetailSwap();updateReleaseNav()}}catch(error){if(request!==releaseOpenRequest||activeReleaseID!==id)return;if(!cached)releaseDetail.innerHTML=`<div class="releaseDetailLoading error">${esc(error.message)}</div>`;toast(error.message)}}
+function animateReleaseDetailSwap(){if(matchMedia('(prefers-reduced-motion:reduce)').matches)return;releaseDetail.getAnimations?.().forEach(animation=>animation.cancel());releaseDetail.animate?.([{opacity:.96},{opacity:1}],{duration:90,easing:'ease-out'})}
+async function openRelease(id,navigable=false,navigationIDs=null,recordHistory=true){
+  id=Number(id);
+  const request=++releaseOpenRequest,wasOpen=releaseDialog.open,previousID=activeReleaseID,previousData=activeReleaseData;
+  activeReleaseID=id;
+  releaseNavFromGrid=navigable&&!Array.isArray(navigationIDs);
+  releaseNavIDs=navigable?(Array.isArray(navigationIDs)?navigationIDs:releases.map(r=>r.id)):[];
+  const cached=releaseByID(id),keepPreviousVisible=wasOpen&&!cached&&!!previousData;
+  stopDetailScreenshots();
+  if(cached){
+    releaseDetail.classList.remove('releaseSwapPending');
+    activeReleaseData=cached;
+    renderReleaseDetail(cached);
+    document.title=releaseDocumentTitle(cached)
+  }else if(keepPreviousVisible){
+    activeReleaseData=null;
+    releaseDetail.classList.add('releaseSwapPending');
+    document.title='Loading next release — JAVBeacon'
+  }else{
+    releaseDetail.classList.remove('releaseSwapPending');
+    activeReleaseData=null;
+    releaseDetail.innerHTML='<div class="releaseDetailLoading" role="status">Loading release…</div>';
+    document.title='Loading release — JAVBeacon'
+  }
+  if(recordHistory&&!handlingAppHistory&&Number(history.state?.releaseID)!==id){
+    const releaseDepth=Math.max(0,Number(history.state?.releaseDepth)||0)+1;
+    history.pushState({javbeacon:true,view:prefs.activeMenu||'releases',releaseID:id,releaseDepth},'',`/release/${id}`)
+  }
+  const chrome=releaseDialogInner?.querySelector('.releaseChrome');
+  chrome?.classList.add('collisionPending');chrome?.classList.remove('chromePointerActive');
+  if(!wasOpen){lockReleaseBackgroundScroll();releaseDialog.showModal()}
+  if(wasOpen&&previousID!==id&&cached)animateReleaseDetailSwap();
+  updateReleaseNav();
+  releaseDialog.scrollTop=0;releaseDialogInner.scrollTop=0;releaseDetail.scrollTop=0;
+  queueReleaseChromeCollision();requestAnimationFrame(resetReleaseChromePointerVisibility);
+  prefetchReleaseNavigation();
+  try{
+    const x=await fetchReleaseDetail(id);
+    if(request!==releaseOpenRequest||activeReleaseID!==id)return;
+    await preloadReleaseAssets(x);
+    if(request!==releaseOpenRequest||activeReleaseID!==id)return;
+    activeReleaseData=x;document.title=releaseDocumentTitle(x);
+    if(cached)syncReleaseDetailStateControls(x);
+    else{releaseDetail.classList.remove('releaseSwapPending');renderReleaseDetail(x);animateReleaseDetailSwap();updateReleaseNav()}
+    prefetchReleaseNavigation()
+  }catch(error){
+    if(request!==releaseOpenRequest||activeReleaseID!==id)return;
+    releaseDetail.classList.remove('releaseSwapPending');
+    if(keepPreviousVisible){activeReleaseID=previousID;activeReleaseData=previousData;document.title=releaseDocumentTitle(previousData);updateReleaseNav()}
+    else releaseDetail.innerHTML=`<div class="releaseDetailLoading error">${esc(error.message)}</div>`;
+    toast(error.message)
+  }
+}
 function updateReleaseNav(){const idx=releaseNavIDs.indexOf(activeReleaseID),active=idx!==-1,mobilePrev=releaseDetail.querySelector('.mobileCoverNav.prev'),mobileNext=releaseDetail.querySelector('.mobileCoverNav.next'),position=releaseDetail.querySelector('.releaseNavPosition'),atStart=idx<=0,atEnd=idx>=releaseNavIDs.length-1&&!(releaseNavFromGrid&&releasesHasMore);releasePrev.hidden=releaseNext.hidden=!active;if(mobilePrev)mobilePrev.hidden=!active;if(mobileNext)mobileNext.hidden=!active;if(active){releasePrev.disabled=atStart;releaseNext.disabled=atEnd;if(mobilePrev)mobilePrev.disabled=atStart;if(mobileNext)mobileNext.disabled=atEnd}if(position){position.hidden=!active;if(active)position.textContent=`${idx+1} of ${releaseNavIDs.length}`}queueReleaseChromeCollision()}
-// Keep the next grid batch ready before details navigation reaches it. The
-// threshold is deliberately larger than the visible page controls so rapid
-// keyboard navigation still has time to complete the request in advance.
+// Warm a useful window on both sides of the active item. Detail JSON, covers,
+// screenshot indexes, and the first screenshots are all fetched without ever
+// blocking navigation. The bounded window avoids turning rapid navigation into
+// an unbounded request burst.
 async function prefetchReleaseNavigation(){
   const idx=releaseNavIDs.indexOf(activeReleaseID);
-  if(!releaseNavFromGrid||!releasesHasMore||idx<0||releaseNavIDs.length-idx-1>25)return;
-  await loadMoreReleases();
-  if(releaseNavFromGrid){releaseNavIDs=releases.map(r=>r.id);updateReleaseNav()}
+  if(idx<0)return;
+  if(releaseNavFromGrid&&releasesHasMore&&releaseNavIDs.length-idx-1<=25){
+    await loadMoreReleases();
+    if(releaseNavFromGrid){releaseNavIDs=releases.map(r=>r.id);updateReleaseNav()}
+  }
+  const nearby=[];
+  for(let distance=1;distance<=8;distance++){
+    if(releaseNavIDs[idx+distance])nearby.push(releaseNavIDs[idx+distance]);
+    if(releaseNavIDs[idx-distance])nearby.push(releaseNavIDs[idx-distance])
+  }
+  await Promise.allSettled(nearby.map(id=>fetchReleaseDetail(id).then(preloadReleaseAssets)))
 }
 // navigateRelease pages Prev/Next through the open release. When browsing
 // from the cover grid (releaseNavFromGrid) and Next runs past the last
@@ -1027,14 +1118,14 @@ async function pollJob(){clearTimeout(jobPollTimer);if(jobPollBusy){jobPollTimer
 async function pollStash(){const j=await api('/jobs/stash'),total=Number(j.total)||0,processed=Number(j.processed)||0,percent=total?Math.min(100,Math.round(processed/total*100)):0,state=j.running?(j.phase||'Running'):j.error?'Failed':'Idle',counts=`${processed.toLocaleString()}${total?' / '+total.toLocaleString():''} checked · ${(j.matched||0).toLocaleString()} matched · ${(j.updated||0).toLocaleString()} updated`;stashStatus.innerHTML=`<div class="stashSyncSummary"><p><strong>${esc(state)}</strong> · ${counts}${j.running&&total?` · ${percent}%`:''}</p>${j.current_item?`<small>Checking ${esc(j.current_item)}</small>`:''}</div><progress class="stashSyncProgress" max="${Math.max(total,1)}" value="${Math.min(processed,Math.max(total,1))}"></progress>${j.scenes?`<small class="muted">${Number(j.scenes).toLocaleString()} StashApp scenes loaded</small>`:''}${j.error?`<p class="errorText">${esc(j.error)}</p>`:''}`;if(!total&&j.running)stashStatus.querySelector('progress').removeAttribute('value');if(j.running)setTimeout(pollStash,800)}
 function renderJobHistoryPagination(total,limit){const pages=Math.max(1,Math.ceil(total/limit));if(jobHistoryPage>pages-1)jobHistoryPage=Math.max(0,pages-1);jobHistoryPagination.innerHTML=total?`<button ${jobHistoryPage<=0?'disabled':''} onclick="changeJobHistoryPage(-1)">‹ Prev</button><span>Page ${jobHistoryPage+1} of ${pages} · ${total} jobs</span><button ${jobHistoryPage>=pages-1?'disabled':''} onclick="changeJobHistoryPage(1)">Next ›</button>`:''}
 function changeJobHistoryPage(delta){jobHistoryPage=Math.max(0,jobHistoryPage+delta);loadJobHistory()}
-function jobHistoryDuration(j){if(!validDate(j.started_at)||!validDate(j.finished_at))return'';const seconds=Math.max(0,(new Date(j.finished_at)-new Date(j.started_at))/1000);return `Duration ${formatETA(seconds)}`}
+function jobHistoryDuration(j){if(!validDate(j.started_at)||!validDate(j.finished_at))return'—';const seconds=Math.max(0,(new Date(j.finished_at)-new Date(j.started_at))/1000);return formatETA(seconds)}
 async function loadJobHistory(){
   const limit=Number(jobHistoryPageSize.value)||25,params=new URLSearchParams({limit,offset:jobHistoryPage*limit});
   try{
     const page=await api('/jobs/history?'+params.toString()),rows=page.items||[];
-    jobHistoryList.innerHTML=rows.length?`<div class="jobHistoryTable"><div class="jobHistoryTableHead"><span>Category</span><span>Job details</span><span>Started</span><span>Ended / duration</span><span>Result</span></div>${rows.map(j=>{
+    jobHistoryList.innerHTML=rows.length?`<div class="jobHistoryTable"><div class="jobHistoryTableHead"><span>Category</span><span>Job details</span><span>Started</span><span>Ended</span><span>Duration</span><span>Result</span></div>${rows.map(j=>{
       const category=String(j.category||'System'),categoryClass=category.toLowerCase().replace(/[^a-z]+/g,''),started=validDate(j.started_at)?fullDateTime(j.started_at):'Unknown',finished=validDate(j.finished_at)?fullDateTime(j.finished_at):(j.state==='running'?'In progress':'—'),siteCount=Number(j.site_count)||0,siteScope=siteCount?`${siteCount} monitoring site${siteCount===1?'':'s'}`:'',summary=category==='Scraping'?`${siteCount>1?`Across ${siteScope} · `:''}${j.added} new · ${j.updated} updated · ${j.skipped} skipped`:(j.details||j.error||'No additional details'),meta=[j.scheduled?'Scheduled scan':j.kind,j.mode,siteScope||j.provider].filter(Boolean).join(' · '),duration=jobHistoryDuration(j);
-      return `<article class="jobHistoryRow"><span class="jobCategory ${categoryClass}">${esc(category)}</span><div class="jobHistoryDetails"><b>${esc(j.title||j.kind||'Background job')}</b><small>${esc(meta)}</small>${j.error?`<small class="jobError">${esc(j.error)}</small>`:''}</div><time datetime="${attr(j.started_at||'')}"><small>Started</small><b>${esc(started)}</b></time><time datetime="${attr(j.finished_at||'')}"><small>Ended</small><b>${esc(finished)}</b>${duration?`<small>${esc(duration)}</small>`:''}</time><div class="jobHistoryResult"><span class="jobState ${esc(j.state)}">${esc(j.state)}</span><small title="${attr(summary)}">${esc(summary)}</small></div></article>`
+      return `<article class="jobHistoryRow"><span class="jobCategory ${categoryClass}">${esc(category)}</span><div class="jobHistoryDetails"><b>${esc(j.title||j.kind||'Background job')}</b><small>${esc(meta)}</small>${j.error?`<small class="jobError">${esc(j.error)}</small>`:''}</div><time datetime="${attr(j.started_at||'')}"><small>Started</small><b>${esc(started)}</b></time><time datetime="${attr(j.finished_at||'')}"><small>Ended</small><b>${esc(finished)}</b></time><div class="jobHistoryDuration"><small>Duration</small><b>${esc(duration)}</b></div><div class="jobHistoryResult"><span class="jobState ${esc(j.state)}">${esc(j.state)}</span><small title="${attr(summary)}">${esc(summary)}</small></div></article>`
     }).join('')}</div>`:'<div class="empty">No recorded job activity.</div>';
     renderJobHistoryPagination(page.total||0,limit)
   }catch(e){jobHistoryList.innerHTML=`<div class="empty">${esc(e.message)}</div>`;jobHistoryPagination.innerHTML=''}
@@ -1107,7 +1198,7 @@ saveDownloadSchedule.onclick=async()=>{try{const x={download_search_enabled:Stri
 cacheAllCovers.onclick=async()=>{if(!confirm('Cache every missing release cover now? This can take a long time for a large library.'))return;try{await api('/jobs/covers',{method:'POST'});toast('Cover cache job started');pollCoverCache()}catch(e){toast(e.message)}};
 backfillScreenshots.onclick=async()=>{const accepted=await appConfirm({title:'Backfill release screenshots?',message:'JAVBeacon will re-fetch JavLibrary release pages newest-first. The low-priority jobs yield to normal scraping and completed releases will not be processed again.',confirmLabel:'Start backfill'});if(!accepted)return;try{await api('/jobs/screenshots',{method:'POST'});toast('Screenshot backfill started');pollScreenshotBackfill()}catch(e){toast(e.message)}};
 uiZoom.onchange=()=>{uiZoom.value=String(saveDeviceDisplayPreference('uiZoom',uiZoom.value));applyTheme()};screenshotSlideSeconds.onchange=()=>{screenshotSlideSeconds.value=String(saveDeviceDisplayPreference('screenshotSlideSeconds',screenshotSlideSeconds.value))};releaseDetailSlideshowDelaySeconds.onchange=()=>{releaseDetailSlideshowDelaySeconds.value=String(saveDeviceDisplayPreference('releaseDetailSlideshowDelaySeconds',releaseDetailSlideshowDelaySeconds.value))};releaseDetailSlideshowSeconds.onchange=()=>{releaseDetailSlideshowSeconds.value=String(saveDeviceDisplayPreference('releaseDetailSlideshowSeconds',releaseDetailSlideshowSeconds.value))};
-$$('nav button').forEach(b=>b.onclick=()=>switchView(b.dataset.view));$$('#releasesView .subtabs button').forEach(b=>b.onclick=()=>statusTab(b.dataset.status,b.dataset.watchlist==='true'));$$('.downloadTabs button').forEach(b=>b.onclick=()=>{downloadStatus=b.dataset.downloadStatus;downloadPage=0;$$('.downloadTabs button').forEach(x=>x.classList.toggle('active',x===b));loadDownloads()});$$('.monitoringTabs button').forEach(b=>b.onclick=()=>monitoringTab(b.dataset.monitoringTab));monitoredWatchlistOnly.onchange=()=>{prefs.monitoredWatchlistOnly=monitoredWatchlistOnly.checked;monitoredPage=0;savePreferences();loadMonitoredReleases()};monitoredAllowNonPreferredOnly.onchange=()=>{monitoredPage=0;loadMonitoredReleases()};monitoredBulkStop.onclick=()=>monitoredBulkAction({monitor_download:false},`Stop monitoring ${monitoredSelected.size} selected release(s)?`);monitoredBulkAllowOn.onclick=()=>monitoredBulkAction({allow_non_preferred_filenames:true});monitoredBulkAllowOff.onclick=()=>monitoredBulkAction({allow_non_preferred_filenames:false});monitoredBulkClear.onclick=()=>{monitoredSelected.clear();renderMonitoredBulkBar();loadMonitoredReleases()};$$('.settingsTabs button').forEach(b=>b.onclick=()=>settingsTab(b.dataset.settingsTab));settingsSearch.oninput=applySettingsFilter;$$('.notificationTabs button').forEach(b=>b.onclick=()=>{notificationType=b.dataset.notification;$$('.notificationTabs button').forEach(x=>x.classList.toggle('active',x===b));loadNotifications()});$$('dialog .close').forEach(b=>b.onclick=()=>b.closest('dialog').close());releaseDialog.addEventListener('close',()=>{const returnID=activeReleaseID,returnToGrid=releaseNavFromGrid&&!releasesView.hidden;activeReleaseData=null;document.title='JAVBeacon';const restore=()=>{if(returnToGrid)requestAnimationFrame(()=>requestAnimationFrame(()=>focusReleaseCard(returnID)))};if(document.fullscreenElement===releaseDialogInner)document.exitFullscreen().then(restore).catch(restore);else restore();if(directReleaseID)history.replaceState({},'', '/')});releasePrev.onclick=()=>navigateRelease(-1);releaseNext.onclick=()=>navigateRelease(1);releaseFullscreen.onclick=()=>toggleReleaseFullscreen();document.addEventListener('keydown',e=>{if(!releaseDialog.open)return;if($$('dialog[open]').some(d=>d!==releaseDialog))return;const t=document.activeElement,editable=t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable);if(editable)return;const x=activeReleaseData;if(shortcutMatches('nextItem',e.key)){e.preventDefault();navigateRelease(1)}else if(shortcutMatches('prevItem',e.key)){e.preventDefault();navigateRelease(-1)}else if(shortcutMatches('close',e.key)){e.preventDefault();releaseDialog.close()}else if(shortcutMatches('fullscreen',e.key)){e.preventDefault();toggleReleaseFullscreen()}else if(!x)return;else if(shortcutMatches('openSource',e.key)){e.preventDefault();openReleaseLink(safe(x.product_url),prefs.releaseLinkForeground?.source)}else if(shortcutMatches('openDownloadSource',e.key)){e.preventDefault();openReleaseLink(sukebeiPage(x.video_id),prefs.releaseLinkForeground?.downloadSource)}else if(shortcutMatches('openBoth',e.key)){e.preventDefault();openReleaseLink(safe(x.product_url),prefs.releaseLinkForeground?.both);openReleaseLink(sukebeiPage(x.video_id),prefs.releaseLinkForeground?.both)}else if(shortcutMatches('searchTorrents',e.key)){e.preventDefault();searchRelease(x.id,false)}else if(shortcutMatches('searchDownload',e.key)){e.preventDefault();searchRelease(x.id,true)}else if(shortcutMatches('toggleWatchlist',e.key)){e.preventDefault();patchWatchlist(x.id,!x.watchlist)}else if(shortcutMatches('toggleNotify',e.key)){e.preventDefault();patchNotify(x.id,!x.notify_on_release)}else if(shortcutMatches('toggleMonitor',e.key)){e.preventDefault();patchMonitor(x.id,!x.monitor_download)}else if(shortcutMatches('updateDetails',e.key)){e.preventDefault();refreshRelease(x.id)}else if(shortcutMatches('openScreenshots',e.key)){e.preventDefault();openFirstScreenshotLightbox()}});releaseDialog.addEventListener('cancel',e=>{if($$('dialog[open]').some(d=>d!==releaseDialog)||!shortcutMatches('close','Escape'))e.preventDefault()});
+$$('nav button').forEach(b=>b.onclick=()=>switchView(b.dataset.view));$$('#releasesView .subtabs button').forEach(b=>b.onclick=()=>statusTab(b.dataset.status,b.dataset.watchlist==='true'));$$('.downloadTabs button').forEach(b=>b.onclick=()=>{downloadStatus=b.dataset.downloadStatus;downloadPage=0;$$('.downloadTabs button').forEach(x=>x.classList.toggle('active',x===b));loadDownloads()});$$('.monitoringTabs button').forEach(b=>b.onclick=()=>monitoringTab(b.dataset.monitoringTab));monitoredWatchlistOnly.onchange=()=>{prefs.monitoredWatchlistOnly=monitoredWatchlistOnly.checked;monitoredPage=0;savePreferences();loadMonitoredReleases()};monitoredAllowNonPreferredOnly.onchange=()=>{monitoredPage=0;loadMonitoredReleases()};monitoredBulkStop.onclick=()=>monitoredBulkAction({monitor_download:false},`Stop monitoring ${monitoredSelected.size} selected release(s)?`);monitoredBulkAllowOn.onclick=()=>monitoredBulkAction({allow_non_preferred_filenames:true});monitoredBulkAllowOff.onclick=()=>monitoredBulkAction({allow_non_preferred_filenames:false});monitoredBulkClear.onclick=()=>{monitoredSelected.clear();renderMonitoredBulkBar();loadMonitoredReleases()};$$('.settingsTabs button').forEach(b=>b.onclick=()=>settingsTab(b.dataset.settingsTab));settingsSearch.oninput=applySettingsFilter;$$('.notificationTabs button').forEach(b=>b.onclick=()=>{notificationType=b.dataset.notification;$$('.notificationTabs button').forEach(x=>x.classList.toggle('active',x===b));loadNotifications()});$$('dialog .close').forEach(b=>b.onclick=()=>b.closest('dialog').close());releaseDialog.addEventListener('close',()=>{const returnID=activeReleaseID,returnToGrid=releaseNavFromGrid&&!releasesView.hidden;activeReleaseData=null;releaseDetail.classList.remove('releaseSwapPending');document.title='JAVBeacon';const restore=()=>{if(returnToGrid)queueMicrotask(()=>focusReleaseCard(returnID))};if(document.fullscreenElement===releaseDialogInner)document.exitFullscreen().then(restore).catch(restore);else restore();if(directReleaseID)history.replaceState({},'', '/')});releasePrev.onclick=()=>navigateRelease(-1);releaseNext.onclick=()=>navigateRelease(1);releaseFullscreen.onclick=()=>toggleReleaseFullscreen();document.addEventListener('keydown',e=>{if(!releaseDialog.open)return;if($$('dialog[open]').some(d=>d!==releaseDialog))return;const t=document.activeElement,editable=t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable);if(editable)return;const x=activeReleaseData;if(shortcutMatches('nextItem',e.key)){e.preventDefault();navigateRelease(1)}else if(shortcutMatches('prevItem',e.key)){e.preventDefault();navigateRelease(-1)}else if(shortcutMatches('close',e.key)){e.preventDefault();releaseDialog.close()}else if(shortcutMatches('fullscreen',e.key)){e.preventDefault();toggleReleaseFullscreen()}else if(!x)return;else if(shortcutMatches('openSource',e.key)){e.preventDefault();openReleaseLink(safe(x.product_url),prefs.releaseLinkForeground?.source)}else if(shortcutMatches('openDownloadSource',e.key)){e.preventDefault();openReleaseLink(sukebeiPage(x.video_id),prefs.releaseLinkForeground?.downloadSource)}else if(shortcutMatches('openBoth',e.key)){e.preventDefault();openReleaseLink(safe(x.product_url),prefs.releaseLinkForeground?.both);openReleaseLink(sukebeiPage(x.video_id),prefs.releaseLinkForeground?.both)}else if(shortcutMatches('searchTorrents',e.key)){e.preventDefault();searchRelease(x.id,false)}else if(shortcutMatches('searchDownload',e.key)){e.preventDefault();searchRelease(x.id,true)}else if(shortcutMatches('toggleWatchlist',e.key)){e.preventDefault();patchWatchlist(x.id,!x.watchlist)}else if(shortcutMatches('toggleNotify',e.key)){e.preventDefault();patchNotify(x.id,!x.notify_on_release)}else if(shortcutMatches('toggleMonitor',e.key)){e.preventDefault();patchMonitor(x.id,!x.monitor_download)}else if(shortcutMatches('updateDetails',e.key)){e.preventDefault();refreshRelease(x.id)}else if(shortcutMatches('openScreenshots',e.key)){e.preventDefault();openFirstScreenshotLightbox()}});releaseDialog.addEventListener('cancel',e=>{if($$('dialog[open]').some(d=>d!==releaseDialog)||!shortcutMatches('close','Escape'))e.preventDefault()});
 $$('.downloadTabs button').forEach(button=>button.addEventListener('click',()=>{downloadStatus=button.dataset.downloadStatus;syncDownloadSortForTab();savePreferences()},{capture:true}));
 function applyNotificationEntry(value=notificationEntry.value){const entered=String(value||'').trim();prefs.notificationEntry=entered;notificationEntry.value=entered;notificationPage=0;savePreferences();renderNotifications();notificationEntry.value=entered;toast(entered?`Applied notification entry filter: ${entered}`:'Notification entry filter cleared')}
 function clearNotificationFilterState(){prefs.notificationSearch='';prefs.notificationCategory='Actress';prefs.notificationEntry='';prefs.notificationStatus='';notificationSearch.value='';notificationCategory.value='Actress';notificationEntry.value='';notificationStatus.value='';notificationSelection.clear();notificationPage=0;savePreferences();renderNotifications();toast('Notification filters cleared')}

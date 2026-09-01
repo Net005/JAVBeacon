@@ -89,10 +89,18 @@ Compose project or absolute host paths, for example:
 ```dotenv
 JAVBEACON_DATA_PATH=/srv/javbeacon/data
 POSTGRES_DATA_PATH=/srv/javbeacon/postgres
+PUID=1000
+PGID=1000
 ```
 
 If `JAVBEACON_DATA_PATH` is omitted, Compose continues to use the existing
 `javbeacon-data` named volume for backward compatibility.
+
+On every container start, JAVBeacon applies `PUID` and `PGID` (both default to
+`1000`) to the application-data mount, including existing covers and
+screenshots, then runs as that identity. The legacy `GUID` spelling is accepted
+as a fallback for `PGID`. These variables affect `JAVBEACON_DATA_PATH`; the
+PostgreSQL cluster remains owned and managed by the PostgreSQL container.
 
 `JAVBEACON_LISTEN`, `JAVBEACON_SCREENSHOTS`, and
 `JAVBEACON_FLARESOLVERR_URL` are also configurable in `.env`. Cover files use
@@ -238,6 +246,8 @@ Most configuration is stored in the active database and managed from the web int
 | --- | --- | --- |
 | `JAVBEACON_LISTEN` | HTTP listen address | `:8080` |
 | `TZ` | IANA timezone the container (and therefore all "server local time" schedules) runs in | `UTC` |
+| `PUID` | Host user ID used for files in the Compose application-data mount | `1000` |
+| `PGID` | Host group ID used for files in the Compose application-data mount (`GUID` is accepted as a legacy alias) | `1000` |
 | `JAVBEACON_DB` | SQLite database path | `data/javbeacon.db` |
 | `JAVBEACON_COVERS` | Initial cover-cache directory | `data/covers` |
 | `JAVBEACON_SCREENSHOTS` | Initial screenshot-cache directory | `data/screenshots`; Compose uses `/app/data/screenshots` |

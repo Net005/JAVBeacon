@@ -143,7 +143,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`function savePreferences(){const payload=preferencePayload();`,
 		`function updateReleaseFiltersSummary()`,
 		`viewportBottom>=pageHeight*.60`,
-		`releaseNavIDs.length-idx-1>25`,
+		`releaseNavIDs.length-idx-1<=25`,
 		`releaseNavFromGrid?null:releaseNavIDs`,
 		`function addReleaseMediaIndicators()`,
 		`class="releaseNavPosition mediaPosition"`,
@@ -197,7 +197,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`parts.filter(Boolean).join(' · ')+' — JAVBeacon'`,
 		`if(request!==releaseOpenRequest||activeReleaseID!==id)return`,
 		`document.title=releaseDocumentTitle(x)`,
-		`activeReleaseData=null;document.title='JAVBeacon'`,
+		`activeReleaseData=null;releaseDetail.classList.remove('releaseSwapPending');document.title='JAVBeacon'`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("Release Details browser-title behavior is missing %q", marker)
@@ -211,7 +211,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`download_seen_complete`,
 		`download_added_at`,
 		`class="downloadPillWrap"`,
-		`const x=await api('/releases/'+id)`,
+		`const x=await fetchReleaseDetail(id)`,
 		`function closeDownloadTelemetry(except=null)`,
 		`wrap.classList.toggle('telemetryOpen',opening)`,
 		`e.stopImmediatePropagation()`,
@@ -238,7 +238,8 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`detailFilterList([x.label],'Label')`,
 		`function initializeAppHistory()`,
 		`function jobHistoryDuration(j)`,
-		`<span>Started</span><span>Ended / duration</span>`,
+		`<span>Started</span><span>Ended</span><span>Duration</span>`,
+		`class="jobHistoryDuration"`,
 		`j.scheduled?'Scheduled scan':j.kind`,
 		`Across ${siteScope}`,
 		`function closeReleaseDetails()`,
@@ -259,7 +260,13 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`if(inPlace)syncReleaseDetailStateControls(x);else renderReleaseDetail(x)`,
 		`updateRelease(saved,!inPlace)`,
 		`function animateReleaseDetailSwap()`,
-		`const cached=releaseByID(id);if(cached)`,
+		`const cached=releaseByID(id),keepPreviousVisible=wasOpen&&!cached&&!!previousData`,
+		`releaseDetail.classList.add('releaseSwapPending')`,
+		`releaseDetailCache=new Map()`,
+		`for(let distance=1;distance<=8;distance++)`,
+		`indexes.slice(0,3)`,
+		`await preloadReleaseAssets(x)`,
+		`scrollIntoView({behavior:'auto',block:'center',inline:'nearest'})`,
 		`if(releaseDialog.open)releaseDialog.close();if(state.javbeacon&&state.releaseID&&releaseDepth>0)`,
 		`class="stateButton compactActionMenu"`,
 	} {
@@ -327,7 +334,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 			t.Fatalf("Release Details download telemetry styling is missing %q", marker)
 		}
 	}
-	for _, marker := range []string{`.releaseStatusInfo{`, `.releaseStatusInfo.downloaded{`, `.releaseStatusInfo.local{`, `.releaseToast{`, `.releaseToast.show{`, `.releaseDetailLoading{`, `.detailValueEntry[hidden]{display:none!important}`, `.detailMeta dd:has(.detailValueOverflow.open)`, `.detailMeta dd:has(.detailValueOverflow.hasOverflow:hover)`, `.statusItems .downloadPill.inline{width:100%;min-height:34px`, `.statusItems .releaseStatusInfo b{font-size:11px}`} {
+	for _, marker := range []string{`.releaseStatusInfo{`, `.releaseStatusInfo.downloaded{`, `.releaseStatusInfo.local{`, `.releaseToast{`, `.releaseToast.show{`, `.releaseDetailLoading{`, `#releaseDetail.releaseSwapPending::before{`, `.releaseDialog::backdrop{background:#090b0ff2!important;backdrop-filter:none!important}`, `.detailValueEntry[hidden]{display:none!important}`, `.detailMeta dd:has(.detailValueOverflow.open)`, `.detailMeta dd:has(.detailValueOverflow.hasOverflow:hover)`, `.statusItems .downloadPill.inline{width:100%;min-height:34px`, `.statusItems .releaseStatusInfo b{font-size:11px}`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("Release Details status/notification styling is missing %q", marker)
 		}
