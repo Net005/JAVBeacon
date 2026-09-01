@@ -904,7 +904,9 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .jobHistoryTableHead{padding:9px 12px;background:#0b0e13;color:#7f8793;font-size:9px;font-weight:850;letter-spacing:1px;text-transform:uppercase}
 .jobHistoryRow{padding:12px;border-top:1px solid #262c36;background:#12161e}
 .jobHistoryRow:nth-child(odd){background:#10141b}
-.jobHistoryRow time{color:#c3cad5;font-size:11px;white-space:nowrap}
+.jobHistoryRow time{display:grid;gap:1px;color:#c3cad5;font-size:11px;white-space:nowrap}
+.jobHistoryRow time small{color:#7f8793;font-size:8px;font-weight:800;letter-spacing:.7px;text-transform:uppercase}
+.jobHistoryRow time b{font-size:11px;font-weight:600}
 .jobCategory{justify-self:start;padding:5px 8px;border:1px solid #4c5564;border-radius:999px;background:#202631;color:#d8e0eb;font-size:9px;font-weight:800;letter-spacing:.5px;text-transform:uppercase}
 .jobCategory.scraping{border-color:#865d27;background:#352814;color:#ffd88e}
 .jobCategory.downloading{border-color:#286b74;background:#13323a;color:#a6edf4}

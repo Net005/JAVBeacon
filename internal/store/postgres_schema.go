@@ -192,6 +192,9 @@ CREATE TABLE IF NOT EXISTS job_history (
 	kind TEXT NOT NULL,
 	state TEXT NOT NULL,
 	mode TEXT NOT NULL DEFAULT '',
+	title TEXT NOT NULL DEFAULT '',
+	scheduled INTEGER NOT NULL DEFAULT 0,
+	site_count INTEGER NOT NULL DEFAULT 0,
 	site_title TEXT NOT NULL DEFAULT '',
 	provider TEXT NOT NULL DEFAULT '',
 	started_at TIMESTAMPTZ,
@@ -475,6 +478,9 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS is_preferred INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS monitor_reason TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS monitor_site_id BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS scheduled INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS site_count INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err

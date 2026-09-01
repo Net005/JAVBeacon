@@ -520,7 +520,7 @@ func enqueueRefresh(queue []RefreshOptions, options RefreshOptions) []RefreshOpt
 }
 
 func newRefreshJob(options RefreshOptions, queued int) domain.Job {
-	return domain.Job{Kind: "scrape", State: "queued", Mode: options.Mode, Running: true, StartedAt: time.Now().UTC(), AllPages: options.AllPages, Priority: refreshPriority(options), QueueDepth: queued, ReleaseID: options.ReleaseID}
+	return domain.Job{Kind: "scrape", Title: options.Title, Scheduled: options.Scheduled, State: "queued", Mode: options.Mode, Running: true, StartedAt: time.Now().UTC(), AllPages: options.AllPages, Priority: refreshPriority(options), QueueDepth: queued, ReleaseID: options.ReleaseID}
 }
 
 func (s *Service) setJob(job domain.Job) {
@@ -604,6 +604,9 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 	jobStarted := time.Now()
 	job := s.Status()
 	job.State = "running"
+	job.StartedAt = jobStarted.UTC()
+	job.Title = options.Title
+	job.Scheduled = options.Scheduled
 	defer func() {
 		job.Running = false
 		job.FinishedAt = time.Now().UTC()
