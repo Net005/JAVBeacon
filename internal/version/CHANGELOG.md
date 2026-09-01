@@ -7,6 +7,20 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.67] - 2026-09-01
+
+### Added
+
+- Settings → Interface now provides persistent per-device controls for how many
+  nearby releases and screenshots Release Details preloads. Both accept any
+  non-negative whole number, with `0` disabling that preload type.
+
+### Fixed
+
+- Release Details metadata overflow panels now remain open while the pointer
+  moves into them, allowing Actress, Studio, Label, Tag, and Site entries in
+  the panel to be clicked reliably.
+
 ## [1.0.66] - 2026-09-01
 
 ### Added
