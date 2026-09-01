@@ -263,6 +263,9 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 			t.Fatalf("Release Details download telemetry is missing %q", marker)
 		}
 	}
+	if strings.Contains(string(javascript), `index?'<i aria-hidden="true"></i>'`) {
+		t.Fatal("Release Details metadata still renders dot separators")
+	}
 	if strings.Contains(string(javascript), "These options search for and redownload a copy.") {
 		t.Fatal("Release Details still includes the redundant redownload explanation")
 	}
@@ -320,7 +323,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 			t.Fatalf("Release Details download telemetry styling is missing %q", marker)
 		}
 	}
-	for _, marker := range []string{`.releaseStatusInfo{`, `.releaseStatusInfo.downloaded{`, `.releaseStatusInfo.local{`, `.releaseToast{`, `.releaseToast.show{`, `.releaseDetailLoading{`, `.statusItems .downloadPill.inline{width:100%;min-height:34px`, `.statusItems .releaseStatusInfo b{font-size:11px}`} {
+	for _, marker := range []string{`.releaseStatusInfo{`, `.releaseStatusInfo.downloaded{`, `.releaseStatusInfo.local{`, `.releaseToast{`, `.releaseToast.show{`, `.releaseDetailLoading{`, `.detailValueEntry[hidden]{display:none!important}`, `.detailMeta dd:has(.detailValueOverflow.open)`, `.detailMeta dd:has(.detailValueOverflow.hasOverflow:hover)`, `.statusItems .downloadPill.inline{width:100%;min-height:34px`, `.statusItems .releaseStatusInfo b{font-size:11px}`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("Release Details status/notification styling is missing %q", marker)
 		}
