@@ -1393,6 +1393,7 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 }
 
 @media(hover:hover) and (pointer:fine){
+  .detailValueOverflow.hasOverflow::after{content:"";position:absolute;top:100%;right:0;left:0;height:8px}
   .detailValueOverflow.hasOverflow:hover .detailValuePopover{display:flex}
   .detailMeta:has(.detailValueOverflow.hasOverflow:hover){position:relative;z-index:75;overflow:visible!important}
   .detailMeta dd:has(.detailValueOverflow.hasOverflow:hover){position:relative;z-index:76;max-height:none!important;overflow:visible!important}

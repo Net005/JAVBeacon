@@ -102,6 +102,10 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`saveDeviceDisplayPreference('screenshotSlideSeconds',screenshotSlideSeconds.value)`,
 		`saveDeviceDisplayPreference('releaseDetailSlideshowDelaySeconds',releaseDetailSlideshowDelaySeconds.value)`,
 		`saveDeviceDisplayPreference('releaseDetailSlideshowSeconds',releaseDetailSlideshowSeconds.value)`,
+		`saveDeviceDisplayPreference('releaseDetailPreloadCount',releaseDetailPreloadCount.value)`,
+		`saveDeviceDisplayPreference('releaseDetailPreloadScreenshotCount',releaseDetailPreloadScreenshotCount.value)`,
+		`Nearby releases in each direction<input id="releaseDetailPreloadCount"`,
+		`Screenshots per nearby release<input id="releaseDetailPreloadScreenshotCount"`,
 		`screenshotSlideSeconds:2.5`,
 		`releaseFiltersOpen:false`,
 		`Number(prefs.screenshotSlideSeconds)||2.5`,
@@ -263,8 +267,8 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`const cached=releaseByID(id),keepPreviousVisible=wasOpen&&!cached&&!!previousData`,
 		`releaseDetail.classList.add('releaseSwapPending')`,
 		`releaseDetailCache=new Map()`,
-		`for(let distance=1;distance<=8;distance++)`,
-		`indexes.slice(0,3)`,
+		`for(let distance=1;distance<=availableDistance;distance++)`,
+		`indexes.slice(0,screenshotCount)`,
 		`await preloadReleaseAssets(x)`,
 		`scrollIntoView({behavior:'auto',block:'center',inline:'nearest'})`,
 		`if(releaseDialog.open)releaseDialog.close();if(state.javbeacon&&state.releaseID&&releaseDepth>0)`,
@@ -334,7 +338,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 			t.Fatalf("Release Details download telemetry styling is missing %q", marker)
 		}
 	}
-	for _, marker := range []string{`.releaseStatusInfo{`, `.releaseStatusInfo.downloaded{`, `.releaseStatusInfo.local{`, `.releaseToast{`, `.releaseToast.show{`, `.releaseDetailLoading{`, `#releaseDetail.releaseSwapPending::before{`, `.releaseDialog::backdrop{background:#090b0ff2!important;backdrop-filter:none!important}`, `.detailValueEntry[hidden]{display:none!important}`, `.detailMeta dd:has(.detailValueOverflow.open)`, `.detailMeta dd:has(.detailValueOverflow.hasOverflow:hover)`, `.statusItems .downloadPill.inline{width:100%;min-height:34px`, `.statusItems .releaseStatusInfo b{font-size:11px}`} {
+	for _, marker := range []string{`.releaseStatusInfo{`, `.releaseStatusInfo.downloaded{`, `.releaseStatusInfo.local{`, `.releaseToast{`, `.releaseToast.show{`, `.releaseDetailLoading{`, `#releaseDetail.releaseSwapPending::before{`, `.releaseDialog::backdrop{background:#090b0ff2!important;backdrop-filter:none!important}`, `.detailValueEntry[hidden]{display:none!important}`, `.detailValueOverflow.hasOverflow::after{`, `.detailMeta dd:has(.detailValueOverflow.open)`, `.detailMeta dd:has(.detailValueOverflow.hasOverflow:hover)`, `.statusItems .downloadPill.inline{width:100%;min-height:34px`, `.statusItems .releaseStatusInfo b{font-size:11px}`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("Release Details status/notification styling is missing %q", marker)
 		}
