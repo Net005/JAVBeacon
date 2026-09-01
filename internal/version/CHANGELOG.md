@@ -7,6 +7,21 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.64] - 2026-09-01
+
+### Changed
+
+- Release Details metadata chips now use compact spacing without dot
+  separators, and clickable Sites match the visual treatment of Tags without
+  external-link arrows.
+
+### Fixed
+
+- Actress, Studio, Label, Tag, and Site overflow controls now reveal their full
+  values on desktop hover and click or touch.
+- Metadata fitting now moves an entire chip into overflow instead of displaying
+  a partially clipped value.
+
 ## [1.0.63] - 2026-09-01
 
 ### Changed
