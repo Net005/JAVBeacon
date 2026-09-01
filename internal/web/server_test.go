@@ -167,7 +167,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`function wireTouchSwipe(`,
 		`el.addEventListener('pointermove'`,
 		`lockReleaseBackgroundScroll()`,
-		`releaseDialog.addEventListener('close',()=>{unlockReleaseBackgroundScroll();stopDetailScreenshots();`,
+		`releaseDialog.addEventListener('close',()=>{releaseOpenRequest++;unlockReleaseBackgroundScroll();stopDetailScreenshots();`,
 		`const interactive=e=>e.target.closest?.('button,a,input,select,textarea,.detailScreenshotRail,.screenshotLightboxStrip')`,
 		`if(dx<0)next?.();else previous?.()`,
 		`function edgeTapDirection(x,width){return x<=width*.2?-1:x>=width*.8?1:0}`,
@@ -195,7 +195,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	for _, marker := range []string{
 		`function releaseDocumentTitle(x)`,
 		`parts.filter(Boolean).join(' · ')+' — JAVBeacon'`,
-		`if(activeReleaseID!==id)return`,
+		`if(request!==releaseOpenRequest||activeReleaseID!==id)return`,
 		`document.title=releaseDocumentTitle(x)`,
 		`activeReleaseData=null;document.title='JAVBeacon'`,
 	} {
@@ -250,6 +250,13 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`searchDialogToastNode.className='releaseToast searchDialogToast'`,
 		`searchDialog?.open?searchDialogToastNode`,
 		`function patchNotificationReleaseState(id,kind,value)`,
+		`function syncReleaseDetailStateControls(x)`,
+		`pendingInPlaceReleasePatches=new Map()`,
+		`if(inPlace)syncReleaseDetailStateControls(x);else renderReleaseDetail(x)`,
+		`updateRelease(saved,!inPlace)`,
+		`function animateReleaseDetailSwap()`,
+		`const cached=releaseByID(id);if(cached)`,
+		`if(releaseDialog.open)releaseDialog.close();if(state.javbeacon&&state.releaseID&&releaseDepth>0)`,
 		`class="stateButton compactActionMenu"`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
@@ -313,7 +320,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 			t.Fatalf("Release Details download telemetry styling is missing %q", marker)
 		}
 	}
-	for _, marker := range []string{`.releaseStatusInfo{`, `.releaseStatusInfo.downloaded{`, `.releaseStatusInfo.local{`, `.releaseToast{`, `.releaseToast.show{`, `.statusItems .downloadPill.inline{width:100%;min-height:34px`, `.statusItems .releaseStatusInfo b{font-size:11px}`} {
+	for _, marker := range []string{`.releaseStatusInfo{`, `.releaseStatusInfo.downloaded{`, `.releaseStatusInfo.local{`, `.releaseToast{`, `.releaseToast.show{`, `.releaseDetailLoading{`, `.statusItems .downloadPill.inline{width:100%;min-height:34px`, `.statusItems .releaseStatusInfo b{font-size:11px}`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("Release Details status/notification styling is missing %q", marker)
 		}

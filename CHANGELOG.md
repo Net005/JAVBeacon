@@ -7,6 +7,22 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.63] - 2026-09-01
+
+### Changed
+
+- Release Details now opens cached releases immediately, closes without waiting
+  for browser-history synchronization, and uses a fast, subtle transition when
+  navigating between releases.
+
+### Fixed
+
+- Toggling Watchlist, Notification, or Monitoring no longer rebuilds the active
+  Release Details view or temporarily removes its screenshot carousel when the
+  confirmation notification appears.
+- Stale detail responses from rapid navigation or closing are now ignored, and
+  live-update echoes no longer cause a second distracting redraw.
+
 ## [1.0.62] - 2026-09-01
 
 ### Fixed
