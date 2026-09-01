@@ -416,7 +416,8 @@ func TestMultiSiteScanTracksSiteIndexAndCount(t *testing.T) {
 	if _, err := service.store.SaveSite(ctx, domain.Site{Title: "Second Site", Type: "Site", Name: "JavLibrary", Enabled: true, URL: site.URL}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.StartOptions(ctx, RefreshOptions{Mode: "quick", Scheduled: true}); err != nil {
+	const scheduledTitle = "New releases only · all enabled sites"
+	if err := service.StartOptions(ctx, RefreshOptions{Mode: "quick", Title: scheduledTitle, Scheduled: true}); err != nil {
 		t.Fatal(err)
 	}
 	job := waitForSiteJob(t, service)
@@ -425,6 +426,16 @@ func TestMultiSiteScanTracksSiteIndexAndCount(t *testing.T) {
 	}
 	if job.SiteIndex != 2 {
 		t.Fatalf("job.SiteIndex = %d, want 2 (the last site processed, once the job has finished)", job.SiteIndex)
+	}
+	history, err := service.store.Jobs(ctx, 1)
+	if err != nil || len(history) != 1 {
+		t.Fatalf("saved job history=%+v err=%v", history, err)
+	}
+	if history[0].Title != scheduledTitle || !history[0].Scheduled || history[0].SiteCount != 2 {
+		t.Fatalf("saved scheduled aggregate=%+v, want title=%q, scheduled=true, site_count=2", history[0], scheduledTitle)
+	}
+	if history[0].SiteTitle == history[0].Title {
+		t.Fatalf("saved aggregate title was overwritten by live site progress: %+v", history[0])
 	}
 
 	// A single-site job must not populate the multi-site progress fields.

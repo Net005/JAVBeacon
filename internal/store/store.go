@@ -176,7 +176,7 @@ CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id INTEGER NOT
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
 CREATE TABLE IF NOT EXISTS user_preferences (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, state TEXT NOT NULL DEFAULT '{}', updated_at DATETIME NOT NULL);
 CREATE TABLE IF NOT EXISTS filter_presets (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, state TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(user_id,name));
-CREATE TABLE IF NOT EXISTS job_history (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, mode TEXT NOT NULL DEFAULT '', site_title TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', started_at DATETIME, finished_at DATETIME, added INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS job_history (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, mode TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', scheduled INTEGER NOT NULL DEFAULT 0, site_count INTEGER NOT NULL DEFAULT 0, site_title TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', started_at DATETIME, finished_at DATETIME, added INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS download_search_runs (id INTEGER PRIMARY KEY, schedule TEXT NOT NULL, started_at DATETIME NOT NULL, finished_at DATETIME NOT NULL, checked INTEGER NOT NULL DEFAULT 0, found INTEGER NOT NULL DEFAULT 0, downloaded INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_download_search_runs_schedule_finished ON download_search_runs(schedule,finished_at DESC);
 CREATE TABLE IF NOT EXISTS downloads (id INTEGER PRIMARY KEY, release_id INTEGER REFERENCES releases(id) ON DELETE SET NULL, provider TEXT NOT NULL DEFAULT '', source_type TEXT NOT NULL DEFAULT '', source_reference TEXT NOT NULL DEFAULT '', query TEXT NOT NULL DEFAULT '', torrent_hash TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL, match_reason TEXT NOT NULL DEFAULT '', qb_response TEXT NOT NULL DEFAULT '', post_status TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', seed_ratio REAL NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, seeds INTEGER NOT NULL DEFAULT 0, peers INTEGER NOT NULL DEFAULT 0, eta_seconds INTEGER NOT NULL DEFAULT 0, seen_complete INTEGER NOT NULL DEFAULT 0, filename_pattern_excluded INTEGER NOT NULL DEFAULT 0, added_at DATETIME NOT NULL, updated_at DATETIME NOT NULL);
@@ -260,6 +260,9 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 			`ALTER TABLE releases ADD COLUMN watchlist_at DATETIME`,
 			`ALTER TABLE releases ADD COLUMN stash_created_at DATETIME`,
 			`ALTER TABLE releases ADD COLUMN is_preferred INTEGER NOT NULL DEFAULT 1`,
+			`ALTER TABLE job_history ADD COLUMN title TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE job_history ADD COLUMN scheduled INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE job_history ADD COLUMN site_count INTEGER NOT NULL DEFAULT 0`,
 		} {
 			if _, alterErr := s.db.Exec(statement); alterErr != nil && !strings.Contains(strings.ToLower(alterErr.Error()), "duplicate column") {
 				return alterErr
@@ -2718,9 +2721,9 @@ func (s *SQLite) SaveJob(ctx context.Context, x domain.Job) (int64, error) {
 		}
 	}
 	if x.ID == 0 {
-		return s.dialect.InsertReturningID(ctx, s.db, `INSERT INTO job_history(kind,state,mode,site_title,provider,started_at,finished_at,added,updated,skipped,error) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, x.Kind, x.State, x.Mode, x.SiteTitle, x.Provider, x.StartedAt, x.FinishedAt, x.Added, x.Updated, x.Skipped, x.Error)
+		return s.dialect.InsertReturningID(ctx, s.db, `INSERT INTO job_history(kind,state,mode,title,scheduled,site_count,site_title,provider,started_at,finished_at,added,updated,skipped,error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.Kind, x.State, x.Mode, x.Title, x.Scheduled, x.SiteCount, x.SiteTitle, x.Provider, x.StartedAt, x.FinishedAt, x.Added, x.Updated, x.Skipped, x.Error)
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE job_history SET state=?,mode=?,site_title=?,provider=?,finished_at=?,added=?,updated=?,skipped=?,error=? WHERE id=?`, x.State, x.Mode, x.SiteTitle, x.Provider, x.FinishedAt, x.Added, x.Updated, x.Skipped, x.Error, x.ID)
+	_, err := s.db.ExecContext(ctx, `UPDATE job_history SET state=?,mode=?,title=?,scheduled=?,site_count=?,site_title=?,provider=?,started_at=?,finished_at=?,added=?,updated=?,skipped=?,error=? WHERE id=?`, x.State, x.Mode, x.Title, x.Scheduled, x.SiteCount, x.SiteTitle, x.Provider, x.StartedAt, x.FinishedAt, x.Added, x.Updated, x.Skipped, x.Error, x.ID)
 	return x.ID, err
 }
 
@@ -2728,7 +2731,7 @@ func (s *SQLite) Jobs(ctx context.Context, limit int) ([]domain.Job, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,state,mode,site_title,provider,started_at,finished_at,added,updated,skipped,error FROM job_history ORDER BY id DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,state,mode,title,scheduled,site_count,site_title,provider,started_at,finished_at,added,updated,skipped,error FROM job_history ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -2737,7 +2740,7 @@ func (s *SQLite) Jobs(ctx context.Context, limit int) ([]domain.Job, error) {
 	for rows.Next() {
 		var x domain.Job
 		var started, finished sql.NullTime
-		if err := rows.Scan(&x.ID, &x.Kind, &x.State, &x.Mode, &x.SiteTitle, &x.Provider, &started, &finished, &x.Added, &x.Updated, &x.Skipped, &x.Error); err != nil {
+		if err := rows.Scan(&x.ID, &x.Kind, &x.State, &x.Mode, &x.Title, &x.Scheduled, &x.SiteCount, &x.SiteTitle, &x.Provider, &started, &finished, &x.Added, &x.Updated, &x.Skipped, &x.Error); err != nil {
 			return nil, err
 		}
 		x.StartedAt = started.Time
@@ -2770,15 +2773,15 @@ func (s *SQLite) JobHistory(ctx context.Context, limit, offset int) ([]domain.Jo
 	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM job_history)+(SELECT COUNT(*) FROM downloads WHERE status NOT IN ('searched','search_accepted','search_rejected'))`).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,category,kind,state,mode,title,provider,started_at,finished_at,added,updated,skipped,error,details FROM (
+	rows, err := s.db.QueryContext(ctx, `SELECT id,category,kind,state,mode,title,provider,scheduled,site_count,started_at,finished_at,added,updated,skipped,error,details FROM (
 		SELECT id,
 			CASE WHEN kind='scrape' OR kind='javlibrary_historical_backfill' THEN 'Scraping' WHEN kind LIKE '%download%' THEN 'Downloading' WHEN kind LIKE '%stash%' THEN 'StashApp' ELSE 'System' END AS category,
-			kind,state,mode,site_title AS title,provider,started_at,finished_at,added,updated,skipped,error,'' AS details
+			kind,state,mode,COALESCE(NULLIF(title,''),site_title) AS title,provider,scheduled,site_count,started_at,finished_at,added,updated,skipped,error,'' AS details
 		FROM job_history
 		UNION ALL
 		SELECT d.id,'Downloading' AS category,'download' AS kind,d.status AS state,d.source_type AS mode,
 			COALESCE(NULLIF(r.video_id,''),NULLIF(d.query,''),NULLIF(d.name,''),'Download') AS title,
-			d.provider,d.added_at AS started_at,
+			d.provider,0 AS scheduled,0 AS site_count,d.added_at AS started_at,
 			CASE WHEN d.status IN ('completed','failed','cancelled','skipped','removed') THEN d.updated_at ELSE NULL END AS finished_at,
 			0 AS added,0 AS updated,0 AS skipped,d.error,
 			COALESCE(NULLIF(d.match_reason,''),NULLIF(d.qb_response,''),NULLIF(d.name,''),'') AS details
@@ -2793,7 +2796,7 @@ func (s *SQLite) JobHistory(ctx context.Context, limit, offset int) ([]domain.Jo
 	for rows.Next() {
 		var x domain.JobHistoryEntry
 		var started, finished any
-		if err := rows.Scan(&x.ID, &x.Category, &x.Kind, &x.State, &x.Mode, &x.Title, &x.Provider, &started, &finished, &x.Added, &x.Updated, &x.Skipped, &x.Error, &x.Details); err != nil {
+		if err := rows.Scan(&x.ID, &x.Category, &x.Kind, &x.State, &x.Mode, &x.Title, &x.Provider, &x.Scheduled, &x.SiteCount, &started, &finished, &x.Added, &x.Updated, &x.Skipped, &x.Error, &x.Details); err != nil {
 			return nil, 0, err
 		}
 		parseTime := func(value any) (time.Time, error) {

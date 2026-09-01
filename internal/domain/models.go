@@ -340,6 +340,8 @@ type QueuedJob struct {
 type Job struct {
 	ID              int64     `json:"id,omitempty"`
 	Kind            string    `json:"kind,omitempty"`
+	Title           string    `json:"title,omitempty"`
+	Scheduled       bool      `json:"scheduled,omitempty"`
 	State           string    `json:"state"`
 	Mode            string    `json:"mode,omitempty"`
 	Running         bool      `json:"running"`
@@ -412,6 +414,8 @@ type JobHistoryEntry struct {
 	Mode       string    `json:"mode,omitempty"`
 	Title      string    `json:"title,omitempty"`
 	Provider   string    `json:"provider,omitempty"`
+	Scheduled  bool      `json:"scheduled,omitempty"`
+	SiteCount  int       `json:"site_count,omitempty"`
 	StartedAt  time.Time `json:"started_at,omitempty"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
 	Added      int       `json:"added"`

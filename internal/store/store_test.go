@@ -437,7 +437,7 @@ func TestJobHistoryCombinesCategoriesAndPaginatesChronologically(t *testing.T) {
 	defer s.Close()
 	started := time.Now().UTC().Add(-2 * time.Hour)
 	finished := started.Add(15 * time.Minute)
-	if _, err := s.SaveJob(ctx, domain.Job{Kind: "scrape", State: "completed", Mode: "quick", SiteTitle: "JavLibrary", StartedAt: started, FinishedAt: finished, Added: 3, Skipped: 20}); err != nil {
+	if _, err := s.SaveJob(ctx, domain.Job{Kind: "scrape", Title: "New releases only · all enabled sites", Scheduled: true, SiteCount: 54, State: "completed", Mode: "new", SiteTitle: "Tentacle", StartedAt: started, FinishedAt: finished, Added: 3, Skipped: 20}); err != nil {
 		t.Fatal(err)
 	}
 	site, err := s.SaveSite(ctx, domain.Site{Title: "Download site", Type: "Site", Name: "JavLibrary", Enabled: true})
@@ -470,7 +470,7 @@ func TestJobHistoryCombinesCategoriesAndPaginatesChronologically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 2 || len(second) != 1 || second[0].Category != "Scraping" || second[0].Mode != "quick" || !second[0].StartedAt.Equal(started) || !second[0].FinishedAt.Equal(finished) {
+	if total != 2 || len(second) != 1 || second[0].Category != "Scraping" || second[0].Mode != "new" || second[0].Title != "New releases only · all enabled sites" || !second[0].Scheduled || second[0].SiteCount != 54 || !second[0].StartedAt.Equal(started) || !second[0].FinishedAt.Equal(finished) {
 		t.Fatalf("second page=%+v total=%d", second, total)
 	}
 }

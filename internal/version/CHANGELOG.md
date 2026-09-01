@@ -7,6 +7,23 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.65] - 2026-09-01
+
+### Changed
+
+- Job History now labels scheduled scans with their schedule name and total
+  monitoring-site scope, and displays explicit start, end, and duration values.
+- Multi-site scheduled scans remain one concise aggregate history entry, with
+  their result summary clearly stating how many monitoring sites it covers.
+
+### Fixed
+
+- Scheduled scan history no longer appears to belong only to the final site
+  processed, such as Tentacle; durable schedule metadata is now kept separate
+  from the live per-site progress fields.
+- Scrape history now records the actual execution start instead of the time a
+  scan entered the queue.
+
 ## [1.0.64] - 2026-09-01
 
 ### Changed
