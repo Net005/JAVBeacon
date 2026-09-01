@@ -32,6 +32,7 @@ RUN apk add --no-cache \
     bash \
     curl \
     ca-certificates \
+    su-exec \
     tzdata \
     && addgroup -S javbeacon \
     && adduser -S -G javbeacon javbeacon
@@ -39,14 +40,14 @@ RUN apk add --no-cache \
 WORKDIR /app
 
 COPY --from=build /javbeacon /usr/local/bin/javbeacon
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN mkdir -p /app/data \
-    && chown -R javbeacon:javbeacon /app
-
-USER javbeacon
+    && chown -R javbeacon:javbeacon /app \
+    && chmod 755 /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 8080
 
 VOLUME ["/app/data"]
 
-ENTRYPOINT ["/usr/local/bin/javbeacon"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

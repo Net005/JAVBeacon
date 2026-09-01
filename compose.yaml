@@ -6,6 +6,10 @@ services:
     container_name: javbeacon
     restart: unless-stopped
     environment:
+      # The entrypoint applies this host identity to /app/data before JAVBeacon
+      # starts. GUID remains accepted as a legacy alias for PGID.
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-${GUID:-1000}}"
       # Controls the timezone Go's time.Local (and therefore every
       # "server local time" schedule below) resolves to inside the
       # container. Defaults to UTC - set to your own IANA zone (e.g.

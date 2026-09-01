@@ -898,26 +898,26 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .jobHistoryHead{margin-bottom:10px}
 .jobHistoryHead label{display:flex;align-items:center;gap:7px;margin:0;color:var(--muted);font-size:11px}
 .jobHistoryHead select{width:auto;min-height:34px;padding:6px 9px}
-.jobHistoryTable{min-width:900px;border:1px solid #303641;border-radius:10px;overflow:hidden}
+.jobHistoryTable{min-width:1120px;border:1px solid #303641;border-radius:10px;overflow:hidden}
 #jobHistory{overflow-x:auto}
-.jobHistoryTableHead,.jobHistoryRow{display:grid;grid-template-columns:110px minmax(220px,1.4fr) minmax(155px,.8fr) minmax(155px,.8fr) minmax(210px,1fr);gap:12px;align-items:center}
-.jobHistoryTableHead{padding:9px 12px;background:#0b0e13;color:#7f8793;font-size:9px;font-weight:850;letter-spacing:1px;text-transform:uppercase}
-.jobHistoryRow{padding:12px;border-top:1px solid #262c36;background:#12161e}
+.jobHistoryTableHead,.jobHistoryRow{display:grid;grid-template-columns:120px minmax(280px,1.45fr) minmax(170px,.78fr) minmax(170px,.78fr) minmax(105px,.46fr) minmax(260px,1.15fr);gap:16px;align-items:center}
+.jobHistoryTableHead{padding:12px 16px;background:#0b0e13;color:#89929f;font-size:10.5px;font-weight:850;letter-spacing:1px;text-transform:uppercase}
+.jobHistoryRow{min-height:82px;padding:16px;border-top:1px solid #262c36;background:#12161e}
 .jobHistoryRow:nth-child(odd){background:#10141b}
-.jobHistoryRow time{display:grid;gap:1px;color:#c3cad5;font-size:11px;white-space:nowrap}
-.jobHistoryRow time small{color:#7f8793;font-size:8px;font-weight:800;letter-spacing:.7px;text-transform:uppercase}
-.jobHistoryRow time b{font-size:11px;font-weight:600}
-.jobCategory{justify-self:start;padding:5px 8px;border:1px solid #4c5564;border-radius:999px;background:#202631;color:#d8e0eb;font-size:9px;font-weight:800;letter-spacing:.5px;text-transform:uppercase}
+.jobHistoryRow time,.jobHistoryDuration{display:grid;gap:3px;color:#d4dae3;white-space:nowrap}
+.jobHistoryRow time small,.jobHistoryDuration small{color:#89929f;font-size:9.5px;font-weight:800;letter-spacing:.75px;text-transform:uppercase}
+.jobHistoryRow time b,.jobHistoryDuration b{font-size:13px;font-weight:650}
+.jobCategory{justify-self:start;padding:6px 10px;border:1px solid #4c5564;border-radius:999px;background:#202631;color:#d8e0eb;font-size:10.5px;font-weight:800;letter-spacing:.5px;text-transform:uppercase}
 .jobCategory.scraping{border-color:#865d27;background:#352814;color:#ffd88e}
 .jobCategory.downloading{border-color:#286b74;background:#13323a;color:#a6edf4}
 .jobCategory.stashapp{border-color:#5a477f;background:#291f3e;color:#d7c3ff}
-.jobHistoryDetails,.jobHistoryResult{display:grid;min-width:0;gap:3px}
+.jobHistoryDetails,.jobHistoryResult{display:grid;min-width:0;gap:5px}
 .jobHistoryDetails b,.jobHistoryDetails small,.jobHistoryResult small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.jobHistoryDetails b{font-size:12px}.jobHistoryDetails small,.jobHistoryResult small{color:var(--muted);font-size:10px}
+.jobHistoryDetails b{font-size:14px}.jobHistoryDetails small,.jobHistoryResult small{color:#b2b9c5;font-size:11.5px}
 .jobHistoryDetails .jobError{color:#ff9eaa}
-.jobState{justify-self:start;color:#d8dee8;font-size:10px;font-weight:800;text-transform:capitalize}
+.jobState{justify-self:start;color:#d8dee8;font-size:12px;font-weight:800;text-transform:capitalize}
 .jobState.completed{color:#7fe0b0}.jobState.failed,.jobState.cancelled{color:#ff8e9b}.jobState.running,.jobState.downloading{color:#8ddbe9}
-@media(max-width:700px){.refreshModeTooltip{position:fixed;top:110px;right:12px;left:12px;width:auto}.jobHistoryHead{align-items:flex-end}.jobHistoryTableHead,.jobHistoryRow{grid-template-columns:100px minmax(210px,1.2fr) 150px 150px minmax(190px,1fr)}}
+@media(max-width:700px){.refreshModeTooltip{position:fixed;top:110px;right:12px;left:12px;width:auto}.jobHistoryHead{align-items:flex-end}.jobHistoryTableHead,.jobHistoryRow{grid-template-columns:110px minmax(240px,1.2fr) 165px 165px 100px minmax(230px,1fr)}}
 /* Card "Actions" menu now lives inline in .releaseStates next to Notify/
    Watchlist/Monitor (was previously its own full-width row) - drop the extra
    top margin that spacing assumed, and give its keyboard focus ring room. */
@@ -1033,8 +1033,9 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
    iOS-derived browsers. Freeze the library at its saved scroll offset for
    the full Release Details lifecycle; JavaScript restores it on close. */
 html.releaseOverlayOpen,body.releaseOverlayOpen{overflow:hidden!important;overscroll-behavior:none!important}
-body.releaseOverlayOpen{position:fixed!important;inset:0!important;width:100%!important}
+.releaseDialog::backdrop{background:#090b0ff2!important;backdrop-filter:none!important}
 @media(max-width:650px){
+  body.releaseOverlayOpen{position:fixed!important;inset:0!important;width:100%!important}
   aside{
     height:calc(62px + env(safe-area-inset-bottom))!important;
     padding:5px max(4px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(4px,env(safe-area-inset-left))!important;
@@ -1308,6 +1309,12 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 .releaseToast.show{opacity:1;visibility:visible;transform:none}
 .releaseDetailLoading{display:grid;width:100%;height:100%;min-height:240px;place-items:center;color:#aab3c0;font-size:13px;font-weight:700;letter-spacing:.2px}
 .releaseDetailLoading.error{color:#ef9ca6}
+#releaseDetail{position:relative}
+#releaseDetail.releaseSwapPending::before{
+  content:"";position:fixed;z-index:9998;top:0;left:0;width:28%;height:2px;pointer-events:none;
+  background:linear-gradient(90deg,transparent,var(--accent),transparent);animation:releaseSwapProgress .75s ease-in-out infinite
+}
+@keyframes releaseSwapProgress{from{transform:translateX(-110%)}to{transform:translateX(460%)}}
 
 @media(max-width:650px){
   .actionGroupHead{gap:6px}
