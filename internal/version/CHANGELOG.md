@@ -7,6 +7,18 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.68] - 2026-09-02
+
+### Fixed
+
+- Manual Watchlist changes now always reconcile the configured Watchlist tag
+  with the matching StashApp scene: enabling Watchlist adds the tag even when
+  an older sync record exists, while disabling Watchlist removes only that tag
+  and preserves every unrelated scene tag.
+- Removing a Watchlist tag manually now clears its completed-sync marker so a
+  later scheduled Watchlist assignment can add it again normally, while the
+  scheduled sync retains its existing cached behavior.
+
 ## [1.0.67] - 2026-09-01
 
 ### Added
