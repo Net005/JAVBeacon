@@ -86,6 +86,11 @@ func TestSyncWatchlistReleaseAddsTagAndPreservesExistingTags(t *testing.T) {
 	if err := st.SetStashState(ctx, releases[0].ID, true, "scene-1"); err != nil {
 		t.Fatal(err)
 	}
+	// A previous successful sync is only historical evidence. If the tag was
+	// later removed in StashApp, a manual Watchlist toggle must restore it.
+	if err := st.SaveWatchlistSync(ctx, releases[0].ID, "scene-1", "watchlist", "tag added"); err != nil {
+		t.Fatal(err)
+	}
 	var mutation string
 	s := New(st, time.Second, slog.Default(), nil, nil)
 	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -110,6 +115,99 @@ func TestSyncWatchlistReleaseAddsTagAndPreservesExistingTags(t *testing.T) {
 	}
 	if synced, err := st.WatchlistSynced(ctx, releases[0].ID, "scene-1", "watchlist"); err != nil || !synced {
 		t.Fatalf("synced=%v err=%v", synced, err)
+	}
+}
+
+func TestSyncWatchlistScheduleKeepsPreviouslySyncedFastPath(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "stash-scheduled-watchlist.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": "https://stash.example", "stash_watchlist_tag_id": "watchlist"}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-2", Title: "Scheduled Watchlist", Source: "GIGA", Watchlist: true})
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	if err := st.SetStashState(ctx, releases[0].ID, true, "scene-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveWatchlistSync(ctx, releases[0].ID, "scene-2", "watchlist", "tag added"); err != nil {
+		t.Fatal(err)
+	}
+
+	mutations := 0
+	s := New(st, time.Second, slog.Default(), nil, nil)
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		query := string(body)
+		response := `{"data":{"findTag":{"id":"watchlist"}}}`
+		if strings.Contains(query, "findScene") {
+			response = `{"data":{"findScene":{"tags":[{"id":"keep"}]}}}`
+		}
+		if strings.Contains(query, "sceneUpdate") {
+			mutations++
+			response = `{"data":{"sceneUpdate":{"id":"scene-2"}}}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
+	})
+
+	status, err := s.SyncWatchlist(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Checked != 1 || status.Updated != 0 || status.Skipped != 1 || mutations != 0 {
+		t.Fatalf("status=%+v mutations=%d, want the scheduled sync to retain its cached fast path", status, mutations)
+	}
+}
+
+func TestSyncWatchlistReleaseRemovesTagAndPreservesExistingTags(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "stash-remove-watchlist.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": "https://stash.example", "stash_watchlist_tag_id": "watchlist"}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-3", Title: "Remove Watchlist", Source: "GIGA"})
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	if err := st.SetStashState(ctx, releases[0].ID, true, "scene-3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveWatchlistSync(ctx, releases[0].ID, "scene-3", "watchlist", "tag added"); err != nil {
+		t.Fatal(err)
+	}
+
+	var mutation string
+	s := New(st, time.Second, slog.Default(), nil, nil)
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		query := string(body)
+		response := `{"data":{"findTag":{"id":"watchlist"}}}`
+		if strings.Contains(query, "findScene") {
+			response = `{"data":{"findScene":{"tags":[{"id":"keep"},{"id":"watchlist"}]}}}`
+		}
+		if strings.Contains(query, "sceneUpdate") {
+			mutation = query
+			response = `{"data":{"sceneUpdate":{"id":"scene-3"}}}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
+	})
+
+	state, err := s.SyncWatchlistRelease(ctx, releases[0].ID)
+	if err != nil || state != "untagged" {
+		t.Fatalf("state=%q err=%v", state, err)
+	}
+	if !strings.Contains(mutation, `\"keep\"`) || strings.Contains(mutation, `\"watchlist\"`) {
+		t.Fatalf("mutation did not preserve unrelated tags while removing Watchlist: %s", mutation)
+	}
+	if synced, err := st.WatchlistSynced(ctx, releases[0].ID, "scene-3", "watchlist"); err != nil || synced {
+		t.Fatalf("synced=%v err=%v, want cleared scheduled-sync marker after manual removal", synced, err)
 	}
 }
 

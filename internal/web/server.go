@@ -1734,15 +1734,18 @@ func (s *Server) patchRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	x, _ := s.store.Release(r.Context(), n)
 	if p.Watchlist != nil {
-		if !*p.Watchlist {
-			x.WatchlistSync = "not_watchlist"
-		} else if settingsErr := s.store.SaveSettings(r.Context(), map[string]string{"stash_watchlist_sync_enabled": "true"}); settingsErr != nil {
-			x.WatchlistSync = "error: " + settingsErr.Error()
-		} else if state, syncErr := s.stash.SyncWatchlistRelease(r.Context(), n); syncErr != nil {
-			x.WatchlistSync = "error: " + syncErr.Error()
-			s.log.Warn("immediate Stash Watchlist sync failed", "release_id", n, "video_id", x.VideoID, "error", syncErr)
-		} else {
-			x.WatchlistSync = state
+		if *p.Watchlist {
+			if settingsErr := s.store.SaveSettings(r.Context(), map[string]string{"stash_watchlist_sync_enabled": "true"}); settingsErr != nil {
+				x.WatchlistSync = "error: " + settingsErr.Error()
+			}
+		}
+		if x.WatchlistSync == "" {
+			if state, syncErr := s.stash.SyncWatchlistRelease(r.Context(), n); syncErr != nil {
+				x.WatchlistSync = "error: " + syncErr.Error()
+				s.log.Warn("immediate Stash Watchlist sync failed", "release_id", n, "video_id", x.VideoID, "watchlist", *p.Watchlist, "error", syncErr)
+			} else {
+				x.WatchlistSync = state
+			}
 		}
 	}
 	s.broadcastRelease(x)

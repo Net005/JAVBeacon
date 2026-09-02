@@ -96,6 +96,7 @@ type Store interface {
 	CreateNotification(context.Context, int64, string, string) (bool, error)
 	WatchlistSynced(context.Context, int64, string, string) (bool, error)
 	SaveWatchlistSync(context.Context, int64, string, string, string) error
+	ClearWatchlistSync(context.Context, int64) error
 	StashMissingScenes(context.Context, domain.StashMissingFilter) ([]domain.StashMissingScene, error)
 	StashMissingScenesCount(context.Context, domain.StashMissingFilter) (int, error)
 	StashMissingScene(context.Context, int64) (domain.StashMissingScene, error)
@@ -3275,5 +3276,9 @@ func (s *SQLite) WatchlistSynced(ctx context.Context, releaseID int64, sceneID, 
 }
 func (s *SQLite) SaveWatchlistSync(ctx context.Context, releaseID int64, sceneID, tagID, result string) error {
 	_, e := s.db.ExecContext(ctx, `INSERT INTO watchlist_sync(release_id,stash_scene_id,tag_id,synced_at,result) VALUES(?,?,?,?,?) ON CONFLICT(release_id) DO UPDATE SET stash_scene_id=excluded.stash_scene_id,tag_id=excluded.tag_id,synced_at=excluded.synced_at,result=excluded.result`, releaseID, sceneID, tagID, time.Now().UTC(), result)
+	return e
+}
+func (s *SQLite) ClearWatchlistSync(ctx context.Context, releaseID int64) error {
+	_, e := s.db.ExecContext(ctx, `DELETE FROM watchlist_sync WHERE release_id=?`, releaseID)
 	return e
 }

@@ -529,9 +529,6 @@ func (s *Service) SyncWatchlistRelease(ctx context.Context, releaseID int64) (st
 	if e != nil {
 		return "", e
 	}
-	if !r.Watchlist {
-		return "not_watchlist", nil
-	}
 	base, key, tagID, e := s.watchlistConfig(ctx)
 	if e != nil {
 		return "", e
@@ -542,7 +539,7 @@ func (s *Service) SyncWatchlistRelease(ctx context.Context, releaseID int64) (st
 	if e = s.verifyWatchlistTag(ctx, base, key, tagID); e != nil {
 		return "", e
 	}
-	return s.syncWatchlistRelease(ctx, r, base, key, tagID)
+	return s.setWatchlistTag(ctx, r, base, key, tagID, r.Watchlist)
 }
 
 func (s *Service) watchlistConfig(ctx context.Context) (base, key, tagID string, err error) {
@@ -583,6 +580,14 @@ func (s *Service) syncWatchlistRelease(ctx context.Context, r domain.Release, ba
 	if done, _ := s.store.WatchlistSynced(ctx, r.ID, r.StashSceneID, tagID); done {
 		return "already_synced", nil
 	}
+	return s.setWatchlistTag(ctx, r, base, key, tagID, true)
+}
+
+// setWatchlistTag is the authoritative manual-toggle path. Unlike the
+// scheduled additive sync above, it always reads the scene's current tags
+// and applies both states so a manual Watchlist toggle is reflected in
+// StashApp immediately without disturbing unrelated tags.
+func (s *Service) setWatchlistTag(ctx context.Context, r domain.Release, base, key, tagID string, enabled bool) (string, error) {
 	var scene struct {
 		Data struct {
 			FindScene *struct {
@@ -598,15 +603,30 @@ func (s *Service) syncWatchlistRelease(ctx context.Context, r domain.Release, ba
 	if scene.Data.FindScene == nil {
 		return "pending_scene", nil
 	}
-	tags := []string{}
+	tags := make([]string, 0, len(scene.Data.FindScene.Tags)+1)
+	hasTag := false
 	for _, tag := range scene.Data.FindScene.Tags {
-		tags = append(tags, tag.ID)
 		if tag.ID == tagID {
-			_ = s.store.SaveWatchlistSync(ctx, r.ID, r.StashSceneID, tagID, "tag already present")
-			return "already_tagged", nil
+			hasTag = true
+			if !enabled {
+				continue
+			}
 		}
+		tags = append(tags, tag.ID)
 	}
-	tags = append(tags, tagID)
+	if enabled && hasTag {
+		_ = s.store.SaveWatchlistSync(ctx, r.ID, r.StashSceneID, tagID, "tag already present")
+		return "already_tagged", nil
+	}
+	if !enabled && !hasTag {
+		if e := s.store.ClearWatchlistSync(ctx, r.ID); e != nil {
+			return "", e
+		}
+		return "already_untagged", nil
+	}
+	if enabled {
+		tags = append(tags, tagID)
+	}
 	quoted := make([]string, 0, len(tags))
 	for _, id := range tags {
 		quoted = append(quoted, `"`+escapeGraphQL(id)+`"`)
@@ -615,10 +635,16 @@ func (s *Service) syncWatchlistRelease(ctx context.Context, r domain.Release, ba
 	if e := s.graphql(ctx, base, key, `mutation { sceneUpdate(input: {id: "`+escapeGraphQL(r.StashSceneID)+`", tag_ids: [`+strings.Join(quoted, ",")+`]}) { id } }`, &mutation); e != nil {
 		return "", e
 	}
-	if e := s.store.SaveWatchlistSync(ctx, r.ID, r.StashSceneID, tagID, "tag added"); e != nil {
+	if enabled {
+		if e := s.store.SaveWatchlistSync(ctx, r.ID, r.StashSceneID, tagID, "tag added"); e != nil {
+			return "", e
+		}
+		return "tagged", nil
+	}
+	if e := s.store.ClearWatchlistSync(ctx, r.ID); e != nil {
 		return "", e
 	}
-	return "tagged", nil
+	return "untagged", nil
 }
 func (s *Service) graphql(ctx context.Context, base, key, query string, target any) error {
 	body, _ := json.Marshal(map[string]string{"query": query})
