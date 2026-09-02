@@ -1051,3 +1051,38 @@ func TestSettingsRejectsInvalidSiteGroupSchedules(t *testing.T) {
 		})
 	}
 }
+
+// TestReleasesEndpointVideoIDExactMatch covers the video_id query param
+// wired through releaseFilterFromQuery into domain.ReleaseFilter.VideoID: an
+// exact, case-insensitive match distinct from the fuzzy "search" param -
+// added for the community StashApp JavLibrary scraper's optional
+// JAVBeacon-backed lookup mode, which needs to resolve a scene's DVD code to
+// exactly one release rather than a substring match's several.
+func TestReleasesEndpointVideoIDExactMatch(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "releases.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, videoID := range []string{"SSIS-001", "SSIS-0010"} {
+		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: videoID, Source: "JavLibrary"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Server{store: st, log: slog.Default()}
+
+	rec := httptest.NewRecorder()
+	s.releases(rec, httptest.NewRequest(http.MethodGet, "/api/releases?video_id=ssis-001", nil))
+	var got []domain.Release
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].VideoID != "SSIS-001" {
+		t.Fatalf("expected exactly the SSIS-001 release, got %+v", got)
+	}
+}

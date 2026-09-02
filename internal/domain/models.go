@@ -183,9 +183,16 @@ type ReleaseEdit struct {
 
 type ReleaseFilter struct {
 	Search, Site, Source, Status, Sort, Direction, Category, Entries, SearchExpression string
-	SiteID                                                                             int64
-	Watchlist, HideLocal, MonitorDownload, UsePreferred                                bool
-	Limit, Offset                                                                      int
+	// VideoID, when set, restricts results to an exact (case-insensitive)
+	// video_id match instead of the fuzzy substring matching Search does.
+	// Used for lookups that must resolve to a single specific release - for
+	// example the community StashApp JavLibrary scraper's optional
+	// JAVBeacon-backed mode, which looks a scene up by its exact DVD code
+	// before falling back to scraping JavLibrary directly.
+	VideoID                                             string
+	SiteID                                              int64
+	Watchlist, HideLocal, MonitorDownload, UsePreferred bool
+	Limit, Offset                                       int
 	// ShowNonPreferred, when false (the default), tells Releases/ReleasesCount
 	// to exclude any release matching an ignore rule (see IgnoreTags and
 	// IgnoreTitles) - the Release Library's "hide ignored releases" behavior.

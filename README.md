@@ -253,7 +253,7 @@ Most configuration is stored in the active database and managed from the web int
 | `JAVBEACON_SCREENSHOTS` | Initial screenshot-cache directory | `data/screenshots`; Compose uses `/app/data/screenshots` |
 | `JAVBEACON_INITIAL_USERNAME` | Username created on the first start | `admin` |
 | `JAVBEACON_INITIAL_PASSWORD` | Password created on the first start | `changeme123` |
-| `JAVBEACON_API_KEY` | Optional API compatibility key | unset |
+| `JAVBEACON_API_KEY` | Initial API key (Settings → General → API access generates a random one automatically if this is unset, and is the authoritative source thereafter) | unset (random key auto-generated on first start) |
 | `JAVBEACON_FLARESOLVERR_URL` | Initial Byparr or FlareSolverr-compatible `/v1` endpoint (legacy variable name) | `http://127.0.0.1:8191/v1`; Compose uses `http://byparr:8191/v1` |
 | `JAVBEACON_PAGE_LIMIT` | Initial scrape page limit | `5` |
 | `JAVBEACON_DB_ENGINE` | `sqlite` or `postgres` | `sqlite` |
@@ -310,6 +310,42 @@ go run ./cmd/javbeacon --reset-password 'a-new-long-password'
 ```
 
 For a Docker deployment, run the same binary inside the container with the persistent data volume attached.
+
+## StashApp scraper integration
+
+JAVBeacon can act as a fast local data source for the community
+[JavLibrary Python scraper](https://github.com/stashapp/CommunityScrapers/tree/master/scrapers/JavLibrary_python)
+used by StashApp. That scraper normally fetches every scene from JavLibrary
+itself, which - because of JavLibrary's Cloudflare protection - requires
+Byparr and can be slow. If a release is already in your JAVBeacon library
+(JAVBeacon scraped it from JavLibrary itself), the scraper can be configured
+to fetch that already-scraped data straight from JAVBeacon's API instead,
+and only fall back to scraping JavLibrary directly when JAVBeacon doesn't
+have the release yet.
+
+To enable it:
+
+1. Open Settings → General → API access in JAVBeacon and copy the API key
+   shown there (a random key is generated automatically the first time
+   JAVBeacon starts, so one is already there - use Regenerate if you'd
+   rather issue a new one). Without a key, JAVBeacon's `/api/*` endpoints
+   only accept an authenticated browser session, which a script cannot use.
+2. In `JavLibrary_python.py`, set `JAVBEACON_ENABLED = True` and point
+   `JAVBEACON_URL` and `JAVBEACON_API_KEY` at your JAVBeacon instance and the
+   key from step 1.
+3. Leave `JAVBEACON_FALLBACK_TO_JAVLIBRARY = True` (the default) so scenes
+   JAVBeacon doesn't have yet still scrape normally through Byparr.
+
+This mode only draws on releases whose `source` is JavLibrary, and skips the
+scraper's separate Japanese-alias lookup (JAVBeacon doesn't store a
+performer's Japanese alias) - the same trade-off the scraper's own
+`IGNORE_ALIASES` setting already offers for speed.
+
+It relies on two small, additive `/api/releases` query parameters: an exact,
+case-insensitive `video_id` filter, and `search` matching a release's stored
+scraper ID and product URL in addition to its existing fields (title, video
+ID, actress, studio, tag). Both are safe to use directly if you build your
+own tooling against JAVBeacon's API.
 
 ## Development
 
