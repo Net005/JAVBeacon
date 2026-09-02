@@ -1179,22 +1179,34 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 	var a []any
 	if f.Search != "" {
 		// Every branch of this OR goes through Dialect.CaseInsensitiveLike so
-		// the free-text search box (title, video ID, actress, studio, tag,
-		// and the release's site/"Label") matches regardless of case on both
-		// engines - plain "LIKE ?" happens to already be case-insensitive on
-		// SQLite (its default collation), which is why this drifted: only
-		// the two EXISTS subqueries below were ever routed through the
-		// dialect helper, leaving the rest silently case-sensitive on
-		// PostgreSQL (whose LIKE always is) even though SQLite deployments
-		// never showed a symptom.
-		q += ` AND (` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name") + `) OR EXISTS (SELECT 1 FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE rss.release_id=r.id AND ` + d.CaseInsensitiveLike("ss.title") + `)`
+		// the free-text search box (title, video ID, scraper ID, product
+		// URL, actress, studio, tag, and the release's site/"Label") matches
+		// regardless of case on both engines - plain "LIKE ?" happens to
+		// already be case-insensitive on SQLite (its default collation),
+		// which is why this drifted: only the two EXISTS subqueries below
+		// were ever routed through the dialect helper, leaving the rest
+		// silently case-sensitive on PostgreSQL (whose LIKE always is) even
+		// though SQLite deployments never showed a symptom.
+		//
+		// scraper_id/product_url are included so a stored source-site URL
+		// (e.g. the JavLibrary product page a scene was originally scraped
+		// from) can be used as the search term - the community StashApp
+		// JavLibrary scraper's optional JAVBeacon-backed mode does this to
+		// resolve an already-tagged scene without re-scraping JavLibrary.
+		q += ` AND (` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR ` + d.CaseInsensitiveLike("r.scraper_id") + ` OR ` + d.CaseInsensitiveLike("r.product_url") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name") + `) OR EXISTS (SELECT 1 FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE rss.release_id=r.id AND ` + d.CaseInsensitiveLike("ss.title") + `)`
 		v := "%" + f.Search + "%"
-		a = append(a, v, v, v, v, v, v, v)
+		a = append(a, v, v, v, v, v, v, v, v, v)
 		if reversed := reverseTwoWordName(f.Search); reversed != "" {
 			q += ` OR EXISTS (SELECT 1 FROM release_actresses a2 WHERE a2.release_id=r.id AND ` + d.CaseInsensitiveLike("a2.name") + `)`
 			a = append(a, "%"+reversed+"%")
 		}
 		q += `)`
+	}
+	// VideoID is an exact (case-insensitive) match, distinct from the fuzzy
+	// Search above - see its doc comment on domain.ReleaseFilter.
+	if f.VideoID != "" {
+		q += ` AND LOWER(r.video_id)=LOWER(?)`
+		a = append(a, f.VideoID)
 	}
 	if f.Source != "" {
 		q += ` AND LOWER(r.source)=LOWER(?)`

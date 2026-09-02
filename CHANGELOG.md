@@ -7,6 +7,35 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.69] - 2026-09-02
+
+### Added
+
+- The API key (`JAVBEACON_API_KEY`) is now configurable from Settings →
+  General → API access, with Copy and Regenerate buttons, and takes effect
+  immediately without a restart. A fresh install generates a random key
+  automatically the first time it starts; an existing install's
+  `JAVBEACON_API_KEY` environment variable still seeds the initial key on
+  upgrade. Clearing the field and saving disables API-key access entirely.
+- `GET /api/releases` (and `/api/releases/count`) now accept a `video_id`
+  query parameter for an exact, case-insensitive release lookup, and the
+  existing free-text `search` parameter now also matches a release's stored
+  scraper ID and product URL. Both support the community StashApp JavLibrary
+  scraper's new optional JAVBeacon-backed lookup mode, which resolves a
+  scene directly from JAVBeacon's own already-scraped release library
+  instead of re-scraping JavLibrary through Byparr/Cloudflare.
+
+### Fixed
+
+- Release Details no longer shows a stale native tooltip alongside its
+  redesigned Downloading/Downloaded and StashApp status badges. Downloading
+  had kept its old "A torrent for this release is currently downloading"
+  mouseover text underneath the newer hover telemetry card (ETA, seeds/
+  peers, last seen complete), and Downloaded/StashApp had kept an old
+  "Downloaded on .../Added to StashApp on ..." mouseover repeating the date
+  already shown directly on the badge. The Release Library grid's compact
+  pills are unaffected - they still show that text as their only tooltip.
+
 ## [1.0.68] - 2026-09-02
 
 ### Fixed

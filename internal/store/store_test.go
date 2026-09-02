@@ -2280,3 +2280,72 @@ func TestUpsertReleaseDoesNotBumpUpdatedAtOnArtworkOnlyChange(t *testing.T) {
 		t.Fatalf("artwork URLs were not applied: image=%q screenshots=%v", after[0].ImageURL, after[0].Screenshots)
 	}
 }
+
+// TestReleasesVideoIDExactMatch covers the exact-match ReleaseFilter.VideoID
+// path added for the community StashApp JavLibrary scraper's optional
+// JAVBeacon-backed lookup mode: given a scene's DVD code, it must resolve to
+// exactly one release and must not fuzzy-match a similar-looking code the
+// way Search's substring matching would.
+func TestReleasesVideoIDExactMatch(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releases := []domain.Release{
+		{SiteID: site.ID, VideoID: "SSIS-001", ScraperID: "javli00186", Title: "SSIS-001 Some Title", Source: "JavLibrary", ProductURL: "https://www.javlibrary.com/en/?v=javli00186"},
+		// Deliberately similar VideoID so a substring Search for "SSIS-001"
+		// would match this one too - VideoID must not.
+		{SiteID: site.ID, VideoID: "SSIS-0010", ScraperID: "javli00187", Title: "SSIS-0010 Another Title", Source: "JavLibrary", ProductURL: "https://www.javlibrary.com/en/?v=javli00187"},
+	}
+	for _, r := range releases {
+		if created, err := s.UpsertRelease(ctx, r); err != nil || !created {
+			t.Fatalf("seed upsert %s: created=%v err=%v", r.VideoID, created, err)
+		}
+	}
+
+	exact, err := s.Releases(ctx, domain.ReleaseFilter{VideoID: "ssis-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exact) != 1 || exact[0].VideoID != "SSIS-001" {
+		t.Fatalf("expected exactly one case-insensitive exact match for ssis-001, got %+v", exact)
+	}
+
+	fuzzy, err := s.Releases(ctx, domain.ReleaseFilter{Search: "SSIS-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fuzzy) != 2 {
+		t.Fatalf("expected Search to still fuzzy-match both releases, got %d", len(fuzzy))
+	}
+
+	byURL, err := s.Releases(ctx, domain.ReleaseFilter{Search: "https://www.javlibrary.com/en/?v=javli00186"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byURL) != 1 || byURL[0].VideoID != "SSIS-001" {
+		t.Fatalf("expected Search to match by stored product_url, got %+v", byURL)
+	}
+
+	byScraperID, err := s.Releases(ctx, domain.ReleaseFilter{Search: "javli00187"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byScraperID) != 1 || byScraperID[0].VideoID != "SSIS-0010" {
+		t.Fatalf("expected Search to match by stored scraper_id, got %+v", byScraperID)
+	}
+
+	none, err := s.Releases(ctx, domain.ReleaseFilter{VideoID: "SSIS-999"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("expected no match for an unknown video_id, got %+v", none)
+	}
+}

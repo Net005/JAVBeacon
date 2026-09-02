@@ -44,6 +44,7 @@ type Server struct {
 	covers        *covers.Cache
 	screenshots   *screenshots.Cache
 	key           string
+	keyMu         sync.RWMutex
 	dbEngine      string
 	sqlitePath    string
 	log           *slog.Logger
@@ -113,6 +114,27 @@ func New(st store.Store, authService *auth.Service, m *monitor.Service, historic
 	s.routes()
 	return s.security(s.mux)
 }
+
+// apiKey returns the currently active API key, safe for concurrent use -
+// it is seeded once at startup (from JAVBEACON_API_KEY or a generated
+// random default, see app.New) but can change at runtime whenever the
+// Settings UI saves a new api_key value, so every read goes through this
+// accessor rather than the raw key field.
+func (s *Server) apiKey() string {
+	s.keyMu.RLock()
+	defer s.keyMu.RUnlock()
+	return s.key
+}
+
+// setAPIKey updates the active API key at runtime (called after the
+// Settings UI saves a new api_key value) so newly-issued requests are
+// checked against it immediately, without an app restart.
+func (s *Server) setAPIKey(key string) {
+	s.keyMu.Lock()
+	defer s.keyMu.Unlock()
+	s.key = key
+}
+
 func (s *Server) routes() {
 	static, _ := fs.Sub(assets, "static")
 	s.mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1020,7 +1042,8 @@ func (s *Server) security(next http.Handler) http.Handler {
 			if cookie != nil {
 				token = cookie.Value
 			}
-			apiKeyValid := s.key != "" && (r.Header.Get("Authorization") == "Bearer "+s.key || r.URL.Query().Get("api_key") == s.key)
+			key := s.apiKey()
+			apiKeyValid := key != "" && (r.Header.Get("Authorization") == "Bearer "+key || r.URL.Query().Get("api_key") == key)
 			if !apiKeyValid && !s.auth.Valid(r.Context(), token) {
 				if strings.HasPrefix(r.URL.Path, "/api/") {
 					s.problem(w, http.StatusUnauthorized, "authentication required")
@@ -1181,7 +1204,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &x) {
 		return
 	}
-	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "stash_watchlist_tag_id": true, "stash_watchlist_sync_enabled": true, "stash_watchlist_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
+	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "api_key": true, "stash_watchlist_tag_id": true, "stash_watchlist_sync_enabled": true, "stash_watchlist_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
 	for _, kind := range monitor.JobPriorityKinds {
 		allowed[monitor.JobPrioritySettingKey(kind)] = true
 	}
@@ -1449,6 +1472,9 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, 500, e.Error())
 		return
 	}
+	if key, ok := x["api_key"]; ok {
+		s.setAPIKey(key)
+	}
 	s.monitor.ApplySettings(r.Context())
 	if action, ok := x["qb_completed_action"]; ok {
 		s.log.Info("qBittorrent completed-download cleanup settings updated", "cleanup_rule", action, "minimum_seed_ratio", x["minimum_seed_ratio"], "files_retained", true)
@@ -1563,7 +1589,7 @@ func validReleaseDateBound(raw string) string {
 func releaseFilterFromQuery(q url.Values, settings map[string]string) domain.ReleaseFilter {
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
-	f := domain.ReleaseFilter{Search: q.Get("search"), Site: q.Get("site"), Status: q.Get("status"), Sort: q.Get("sort"), Direction: q.Get("direction"), Category: q.Get("category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), Watchlist: q.Get("watchlist") == "true", MonitorDownload: q.Get("monitor_download") == "true", HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", MinReleaseDate: validReleaseDateBound(q.Get("min_release_date")), MaxReleaseDate: validReleaseDateBound(q.Get("max_release_date")), Limit: limit, Offset: offset}
+	f := domain.ReleaseFilter{Search: q.Get("search"), VideoID: strings.TrimSpace(q.Get("video_id")), Site: q.Get("site"), Status: q.Get("status"), Sort: q.Get("sort"), Direction: q.Get("direction"), Category: q.Get("category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), Watchlist: q.Get("watchlist") == "true", MonitorDownload: q.Get("monitor_download") == "true", HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", MinReleaseDate: validReleaseDateBound(q.Get("min_release_date")), MaxReleaseDate: validReleaseDateBound(q.Get("max_release_date")), Limit: limit, Offset: offset}
 	if !f.ShowNonPreferred {
 		f.IgnoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
 		f.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])

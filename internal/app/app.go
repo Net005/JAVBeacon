@@ -22,6 +22,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/monitor"
 	"github.com/Net005/JAVBeacon/internal/scraper"
 	"github.com/Net005/JAVBeacon/internal/screenshots"
+	"github.com/Net005/JAVBeacon/internal/setup"
 	"github.com/Net005/JAVBeacon/internal/stash"
 	"github.com/Net005/JAVBeacon/internal/store"
 	buildversion "github.com/Net005/JAVBeacon/internal/version"
@@ -254,6 +255,34 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		st.Close()
 		return nil, err
 	}
+	// apiKey is resolved once here rather than read fresh from cfg.APIKey on
+	// every request: the "api_key" setting is only present in the settings
+	// table once something has explicitly saved it, so its absence cleanly
+	// means "never configured" (as opposed to "configured as empty", which a
+	// user can still choose via the Settings UI to disable API-key auth).
+	// On first run we seed it once - from JAVBEACON_API_KEY if set, matching
+	// the pre-existing env var so upgrading installs keep working unchanged,
+	// otherwise a fresh random key via the same generator the PostgreSQL
+	// setup wizard uses - and persist it so it survives restarts and is
+	// visible/editable from Settings from then on. webapp.New receives this
+	// resolved value as the server's initial in-memory key; later edits via
+	// the Settings UI update it live through Server.setAPIKey.
+	apiKey, ok := settings["api_key"]
+	if !ok {
+		apiKey = strings.TrimSpace(cfg.APIKey)
+		if apiKey == "" {
+			generated, genErr := setup.GeneratePassword()
+			if genErr != nil {
+				st.Close()
+				return nil, genErr
+			}
+			apiKey = generated
+		}
+		if err := st.SaveSettings(context.Background(), map[string]string{"api_key": apiKey}); err != nil {
+			st.Close()
+			return nil, err
+		}
+	}
 	akiba := scraper.NewAkiba(cfg.AkibaBaseURL, cfg.AkibaPath, cfg.RequestTimeout, log)
 	javlibrary := scraper.NewJavLibrary(cfg.RequestTimeout, cfg.FlareSolverrURL, cfg.FlareSolverrCooldown, log)
 	coverCache, err := covers.New(settings["cover_directory"], cfg.RequestTimeout, log)
@@ -289,7 +318,7 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		st.Close()
 		return nil, err
 	}
-	handler := webapp.New(st, authService, mon, historicalBackfill, stashSync, downloadService, coverCache, cfg.APIKey, cfg.DatabaseEngine, cfg.DatabasePath, log, logs, screenshotCache)
+	handler := webapp.New(st, authService, mon, historicalBackfill, stashSync, downloadService, coverCache, apiKey, cfg.DatabaseEngine, cfg.DatabasePath, log, logs, screenshotCache)
 	return &App{cfg: cfg, log: log, store: st, monitor: mon, stash: stashSync, downloads: downloadService, server: &http.Server{Addr: cfg.ListenAddress, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}}, nil
 }
 
