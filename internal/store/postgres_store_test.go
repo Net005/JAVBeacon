@@ -127,7 +127,7 @@ func TestPostgresStoreFullLifecycle(t *testing.T) {
 		t.Fatalf("JSONArrayAgg not decoded right: %+v", items[0])
 	}
 	local := true
-	if err := s.PatchRelease(ctx, items[0].ID, nil, &local, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := s.PatchRelease(ctx, items[0].ID, nil, &local, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	stats, err := s.Stats(ctx)

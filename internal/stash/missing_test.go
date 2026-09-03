@@ -512,7 +512,178 @@ func TestApplySelectionMonitorAndDownloadSearchesInBackground(t *testing.T) {
 	}
 }
 
+// TestApplySelectionSetsIgnoreLocalForceDownloadFlagAutomatically covers the
+// second half of the "Missing Library Files" fix: unlike allowNonPreferred
+// (an explicit checkbox), IgnoreLocalForceDownload is always set on a
+// release the moment runApply marks it monitored, in both apply modes and
+// regardless of the allowNonPreferred toggle - because every release
+// reachable from Missing Library Files already has a StashApp scene by
+// definition of being a "missing file" entry, so download.Service must
+// never skip it as an "already in StashApp" duplicate.
+func TestApplySelectionSetsIgnoreLocalForceDownloadFlagAutomatically(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("monitor only", func(t *testing.T) {
+		st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "apply-ignore-local-monitor-only.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		site, _ := st.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: true})
+		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "ILF-1", Title: "T", Source: "GIGA"}); err != nil {
+			t.Fatal(err)
+		}
+		releases, _ := st.Releases(ctx, domain.ReleaseFilter{Search: "ILF-1", Limit: 1})
+		id, err := st.UpsertStashMissingScene(ctx, domain.StashMissingScene{StashSceneID: "scn-ilf-1", Title: "T", Code: "ILF-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.LinkStashMissingRelease(ctx, id, releases[0].ID); err != nil {
+			t.Fatal(err)
+		}
+
+		s := New(st, time.Second, slog.Default(), nil, nil)
+		s.runApply(ctx, []int64{id}, ApplyModeMonitorOnly, false)
+
+		release, err := st.Release(ctx, releases[0].ID)
+		if err != nil || !release.IgnoreLocalForceDownload {
+			t.Fatalf("expected IgnoreLocalForceDownload=true after a monitor-only apply, got %+v (err=%v)", release, err)
+		}
+	})
+
+	t.Run("monitor and download, allowNonPreferred off", func(t *testing.T) {
+		st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "apply-ignore-local-monitor-download.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		mux := http.NewServeMux()
+		mux.HandleFunc("/feed", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`<rss><channel></channel></rss>`))
+		})
+		server := httptest.NewServer(mux)
+		defer server.Close()
+		if err := st.SaveSettings(ctx, map[string]string{"search_url_template": server.URL + "/feed?q=<release_id>"}); err != nil {
+			t.Fatal(err)
+		}
+		site, _ := st.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: false, Download: false})
+		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "ILF-2", Title: "T", Source: "GIGA"}); err != nil {
+			t.Fatal(err)
+		}
+		releases, _ := st.Releases(ctx, domain.ReleaseFilter{Search: "ILF-2", Limit: 1})
+		id, err := st.UpsertStashMissingScene(ctx, domain.StashMissingScene{StashSceneID: "scn-ilf-2", Title: "T", Code: "ILF-2"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.LinkStashMissingRelease(ctx, id, releases[0].ID); err != nil {
+			t.Fatal(err)
+		}
+
+		downloads := download.New(st, 2*time.Second, slog.Default())
+		s := New(st, time.Second, slog.Default(), nil, downloads)
+		s.runApply(ctx, []int64{id}, ApplyModeMonitorDownload, false)
+
+		release, err := st.Release(ctx, releases[0].ID)
+		if err != nil || !release.IgnoreLocalForceDownload {
+			t.Fatalf("expected IgnoreLocalForceDownload=true after a monitor+download apply, got %+v (err=%v)", release, err)
+		}
+	})
+}
+
+// TestApplySelectionMonitorDownloadDownloadsDespiteExistingLocalStashScene
+// is the core end-to-end proof of the reported bug and its fix: a release
+// recovered through Missing Library Files already has a matched StashApp
+// scene (is_local=true - the scene exists, only its file on disk is
+// missing), which download.Service.duplicate would otherwise treat as
+// "release already exists in StashApp" and silently skip. Because runApply
+// now sets IgnoreLocalForceDownload automatically, the immediate
+// search-and-download this apply run drives must find and actually queue
+// the download instead of reporting not_found.
+func TestApplySelectionMonitorDownloadDownloadsDespiteExistingLocalStashScene(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "apply-download-despite-local.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/feed", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>` +
+			`<item><title>trusted@ ILF-3 seeded</title><link>magnet:?xt=urn:btih:ilf3hash</link><nyaa:seeders>3</nyaa:seeders></item>` +
+			`</channel></rss>`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	qbMux := http.NewServeMux()
+	qbMux.HandleFunc("POST /api/v2/auth/login", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("Ok.")) })
+	qbMux.HandleFunc("GET /api/v2/torrents/categories", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) })
+	var added bool
+	qbMux.HandleFunc("GET /api/v2/torrents/info", func(w http.ResponseWriter, _ *http.Request) {
+		if !added {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"hash":"ilf3hash","name":"trusted@ ILF-3 seeded"}]`))
+	})
+	qbMux.HandleFunc("POST /api/v2/torrents/add", func(w http.ResponseWriter, _ *http.Request) {
+		added = true
+		_, _ = w.Write([]byte("Ok."))
+	})
+	qbServer := httptest.NewServer(qbMux)
+	defer qbServer.Close()
+
+	if err := st.SaveSettings(ctx, map[string]string{
+		"accepted_patterns":   "trusted@",
+		"search_url_template": server.URL + "/feed?q=<release_id>",
+		"qb_url":              qbServer.URL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: false, Download: false})
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "ILF-3", Title: "T", Source: "GIGA"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Search: "ILF-3", Limit: 1})
+	// The defining trait of a Missing Library Files entry: already linked
+	// in StashApp before this apply run ever touches it.
+	if err := st.SetStashState(ctx, releases[0].ID, true, "scn-ilf-3"); err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.UpsertStashMissingScene(ctx, domain.StashMissingScene{StashSceneID: "scn-ilf-3", Title: "T", Code: "ILF-3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LinkStashMissingRelease(ctx, id, releases[0].ID); err != nil {
+		t.Fatal(err)
+	}
+
+	downloads := download.New(st, 2*time.Second, slog.Default())
+	s := New(st, time.Second, slog.Default(), nil, downloads)
+	s.runApply(ctx, []int64{id}, ApplyModeMonitorDownload, false)
+
+	status := s.ApplyRunStatus()
+	if status.Found != 1 || status.NotFound != 0 || status.Failed != 0 {
+		t.Fatalf("expected found=1 despite the release already being linked in StashApp, got %+v", status)
+	}
+	rows, err := st.Downloads(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var downloading bool
+	for _, d := range rows {
+		if d.Status == "downloading" {
+			downloading = true
+		}
+	}
+	if !downloading {
+		t.Fatalf("expected a downloading download row despite the release already being local, got %+v", rows)
+	}
+}
+
 // TestApplySelectionThreadsAllowNonPreferredThroughToSearchAndDownloadNow is
+
 // TODO-2.0 Task A's coverage for StartApply/runApply's new allowNonPreferred
 // parameter: given an identical feed carrying only a seeded-but-unaccepted
 // torrent, the apply job must report "not_found" when the toggle is off

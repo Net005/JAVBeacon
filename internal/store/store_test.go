@@ -33,7 +33,7 @@ func TestSQLiteReleaseLifecycle(t *testing.T) {
 		t.Fatalf("items=%d err=%v", len(items), err)
 	}
 	local := true
-	if err := s.PatchRelease(ctx, items[0].ID, nil, &local, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := s.PatchRelease(ctx, items[0].ID, nil, &local, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	stats, err := s.Stats(ctx)
@@ -909,7 +909,7 @@ func TestReleaseLabelAndDownloadStatus(t *testing.T) {
 	}
 
 	updated := "Patched Label"
-	if err := s.PatchRelease(ctx, got.ID, nil, nil, nil, nil, nil, nil, &updated, nil); err != nil {
+	if err := s.PatchRelease(ctx, got.ID, nil, nil, nil, nil, nil, nil, &updated, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := fetch(); got.Label != "Patched Label" {
@@ -1460,7 +1460,7 @@ func TestReleaseDownloadMonitoringPersistsAndFilters(t *testing.T) {
 	_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "MON-1", Title: "Monitor me", Source: "GIGA"})
 	releases, _ := s.Releases(ctx, domain.ReleaseFilter{Limit: 10})
 	monitor := true
-	if err := s.PatchRelease(ctx, releases[0].ID, nil, nil, nil, nil, nil, &monitor, nil, nil); err != nil {
+	if err := s.PatchRelease(ctx, releases[0].ID, nil, nil, nil, nil, nil, &monitor, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	monitored, err := s.Releases(ctx, domain.ReleaseFilter{MonitorDownload: true, Limit: 10})
@@ -1493,13 +1493,13 @@ func TestBulkSetReleaseFlagsAppliesToEverySelectedReleaseAndFilterFindsThem(t *t
 	monitor := true
 	for _, r := range rows {
 		ids = append(ids, r.ID)
-		if err := s.PatchRelease(ctx, r.ID, nil, nil, nil, nil, nil, &monitor, nil, nil); err != nil {
+		if err := s.PatchRelease(ctx, r.ID, nil, nil, nil, nil, nil, &monitor, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	allow := true
-	n, err := s.BulkSetReleaseFlags(ctx, ids, nil, &allow)
+	n, err := s.BulkSetReleaseFlags(ctx, ids, nil, &allow, nil)
 	if err != nil || n != 3 {
 		t.Fatalf("expected 3 rows updated, got n=%d err=%v", n, err)
 	}
@@ -1509,7 +1509,7 @@ func TestBulkSetReleaseFlagsAppliesToEverySelectedReleaseAndFilterFindsThem(t *t
 	}
 
 	stopMonitoring := false
-	n, err = s.BulkSetReleaseFlags(ctx, ids[:2], &stopMonitoring, nil)
+	n, err = s.BulkSetReleaseFlags(ctx, ids[:2], &stopMonitoring, nil, nil)
 	if err != nil || n != 2 {
 		t.Fatalf("expected 2 rows updated, got n=%d err=%v", n, err)
 	}
@@ -1522,6 +1522,96 @@ func TestBulkSetReleaseFlagsAppliesToEverySelectedReleaseAndFilterFindsThem(t *t
 	stillFlagged, err := s.Releases(ctx, domain.ReleaseFilter{AllowNonPreferredFilenames: &allow, Limit: 10})
 	if err != nil || len(stillFlagged) != 3 {
 		t.Fatalf("expected the allow-non-preferred flag to survive an unrelated bulk update, got %+v err=%v", stillFlagged, err)
+	}
+}
+
+// TestPatchReleaseSetsIgnoreLocalForceDownload covers the "Download
+// monitoring area" flag that mirrors AllowNonPreferredFilenames: setting it
+// on a single release via PatchRelease persists it, the
+// IgnoreLocalForceDownload filter finds it again, and leaving the pointer
+// nil on an unrelated patch call never disturbs it.
+func TestPatchReleaseSetsIgnoreLocalForceDownload(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "ignore-local-patch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, _ := s.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "GIGA", Enabled: true})
+	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "IGN-1", Title: "T", Source: "GIGA"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{Search: "IGN-1", Limit: 1})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("release setup failed: rows=%+v err=%v", rows, err)
+	}
+
+	ignore := true
+	if err := s.PatchRelease(ctx, rows[0].ID, nil, nil, nil, nil, nil, nil, nil, nil, &ignore); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Release(ctx, rows[0].ID)
+	if err != nil || !got.IgnoreLocalForceDownload {
+		t.Fatalf("expected IgnoreLocalForceDownload=true, got %+v (err=%v)", got, err)
+	}
+	flagged, err := s.Releases(ctx, domain.ReleaseFilter{IgnoreLocalForceDownload: &ignore, Limit: 10})
+	if err != nil || len(flagged) != 1 || flagged[0].ID != rows[0].ID {
+		t.Fatalf("expected the IgnoreLocalForceDownload filter to find the release, got %+v err=%v", flagged, err)
+	}
+
+	label := "relabeled"
+	if err := s.PatchRelease(ctx, rows[0].ID, nil, nil, nil, nil, nil, nil, &label, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	stillFlagged, err := s.Release(ctx, rows[0].ID)
+	if err != nil || !stillFlagged.IgnoreLocalForceDownload {
+		t.Fatalf("expected IgnoreLocalForceDownload to survive an unrelated patch call, got %+v err=%v", stillFlagged, err)
+	}
+}
+
+// TestBulkSetReleaseFlagsAppliesIgnoreLocalForceDownloadFlag mirrors
+// TestBulkSetReleaseFlagsAppliesToEverySelectedReleaseAndFilterFindsThem for
+// the third bulk-settable flag: bulk-setting it across every selected
+// release id, the filter finding them again, and an unrelated bulk call
+// (stop monitoring) leaving it untouched.
+func TestBulkSetReleaseFlagsAppliesIgnoreLocalForceDownloadFlag(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "bulk-ignore-local.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, _ := s.SaveSite(ctx, domain.Site{Title: "Bulk", Type: "Site", Name: "GIGA", Enabled: true})
+	for _, videoID := range []string{"BULKIL-1", "BULKIL-2", "BULKIL-3"} {
+		_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: "T", Source: "GIGA"})
+	}
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("release setup failed: rows=%+v err=%v", rows, err)
+	}
+	var ids []int64
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+	}
+
+	ignore := true
+	n, err := s.BulkSetReleaseFlags(ctx, ids, nil, nil, &ignore)
+	if err != nil || n != 3 {
+		t.Fatalf("expected 3 rows updated, got n=%d err=%v", n, err)
+	}
+	flagged, err := s.Releases(ctx, domain.ReleaseFilter{IgnoreLocalForceDownload: &ignore, Limit: 10})
+	if err != nil || len(flagged) != 3 {
+		t.Fatalf("expected all 3 releases to match the filter, got %+v err=%v", flagged, err)
+	}
+
+	stopMonitoring := false
+	n, err = s.BulkSetReleaseFlags(ctx, ids[:2], &stopMonitoring, nil, nil)
+	if err != nil || n != 2 {
+		t.Fatalf("expected 2 rows updated, got n=%d err=%v", n, err)
+	}
+	stillFlagged, err := s.Releases(ctx, domain.ReleaseFilter{IgnoreLocalForceDownload: &ignore, Limit: 10})
+	if err != nil || len(stillFlagged) != 3 {
+		t.Fatalf("expected the ignore-local flag to survive an unrelated bulk update, got %+v err=%v", stillFlagged, err)
 	}
 }
 
