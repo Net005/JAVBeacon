@@ -7,6 +7,22 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Monitored releases can now be flagged "Ignore StashApp Local (force
+  download)" - a new persistent per-release override, alongside the
+  existing "Allow non-preferred filenames" flag, in the Download
+  Monitoring → Monitored releases tab (filter checkbox and bulk on/off
+  actions). A release with this flag set is downloaded by the scheduled
+  search job (and any manual search) even though it already has a matched
+  StashApp scene, instead of being skipped as an "already exists" duplicate.
+- Missing Library Files now sets that new flag automatically, on every
+  release it marks monitored (both "Set Monitored Only" and "Set Monitored
+  + Download + Search"): a release recovered there already has a StashApp
+  scene by definition - only its file on disk is missing - so it must never
+  be skipped as a duplicate the way an ordinary already-linked release
+  would be.
+
 ## [1.0.69] - 2026-09-02
 
 ### Added

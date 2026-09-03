@@ -536,7 +536,7 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 			return x, e
 		}
 	}
-	if reason, existingID, replaceable, e := s.duplicate(ctx, r, sourceType == "Manual Search"); e != nil {
+	if reason, existingID, replaceable, e := s.duplicate(ctx, r, sourceType == "Manual Search" || r.IgnoreLocalForceDownload); e != nil {
 		x.Status = "failed"
 		x.Error = e.Error()
 		x, _ = s.store.SaveDownload(ctx, x)
@@ -1106,7 +1106,7 @@ func (s *Service) runMonitoredSearch(ctx context.Context, schedule string, getJo
 			job.Skipped++
 			continue
 		}
-		if reason, _, _, err := s.duplicate(ctx, release, false); err != nil {
+		if reason, _, _, err := s.duplicate(ctx, release, release.IgnoreLocalForceDownload); err != nil {
 			job.Failed++
 			job.Error = err.Error()
 			continue
@@ -1388,7 +1388,7 @@ func (s *Service) releaseNotifications(ctx context.Context) {
 					for _, result := range results {
 						if result.Accepted {
 							v := true
-							_ = s.store.PatchRelease(ctx, r.ID, &v, nil, nil, nil, nil, nil, nil, nil)
+							_ = s.store.PatchRelease(ctx, r.ID, &v, nil, nil, nil, nil, nil, nil, nil, nil)
 							r.Released = true
 							break
 						}

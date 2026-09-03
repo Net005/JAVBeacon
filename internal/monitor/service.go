@@ -1007,7 +1007,7 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 					if releaseID == 0 {
 						job.Error = "new release could not be reloaded for Watchlist marking"
 						s.log.Error("future release Watchlist marking failed", "site", site.Title, "video_id", r.VideoID, "error", job.Error)
-					} else if patchErr := s.store.PatchRelease(ctx, releaseID, nil, nil, nil, nil, &value, nil, nil, nil); patchErr != nil {
+					} else if patchErr := s.store.PatchRelease(ctx, releaseID, nil, nil, nil, nil, &value, nil, nil, nil, nil); patchErr != nil {
 						job.Error = patchErr.Error()
 						s.log.Error("future release Watchlist marking failed", "site", site.Title, "release_id", releaseID, "video_id", r.VideoID, "error", patchErr)
 					} else {

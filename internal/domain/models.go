@@ -130,6 +130,19 @@ type Release struct {
 	// release that needed the relaxed rule once keeps getting it on every
 	// future scheduled check too.
 	AllowNonPreferredFilenames bool `json:"allow_non_preferred_filenames"`
+	// IgnoreLocalForceDownload persists a per-release override that makes
+	// download.Service treat this release as needing a download even
+	// though it already has a matched StashApp scene (Local/StashSceneID
+	// set) - the normal rule (download.Service.duplicate) otherwise skips
+	// any release already linked in StashApp, on the assumption its file
+	// already exists. That assumption is wrong for a release recovered
+	// through Missing Library Files: the scene is linked, but its actual
+	// file on disk is what's missing, so runApply sets this flag
+	// automatically whenever it marks such a release monitored. It can
+	// also be set directly (or via the "Monitored releases" bulk actions)
+	// for any other release whose local copy is known bad/gone despite
+	// still being linked in StashApp.
+	IgnoreLocalForceDownload bool `json:"ignore_local_force_download"`
 	// OCounter, PlayCount, LastPlayedAt, and LastOCountAt mirror
 	// StashMissingScene's identically-named/purposed fields (stash_missing.go)
 	// but for a release already matched to a StashApp scene: best-effort,
@@ -209,6 +222,11 @@ type ReleaseFilter struct {
 	// same name: nil means no filter, true/false restrict to releases with
 	// the flag set/unset.
 	AllowNonPreferredFilenames *bool
+	// IgnoreLocalForceDownload filters the "Releases checked by the
+	// scheduled job" table by the persistent per-release override of the
+	// same name: nil means no filter, true/false restrict to releases with
+	// the flag set/unset.
+	IgnoreLocalForceDownload *bool
 	// MinReleaseDate/MaxReleaseDate restrict r.release_date to an inclusive
 	// "YYYY-MM-DD" range when set (empty means unbounded on that side). The
 	// Release Library's Released tab uses this for its configurable

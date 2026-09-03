@@ -735,6 +735,10 @@ func (s *Service) ApplyRunStatus() ApplyStatus {
 // as-is (see its doc comment) - it enables the TODO-2.0 Task A fallback chain
 // that accepts a seeded-but-unaccepted, or failing that merely most-recent,
 // result instead of requiring a clean accepted-filename-pattern match.
+// Both modes also always set IgnoreLocalForceDownload on the release (see
+// its doc comment) - unlike allowNonPreferred this is not a toggle, since
+// every release reachable from here already has a StashApp scene by
+// definition of being a "missing file" entry.
 func (s *Service) StartApply(ctx context.Context, ids []int64, mode string, allowNonPreferred bool) error {
 	s.applyMu.Lock()
 	if s.applyStatus.Running {
@@ -797,13 +801,25 @@ func (s *Service) runApply(ctx context.Context, ids []int64, mode string, allowN
 		if allowNonPreferred {
 			allowNonPreferredFlag = &allowNonPreferred
 		}
-		if err := s.store.PatchRelease(ctx, release.ID, nil, nil, nil, nil, nil, &monitor, nil, allowNonPreferredFlag); err != nil {
+		// ignoreLocal is always set (not conditional like allowNonPreferred)
+		// whenever a release is marked monitored from here: a Missing
+		// Library Files entry means the release's StashApp scene already
+		// exists (release.Local/StashSceneID set) but its actual file on
+		// disk is what's gone missing - the exact case
+		// download.Service.duplicate's normal "already exists in StashApp"
+		// skip gets wrong. Without this, both this apply's own immediate
+		// SearchAndDownloadNow call below and every future scheduled
+		// monitored-search check would silently skip these releases
+		// forever, since they show as already linked in StashApp.
+		ignoreLocal := true
+		if err := s.store.PatchRelease(ctx, release.ID, nil, nil, nil, nil, nil, &monitor, nil, allowNonPreferredFlag, &ignoreLocal); err != nil {
 			record(ApplyResult{SceneID: id, VideoID: release.VideoID, Status: "failed", Error: err.Error()}, true)
 			continue
 		}
 		if allowNonPreferred {
 			release.AllowNonPreferredFilenames = true
 		}
+		release.IgnoreLocalForceDownload = true
 		result.Monitored++
 		if mode != ApplyModeMonitorDownload {
 			record(ApplyResult{SceneID: id, VideoID: release.VideoID, Status: "monitored"}, false)

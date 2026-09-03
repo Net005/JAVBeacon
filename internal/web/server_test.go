@@ -851,7 +851,7 @@ func TestPatchReleasesBulkAppliesStopMonitoringAndAllowNonPreferredFlag(t *testi
 	monitor := true
 	for _, r := range rows {
 		ids = append(ids, r.ID)
-		if err := st.PatchRelease(ctx, r.ID, nil, nil, nil, nil, nil, &monitor, nil, nil); err != nil {
+		if err := st.PatchRelease(ctx, r.ID, nil, nil, nil, nil, nil, &monitor, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -884,6 +884,88 @@ func TestPatchReleasesBulkAppliesStopMonitoringAndAllowNonPreferredFlag(t *testi
 		if !got.AllowNonPreferredFilenames {
 			t.Fatalf("release %d should have the allow-non-preferred flag set: %+v", id, got)
 		}
+	}
+}
+
+// TestPatchReleasesBulkAppliesIgnoreLocalForceDownloadFlag mirrors
+// TestPatchReleasesBulkAppliesStopMonitoringAndAllowNonPreferredFlag for the
+// "ignore StashApp Local / force download" bulk action, and confirms
+// /api/releases?ignore_local_force_download=true finds the flagged release
+// via releaseFilterFromQuery.
+func TestPatchReleasesBulkAppliesIgnoreLocalForceDownloadFlag(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "patch-bulk-ignore-local.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "BULKIL-W1", Title: "BULKIL-W1", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("seed release lookup: items=%d err=%v", len(rows), err)
+	}
+	s := &Server{store: st, log: slog.Default()}
+
+	body, _ := json.Marshal(map[string]any{"ids": []int64{rows[0].ID}, "ignore_local_force_download": true})
+	req := httptest.NewRequest(http.MethodPatch, "/api/releases/bulk", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.patchReleasesBulk(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	got, err := st.Release(ctx, rows[0].ID)
+	if err != nil || !got.IgnoreLocalForceDownload {
+		t.Fatalf("expected the release to have the ignore-local flag set: %+v (err=%v)", got, err)
+	}
+
+	filterRec := httptest.NewRecorder()
+	s.releases(filterRec, httptest.NewRequest(http.MethodGet, "/api/releases?ignore_local_force_download=true", nil))
+	var filtered []domain.Release
+	if err := json.NewDecoder(filterRec.Body).Decode(&filtered); err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 1 || filtered[0].ID != rows[0].ID {
+		t.Fatalf("expected the ignore_local_force_download filter to find the release, got %+v", filtered)
+	}
+}
+
+// TestPatchReleasesBulkRejectsEmptyPatch covers the "nothing to update"
+// guard now that patchReleasesBulk has three independently-optional flags:
+// a request with ids but none of monitor_download,
+// allow_non_preferred_filenames, or ignore_local_force_download set must
+// still be rejected rather than silently doing nothing.
+func TestPatchReleasesBulkRejectsEmptyPatch(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "patch-bulk-empty.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "BULKIL-EMPTY", Title: "BULKIL-EMPTY", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("seed release lookup: items=%d err=%v", len(rows), err)
+	}
+	s := &Server{store: st, log: slog.Default()}
+
+	body, _ := json.Marshal(map[string]any{"ids": []int64{rows[0].ID}})
+	req := httptest.NewRequest(http.MethodPatch, "/api/releases/bulk", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.patchReleasesBulk(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s, want 422", rec.Code, rec.Body.String())
 	}
 }
 

@@ -1599,6 +1599,10 @@ func releaseFilterFromQuery(q url.Values, settings map[string]string) domain.Rel
 		v := raw == "true"
 		f.AllowNonPreferredFilenames = &v
 	}
+	if raw := q.Get("ignore_local_force_download"); raw == "true" || raw == "false" {
+		v := raw == "true"
+		f.IgnoreLocalForceDownload = &v
+	}
 	return f
 }
 func (s *Server) releases(w http.ResponseWriter, r *http.Request) {
@@ -1742,13 +1746,14 @@ func (s *Server) patchRelease(w http.ResponseWriter, r *http.Request) {
 		MonitorDownload            *bool   `json:"monitor_download"`
 		Label                      *string `json:"label"`
 		AllowNonPreferredFilenames *bool   `json:"allow_non_preferred_filenames"`
+		IgnoreLocalForceDownload   *bool   `json:"ignore_local_force_download"`
 	}
 	if !s.decode(w, r, &p) {
 		return
 	}
 	n, e := id(r)
 	if e == nil {
-		e = s.store.PatchRelease(r.Context(), n, p.Released, p.Local, p.Notified, p.NotifyOnRelease, p.Watchlist, p.MonitorDownload, p.Label, p.AllowNonPreferredFilenames)
+		e = s.store.PatchRelease(r.Context(), n, p.Released, p.Local, p.Notified, p.NotifyOnRelease, p.Watchlist, p.MonitorDownload, p.Label, p.AllowNonPreferredFilenames, p.IgnoreLocalForceDownload)
 	}
 	if errors.Is(e, sql.ErrNoRows) {
 		s.problem(w, 404, "release not found")
@@ -1779,14 +1784,16 @@ func (s *Server) patchRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 // patchReleasesBulk backs the "Releases checked by the scheduled job" table's
-// mass-select actions: stop monitoring (monitor_download=false) and set/
-// clear the persistent "allow non-preferred filenames" override, applied to
-// every selected release id in one request.
+// mass-select actions: stop monitoring (monitor_download=false), set/clear
+// the persistent "allow non-preferred filenames" override, and set/clear
+// the persistent "ignore StashApp Local / force download" override,
+// applied to every selected release id in one request.
 func (s *Server) patchReleasesBulk(w http.ResponseWriter, r *http.Request) {
 	var p struct {
 		IDs                        []int64 `json:"ids"`
 		MonitorDownload            *bool   `json:"monitor_download"`
 		AllowNonPreferredFilenames *bool   `json:"allow_non_preferred_filenames"`
+		IgnoreLocalForceDownload   *bool   `json:"ignore_local_force_download"`
 	}
 	if !s.decode(w, r, &p) {
 		return
@@ -1795,11 +1802,11 @@ func (s *Server) patchReleasesBulk(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusUnprocessableEntity, "select at least one release")
 		return
 	}
-	if p.MonitorDownload == nil && p.AllowNonPreferredFilenames == nil {
+	if p.MonitorDownload == nil && p.AllowNonPreferredFilenames == nil && p.IgnoreLocalForceDownload == nil {
 		s.problem(w, http.StatusUnprocessableEntity, "nothing to update")
 		return
 	}
-	n, e := s.store.BulkSetReleaseFlags(r.Context(), p.IDs, p.MonitorDownload, p.AllowNonPreferredFilenames)
+	n, e := s.store.BulkSetReleaseFlags(r.Context(), p.IDs, p.MonitorDownload, p.AllowNonPreferredFilenames, p.IgnoreLocalForceDownload)
 	if e != nil {
 		s.problem(w, 500, e.Error())
 		return
