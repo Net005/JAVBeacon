@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1156,6 +1157,16 @@ func TestReleasesEndpointVideoIDExactMatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	seeded, err := st.Releases(ctx, domain.ReleaseFilter{VideoID: "SSIS-001", Limit: 1})
+	if err != nil || len(seeded) != 1 {
+		t.Fatalf("seeded release lookup: releases=%+v err=%v", seeded, err)
+	}
+	if err := st.SetStashState(ctx, seeded[0].ID, true, "stash-scene-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetStashFilePath(ctx, seeded[0].ID, "/library/JAV/SSIS-001.mp4"); err != nil {
+		t.Fatal(err)
+	}
 	s := &Server{store: st, log: slog.Default()}
 
 	rec := httptest.NewRecorder()
@@ -1164,7 +1175,18 @@ func TestReleasesEndpointVideoIDExactMatch(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].VideoID != "SSIS-001" {
+	if len(got) != 1 || got[0].VideoID != "SSIS-001" || got[0].StashFilePath != "/library/JAV/SSIS-001.mp4" {
 		t.Fatalf("expected exactly the SSIS-001 release, got %+v", got)
+	}
+
+	rec = httptest.NewRecorder()
+	path := "/library/JAV/SSIS-001.mp4"
+	s.releases(rec, httptest.NewRequest(http.MethodGet, "/api/releases?stash_file_path="+url.QueryEscape("/LIBRARY/jav/ssis-001.MP4"), nil))
+	got = nil
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].VideoID != "SSIS-001" || got[0].StashFilePath != path {
+		t.Fatalf("expected case-insensitive exact Stash file path to resolve SSIS-001, got %+v", got)
 	}
 }

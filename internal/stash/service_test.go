@@ -262,7 +262,7 @@ func TestFirstLocalSyncStoresPlaybackStatsForReleaseConditions(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		response := `{"data":{"findScenes":{"scenes":[{"id":"scene-100","title":"SYNC-100","code":"SYNC-100"}]}}}`
 		if strings.Contains(string(body), "JAVBeaconSceneCreatedAt") {
-			response = `{"data":{"findScenes":{"scenes":[{"id":"scene-100","created_at":"2026-08-28T10:00:00Z"}]}}}`
+			response = `{"data":{"findScenes":{"scenes":[{"id":"scene-100","created_at":"2026-08-28T10:00:00Z","files":[{"path":"/library/JAV/SYNC-100.mp4"}]}]}}}`
 		} else if strings.Contains(string(body), "JAVBeaconPlaybackStats") {
 			response = `{"data":{"findScenes":{"scenes":[{"id":"scene-100","o_counter":3,"play_count":5,"last_played_at":"2024-05-10T12:00:00Z","o_history":["2024-04-01T12:00:00Z","2024-05-09T12:00:00Z"]}]}}}`
 		}
@@ -275,7 +275,7 @@ func TestFirstLocalSyncStoresPlaybackStatsForReleaseConditions(t *testing.T) {
 		t.Fatalf("release lookup: releases=%+v err=%v", releases, err)
 	}
 	got := releases[0]
-	if !got.Local || got.StashSceneID != "scene-100" || got.StashCreatedAt.IsZero() || got.OCounter != 3 || got.PlayCount != 5 || got.LastPlayedAt != "2024-05-10T12:00:00Z" || got.LastOCountAt != "2024-05-09T12:00:00Z" {
+	if !got.Local || got.StashSceneID != "scene-100" || got.StashFilePath != "/library/JAV/SYNC-100.mp4" || got.StashCreatedAt.IsZero() || got.OCounter != 3 || got.PlayCount != 5 || got.LastPlayedAt != "2024-05-10T12:00:00Z" || got.LastOCountAt != "2024-05-09T12:00:00Z" {
 		t.Fatalf("first sync did not persist local state and playback stats together: %+v", got)
 	}
 	status := s.Status()
@@ -296,6 +296,47 @@ func TestFirstLocalSyncStoresPlaybackStatsForReleaseConditions(t *testing.T) {
 		if filterErr != nil || len(matches) != 1 || matches[0].VideoID != "SYNC-100" {
 			t.Fatalf("condition %s: matches=%+v err=%v", condition, matches, filterErr)
 		}
+	}
+}
+
+func TestLocalSyncClearsStaleStashFilePathWhenSceneIsGone(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "stash-path-cleared.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": "https://stash.example"}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "GONE-100", Title: "Removed scene", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{VideoID: "GONE-100", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release lookup: releases=%+v err=%v", releases, err)
+	}
+	release := releases[0]
+	if err := st.SetStashState(ctx, release.ID, true, "scene-gone"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetStashFilePath(ctx, release.ID, "/library/JAV/GONE-100.mp4"); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(st, time.Second, slog.Default(), nil, nil)
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":{"findScenes":{"scenes":[]}}}`)), Header: make(http.Header)}, nil
+	})
+	s.run(ctx)
+
+	got, err := st.Release(ctx, release.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Local || got.StashSceneID != "" || got.StashFilePath != "" {
+		t.Fatalf("stale Stash state and file path were not cleared: %+v", got)
 	}
 }
 

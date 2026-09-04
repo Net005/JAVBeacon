@@ -46,6 +46,7 @@ type Store interface {
 	BulkSetReleaseFlags(context.Context, []int64, *bool, *bool, *bool) (int64, error)
 	SetReleaseMonitoring(context.Context, int64, bool, string, int64) error
 	SetStashState(context.Context, int64, bool, string) error
+	SetStashFilePath(context.Context, int64, string) error
 	SetStashReleaseDate(context.Context, int64, string) error
 	SetStashCreatedAt(context.Context, int64, time.Time) error
 	SetStashPlaybackStats(context.Context, int64, int, int, string, string) error
@@ -235,6 +236,7 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 			`ALTER TABLE releases ADD COLUMN monitor_site_id INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE releases ADD COLUMN identity_key TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE releases ADD COLUMN stash_scene_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE releases ADD COLUMN stash_file_path TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE pipeline_logs ADD COLUMN configuration TEXT NOT NULL DEFAULT '{}'`,
 			`ALTER TABLE pipeline_steps ADD COLUMN trigger TEXT NOT NULL DEFAULT 'download_completed'`,
 			`ALTER TABLE sites ADD COLUMN last_scraped_at DATETIME`,
@@ -383,7 +385,7 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 		err = s.normalizeReleaseTimestamps(context.Background())
 	}
 	if err == nil {
-		_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_releases_released_date ON releases(released,release_date DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_local_created ON releases(is_local,stash_created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_watchlist_date ON releases(watchlist,watchlist_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_updated ON releases(updated_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_title_order ON releases(title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS idx_releases_preferred ON releases(is_preferred,id);`)
+		_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_releases_released_date ON releases(released,release_date DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_local_created ON releases(is_local,stash_created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_watchlist_date ON releases(watchlist,watchlist_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_updated ON releases(updated_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_title_order ON releases(title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS idx_releases_preferred ON releases(is_preferred,id); CREATE INDEX IF NOT EXISTS idx_releases_stash_file_path_ci ON releases(LOWER(stash_file_path)) WHERE stash_file_path<>'';`)
 	}
 	return err
 }
@@ -710,6 +712,7 @@ func releaseDedupUpdate(d Dialect) string {
 		maxFold("monitor_download") + `,` +
 		maxFold("site_monitor_download") + `,` +
 		`stash_scene_id=COALESCE(NULLIF(stash_scene_id,''),(SELECT old.stash_scene_id FROM release_duplicate_map m JOIN releases old ON old.id=m.old_id WHERE m.keep_id=keep.id AND old.stash_scene_id<>'' LIMIT 1),''),` +
+		`stash_file_path=COALESCE(NULLIF(stash_file_path,''),(SELECT old.stash_file_path FROM release_duplicate_map m JOIN releases old ON old.id=m.old_id WHERE m.keep_id=keep.id AND old.stash_file_path<>'' LIMIT 1),''),` +
 		`stash_added_at=COALESCE(stash_added_at,(SELECT old.stash_added_at FROM release_duplicate_map m JOIN releases old ON old.id=m.old_id WHERE m.keep_id=keep.id AND old.stash_added_at IS NOT NULL LIMIT 1)),` +
 		`stash_created_at=COALESCE(stash_created_at,(SELECT old.stash_created_at FROM release_duplicate_map m JOIN releases old ON old.id=m.old_id WHERE m.keep_id=keep.id AND old.stash_created_at IS NOT NULL LIMIT 1)),` +
 		`stash_release_date=COALESCE(NULLIF(stash_release_date,''),(SELECT old.stash_release_date FROM release_duplicate_map m JOIN releases old ON old.id=m.old_id WHERE m.keep_id=keep.id AND old.stash_release_date<>'' LIMIT 1),''),` +
@@ -915,7 +918,7 @@ func releaseSelect(d Dialect) string {
 	// completion time. Active downloads take precedence over completed ones so
 	// the status pill and its URL always describe the same download row.
 	tags := d.JSONArrayAgg("name", "SELECT name FROM release_tags WHERE release_id=r.id ORDER BY position")
-	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,r.director,r.studio,r.label,` + tags + `,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.ignore_local_force_download,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,r.director,r.studio,r.label,` + tags + `,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_file_path,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.ignore_local_force_download,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 // releaseCardSelect keeps the Release Library payload small. Release Details
@@ -925,14 +928,14 @@ func releaseSelect(d Dialect) string {
 func releaseCardSelect(d Dialect) string {
 	actresses := d.JSONArrayAgg("name", "SELECT name FROM release_actresses WHERE release_id=r.id ORDER BY position")
 	tags := d.JSONArrayAgg("name", "SELECT name FROM release_tags WHERE release_id=r.id ORDER BY position")
-	return `SELECT r.id,r.site_id,s.title,'[]','[]',r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,'',r.studio,r.label,` + tags + `,'','',r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.ignore_local_force_download,0,0,'','',r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	return `SELECT r.id,r.site_id,s.title,'[]','[]',r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,'',r.studio,r.label,` + tags + `,'','',r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_file_path,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.ignore_local_force_download,0,0,'','',r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('downloading','completed') ORDER BY CASE d.status WHEN 'downloading' THEN 0 ELSE 1 END,d.updated_at DESC LIMIT 1),''),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 func scanRelease(scanner interface{ Scan(...any) error }) (domain.Release, error) {
 	var x domain.Release
 	var siteIDs, siteTitles, actresses, genres, shots string
 	var stashAddedAt, stashCreatedAt, watchlistAt, downloadedAt sql.NullTime
-	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Watchlist, &watchlistAt, &x.MonitorDownload, &x.MonitorReason, &x.MonitorSiteID, &x.MonitorSiteTitle, &x.StashSceneID, &stashAddedAt, &stashCreatedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.IgnoreLocalForceDownload, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &downloadedAt)
+	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Watchlist, &watchlistAt, &x.MonitorDownload, &x.MonitorReason, &x.MonitorSiteID, &x.MonitorSiteTitle, &x.StashSceneID, &x.StashFilePath, &stashAddedAt, &stashCreatedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.IgnoreLocalForceDownload, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &downloadedAt)
 	if err == nil {
 		_ = json.Unmarshal([]byte(siteIDs), &x.SiteIDs)
 		_ = json.Unmarshal([]byte(siteTitles), &x.SiteTitles)
@@ -1208,6 +1211,10 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 	if f.VideoID != "" {
 		q += ` AND LOWER(r.video_id)=LOWER(?)`
 		a = append(a, f.VideoID)
+	}
+	if f.StashFilePath != "" {
+		q += ` AND LOWER(r.stash_file_path)=LOWER(?)`
+		a = append(a, f.StashFilePath)
 	}
 	if f.Source != "" {
 		q += ` AND LOWER(r.source)=LOWER(?)`
@@ -2423,6 +2430,14 @@ func (s *SQLite) SetStashState(ctx context.Context, id int64, local bool, sceneI
 		return err
 	}
 	return tx.Commit()
+}
+
+// SetStashFilePath stores the complete path reported by the matched StashApp
+// scene. Passing an empty path clears stale data when a release is no longer
+// local or its scene no longer has an attached video file.
+func (s *SQLite) SetStashFilePath(ctx context.Context, id int64, path string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE releases SET stash_file_path=?,updated_at=? WHERE id=?`, path, time.Now().UTC(), id)
+	return err
 }
 
 // SetStashReleaseDate records the release date StashApp has on file for a
