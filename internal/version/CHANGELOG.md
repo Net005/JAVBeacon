@@ -7,6 +7,14 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.72] - 2026-09-05
+
+### Fixed
+
+- PostgreSQL upgrades now add the new StashApp video-path column before
+  creating its case-insensitive lookup index, preventing an existing
+  installation from entering a restart loop with a missing-column error.
+
 ## [1.0.71] - 2026-09-05
 
 ### Added

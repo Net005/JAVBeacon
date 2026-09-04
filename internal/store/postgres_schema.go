@@ -151,7 +151,6 @@ CREATE INDEX IF NOT EXISTS idx_releases_label_trgm ON releases USING gin(label g
 CREATE INDEX IF NOT EXISTS idx_releases_studio_filter_trgm ON releases USING gin(LOWER(studio) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_releases_label_filter_trgm ON releases USING gin(LOWER(label) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_releases_story_trgm ON releases USING gin(story gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_releases_stash_file_path_ci ON releases(LOWER(stash_file_path)) WHERE stash_file_path<>'';
 
 CREATE TABLE IF NOT EXISTS settings (
 	key TEXT PRIMARY KEY,
@@ -498,6 +497,10 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		`CREATE INDEX IF NOT EXISTS idx_releases_preferred ON releases(is_preferred,id)`,
 		`CREATE INDEX IF NOT EXISTS idx_releases_local_created ON releases(is_local,stash_created_at DESC,id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_releases_watchlist_date ON releases(watchlist,watchlist_at DESC,id DESC)`,
+		// This index must remain in the post-ALTER phase rather than
+		// postgresSchemaDDL. CREATE TABLE IF NOT EXISTS does not add a new
+		// column to an existing releases table, so attempting the index during
+		// the baseline phase would fail before stash_file_path is added above.
 		`CREATE INDEX IF NOT EXISTS idx_releases_stash_file_path_ci ON releases(LOWER(stash_file_path)) WHERE stash_file_path<>''`,
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
