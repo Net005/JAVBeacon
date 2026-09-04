@@ -148,6 +148,20 @@ func TestPostgresSchemaIncludesReleaseLibraryPerformanceIndexes(t *testing.T) {
 	}
 }
 
+func TestPostgresStashFilePathIndexIsNotCreatedBeforeColumnUpgrade(t *testing.T) {
+	// postgresSchemaDDL runs before the incremental ALTER statements. An
+	// existing releases table therefore does not yet have stash_file_path,
+	// even though the cumulative CREATE TABLE definition includes it for a
+	// fresh database. Keep its index in migratePostgres's post-ALTER index
+	// phase or upgrades fail before the column can be added.
+	if strings.Contains(postgresSchemaDDL, "idx_releases_stash_file_path_ci") {
+		t.Fatal("stash_file_path index must not run in baseline PostgreSQL DDL before incremental column migrations")
+	}
+	if !strings.Contains(postgresSchemaDDL, "stash_file_path TEXT NOT NULL DEFAULT ''") {
+		t.Fatal("fresh PostgreSQL schema is missing stash_file_path")
+	}
+}
+
 // TestStashMissingFilterWhereUsesCaseInsensitiveLikeOnPostgres is the
 // analogous regression test for the same bug class in
 // stashMissingFilterWhere's path/studio/tag Conditions branches, which
