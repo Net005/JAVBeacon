@@ -58,6 +58,36 @@ func TestAkibaCardCurrentSamBoxLayout(t *testing.T) {
 	}
 }
 
+func TestAkibaStoryPrefersExpandedTextAndDropsToggleControls(t *testing.T) {
+	doc, err := xhtml.Parse(strings.NewReader(`<div id="works_txt">
+		<div id="story_list1" style="display:block"><li class="story_window">
+			There exists an inhumane organization that treats women as commodities and sells them to the world’s…<br>
+			<span><a href="#story_list2">▼More</a></span>
+		</li></div>
+		<div id="story_list2" style="display:none"><li class="story_window">
+			There exists an inhumane organization that treats women as commodities and sells them to the world’s most powerful people. I had no connection to that world... [The Bad End]<br>
+			<span><a href="#story_list1">▲Close</a></span>
+		</li></div>
+	</div>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "There exists an inhumane organization that treats women as commodities and sells them to the world’s most powerful people. I had no connection to that world... [The Bad End]"
+	if got := akibaStory(doc); got != want {
+		t.Fatalf("story = %q, want %q", got, want)
+	}
+}
+
+func TestAkibaStoryFallsBackToCollapsedTextWithoutMoreControl(t *testing.T) {
+	doc, err := xhtml.Parse(strings.NewReader(`<div id="story_list1"><div class="story_window">Short story… <a href="#story_list2">▼More</a></div></div>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := akibaStory(doc); got != "Short story…" {
+		t.Fatalf("story = %q, want collapsed story without toggle control", got)
+	}
+}
+
 // TestAkibaScrapeFilteredRetriesTransientDetailFetchFailureOnce mirrors
 // TestScrapeFilteredRetriesTransientDetailFetchFailureOnce in
 // javlibrary_test.go: a.detail already retries internally (fetch ->

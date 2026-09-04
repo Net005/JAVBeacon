@@ -346,17 +346,47 @@ func (a *Akiba) detail(ctx context.Context, raw string, stage ...DetailStage) (d
 			r.ReleaseDate = normalizeDate(v)
 		}
 	}
-	if n := first(doc, func(n *html.Node) bool {
-		return hasClass(n, "story_window") && (hasAncestorID(n, "story_list2") || hasAncestorID(n, "story_list1"))
-	}); n != nil {
-		r.Story = nodeText(n)
-	}
+	r.Story = akibaStory(doc)
 	for _, n := range findAll(doc, func(n *html.Node) bool {
 		return n.Data == "a" && strings.Contains(attr(n, "href"), "_l.jpg") && (hasAncestorID(n, "sample_list") || hasClassAncestor(n, "gasatsu_images_pc"))
 	}) {
 		r.Screenshots = appendUnique(r.Screenshots, resolve(a.base, attr(n, "href")))
 	}
 	return r, nil
+}
+
+// akibaStory prefers the complete story stored in the page's hidden expanded
+// block. Akiba renders the shortened story_list1 before story_list2, so taking
+// the first story_window captures the ellipsis and its "More" control instead
+// of the full text. Links are UI controls (More/Close), never story content.
+func akibaStory(doc *html.Node) string {
+	for _, containerID := range []string{"story_list2", "story_list1"} {
+		if n := first(doc, func(n *html.Node) bool {
+			return hasClass(n, "story_window") && hasAncestorID(n, containerID)
+		}); n != nil {
+			return nodeTextSkippingLinks(n)
+		}
+	}
+	return ""
+}
+
+func nodeTextSkippingLinks(n *html.Node) string {
+	var b strings.Builder
+	var walk func(*html.Node)
+	walk = func(x *html.Node) {
+		if x.Type == html.ElementNode && x.Data == "a" {
+			return
+		}
+		if x.Type == html.TextNode {
+			b.WriteString(x.Data)
+			b.WriteByte(' ')
+		}
+		for c := x.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(n)
+	return strings.Join(strings.Fields(stdhtml.UnescapeString(b.String())), " ")
 }
 
 // Refresh fetches only the stored product page and merges its current details.

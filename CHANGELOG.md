@@ -7,6 +7,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.70] - 2026-09-05
+
 ### Added
 
 - Monitored releases can now be flagged "Ignore StashApp Local (force
@@ -22,6 +24,13 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   scene by definition - only its file on disk is missing - so it must never
   be skipped as a duplicate the way an ordinary already-linked release
   would be.
+
+### Fixed
+
+- Akiba/GIGA release details now read the complete story from the hidden
+  expanded story block instead of storing the shortened preview and its
+  “More” control. The scraper also excludes the expanded block's “Close”
+  control, with a clean fallback for pages that only provide a short story.
 
 ## [1.0.69] - 2026-09-02
 
