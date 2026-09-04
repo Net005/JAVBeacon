@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS releases (
 	monitor_site_id BIGINT NOT NULL DEFAULT 0,
 	identity_key TEXT NOT NULL DEFAULT '',
 	stash_scene_id TEXT NOT NULL DEFAULT '',
+	stash_file_path TEXT NOT NULL DEFAULT '',
 	stash_added_at TIMESTAMPTZ,
 	stash_created_at TIMESTAMPTZ,
 	stash_release_date TEXT NOT NULL DEFAULT '',
@@ -150,6 +151,7 @@ CREATE INDEX IF NOT EXISTS idx_releases_label_trgm ON releases USING gin(label g
 CREATE INDEX IF NOT EXISTS idx_releases_studio_filter_trgm ON releases USING gin(LOWER(studio) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_releases_label_filter_trgm ON releases USING gin(LOWER(label) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_releases_story_trgm ON releases USING gin(story gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_releases_stash_file_path_ci ON releases(LOWER(stash_file_path)) WHERE stash_file_path<>'';
 
 CREATE TABLE IF NOT EXISTS settings (
 	key TEXT PRIMARY KEY,
@@ -476,6 +478,7 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS screenshots_checked_at TIMESTAMPTZ`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS watchlist_at TIMESTAMPTZ`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS stash_created_at TIMESTAMPTZ`,
+		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS stash_file_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS is_preferred INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS monitor_reason TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS monitor_site_id BIGINT NOT NULL DEFAULT 0`,
@@ -495,6 +498,7 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		`CREATE INDEX IF NOT EXISTS idx_releases_preferred ON releases(is_preferred,id)`,
 		`CREATE INDEX IF NOT EXISTS idx_releases_local_created ON releases(is_local,stash_created_at DESC,id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_releases_watchlist_date ON releases(watchlist,watchlist_at DESC,id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_releases_stash_file_path_ci ON releases(LOWER(stash_file_path)) WHERE stash_file_path<>''`,
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err

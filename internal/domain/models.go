@@ -64,7 +64,11 @@ type Release struct {
 	MonitorSiteTitle    string   `json:"monitor_site_title,omitempty"`
 	SiteMonitorDownload bool     `json:"-"`
 	StashSceneID        string   `json:"stash_scene_id"`
-	WatchlistSync       string   `json:"watchlist_sync,omitempty"`
+	// StashFilePath is the complete path of the first video file attached to
+	// the matched StashApp scene. It is synchronized with local availability
+	// and exposed through the release API for consumers such as JAVBeaconSubs.
+	StashFilePath string `json:"stash_file_path,omitempty"`
+	WatchlistSync string `json:"watchlist_sync,omitempty"`
 	// DownloadStatus is computed: "downloading" when an active torrent
 	// exists for this release, "completed" when the most recent finished
 	// download for it succeeded, or "" when there is none (Phase 6A).
@@ -165,11 +169,12 @@ type Release struct {
 // edit only touches what the form actually submitted - nil means "leave
 // this alone", not "clear it".
 //
-// Deliberately excluded: Local, Notified, StashSceneID, StashAddedAt,
-// StashCreatedAt, StashReleaseDate, WatchlistAt, and DownloadedAt. Those are derived from real external
-// state (an actual download, an actual StashApp sync) rather than being
-// facts about the release itself, so hand-editing them here would let the
-// UI claim something happened (a download, a library sync) that didn't -
+// Deliberately excluded: Local, Notified, StashSceneID, StashFilePath,
+// StashAddedAt, StashCreatedAt, StashReleaseDate, WatchlistAt, and
+// DownloadedAt. Those are derived from real external state (an actual
+// download, an actual StashApp sync) rather than being facts about the
+// release itself, so hand-editing them here would let the UI claim something
+// happened (a download, a library sync) that didn't -
 // they stay system-managed, updated only by the code paths that actually
 // perform those actions.
 //
@@ -202,7 +207,12 @@ type ReleaseFilter struct {
 	// example the community StashApp JavLibrary scraper's optional
 	// JAVBeacon-backed mode, which looks a scene up by its exact DVD code
 	// before falling back to scraping JavLibrary directly.
-	VideoID                                             string
+	VideoID string
+	// StashFilePath, when set, restricts results to an exact, case-insensitive
+	// full video path reported by StashApp. This lets API clients such as
+	// JAVBeaconSubs map a media file back to its JAVBeacon release without a
+	// fuzzy text match.
+	StashFilePath                                       string
 	SiteID                                              int64
 	Watchlist, HideLocal, MonitorDownload, UsePreferred bool
 	Limit, Offset                                       int

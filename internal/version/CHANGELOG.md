@@ -7,6 +7,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.71] - 2026-09-05
+
+### Added
+
+- StashApp local-library sync now stores the complete video file path for
+  each matched release and exposes it as `stash_file_path` in release API
+  responses. API clients such as JAVBeaconSubs can resolve a file directly
+  through the new exact, case-insensitive `stash_file_path` filter. Indexed
+  SQLite and PostgreSQL migrations keep these lookups fast, and stale paths
+  are cleared when a scene is no longer local.
+
 ## [1.0.70] - 2026-09-05
 
 ### Added

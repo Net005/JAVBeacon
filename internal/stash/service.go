@@ -41,7 +41,12 @@ const DefaultQuery = `query JAVBeaconLocalScenes { findScenes(filter: { per_page
 // Count/Last Played figures still sync even when Last O Count Date can't.
 const playbackStatsQueryWithHistory = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id o_counter play_count last_played_at o_history } } }`
 const playbackStatsQueryBasic = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id o_counter play_count last_played_at } } }`
-const sceneCreatedAtQuery = `query JAVBeaconSceneCreatedAt { findScenes(filter: { per_page: -1 }) { scenes { id created_at } } }`
+const sceneDetailsQuery = `query JAVBeaconSceneCreatedAt { findScenes(filter: { per_page: -1 }) { scenes { id created_at files { path } } } }`
+
+type sceneDetails struct {
+	CreatedAt string
+	FilePath  string
+}
 
 // playbackStats is one scene's parsed O-Counter/Play Count/Last Played/Last
 // O Count Date figures, keyed by StashApp scene ID in fetchPlaybackStats's
@@ -201,9 +206,9 @@ func (s *Service) run(ctx context.Context) {
 	}
 	result.Phase = "Fetching StashApp details"
 	s.publishStatus(result)
-	createdAtByScene, createdAtErr := s.fetchSceneCreatedAt(ctx, url, apiKey)
-	if createdAtErr != nil {
-		result.Error = "fetch StashApp scene creation dates: " + createdAtErr.Error()
+	detailsByScene, detailsErr := s.fetchSceneDetails(ctx, url, apiKey)
+	if detailsErr != nil {
+		result.Error = "fetch StashApp scene details: " + detailsErr.Error()
 		return
 	}
 	// Playback stats are a separate, best-effort pass (see the doc comment
@@ -254,6 +259,17 @@ func (s *Service) run(ctx context.Context) {
 				releaseUpdated = true
 				s.log.Debug("release local state changed from Stash", "video_id", release.VideoID, "local", local)
 			}
+			stashFilePath := ""
+			if local && sceneID != "" {
+				stashFilePath = detailsByScene[sceneID].FilePath
+			}
+			if stashFilePath != release.StashFilePath {
+				if e := s.store.SetStashFilePath(ctx, release.ID, stashFilePath); e != nil {
+					result.Error = e.Error()
+				} else {
+					releaseUpdated = true
+				}
+			}
 			// TODO-2.0's "Missing released status display": best-effort, so a
 			// scene lookup miss or a custom query lacking `date` just means
 			// nothing to store here - it never clears a previously stored
@@ -276,7 +292,7 @@ func (s *Service) run(ctx context.Context) {
 				// fetched independently from optional playback statistics. This
 				// guarantees the Local tab's Added Locally sort is backed by the
 				// same timestamp as StashApp's sortby=created_at.
-				if rawCreatedAt := createdAtByScene[sceneID]; rawCreatedAt != "" {
+				if rawCreatedAt := detailsByScene[sceneID].CreatedAt; rawCreatedAt != "" {
 					if createdAt, e := time.Parse(time.RFC3339, rawCreatedAt); e != nil {
 						result.Error = fmt.Sprintf("parse StashApp created_at for scene %s: %v", sceneID, e)
 					} else if !createdAt.Equal(release.StashCreatedAt) {
@@ -319,8 +335,8 @@ func (s *Service) run(ctx context.Context) {
 	}
 }
 
-func (s *Service) fetchSceneCreatedAt(ctx context.Context, url, apiKey string) (map[string]string, error) {
-	body, _ := json.Marshal(map[string]string{"query": sceneCreatedAtQuery})
+func (s *Service) fetchSceneDetails(ctx context.Context, url, apiKey string) (map[string]sceneDetails, error) {
+	body, _ := json.Marshal(map[string]string{"query": sceneDetailsQuery})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -343,6 +359,9 @@ func (s *Service) fetchSceneCreatedAt(ctx context.Context, url, apiKey string) (
 				Scenes []struct {
 					ID        string `json:"id"`
 					CreatedAt string `json:"created_at"`
+					Files     []struct {
+						Path string `json:"path"`
+					} `json:"files"`
 				} `json:"scenes"`
 			} `json:"findScenes"`
 		} `json:"data"`
@@ -356,9 +375,16 @@ func (s *Service) fetchSceneCreatedAt(ctx context.Context, url, apiKey string) (
 	if len(payload.Errors) > 0 {
 		return nil, errors.New(payload.Errors[0].Message)
 	}
-	out := make(map[string]string, len(payload.Data.FindScenes.Scenes))
+	out := make(map[string]sceneDetails, len(payload.Data.FindScenes.Scenes))
 	for _, scene := range payload.Data.FindScenes.Scenes {
-		out[scene.ID] = scene.CreatedAt
+		detail := sceneDetails{CreatedAt: scene.CreatedAt}
+		for _, file := range scene.Files {
+			if strings.TrimSpace(file.Path) != "" {
+				detail.FilePath = file.Path
+				break
+			}
+		}
+		out[scene.ID] = detail
 	}
 	return out, nil
 }

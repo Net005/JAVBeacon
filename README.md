@@ -347,6 +347,13 @@ scraper ID and product URL in addition to its existing fields (title, video
 ID, actress, studio, tag). Both are safe to use directly if you build your
 own tooling against JAVBeacon's API.
 
+When the StashApp local-library sync matches a release, its API object also
+contains `stash_file_path`: the complete path of the first video file attached
+to that StashApp scene. API clients such as JAVBeaconSubs can resolve a file
+back to its release with the exact, case-insensitive `stash_file_path` query
+parameter, for example
+`/api/releases?stash_file_path=%2Flibrary%2FJAV%2FSSIS-001.mp4`.
+
 ## Development
 
 ```bash

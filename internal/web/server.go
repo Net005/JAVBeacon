@@ -1589,7 +1589,7 @@ func validReleaseDateBound(raw string) string {
 func releaseFilterFromQuery(q url.Values, settings map[string]string) domain.ReleaseFilter {
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
-	f := domain.ReleaseFilter{Search: q.Get("search"), VideoID: strings.TrimSpace(q.Get("video_id")), Site: q.Get("site"), Status: q.Get("status"), Sort: q.Get("sort"), Direction: q.Get("direction"), Category: q.Get("category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), Watchlist: q.Get("watchlist") == "true", MonitorDownload: q.Get("monitor_download") == "true", HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", MinReleaseDate: validReleaseDateBound(q.Get("min_release_date")), MaxReleaseDate: validReleaseDateBound(q.Get("max_release_date")), Limit: limit, Offset: offset}
+	f := domain.ReleaseFilter{Search: q.Get("search"), VideoID: strings.TrimSpace(q.Get("video_id")), StashFilePath: q.Get("stash_file_path"), Site: q.Get("site"), Status: q.Get("status"), Sort: q.Get("sort"), Direction: q.Get("direction"), Category: q.Get("category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), Watchlist: q.Get("watchlist") == "true", MonitorDownload: q.Get("monitor_download") == "true", HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", MinReleaseDate: validReleaseDateBound(q.Get("min_release_date")), MaxReleaseDate: validReleaseDateBound(q.Get("max_release_date")), Limit: limit, Offset: offset}
 	if !f.ShowNonPreferred {
 		f.IgnoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
 		f.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
