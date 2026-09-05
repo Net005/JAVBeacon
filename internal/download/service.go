@@ -65,6 +65,12 @@ type Service struct {
 	pipelineJobs chan pipelineJob
 	httpMu       sync.Mutex
 	httpActive   int
+	httpRuns     map[int64]*httpDownloadRun
+}
+
+type httpDownloadRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // scheduleMaxSleepChunk bounds how long any schedule loop below ever sleeps
@@ -258,7 +264,7 @@ func (s *Service) httpFallbackDue(downloadID int64) bool {
 }
 
 func New(st store.Store, timeout time.Duration, log *slog.Logger) *Service {
-	s := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, pipelineJobs: make(chan pipelineJob, 64), scheduleNextAttempt: map[string]time.Time{}}
+	s := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, pipelineJobs: make(chan pipelineJob, 64), scheduleNextAttempt: map[string]time.Time{}, httpRuns: map[int64]*httpDownloadRun{}}
 	if rows, err := st.DownloadSearchRuns(context.Background(), "recent", 1); err == nil && len(rows) > 0 {
 		s.job = searchJobFromRun(rows[0])
 	}
@@ -385,8 +391,8 @@ func (s *Service) provider(ctx context.Context) (SearchProvider, error) {
 	if e != nil {
 		return nil, e
 	}
-	patterns := strings.FieldsFunc(settings["accepted_patterns"], func(r rune) bool { return r == '\n' || r == ',' })
-	return &Nyaa{Client: s.client, URLTemplate: settings["search_url_template"], AcceptedPatterns: patterns}, nil
+	patterns := ParsePreferredFilenamePatterns(settings["accepted_patterns"])
+	return &Nyaa{Client: s.client, URLTemplate: settings["search_url_template"], PreferredPatterns: patterns}, nil
 }
 func (s *Service) Search(ctx context.Context, release domain.Release) ([]domain.SearchResult, error) {
 	return s.search(ctx, release, "Manual Search")
@@ -526,6 +532,16 @@ func sortSearchResults(rows []domain.SearchResult) []domain.SearchResult {
 	sort.SliceStable(sorted, func(i, j int) bool {
 		if sorted[i].Accepted != sorted[j].Accepted {
 			return sorted[i].Accepted
+		}
+		if sorted[i].Accepted && sorted[i].PreferredFilenamePriority != sorted[j].PreferredFilenamePriority {
+			iPriority, jPriority := sorted[i].PreferredFilenamePriority, sorted[j].PreferredFilenamePriority
+			if iPriority == 0 {
+				iPriority = defaultFilenamePatternPriority
+			}
+			if jPriority == 0 {
+				jPriority = defaultFilenamePatternPriority
+			}
+			return iPriority < jPriority
 		}
 		return sorted[i].Seeds > sorted[j].Seeds
 	})
@@ -881,6 +897,9 @@ func (s *Service) logDownloadFailure(d domain.Download) {
 		"source_type", d.SourceType,
 		"source_reference", d.SourceReference,
 		"source_page_url", d.SourcePageURL,
+		"provider_file_id", d.ProviderFileID,
+		"selected_name", d.Name,
+		"selected_size", d.BytesTotal,
 		"error", d.Error,
 		"match_reason", d.MatchReason,
 		"provider_response", d.QBResponse,
@@ -969,12 +988,12 @@ func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, resul
 			matchReason += ": " + result.Reason
 		}
 	}
-	x, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: firstNonEmpty(result.Provider, "JavDB / Keepshare"), SourceType: sourceType, SourceReference: sourceRef, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "queued", MatchReason: matchReason, BytesTotal: result.SizeBytes})
+	x, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: firstNonEmpty(result.Provider, "JavDB / Keepshare"), SourceType: sourceType, SourceReference: sourceRef, SourcePageURL: result.SourceURL, ProviderFileID: result.ProviderFileID, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "queued", MatchReason: matchReason, BytesTotal: result.SizeBytes})
 	if err != nil {
 		return x, err
 	}
 	s.logHTTPDownloadEvent("HTTP download queued", x)
-	go s.runHTTPDownload(context.Background(), x)
+	s.startHTTPDownload(x)
 	_, _ = s.store.CreateNotification(ctx, r.ID, "download_started", "HTTP download queued")
 	return x, nil
 }
@@ -1018,6 +1037,47 @@ func (s *Service) releaseHTTPSlot() {
 	s.httpMu.Unlock()
 }
 
+func (s *Service) startHTTPDownload(d domain.Download) {
+	ctx, cancel := context.WithCancel(context.Background())
+	run := &httpDownloadRun{cancel: cancel, done: make(chan struct{})}
+	s.httpMu.Lock()
+	if s.httpRuns == nil {
+		s.httpRuns = map[int64]*httpDownloadRun{}
+	}
+	if previous := s.httpRuns[d.ID]; previous != nil {
+		previous.cancel()
+	}
+	s.httpRuns[d.ID] = run
+	s.httpMu.Unlock()
+	go func() {
+		defer close(run.done)
+		defer func() {
+			s.httpMu.Lock()
+			if s.httpRuns[d.ID] == run {
+				delete(s.httpRuns, d.ID)
+			}
+			s.httpMu.Unlock()
+		}()
+		s.runHTTPDownload(ctx, d)
+	}()
+}
+
+func (s *Service) cancelHTTPDownload(ctx context.Context, downloadID int64) error {
+	s.httpMu.Lock()
+	run := s.httpRuns[downloadID]
+	s.httpMu.Unlock()
+	if run == nil {
+		return nil
+	}
+	run.cancel()
+	select {
+	case <-run.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (s *Service) resumeHTTPDownloads() {
 	time.Sleep(500 * time.Millisecond)
 	rows, err := s.store.Downloads(context.Background(), "")
@@ -1033,7 +1093,7 @@ func (s *Service) resumeHTTPDownloads() {
 			row.BytesPerSecond = 0
 			row, _ = s.store.SaveDownload(context.Background(), row)
 			s.logHTTPDownloadEvent("HTTP download resumed after JAVBeacon restart", row)
-			go s.runHTTPDownload(context.Background(), row)
+			s.startHTTPDownload(row)
 		}
 	}
 }
@@ -1092,6 +1152,10 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		dir = strings.TrimSpace(settings["http_download_directory"])
 	}
 	fail := func(e error) {
+		if errors.Is(e, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			s.logHTTPDownloadEvent("HTTP download canceled", d)
+			return
+		}
 		failure := e.Error()
 		d.Status = "failed"
 		d.Error = failure
@@ -1155,7 +1219,14 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		fail(err)
 		return
 	}
-	if resp.ContentLength > 0 {
+	if resp.ContentLength > 0 && d.BytesTotal > 0 && resp.ContentLength != d.BytesTotal {
+		resp.Body.Close()
+		out.Close()
+		_ = os.Remove(tempPath)
+		fail(fmt.Errorf("HTTP provider returned the wrong file size: selected %d bytes, response contains %d bytes", d.BytesTotal, resp.ContentLength))
+		return
+	}
+	if d.BytesTotal == 0 && resp.ContentLength > 0 {
 		d.BytesTotal = resp.ContentLength
 	}
 	started, lastSave := time.Now(), time.Now()
@@ -1201,6 +1272,11 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	if err != nil {
 		_ = os.Remove(tempPath)
 		fail(err)
+		return
+	}
+	if d.BytesTotal > 0 && d.BytesDownloaded != d.BytesTotal {
+		_ = os.Remove(tempPath)
+		fail(fmt.Errorf("HTTP download size mismatch: selected %d bytes, received %d bytes", d.BytesTotal, d.BytesDownloaded))
 		return
 	}
 	if err = os.Rename(tempPath, finalPath); err != nil {
@@ -1332,7 +1408,7 @@ func (s *Service) RetryHTTPDownload(ctx context.Context, downloadID int64) (doma
 					"previous_failure", previousFailure,
 				)
 			}
-			go s.runHTTPDownload(context.Background(), row)
+			s.startHTTPDownload(row)
 			_, _ = s.store.CreateNotification(ctx, row.ReleaseID, "download_started", "HTTP download retry queued")
 			return row, nil
 		}
@@ -1351,6 +1427,8 @@ func (s *Service) logHTTPDownloadEvent(message string, d domain.Download) {
 		"provider", d.Provider,
 		"source_type", d.SourceType,
 		"source_reference", d.SourceReference,
+		"provider_file_id", d.ProviderFileID,
+		"selected_name", d.Name,
 		"status", d.Status,
 		"bytes_downloaded", d.BytesDownloaded,
 		"bytes_total", d.BytesTotal,
@@ -1422,14 +1500,35 @@ func (s *Service) RemoveDownload(ctx context.Context, downloadID int64) (int64, 
 	if selected == nil {
 		return 0, errors.New("download not found")
 	}
-	if strings.EqualFold(selected.Transport, "http") && strings.EqualFold(selected.Status, "failed") {
-		deleted, err := s.store.DeleteDownload(ctx, selected.ID)
-		if err == nil {
-			s.log.Info("failed HTTP download history removed", "download_id", selected.ID, "release_id", selected.ReleaseID, "video_id", selected.Query)
-		}
-		return deleted, err
+	if strings.EqualFold(selected.Transport, "http") {
+		return s.removeHTTPReleaseDownloads(ctx, selected.ID, selected.ReleaseID, selected.Query)
 	}
 	return s.removeReleaseDownloads(ctx, selected.ReleaseID, selected.Query, false)
+}
+
+func (s *Service) removeHTTPReleaseDownloads(ctx context.Context, downloadID, releaseID int64, query string) (int64, error) {
+	if err := s.cancelHTTPDownload(ctx, downloadID); err != nil {
+		return 0, fmt.Errorf("cancel HTTP download: %w", err)
+	}
+	rows, err := s.store.Downloads(ctx, "")
+	if err != nil {
+		return 0, err
+	}
+	deleted := int64(0)
+	for _, row := range rows {
+		if row.ReleaseID != releaseID || !strings.EqualFold(row.Transport, "http") {
+			continue
+		}
+		n, deleteErr := s.store.DeleteDownload(ctx, row.ID)
+		if deleteErr != nil {
+			return deleted, deleteErr
+		}
+		deleted += n
+	}
+	if s.log != nil {
+		s.log.Info("HTTP download canceled and history removed", "download_id", downloadID, "release_id", releaseID, "video_id", query, "history_rows", deleted)
+	}
+	return deleted, nil
 }
 
 func (s *Service) removeReleaseDownloads(ctx context.Context, releaseID int64, query string, deleteFiles bool) (int64, error) {
@@ -1547,8 +1646,10 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 		wanted[id] = true
 	}
 	type selectedRelease struct {
-		id    int64
-		query string
+		id         int64
+		downloadID int64
+		query      string
+		transport  string
 	}
 	selected := map[int64]selectedRelease{}
 	failedHTTPHistory := make([]domain.Download, 0)
@@ -1558,7 +1659,7 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 				failedHTTPHistory = append(failedHTTPHistory, row)
 				continue
 			}
-			selected[row.ReleaseID] = selectedRelease{id: row.ReleaseID, query: row.Query}
+			selected[row.ReleaseID] = selectedRelease{id: row.ReleaseID, downloadID: row.ID, query: row.Query, transport: normalizedDownloadTransport(row.Transport)}
 		}
 	}
 	if len(selected) == 0 && len(failedHTTPHistory) == 0 {
@@ -1585,10 +1686,16 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 		for _, item := range items {
 			job.CurrentItem = item.query
 			s.setReplacementJob(job)
-			if _, err := s.removeReleaseDownloads(background, item.id, item.query, true); err != nil {
-				s.log.Error("bulk download removal failed", "release_id", item.id, "video_id", item.query, "error", err)
+			var removeErr error
+			if item.transport == "http" {
+				_, removeErr = s.removeHTTPReleaseDownloads(background, item.downloadID, item.id, item.query)
+			} else {
+				_, removeErr = s.removeReleaseDownloads(background, item.id, item.query, true)
+			}
+			if removeErr != nil {
+				s.log.Error("bulk download removal failed", "release_id", item.id, "video_id", item.query, "transport", item.transport, "error", removeErr)
 				job.Failed++
-				job.LastError = err.Error()
+				job.LastError = removeErr.Error()
 				job.Processed++
 				s.setReplacementJob(job)
 				continue

@@ -31,6 +31,20 @@ func TestNyaaSearchAppliesFilenameRules(t *testing.T) {
 	}
 }
 
+func TestNyaaFilenameMatchingUsesHighestPriorityPatternFirst(t *testing.T) {
+	p := &Nyaa{PreferredPatterns: []PreferredFilenamePattern{
+		{Pattern: "large@", Priority: 10},
+		{Pattern: "best@", Priority: 1},
+	}}
+	accepted, _, priority, matched := p.matchFiles("PRED-888", []string{
+		"large@PRED-888.mp4",
+		"best@PRED-888.mp4",
+	})
+	if !accepted || priority != 1 || matched != "best@PRED-888.mp4" {
+		t.Fatalf("accepted=%v priority=%d matched=%q", accepted, priority, matched)
+	}
+}
+
 func TestNyaaSearchParsesSeedersAndLeechersFromNamespacedRSSFields(t *testing.T) {
 	client := &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
 		body := `<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>` +

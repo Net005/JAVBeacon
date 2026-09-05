@@ -1498,6 +1498,9 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if raw, ok := x["accepted_patterns"]; ok {
+		x["accepted_patterns"] = download.NormalizePreferredFilenamePatterns(raw)
+	}
 	// monitor_recent_days/monitor_older_days are the Monitored releases
 	// two-schedule split's day thresholds (task 38) - validated the same
 	// way as minimum_seed_ratio above (only when non-blank, so a form

@@ -108,6 +108,9 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .downloadTable.bulkSelectable .downloadTableHead{padding-left:calc(var(--download-cover) + 50px)}
 .downloadSwarm.httpTransfer{grid-template-columns:repeat(3,minmax(0,1fr))}
 .downloadSwarm.httpTransfer .httpSpeed{border-color:#286473;background:#10272e;color:#91c9d6}
+.downloadTransferCompact{display:grid;grid-template-columns:auto minmax(82px,1fr);align-items:center;gap:8px;min-width:0;padding:6px 8px;border:1px solid #2d3b46;border-radius:8px;background:#0d141a}.downloadTransferAmount{display:grid;gap:1px;min-width:0}.downloadTransferAmount b{color:#dce6ef;font-size:12px;white-space:nowrap}.downloadTransferAmount span{color:#7f8b99;font-size:9px;white-space:nowrap}.httpSpeedGraph{display:grid;grid-template-columns:minmax(0,1fr);gap:2px;min-width:0}.httpSpeedGraph>div{display:flex;align-items:baseline;justify-content:space-between;gap:5px}.httpSpeedGraph b{overflow:hidden;color:#8fdddc;font-size:10px;line-height:1;white-space:nowrap;text-overflow:ellipsis}.httpSpeedGraph small{color:#667784;font-size:7px;white-space:nowrap}.httpSpeedGraph svg{display:block;width:100%;height:28px;overflow:visible;border-bottom:1px solid #29404a}.httpSpeedGraph polygon{fill:#42b9bd24}.httpSpeedGraph polyline{fill:none;stroke:#55d0c0;stroke-width:2;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 3px #42c8c777)}.httpDownloadRow .downloadTiming{gap:3px}.httpDownloadRow .downloadTiming small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.httpDownloadRow .downloadState{gap:3px}
+@media(max-width:950px){.downloadTransferCompact{grid-column:3;grid-row:2}}
+@media(max-width:650px){.downloadTransferCompact{grid-column:1/-1;grid-row:auto}.httpSpeedGraph svg{height:34px}}
 .downloadPill.http{gap:5px;border-color:#348895;background:#102b31f2;color:#a7eaf0}.downloadPill.http.downloaded{border-color:#318774;background:#102a23f2;color:#a9efda}.downloadPill .actionIcon{width:14px;height:14px;font-size:14px}
 .releaseStatusIcon .actionIcon{width:15px;height:15px;font-size:15px}.releaseStatusInfo.http{border-color:#318774;background:#102a23;color:#a9efda}
 
@@ -1031,6 +1034,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .byparrInstanceRow input[data-byparr-url]{min-width:0}
 .byparrInstanceRow input[data-byparr-priority]{min-width:0}
 .byparrInstanceRow label.check{white-space:nowrap;margin:0}
+.preferredPatternSetting{display:block;margin:10px 0}.preferredPatternSetting>.fieldLabel{display:block;margin-bottom:6px;font-weight:700}.preferredPatternHead,.preferredFilenamePatternRow{display:grid;grid-template-columns:minmax(0,1fr) 90px 42px;gap:7px;align-items:center}.preferredPatternHead{padding:0 4px 4px;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.8px;text-transform:uppercase}.preferredFilenamePatternRow{margin:7px 0}.preferredFilenamePatternRow input{min-width:0}.preferredFilenamePatternRow button{height:38px;padding:0;font-size:20px}.preferredPatternSetting>button{margin-top:4px}
 .siteGroupScheduleCard{padding:14px;margin:10px 0;border:1px solid var(--line);border-radius:10px;background:var(--surface2)}
 .siteGroupScheduleForecast{margin:8px 0 10px;padding:7px 10px;border-left:2px solid #58677b;background:#0b1017;border-radius:0 7px 7px 0;font-size:11px;line-height:1.45}
 .siteGroupScheduleCard>[data-sgs-remove]{margin-top:12px;width:100%}

@@ -41,7 +41,7 @@ var pikPakAlgorithms = []string{
 type javDBProvider struct {
 	client           *http.Client
 	baseURL          string
-	acceptedPatterns []string
+	acceptedPatterns []PreferredFilenamePattern
 	log              *slog.Logger
 	inspectCandidate func(context.Context, string, string) (pikPakFile, []pikPakFile, error)
 }
@@ -64,7 +64,7 @@ type resolvedHTTPFile struct {
 }
 
 func httpSourceProviders(client *http.Client, settings map[string]string, logger *slog.Logger) []HTTPSourceProvider {
-	patterns := strings.FieldsFunc(settings["accepted_patterns"], func(r rune) bool { return r == '\n' || r == ',' })
+	patterns := ParsePreferredFilenamePatterns(settings["accepted_patterns"])
 	return []HTTPSourceProvider{&javDBProvider{client: client, baseURL: settings["javdb_url"], acceptedPatterns: patterns, log: logger}}
 }
 
@@ -93,7 +93,7 @@ func (p *javDBProvider) Resolve(ctx context.Context, download domain.Download) (
 			case <-timer.C:
 			}
 		}
-		direct, name, size, err = resolvePikPakShare(ctx, p.client, download.SourceReference, download.Query, p.acceptedPatterns)
+		direct, name, size, err = resolvePikPakShare(ctx, p.client, download.SourceReference, download.Query, p.acceptedPatterns, download.ProviderFileID, download.Name, download.BytesTotal)
 		if err == nil {
 			return resolvedHTTPFile{URL: direct, Name: name, Size: size, Headers: map[string]string{"User-Agent": publicShareUserAgent, "Referer": "https://mypikpak.com/"}}, nil
 		}
@@ -270,7 +270,8 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 		}
 		rows[i].Title = selected.Name
 		rows[i].MatchedFile = selected.Name
-		rows[i].PreferredFilenameMatch, _ = matchesAcceptedHTTPPattern(selected.Name, p.acceptedPatterns)
+		rows[i].ProviderFileID = selected.ID
+		rows[i].PreferredFilenameMatch, _, rows[i].PreferredFilenamePriority = matchesAcceptedHTTPPattern(selected.Name, p.acceptedPatterns)
 		rows[i].Files, rows[i].FileDetails = pikPakSearchFiles(files, selected)
 		if size, parseErr := strconv.ParseInt(selected.Size, 10, 64); parseErr == nil && size > 0 {
 			rows[i].SizeBytes = size
@@ -285,7 +286,7 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 }
 
 func (p *javDBProvider) inspectSearchCandidate(ctx context.Context, link, releaseID string) (pikPakFile, []pikPakFile, error) {
-	_, _, selected, files, err := inspectPikPakShare(ctx, p.client, link, releaseID, p.acceptedPatterns)
+	_, _, selected, files, err := inspectPikPakShare(ctx, p.client, link, releaseID, p.acceptedPatterns, "", "", 0)
 	if err == nil || ctx.Err() != nil {
 		return selected, files, err
 	}
@@ -299,16 +300,19 @@ func (p *javDBProvider) inspectSearchCandidate(ctx context.Context, link, releas
 		return pikPakFile{}, nil, ctx.Err()
 	case <-timer.C:
 	}
-	_, _, selected, files, err = inspectPikPakShare(ctx, p.client, link, releaseID, p.acceptedPatterns)
+	_, _, selected, files, err = inspectPikPakShare(ctx, p.client, link, releaseID, p.acceptedPatterns, "", "", 0)
 	return selected, files, err
 }
 
-func sortJavDBDownloadCandidates(rows []domain.SearchResult, releaseID string, patterns []string) {
+func sortJavDBDownloadCandidates(rows []domain.SearchResult, releaseID string, patterns []PreferredFilenamePattern) {
 	sort.SliceStable(rows, func(i, j int) bool {
-		iPreferred, _ := matchesAcceptedHTTPPattern(rows[i].Title, patterns)
-		jPreferred, _ := matchesAcceptedHTTPPattern(rows[j].Title, patterns)
+		iPreferred, _, iPriority := matchesAcceptedHTTPPattern(rows[i].Title, patterns)
+		jPreferred, _, jPriority := matchesAcceptedHTTPPattern(rows[j].Title, patterns)
 		if iPreferred != jPreferred {
 			return iPreferred
+		}
+		if iPreferred && iPriority != jPriority {
+			return iPriority < jPriority
 		}
 		iU, jU := hasUVariant(rows[i].Title, releaseID), hasUVariant(rows[j].Title, releaseID)
 		if iU != jU {
@@ -317,25 +321,27 @@ func sortJavDBDownloadCandidates(rows []domain.SearchResult, releaseID string, p
 		return rows[i].SizeBytes > rows[j].SizeBytes
 	})
 	for i := range rows {
-		if preferred, pattern := matchesAcceptedHTTPPattern(rows[i].Title, patterns); preferred {
+		if preferred, pattern, priority := matchesAcceptedHTTPPattern(rows[i].Title, patterns); preferred {
 			rows[i].PreferredFilenameMatch = true
-			rows[i].Reason = "preferred HTTP filename matched pattern " + pattern
+			rows[i].PreferredFilenamePriority = priority
+			rows[i].Reason = fmt.Sprintf("preferred HTTP filename matched priority %d pattern %s", priority, pattern)
 		}
 	}
 }
 
-func matchesAcceptedHTTPPattern(name string, patterns []string) (bool, string) {
+func matchesAcceptedHTTPPattern(name string, patterns []PreferredFilenamePattern) (bool, string, int) {
+	patterns = normalizePreferredFilenamePatterns(patterns)
 	if len(patterns) == 0 {
-		patterns = []string{"4k688.com@", "hhd800.com@"}
+		patterns = defaultPreferredFilenamePatternRows()
 	}
 	name = strings.ToLower(name)
-	for _, pattern := range patterns {
-		pattern = strings.TrimSpace(pattern)
+	for _, item := range patterns {
+		pattern := strings.TrimSpace(item.Pattern)
 		if pattern != "" && strings.Contains(name, strings.ToLower(pattern)) {
-			return true, pattern
+			return true, pattern, item.Priority
 		}
 	}
-	return false, ""
+	return false, "", 0
 }
 
 func (p *javDBProvider) getHTML(ctx context.Context, raw string) (*html.Node, int, error) {
@@ -860,7 +866,7 @@ func (p *pikPakClient) listShareFiles(ctx context.Context, shareID, parentID str
 	}
 }
 
-func inspectPikPakShare(ctx context.Context, client *http.Client, keepshareURL, releaseID string, preferredPatterns []string) (*pikPakClient, string, pikPakFile, []pikPakFile, error) {
+func inspectPikPakShare(ctx context.Context, client *http.Client, keepshareURL, releaseID string, preferredPatterns []PreferredFilenamePattern, requestedFileID, expectedName string, expectedSize int64) (*pikPakClient, string, pikPakFile, []pikPakFile, error) {
 	shareID, err := discoverPikPakShareID(ctx, client, keepshareURL)
 	if err != nil {
 		return nil, "", pikPakFile{}, nil, err
@@ -870,11 +876,51 @@ func inspectPikPakShare(ctx context.Context, client *http.Client, keepshareURL, 
 	if err != nil {
 		return nil, "", pikPakFile{}, nil, err
 	}
-	selected, found := selectPikPakFile(all, releaseID, preferredPatterns)
+	var selected pikPakFile
+	found := false
+	if requestedFileID != "" {
+		selected, found = selectPikPakFileByID(all, requestedFileID, releaseID)
+		if !found {
+			return nil, "", pikPakFile{}, all, fmt.Errorf("selected PikPak file %s is unavailable or no longer matches %s", requestedFileID, releaseID)
+		}
+	} else if expectedName != "" || expectedSize > 0 {
+		selected, found = selectPikPakFileByIdentity(all, expectedName, expectedSize, releaseID)
+		if !found {
+			return nil, "", pikPakFile{}, all, fmt.Errorf("previously selected PikPak file %q (%d bytes) is unavailable", expectedName, expectedSize)
+		}
+	} else {
+		selected, found = selectPikPakFile(all, releaseID, preferredPatterns)
+	}
 	if !found {
 		return nil, "", pikPakFile{}, all, fmt.Errorf("PikPak share contained no file matching %s", releaseID)
 	}
 	return pp, shareID, selected, all, nil
+}
+
+func selectPikPakFileByIdentity(files []pikPakFile, expectedName string, expectedSize int64, releaseID string) (pikPakFile, bool) {
+	for _, file := range files {
+		if file.Kind == "drive#folder" || !releaseIDMatchesText(file.Name, releaseID) {
+			continue
+		}
+		size, _ := strconv.ParseInt(file.Size, 10, 64)
+		if expectedName != "" && !strings.EqualFold(strings.TrimSpace(file.Name), strings.TrimSpace(expectedName)) {
+			continue
+		}
+		if expectedSize > 0 && size != expectedSize {
+			continue
+		}
+		return file, true
+	}
+	return pikPakFile{}, false
+}
+
+func selectPikPakFileByID(files []pikPakFile, fileID, releaseID string) (pikPakFile, bool) {
+	for _, file := range files {
+		if file.ID == fileID && file.Kind != "drive#folder" && releaseIDMatchesText(file.Name, releaseID) {
+			return file, true
+		}
+	}
+	return pikPakFile{}, false
 }
 
 // discoverPikPakShareID follows Keepshare's own intermediate redirects but
@@ -926,7 +972,7 @@ func discoverPikPakShareID(ctx context.Context, client *http.Client, sourceURL s
 	return "", errors.New("Keepshare did not resolve to a PikPak public share")
 }
 
-func selectPikPakFile(files []pikPakFile, releaseID string, preferredPatterns []string) (pikPakFile, bool) {
+func selectPikPakFile(files []pikPakFile, releaseID string, preferredPatterns []PreferredFilenamePattern) (pikPakFile, bool) {
 	var selected pikPakFile
 	found := false
 	for i := range files {
@@ -935,10 +981,10 @@ func selectPikPakFile(files []pikPakFile, releaseID string, preferredPatterns []
 			continue
 		}
 		size, _ := strconv.ParseInt(f.Size, 10, 64)
-		preferred, _ := matchesAcceptedHTTPPattern(f.Name, preferredPatterns)
-		oldPreferred, _ := matchesAcceptedHTTPPattern(selected.Name, preferredPatterns)
+		preferred, _, priority := matchesAcceptedHTTPPattern(f.Name, preferredPatterns)
+		oldPreferred, _, oldPriority := matchesAcceptedHTTPPattern(selected.Name, preferredPatterns)
 		oldSize, _ := strconv.ParseInt(selected.Size, 10, 64)
-		if !found || (preferred && !oldPreferred) || preferred == oldPreferred && size > oldSize {
+		if !found || (preferred && !oldPreferred) || (preferred && oldPreferred && priority < oldPriority) || (preferred == oldPreferred && priority == oldPriority && size > oldSize) {
 			selected, found = f, true
 		}
 	}
@@ -956,16 +1002,26 @@ func pikPakSearchFiles(files []pikPakFile, selected pikPakFile) ([]string, []dom
 	return names, details
 }
 
-func resolvePikPakShare(ctx context.Context, client *http.Client, keepshareURL, releaseID string, preferredPatterns []string) (string, string, int64, error) {
-	pp, shareID, selected, _, err := inspectPikPakShare(ctx, client, keepshareURL, releaseID, preferredPatterns)
+func resolvePikPakShare(ctx context.Context, client *http.Client, keepshareURL, releaseID string, preferredPatterns []PreferredFilenamePattern, providerFileID, expectedName string, expectedSize int64) (string, string, int64, error) {
+	pp, shareID, selected, _, err := inspectPikPakShare(ctx, client, keepshareURL, releaseID, preferredPatterns, providerFileID, expectedName, expectedSize)
 	if err != nil {
 		return "", "", 0, err
+	}
+	selectedSize, _ := strconv.ParseInt(selected.Size, 10, 64)
+	if expectedName != "" && !strings.EqualFold(strings.TrimSpace(selected.Name), strings.TrimSpace(expectedName)) {
+		return "", "", 0, fmt.Errorf("selected PikPak file changed: expected %q, resolved %q", expectedName, selected.Name)
+	}
+	if expectedSize > 0 && selectedSize > 0 && expectedSize != selectedSize {
+		return "", "", 0, fmt.Errorf("selected PikPak file size changed: expected %d bytes, resolved %d bytes", expectedSize, selectedSize)
 	}
 	info, err := pp.request(ctx, "/drive/v1/share/file_info", url.Values{"share_id": {shareID}, "file_id": {selected.ID}})
 	if err != nil {
 		return "", "", 0, err
 	}
 	file := info.FileInfo
+	if file.ID != "" && file.ID != selected.ID {
+		return "", "", 0, fmt.Errorf("PikPak returned the wrong file: requested %s, received %s", selected.ID, file.ID)
+	}
 	// web_content_link is PikPak's original-file stream (the same URL exposed
 	// when the public player is opened). Always prefer it over the media array,
 	// whose entries may be bandwidth-saving transcodes. If it is absent, prefer
@@ -985,6 +1041,5 @@ func resolvePikPakShare(ctx context.Context, client *http.Client, keepshareURL, 
 	if direct == "" {
 		return "", "", 0, errors.New("PikPak did not return a downloadable URL for the matching file")
 	}
-	size, _ := strconv.ParseInt(selected.Size, 10, 64)
-	return direct, selected.Name, size, nil
+	return direct, selected.Name, selectedSize, nil
 }

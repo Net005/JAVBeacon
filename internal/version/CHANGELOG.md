@@ -7,6 +7,35 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.95] - 2026-09-06
+
+### Added
+
+- Preferred filename patterns are now managed as individual settings rows with
+  an explicit numeric priority. Priority 1 is highest; existing newline-based
+  patterns are migrated automatically to priority 10.
+- Torrent and HTTP search results now expose the matched filename priority, and
+  Download Activity shows a compact live speed graph for active HTTP transfers.
+
+### Changed
+
+- Torrent and HTTP candidate selection now chooses matches from the
+  highest-priority configured filename pattern before comparing seed counts or
+  file sizes. Equal-priority Torrent matches still prefer more seeds, while
+  equal-priority HTTP matches still prefer the largest file.
+- Download Activity uses a denser active-transfer layout with smaller transfer
+  metrics and continuously updated HTTP speed history.
+
+### Fixed
+
+- Manual HTTP selection now pins the exact PikPak file ID, filename, and size
+  discovered during search, preventing download-time resolution from silently
+  substituting another release-ID-matching file from the same share.
+- Removing an active HTTP download now cancels its worker and clears its HTTP
+  history without attempting to contact qBittorrent.
+- The new preferred-pattern list no longer leaves the obsolete textarea taking
+  up empty space beneath its row controls.
+
 ## [1.0.94] - 2026-09-05
 
 ### Changed

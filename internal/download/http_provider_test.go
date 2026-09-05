@@ -121,6 +121,9 @@ func TestJavDBSearchMatchesPREDSpacingAndPRPMExactDate(t *testing.T) {
 			if rows[0].MatchedFile != "4k688.com@"+test.requested+".mp4" {
 				t.Fatalf("candidate inspection did not run: %+v", rows[0])
 			}
+			if rows[0].ProviderFileID != "video" {
+				t.Fatalf("selected provider file ID was not retained: %+v", rows[0])
+			}
 		})
 	}
 }
@@ -303,7 +306,7 @@ func TestJavDBSortingPrefersConfiguredFilenamePatternsBeforeNormalHTTPOrder(t *t
 		{Title: "trusted@ ADN-803-U.mp4", SizeBytes: 5 << 30},
 		{Title: "trusted@ ADN-803.mp4", SizeBytes: 3 << 30},
 	}
-	sortJavDBDownloadCandidates(rows, "ADN-803", []string{"trusted@"})
+	sortJavDBDownloadCandidates(rows, "ADN-803", legacyPreferredFilenamePatterns([]string{"trusted@"}))
 	if rows[0].Title != "trusted@ ADN-803.mp4" || rows[1].Title != "trusted@ ADN-803-U.mp4" || rows[2].Title != "ADN-803.mp4" {
 		t.Fatalf("unexpected preferred HTTP order: %+v", rows)
 	}
@@ -318,13 +321,55 @@ func TestPikPakFileSelectionUsesPreferredPatternsThenLargestFallback(t *testing.
 		{ID: "preferred", Name: "trusted@ ADN-803.mp4", Size: "3000"},
 		{ID: "other", Name: "ADN-803 sample.mp4", Size: "1000"},
 	}
-	selected, found := selectPikPakFile(files, "ADN-803", []string{"trusted@"})
+	selected, found := selectPikPakFile(files, "ADN-803", legacyPreferredFilenamePatterns([]string{"trusted@"}))
 	if !found || selected.ID != "preferred" {
 		t.Fatalf("preferred file was not selected: %+v, found=%v", selected, found)
 	}
-	selected, found = selectPikPakFile(files, "ADN-803", []string{"does-not-match"})
+	selected, found = selectPikPakFile(files, "ADN-803", legacyPreferredFilenamePatterns([]string{"does-not-match"}))
 	if !found || selected.ID != "large" {
 		t.Fatalf("largest fallback file was not selected: %+v, found=%v", selected, found)
+	}
+}
+
+func TestPikPakFileSelectionUsesPatternPriorityBeforeFileSize(t *testing.T) {
+	files := []pikPakFile{
+		{ID: "priority-ten", Name: "large@ADN-803.mp4", Size: "9000"},
+		{ID: "priority-one", Name: "best@ADN-803.mp4", Size: "3000"},
+	}
+	selected, found := selectPikPakFile(files, "ADN-803", []PreferredFilenamePattern{
+		{Pattern: "large@", Priority: 10},
+		{Pattern: "best@", Priority: 1},
+	})
+	if !found || selected.ID != "priority-one" {
+		t.Fatalf("priority-one file was not selected: %+v, found=%v", selected, found)
+	}
+}
+
+func TestPikPakPinnedFileSelectionNeverSubstitutesAnotherMatchingFile(t *testing.T) {
+	files := []pikPakFile{
+		{ID: "smaller", Name: "ADN-803.mp4", Size: "1900000000"},
+		{ID: "chosen", Name: "ADN-803.mp4", Size: "3400000000"},
+	}
+	selected, found := selectPikPakFileByID(files, "chosen", "ADN-803")
+	if !found || selected.ID != "chosen" || selected.Size != "3400000000" {
+		t.Fatalf("exact selected file was not retained: %+v, found=%v", selected, found)
+	}
+	if selected, found = selectPikPakFileByID(files, "missing", "ADN-803"); found {
+		t.Fatalf("missing pinned file silently fell back to %+v", selected)
+	}
+}
+
+func TestPikPakHistoricalSelectionUsesExactStoredNameAndSize(t *testing.T) {
+	files := []pikPakFile{
+		{ID: "wrong", Name: "ADN-803.mp4", Size: "1900000000"},
+		{ID: "chosen", Name: "4k688.com@ADN-803.mp4", Size: "3689305356"},
+	}
+	selected, found := selectPikPakFileByIdentity(files, "4K688.COM@adn-803.mp4", 3689305356, "ADN-803")
+	if !found || selected.ID != "chosen" {
+		t.Fatalf("stored HTTP selection was not recovered exactly: %+v, found=%v", selected, found)
+	}
+	if selected, found = selectPikPakFileByIdentity(files, "4k688.com@ADN-803.mp4", 1900000000, "ADN-803"); found {
+		t.Fatalf("mismatched stored name/size silently selected %+v", selected)
 	}
 }
 
