@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +39,36 @@ func TestJavLibraryListingAndDetail(t *testing.T) {
 	x := items[0]
 	if x.VideoID != "ABC-123" || x.Title != "Detailed title" || x.ReleaseDate != "2024-02-03" || x.Actress != "Actor One, Actor Two, Alias Two, Actor Three, Stage Three" || len(x.Genres) != 2 || x.Genres[1] != "Best, Omnibus" || x.Director != "Director Name" || x.Studio != "Attackers" || x.Label != "Otona No Drama" || !x.Released {
 		t.Fatalf("unexpected release: %+v", x)
+	}
+}
+
+func TestJavLibraryExcludesGIGAStudioReleases(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			_, _ = w.Write([]byte(`<html><title>JAVLibrary list</title><div class="video"><a href="/javother.html" title="Other item"></a><div class="id">OTHER-1</div></div></html>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<html><title>JAVLibrary list</title><div class="video"><a href="/javgiga.html" title="GIGA item"></a><div class="id">GIGA-1</div></div></html>`))
+	})
+	detail := func(studio string) string {
+		return `<html><title>Detailed title - JAVLibrary</title><table><tr><td class="header">Release Date:</td><td>2026-09-05</td></tr><tr><td class="header">Maker:</td><td>` + studio + `</td></tr></table></html>`
+	}
+	mux.HandleFunc("/javgiga.html", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(detail(" GIGA "))) })
+	mux.HandleFunc("/javother.html", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(detail("Attackers"))) })
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	scraper := NewJavLibrary(2*time.Second, "", 0, nil)
+	items, err := scraper.Scrape(context.Background(), server.URL+"/list", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].VideoID != "OTHER-1" {
+		t.Fatalf("items=%+v, want only the non-GIGA studio release", items)
+	}
+	if _, err := scraper.AddByURL(context.Background(), server.URL+"/javgiga.html", "GIGA-1"); !errors.Is(err, errJavLibraryGIGARelease) {
+		t.Fatalf("AddByURL error=%v, want GIGA exclusion", err)
 	}
 }
 

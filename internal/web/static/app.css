@@ -657,7 +657,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 
   .releaseInfo{
     display:grid!important;
-    grid-template-rows:88px 196px minmax(0,1fr) 38px 76px!important;
+    grid-template-rows:88px 196px auto 38px minmax(76px,1fr)!important;
     gap:7px!important;
     align-content:stretch!important;
     justify-content:stretch!important;
@@ -707,15 +707,13 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
   .detailSources{height:38px!important;min-height:38px!important;max-height:38px!important;overflow:hidden!important;padding:5px 9px!important;margin:0!important}
   .sourceAddedAt{display:none!important}
 
-  .detailStory{height:76px!important;min-height:76px!important;max-height:76px!important;overflow:hidden!important;margin:0!important;padding:9px 12px!important}
+  .detailStory{height:auto!important;min-height:76px!important;max-height:none!important;overflow:auto!important;margin:0!important;padding:9px 12px!important}
   .detailStory h2{margin:0 0 4px!important;font-size:12px!important}
   .detailStory p{
     margin:0!important;
-    display:-webkit-box!important;
-    -webkit-box-orient:vertical!important;
-    -webkit-line-clamp:2!important;
-    overflow:hidden!important;
-    text-overflow:ellipsis!important;
+    display:block!important;
+    overflow:visible!important;
+    text-overflow:clip!important;
     white-space:normal!important;
     line-height:1.4!important;
     font-size:11px!important;

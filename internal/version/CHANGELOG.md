@@ -7,6 +7,21 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.77] - 2026-09-05
+
+### Changed
+
+- JavLibrary scans now exclude releases whose studio is GIGA, using a
+  case-insensitive studio match, so GIGA metadata comes exclusively from the
+  dedicated Akiba-web/GIGA scraper. A one-time SQLite and PostgreSQL migration
+  removes existing JavLibrary-origin GIGA duplicates without touching releases
+  collected by the dedicated provider.
+
+### Fixed
+
+- Release Details now uses the available Story area instead of clipping text
+  to one or two lines when the panel has room to display it.
+
 ## [1.0.76] - 2026-09-05
 
 ### Added

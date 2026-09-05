@@ -542,6 +542,9 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 	if err := s.migrateNormalizedReleaseMetadata(ctx); err != nil {
 		return err
 	}
+	if err := s.removeJavLibraryGIGAReleases(ctx); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE sites SET download_mode='future' WHERE download=1 AND download_mode=''`); err != nil {
 		return err
 	}
