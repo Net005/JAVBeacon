@@ -529,6 +529,7 @@ type Download struct {
 	DestinationPath string          `json:"destination_path,omitempty"`
 	BytesTotal      int64           `json:"bytes_total,omitempty"`
 	BytesDownloaded int64           `json:"bytes_downloaded,omitempty"`
+	BytesPerSecond  int64           `json:"bytes_per_second,omitempty"`
 	Name            string          `json:"name"`
 	Files           json.RawMessage `json:"files"`
 	Status          string          `json:"status"`
