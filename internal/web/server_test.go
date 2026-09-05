@@ -1062,7 +1062,11 @@ func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testin
 		},
 		"static/app.js": {
 			`let releaseSelection=new Set()`,
+			`let releaseSelectionAnchor=null`,
 			`releaseSelection.has(Number(x.id))`,
+			`handleReleaseCoverClick(event,${x.id})`,
+			`event?.shiftKey&&releaseSelectionAnchor!==null`,
+			`releaseGrid.classList.toggle('selectionMode',count>0)`,
 			`function appendReleases(rows)`,
 			`api('/releases/bulk/monitor-download'`,
 			`ignore_local_force_download:releaseBulkIgnoreLocal.checked`,
@@ -1070,6 +1074,7 @@ func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testin
 		},
 		"static/app.css": {
 			`.releaseSelect{position:absolute`,
+			`.coverGrid.selectionMode .releaseSelect`,
 			`.card.selected{border-color:`,
 			`.releaseBulkDownloadDialog{width:`,
 		},
@@ -1084,6 +1089,25 @@ func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testin
 			if !strings.Contains(text, marker) {
 				t.Errorf("%s missing %q", name, marker)
 			}
+		}
+	}
+}
+
+func TestMissingScanFolderScopeUIExplainsMultipleRows(t *testing.T) {
+	body, err := assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(body)
+	for _, marker := range []string{
+		"Folder scopes",
+		"optional · one per row",
+		"Each non-empty row is a separate folder scope",
+		"multiple rows expand the scan rather than narrowing it",
+		"/videos/Studio A&#10;/videos/Studio B&#10;/archive/JAV",
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("multi-folder scope UI is missing %q", marker)
 		}
 	}
 }

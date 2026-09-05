@@ -7,6 +7,23 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.75] - 2026-09-05
+
+### Changed
+
+- Release Library selection controls no longer permanently consume the
+  cover's status-pill space. A card reveals its checkbox on hover or keyboard
+  focus; after the first release is selected, every loaded card keeps its
+  checkbox visible and cover clicks toggle additional selections. The mode
+  remains active as more releases are appended while scrolling.
+- Shift-clicking a release checkbox or cover now selects the complete loaded
+  range between the first selected release and the clicked release, making
+  large contiguous Monitor + Download batches much faster to assemble.
+- Missing Library Files now presents folder scoping explicitly as a multi-row
+  list in both the pre-scan dialog and StashApp settings. Every non-empty row
+  is an independent case-insensitive scope and a scene is included when its
+  path matches any row; existing newline-separated settings remain compatible.
+
 ## [1.0.74] - 2026-09-05
 
 ### Added
