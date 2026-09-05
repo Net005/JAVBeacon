@@ -1279,6 +1279,7 @@ html.releaseOverlayOpen,body.releaseOverlayOpen{overflow:hidden!important;oversc
 .downloadQuickSort select{min-width:132px}
 .downloadQuickSort button{min-width:40px;padding-inline:10px}
 .downloadTable.bulkSelectable .downloadTableRow{min-height:max(96px,calc(var(--download-cover) * .676 + 20px))}
+.downloadFailureDetail{grid-column:1/-1;display:grid;gap:3px;padding:8px 10px;border:1px solid #783743;border-radius:7px;background:#251319;color:#ffc0c8;font-size:10px;line-height:1.45;overflow-wrap:anywhere;white-space:pre-wrap}.downloadFailureDetail b{color:#ff8e9d;font-size:9px;letter-spacing:.65px;text-transform:uppercase}.downloadFailureDetail span{min-width:0}
 
 /* Release Details action controls use one consistent icon/text baseline and
    explicit checkbox state. Disabled controls keep a restrained color tint;
