@@ -18,12 +18,12 @@ import (
 // Files" scan (TODO-2.0 Phase 2). It requests every field the feature's
 // filter set needs beyond what DefaultQuery already fetches for the local-
 // library sync above: per-file paths (to detect a scene with no surviving
-// file on disk), O-counter/play count/last played (for filtering), studio
-// and tags, and the scene's URL list (to find a JavLibrary product URL for
-// retrieval). Operators with a differently-shaped StashApp GraphQL schema
+// file on disk), O-counter/play count/last played/O-history (for filtering),
+// studio and tags, and the scene's URL list (to find a JavLibrary product URL
+// for retrieval). Operators with a differently-shaped StashApp GraphQL schema
 // can override this via the stash_missing_graphql_query setting, mirroring
 // how stash_graphql_query already overrides DefaultQuery.
-const DefaultMissingQuery = `query JAVBeaconMissingScenes { findScenes(filter: { per_page: -1 }) { scenes { id title code date o_counter play_count last_played_at studio { name } tags { name } urls files { path basename } } } }`
+const DefaultMissingQuery = `query JAVBeaconMissingScenes { findScenes(filter: { per_page: -1 }) { scenes { id title code date o_counter play_count last_played_at o_history studio { name } tags { name } urls files { path basename } } } }`
 
 // recoverySiteTitle names the single, lazily-created, disabled Site that
 // releases retrieved by this flow are attached to. Releases need a SiteID,
@@ -196,7 +196,7 @@ func (s *Service) runMissingScan(ctx context.Context) {
 		result.Missing++
 		x := domain.StashMissingScene{
 			StashSceneID: c.ID, Title: c.Title, Code: c.Code, Date: c.Date,
-			OCounter: c.OCounter, PlayCount: c.PlayCount, LastPlayedAt: c.LastPlayedAt,
+			OCounter: c.OCounter, PlayCount: c.PlayCount, LastPlayedAt: c.LastPlayedAt, LastOCountAt: c.LastOCountAt,
 			Studio: c.Studio, Tags: c.Tags, URLs: c.URLs, JavLibraryURL: javLibraryURLFrom(c.URLs),
 			Paths: c.Paths,
 		}
@@ -309,10 +309,10 @@ func (s *Service) releasesByCanonicalVideoID(ctx context.Context) (map[string]do
 // missingCandidate is one scene as reported by fetchMissingCandidates,
 // already flattened from the (possibly custom) GraphQL response shape.
 type missingCandidate struct {
-	ID, Title, Code, Date string
-	OCounter, PlayCount   int
-	LastPlayedAt, Studio  string
-	Tags, URLs, Paths     []string
+	ID, Title, Code, Date              string
+	OCounter, PlayCount                int
+	LastPlayedAt, LastOCountAt, Studio string
+	Tags, URLs, Paths                  []string
 }
 
 func (s *Service) fetchMissingCandidates(ctx context.Context, url, query, apiKey string) ([]missingCandidate, error) {
@@ -337,13 +337,14 @@ func (s *Service) fetchMissingCandidates(ctx context.Context, url, query, apiKey
 		Data struct {
 			FindScenes struct {
 				Scenes []struct {
-					ID           string `json:"id"`
-					Title        string `json:"title"`
-					Code         string `json:"code"`
-					Date         string `json:"date"`
-					OCounter     int    `json:"o_counter"`
-					PlayCount    int    `json:"play_count"`
-					LastPlayedAt string `json:"last_played_at"`
+					ID           string   `json:"id"`
+					Title        string   `json:"title"`
+					Code         string   `json:"code"`
+					Date         string   `json:"date"`
+					OCounter     int      `json:"o_counter"`
+					PlayCount    int      `json:"play_count"`
+					LastPlayedAt string   `json:"last_played_at"`
+					OHistory     []string `json:"o_history"`
 					Studio       *struct {
 						Name string `json:"name"`
 					} `json:"studio"`
@@ -366,6 +367,12 @@ func (s *Service) fetchMissingCandidates(ctx context.Context, url, query, apiKey
 		return nil, err
 	}
 	if len(payload.Errors) > 0 {
+		// Older StashApp GraphQL schemas may not expose o_history. Preserve
+		// the entire missing-file scan in that case and simply leave the
+		// Last O Count Date blank, matching the main local-sync fallback.
+		if strings.Contains(query, "o_history") {
+			return s.fetchMissingCandidates(ctx, url, strings.ReplaceAll(query, "o_history", ""), apiKey)
+		}
 		return nil, errors.New(payload.Errors[0].Message)
 	}
 	out := make([]missingCandidate, 0, len(payload.Data.FindScenes.Scenes))
@@ -374,6 +381,11 @@ func (s *Service) fetchMissingCandidates(ctx context.Context, url, query, apiKey
 			ID: scene.ID, Title: scene.Title, Code: scene.Code, Date: scene.Date,
 			OCounter: scene.OCounter, PlayCount: scene.PlayCount, LastPlayedAt: scene.LastPlayedAt,
 			URLs: scene.URLs,
+		}
+		for _, timestamp := range scene.OHistory {
+			if timestamp > c.LastOCountAt {
+				c.LastOCountAt = timestamp
+			}
 		}
 		if scene.Studio != nil {
 			c.Studio = scene.Studio.Name

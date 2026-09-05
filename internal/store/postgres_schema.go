@@ -380,6 +380,7 @@ CREATE TABLE IF NOT EXISTS stash_missing_scenes (
 	o_counter INTEGER NOT NULL DEFAULT 0,
 	play_count INTEGER NOT NULL DEFAULT 0,
 	last_played_at TEXT NOT NULL DEFAULT '',
+	last_o_count_at TEXT NOT NULL DEFAULT '',
 	studio TEXT NOT NULL DEFAULT '',
 	tags TEXT NOT NULL DEFAULT '[]',
 	urls TEXT NOT NULL DEFAULT '[]',
@@ -485,6 +486,7 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS scheduled INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS site_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stash_missing_scenes ADD COLUMN IF NOT EXISTS last_o_count_at TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err

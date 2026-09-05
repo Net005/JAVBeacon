@@ -345,6 +345,7 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 			o_counter INTEGER NOT NULL DEFAULT 0,
 			play_count INTEGER NOT NULL DEFAULT 0,
 			last_played_at TEXT NOT NULL DEFAULT '',
+			last_o_count_at TEXT NOT NULL DEFAULT '',
 			studio TEXT NOT NULL DEFAULT '',
 			tags TEXT NOT NULL DEFAULT '[]',
 			urls TEXT NOT NULL DEFAULT '[]',
@@ -359,6 +360,11 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 		CREATE INDEX IF NOT EXISTS idx_stash_missing_release ON stash_missing_scenes(release_id);
 		CREATE INDEX IF NOT EXISTS idx_stash_missing_status ON stash_missing_scenes(status);
 		CREATE INDEX IF NOT EXISTS idx_stash_missing_lastscan ON stash_missing_scenes(last_scan_at);`)
+	}
+	if err == nil {
+		if _, alterErr := s.db.Exec(`ALTER TABLE stash_missing_scenes ADD COLUMN last_o_count_at TEXT NOT NULL DEFAULT ''`); alterErr != nil && !strings.Contains(strings.ToLower(alterErr.Error()), "duplicate column") {
+			return alterErr
+		}
 	}
 	if err == nil {
 		err = s.cleanupStoredReleaseText(context.Background())

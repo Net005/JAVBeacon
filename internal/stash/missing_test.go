@@ -45,7 +45,7 @@ func TestMissingScanRecordsMissingScenesAndMatchesExisting(t *testing.T) {
 	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[
 			{"id":"1","title":"Has file","code":"ABC-100","files":[{"path":"` + existing + `"}]},
-			{"id":"2","title":"No file, unmatched","code":"XYZ-999","files":[{"path":"` + filepath.Join(dir, "gone1.mp4") + `"}],"urls":["https://www.javlibrary.com/en/?v=xyz999"]},
+			{"id":"2","title":"No file, unmatched","code":"XYZ-999","o_history":["2024-04-01T12:00:00Z","2024-05-09T12:00:00Z"],"files":[{"path":"` + filepath.Join(dir, "gone1.mp4") + `"}],"urls":["https://www.javlibrary.com/en/?v=xyz999"]},
 			{"id":"3","title":"No file, matched","code":"DEF-456","files":[{"path":"` + filepath.Join(dir, "gone2.mp4") + `"}]}
 		]}}}`))
 	})
@@ -83,7 +83,7 @@ func TestMissingScanRecordsMissingScenesAndMatchesExisting(t *testing.T) {
 			matched = &rows[i]
 		}
 	}
-	if unmatched == nil || unmatched.ReleaseID != 0 || unmatched.JavLibraryURL != "https://www.javlibrary.com/en/?v=xyz999" {
+	if unmatched == nil || unmatched.ReleaseID != 0 || unmatched.JavLibraryURL != "https://www.javlibrary.com/en/?v=xyz999" || unmatched.LastOCountAt != "2024-05-09T12:00:00Z" {
 		t.Fatalf("unmatched scene wrong: %+v", unmatched)
 	}
 	if matched == nil || matched.ReleaseVideoID != "DEF-456" {
