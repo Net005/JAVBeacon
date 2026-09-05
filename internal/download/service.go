@@ -965,6 +965,7 @@ func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, resul
 	if err != nil {
 		return x, err
 	}
+	s.logHTTPDownloadEvent("HTTP download queued", x)
 	go s.runHTTPDownload(context.Background(), x)
 	_, _ = s.store.CreateNotification(ctx, r.ID, "download_started", "HTTP download queued")
 	return x, nil
@@ -1023,6 +1024,7 @@ func (s *Service) resumeHTTPDownloads() {
 			row.BytesDownloaded = 0
 			row.BytesPerSecond = 0
 			row, _ = s.store.SaveDownload(context.Background(), row)
+			s.logHTTPDownloadEvent("HTTP download resumed after JAVBeacon restart", row)
 			go s.runHTTPDownload(context.Background(), row)
 		}
 	}
@@ -1075,6 +1077,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		return
 	}
 	defer s.releaseHTTPSlot()
+	s.logHTTPDownloadEvent("HTTP download started", d)
 	settings, err := s.store.Settings(ctx)
 	dir := ""
 	if err == nil {
@@ -1205,6 +1208,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	d.Status = "completed"
 	d.MatchReason = appendDownloadPreference("HTTP file downloaded from Keepshare", d.MatchReason)
 	d, _ = s.store.SaveDownload(context.Background(), d)
+	s.logHTTPDownloadEvent("HTTP download completed", d)
 	_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_completed", "HTTP download completed")
 	s.runEventPipelineAsync(context.Background(), d, Torrent{Name: filepath.Base(finalPath), ContentPath: finalPath, Progress: 1}, pipelineDownloadCompleted, nil)
 }
@@ -1285,10 +1289,64 @@ func (s *Service) RetryHTTPDownload(ctx context.Context, downloadID int64) (doma
 			if e != nil {
 				return domain.Download{}, e
 			}
-			return s.queueHTTPDownload(ctx, release, domain.SearchResult{Provider: row.Provider, Title: row.Name, Link: row.SourceReference, SourceURL: row.SourcePageURL, Transport: "http", SizeBytes: row.BytesTotal, Accepted: true, Reason: "retried HTTP download"}, "Manual HTTP Retry", row.SourceReference)
+			// Retry the failed row itself. Creating a second history row left the
+			// clicked row visibly failed and made a successful retry look as if it
+			// had immediately fallen back into failure. A retry deliberately ignores
+			// local/completed history, but still refuses to duplicate another active
+			// HTTP transfer for this release.
+			if reason, _, _, duplicateErr := s.duplicateStored(ctx, release, true, true, "http"); duplicateErr != nil {
+				return domain.Download{}, duplicateErr
+			} else if reason != "" {
+				return domain.Download{}, errors.New(reason)
+			}
+			previousFailure := row.Error
+			row.Status = "queued"
+			row.Error = ""
+			row.PostStatus = ""
+			row.Progress = 0
+			row.BytesDownloaded = 0
+			row.BytesPerSecond = 0
+			row.ETASeconds = 0
+			row.DestinationPath = ""
+			row.SourceType = "Manual HTTP Retry"
+			row.MatchReason = appendDownloadPreference("retried failed HTTP download", row.MatchReason)
+			row, e = s.store.SaveDownload(ctx, row)
+			if e != nil {
+				return row, e
+			}
+			if s.log != nil {
+				s.log.Info("HTTP download retry queued",
+					"download_id", row.ID,
+					"release_id", row.ReleaseID,
+					"video_id", row.Query,
+					"provider", row.Provider,
+					"source_reference", row.SourceReference,
+					"previous_failure", previousFailure,
+				)
+			}
+			go s.runHTTPDownload(context.Background(), row)
+			_, _ = s.store.CreateNotification(ctx, row.ReleaseID, "download_started", "HTTP download retry queued")
+			return row, nil
 		}
 	}
 	return domain.Download{}, errors.New("HTTP download not found")
+}
+
+func (s *Service) logHTTPDownloadEvent(message string, d domain.Download) {
+	if s.log == nil {
+		return
+	}
+	s.log.Info(message,
+		"download_id", d.ID,
+		"release_id", d.ReleaseID,
+		"video_id", d.Query,
+		"provider", d.Provider,
+		"source_type", d.SourceType,
+		"source_reference", d.SourceReference,
+		"status", d.Status,
+		"bytes_downloaded", d.BytesDownloaded,
+		"bytes_total", d.BytesTotal,
+	)
 }
 
 // RetryFailedHTTPDownloads queues either the selected failed HTTP rows or all
@@ -1355,6 +1413,13 @@ func (s *Service) RemoveDownload(ctx context.Context, downloadID int64) (int64, 
 	}
 	if selected == nil {
 		return 0, errors.New("download not found")
+	}
+	if strings.EqualFold(selected.Transport, "http") && strings.EqualFold(selected.Status, "failed") {
+		deleted, err := s.store.DeleteDownload(ctx, selected.ID)
+		if err == nil {
+			s.log.Info("failed HTTP download history removed", "download_id", selected.ID, "release_id", selected.ReleaseID, "video_id", selected.Query)
+		}
+		return deleted, err
 	}
 	return s.removeReleaseDownloads(ctx, selected.ReleaseID, selected.Query, false)
 }
@@ -1478,15 +1543,20 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 		query string
 	}
 	selected := map[int64]selectedRelease{}
+	failedHTTPHistory := make([]domain.Download, 0)
 	for _, row := range rows {
 		if wanted[row.ID] && row.ReleaseID != 0 {
+			if !replace && strings.EqualFold(row.Transport, "http") && strings.EqualFold(row.Status, "failed") {
+				failedHTTPHistory = append(failedHTTPHistory, row)
+				continue
+			}
 			selected[row.ReleaseID] = selectedRelease{id: row.ReleaseID, query: row.Query}
 		}
 	}
-	if len(selected) == 0 {
+	if len(selected) == 0 && len(failedHTTPHistory) == 0 {
 		return domain.DownloadReplacementJob{}, errors.New("no matching downloads selected")
 	}
-	job := domain.DownloadReplacementJob{Running: true, Replace: replace, NonPreferred: allowNonPreferred, StartedAt: time.Now().UTC(), Total: len(selected)}
+	job := domain.DownloadReplacementJob{Running: true, Replace: replace, NonPreferred: allowNonPreferred, StartedAt: time.Now().UTC(), Total: len(selected) + len(failedHTTPHistory)}
 	s.mu.Lock()
 	if s.replacementJob.Running {
 		existing := s.replacementJob
@@ -1495,7 +1565,7 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 	}
 	s.replacementJob = job
 	s.mu.Unlock()
-	go func(items map[int64]selectedRelease) {
+	go func(items map[int64]selectedRelease, historyRows []domain.Download) {
 		background := context.Background()
 		defer func() {
 			job.Running = false
@@ -1545,7 +1615,27 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 			job.Processed++
 			s.setReplacementJob(job)
 		}
-	}(selected)
+		for _, row := range historyRows {
+			job.CurrentItem = firstNonEmpty(row.Query, row.Name)
+			s.setReplacementJob(job)
+			deleted, err := s.store.DeleteDownload(background, row.ID)
+			if err != nil {
+				s.log.Error("failed HTTP download history removal failed", "download_id", row.ID, "release_id", row.ReleaseID, "video_id", row.Query, "error", err)
+				job.Failed++
+				job.LastError = err.Error()
+			} else if deleted == 0 {
+				err := errors.New("download not found")
+				s.log.Warn("failed HTTP download history was already absent", "download_id", row.ID, "release_id", row.ReleaseID, "video_id", row.Query)
+				job.Failed++
+				job.LastError = err.Error()
+			} else {
+				s.log.Info("failed HTTP download history removed", "download_id", row.ID, "release_id", row.ReleaseID, "video_id", row.Query)
+				job.Removed++
+			}
+			job.Processed++
+			s.setReplacementJob(job)
+		}
+	}(selected, failedHTTPHistory)
 	return job, nil
 }
 

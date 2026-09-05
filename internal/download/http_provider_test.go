@@ -1,14 +1,42 @@
 package download
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"golang.org/x/net/html"
 )
+
+func TestDiscoverPikPakShareIDStopsAtKeepshareRedirect(t *testing.T) {
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://mypikpak.com/s/VP-YhHbopMQjt_gRbkB6ORjZo2/AAAAAAfNVsQqoHTeqzJ8lh0Yo2_VP-?act=play", http.StatusFound)
+	}))
+	defer redirect.Close()
+	shareID, err := discoverPikPakShareID(context.Background(), redirect.Client(), redirect.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shareID != "VP-YhHbopMQjt_gRbkB6ORjZo2" {
+		t.Fatalf("share ID=%q", shareID)
+	}
+}
+
+func TestDiscoverPikPakShareIDParsesDirectPlayerURLWithoutRequest(t *testing.T) {
+	shareID, err := discoverPikPakShareID(context.Background(), &http.Client{Timeout: time.Nanosecond}, "https://mypikpak.com/s/direct-share/direct-file?act=play")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shareID != "direct-share" {
+		t.Fatalf("share ID=%q", shareID)
+	}
+}
 
 func TestReleaseIDMatchesTextIsCaseInsensitiveAndRejectsHalfMatches(t *testing.T) {
 	for _, value := range []string{"ADN-803", "adn803.mp4", "[source] AdN_803-U.mp4"} {

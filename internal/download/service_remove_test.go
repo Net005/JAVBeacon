@@ -68,6 +68,43 @@ func TestRemoveDownloadRemovesTorrentAndAllReleaseHistory(t *testing.T) {
 	}
 }
 
+func TestBulkRemoveFailedHTTPDeletesOnlySelectedHistoryWithoutQBittorrent(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "remove-failed-http.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"qb_url": "http://127.0.0.1:1"}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "HTTP-404", Title: "Test", Source: "JavLibrary", Released: true})
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	failed, _ := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "HTTP-404", Transport: "http", Status: "failed", Error: "provider timeout"})
+	retained, _ := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "HTTP-404", Transport: "torrent", Status: "completed", TorrentHash: "retained"})
+
+	service := New(st, 50*time.Millisecond, slog.Default())
+	if _, err := service.StartBulkRemoveAndReplace(ctx, []int64{failed.ID}, false, false); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for service.ReplacementStatus().Running && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	job := service.ReplacementStatus()
+	if job.Running || job.Removed != 1 || job.Failed != 0 {
+		t.Fatalf("unexpected deletion result: %+v", job)
+	}
+	rows, err := st.Downloads(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != retained.ID {
+		t.Fatalf("only selected failed HTTP history should be removed: %+v", rows)
+	}
+}
+
 func TestManualReplacementDeletesFilesClearsHistoryAndStartsFreshDownload(t *testing.T) {
 	var deletedFiles, added atomic.Bool
 	mux := http.NewServeMux()

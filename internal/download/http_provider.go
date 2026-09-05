@@ -76,8 +76,26 @@ func (p *javDBProvider) CanResolve(download domain.Download) bool {
 }
 
 func (p *javDBProvider) Resolve(ctx context.Context, download domain.Download) (resolvedHTTPFile, error) {
-	direct, name, size, err := resolvePikPakShare(ctx, p.client, download.SourceReference, download.Query, p.acceptedPatterns)
-	return resolvedHTTPFile{URL: direct, Name: name, Size: size, Headers: map[string]string{"User-Agent": publicShareUserAgent, "Referer": "https://mypikpak.com/"}}, err
+	const attempts = 3
+	var direct, name string
+	var size int64
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(time.Duration(attempt) * 500 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return resolvedHTTPFile{}, ctx.Err()
+			case <-timer.C:
+			}
+		}
+		direct, name, size, err = resolvePikPakShare(ctx, p.client, download.SourceReference, download.Query, p.acceptedPatterns)
+		if err == nil {
+			return resolvedHTTPFile{URL: direct, Name: name, Size: size, Headers: map[string]string{"User-Agent": publicShareUserAgent, "Referer": "https://mypikpak.com/"}}, nil
+		}
+	}
+	return resolvedHTTPFile{}, fmt.Errorf("PikPak resolution failed after %d attempts: %w", attempts, err)
 }
 
 func normalizeReleaseID(s string) string {
@@ -547,26 +565,10 @@ func (p *pikPakClient) listShareFiles(ctx context.Context, shareID, parentID str
 }
 
 func inspectPikPakShare(ctx context.Context, client *http.Client, keepshareURL, releaseID string, preferredPatterns []string) (*pikPakClient, string, pikPakFile, []pikPakFile, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, keepshareURL, nil)
-	req.Header.Set("User-Agent", publicShareUserAgent)
-	resp, err := client.Do(req)
+	shareID, err := discoverPikPakShareID(ctx, client, keepshareURL)
 	if err != nil {
 		return nil, "", pikPakFile{}, nil, err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return nil, "", pikPakFile{}, nil, err
-	}
-	shareURL := resp.Request.URL.String()
-	m := publicShareURLPattern.FindStringSubmatch(shareURL)
-	if m == nil {
-		m = publicShareURLPattern.FindStringSubmatch(string(body))
-	}
-	if m == nil {
-		return nil, "", pikPakFile{}, nil, errors.New("Keepshare did not resolve to a PikPak public share")
-	}
-	shareID := m[1]
 	pp := newPikPakClient(client)
 	all, err := pp.listShareFiles(ctx, shareID, "")
 	if err != nil {
@@ -577,6 +579,46 @@ func inspectPikPakShare(ctx context.Context, client *http.Client, keepshareURL, 
 		return nil, "", pikPakFile{}, all, fmt.Errorf("PikPak share contained no file matching %s", releaseID)
 	}
 	return pp, shareID, selected, all, nil
+}
+
+// discoverPikPakShareID deliberately does not follow Keepshare's redirect to
+// the public PikPak player. The redirect Location already contains the share
+// ID, while loading the full ?act=play page can hang until Client.Timeout even
+// though the share API remains healthy. Direct PikPak URLs and HTML/JS-based
+// Keepshare responses are retained as fallbacks.
+func discoverPikPakShareID(ctx context.Context, client *http.Client, sourceURL string) (string, error) {
+	if match := publicShareURLPattern.FindStringSubmatch(sourceURL); match != nil {
+		return match[1], nil
+	}
+	noRedirect := *client
+	noRedirect.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", publicShareUserAgent)
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if location := strings.TrimSpace(resp.Header.Get("Location")); location != "" {
+		location = resolveURL(resp.Request.URL.String(), location)
+		if match := publicShareURLPattern.FindStringSubmatch(location); match != nil {
+			return match[1], nil
+		}
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return "", err
+	}
+	if match := publicShareURLPattern.FindStringSubmatch(string(body)); match != nil {
+		return match[1], nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return "", fmt.Errorf("Keepshare returned HTTP %d without a PikPak share redirect", resp.StatusCode)
+	}
+	return "", errors.New("Keepshare did not resolve to a PikPak public share")
 }
 
 func selectPikPakFile(files []pikPakFile, releaseID string, preferredPatterns []string) (pikPakFile, bool) {

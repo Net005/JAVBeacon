@@ -36,6 +36,18 @@ func TestDownloadFailureLogIncludesReasonAndContext(t *testing.T) {
 	}
 }
 
+func TestHTTPDownloadLifecycleLogIncludesVisibleIdentityAndStatus(t *testing.T) {
+	var output bytes.Buffer
+	service := &Service{log: slog.New(slog.NewJSONHandler(&output, nil))}
+	service.logHTTPDownloadEvent("HTTP download retry queued", domain.Download{ID: 42, ReleaseID: 17, Query: "TEST-123", Provider: "JavDB / Keepshare", Status: "queued", BytesTotal: 12345})
+	logged := output.String()
+	for _, want := range []string{`"msg":"HTTP download retry queued"`, `"download_id":42`, `"release_id":17`, `"video_id":"TEST-123"`, `"status":"queued"`, `"bytes_total":12345`} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("lifecycle log %q does not contain %q", logged, want)
+		}
+	}
+}
+
 func TestOpenHTTPDownloadStreamRetriesTemporaryGatewayFailure(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

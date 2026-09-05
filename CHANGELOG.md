@@ -7,6 +7,37 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.90] - 2026-09-05
+
+### Added
+
+- Every entry in Live Server Logs now has a Copy action that includes its
+  timestamp, level, complete message, and all structured fields.
+- Live Server Logs can export the currently loaded entries matching the active
+  level and text filters as a timestamped plain-text log file.
+
+### Changed
+
+- Retrying a failed HTTP download now reuses and immediately re-queues the
+  failed activity row, clears its stale progress and error state, and records
+  queued, started, resumed, completed, and failed lifecycle events in the
+  server log.
+- Keepshare/PikPak resolution now retries transient failures and extracts the
+  public PikPak share identifier directly from redirects or direct share URLs,
+  avoiding a blocking request to the playback page before resolving the
+  original-quality stream.
+
+### Fixed
+
+- Failed HTTP activity entries can now be deleted individually or in bulk
+  without contacting qBittorrent; only the selected failed history rows are
+  removed, leaving unrelated Torrent and HTTP history intact.
+- Retrying a failed HTTP transfer no longer immediately returns to Failed
+  without starting a new worker, while an active HTTP transfer for the same
+  release is still protected from duplication.
+- Long Download Activity failure details now remain aligned below the release
+  information instead of overlapping the cover and table columns.
+
 ## [1.0.89] - 2026-09-05
 
 ### Added
