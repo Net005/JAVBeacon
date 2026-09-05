@@ -9,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -37,8 +39,10 @@ type Service struct {
 	// Download Activity delete/replacement operation.
 	replacementJob domain.DownloadReplacementJob
 
-	cleanupRetryMu sync.Mutex
-	cleanupRetryAt map[int64]time.Time
+	cleanupRetryMu      sync.Mutex
+	cleanupRetryAt      map[int64]time.Time
+	httpFallbackMu      sync.Mutex
+	httpFallbackRetryAt map[int64]time.Time
 
 	// pipelineInFlightMu/pipelineInFlight track which (download ID,
 	// trigger) event pipelines runEventPipelineAsync currently has running
@@ -59,6 +63,8 @@ type Service struct {
 	scheduleNextAttempt map[string]time.Time
 
 	pipelineJobs chan pipelineJob
+	httpMu       sync.Mutex
+	httpActive   int
 }
 
 // scheduleMaxSleepChunk bounds how long any schedule loop below ever sleeps
@@ -82,6 +88,24 @@ type pipelineJob struct {
 // a single failure used to permanently strand the torrent in "cleanup_failed"
 // until someone noticed and intervened by hand.
 const cleanupRetryInterval = 5 * time.Minute
+
+// defaultTorrentHTTPFallbackDelay lets a newly submitted magnet resolve
+// metadata and establish peers before its first health decision. Installations
+// can override it with http_fallback_delay under Downloads -> HTTP.
+const defaultTorrentHTTPFallbackDelay = 8 * time.Hour
+const httpFallbackRetryInterval = 30 * time.Minute
+
+func (s *Service) torrentHTTPFallbackDelay(ctx context.Context) time.Duration {
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return defaultTorrentHTTPFallbackDelay
+	}
+	delay, err := time.ParseDuration(strings.TrimSpace(settings["http_fallback_delay"]))
+	if err != nil || delay <= 0 {
+		return defaultTorrentHTTPFallbackDelay
+	}
+	return delay
+}
 
 // cleanupDue reports whether it's time to retry a previously failed cleanup
 // for this download, and if so reserves the next retry slot so concurrent
@@ -107,6 +131,19 @@ func (s *Service) clearCleanupRetry(downloadID int64) {
 	delete(s.cleanupRetryAt, downloadID)
 }
 
+func (s *Service) httpFallbackDue(downloadID int64) bool {
+	s.httpFallbackMu.Lock()
+	defer s.httpFallbackMu.Unlock()
+	if next, ok := s.httpFallbackRetryAt[downloadID]; ok && time.Now().Before(next) {
+		return false
+	}
+	if s.httpFallbackRetryAt == nil {
+		s.httpFallbackRetryAt = map[int64]time.Time{}
+	}
+	s.httpFallbackRetryAt[downloadID] = time.Now().Add(httpFallbackRetryInterval)
+	return true
+}
+
 func New(st store.Store, timeout time.Duration, log *slog.Logger) *Service {
 	s := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, pipelineJobs: make(chan pipelineJob, 64), scheduleNextAttempt: map[string]time.Time{}}
 	if rows, err := st.DownloadSearchRuns(context.Background(), "recent", 1); err == nil && len(rows) > 0 {
@@ -116,6 +153,7 @@ func New(st store.Store, timeout time.Duration, log *slog.Logger) *Service {
 		s.olderJob = searchJobFromRun(rows[0])
 	}
 	go s.runPipelineWorker()
+	go s.resumeHTTPDownloads()
 	return s
 }
 
@@ -239,6 +277,57 @@ func (s *Service) provider(ctx context.Context) (SearchProvider, error) {
 }
 func (s *Service) Search(ctx context.Context, release domain.Release) ([]domain.SearchResult, error) {
 	return s.search(ctx, release, "Manual Search")
+}
+func (s *Service) SearchHTTP(ctx context.Context, release domain.Release) ([]domain.SearchResult, error) {
+	return s.searchHTTP(ctx, release, "Manual HTTP Search")
+}
+func (s *Service) searchHTTP(ctx context.Context, release domain.Release, sourceType string) ([]domain.SearchResult, error) {
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var rows []domain.SearchResult
+	var providerErrors []string
+	for _, provider := range httpSourceProviders(s.client, settings) {
+		found, searchErr := provider.Search(ctx, release)
+		history := domain.Download{ReleaseID: release.ID, Provider: provider.Name(), SourceType: sourceType, Query: release.VideoID, Status: "searched", Transport: "http"}
+		if searchErr != nil {
+			history.Status, history.Error = "failed", searchErr.Error()
+			_, _ = s.store.SaveDownload(ctx, history)
+			providerErrors = append(providerErrors, provider.Name()+": "+searchErr.Error())
+			continue
+		}
+		for _, result := range found {
+			item := history
+			item.Name = result.Title
+			item.SourceReference = result.SourceURL
+			item.BytesTotal = result.SizeBytes
+			item.MatchReason = result.Reason
+			if result.Accepted {
+				item.Status = "search_accepted"
+			} else {
+				item.Status = "search_rejected"
+			}
+			_, _ = s.store.SaveDownload(ctx, item)
+		}
+		rows = append(rows, found...)
+	}
+	if len(rows) == 0 && len(providerErrors) > 0 {
+		return nil, errors.New(strings.Join(providerErrors, "; "))
+	}
+	return rows, nil
+}
+
+func (s *Service) SearchAll(ctx context.Context, release domain.Release) ([]domain.SearchResult, error) {
+	torrent, torrentErr := s.Search(ctx, release)
+	httpRows, httpErr := s.SearchHTTP(ctx, release)
+	if torrentErr != nil && httpErr != nil {
+		return nil, fmt.Errorf("torrent: %v; HTTP: %v", torrentErr, httpErr)
+	}
+	if release.HTTPDownloadPrimary {
+		return append(httpRows, torrent...), nil
+	}
+	return append(torrent, httpRows...), nil
 }
 func (s *Service) search(ctx context.Context, release domain.Release, sourceType string) ([]domain.SearchResult, error) {
 	rows, e := s.searchNative(ctx, release, sourceType)
@@ -466,8 +555,8 @@ func (s *Service) duplicate(ctx context.Context, r domain.Release, allowLocal bo
 		return "", 0, false, e
 	}
 	for _, d := range downloads {
-		if d.ReleaseID == r.ID && (d.Status == "downloading" || d.Status == "completed" || d.Status == "processing") {
-			return "release already has download history in state " + d.Status, d.ID, d.Status == "downloading" || d.Status == "processing", nil
+		if d.ReleaseID == r.ID && (d.Status == "queued" || d.Status == "downloading" || d.Status == "completed" || d.Status == "processing") {
+			return "release already has download history in state " + d.Status, d.ID, d.Status == "queued" || d.Status == "downloading" || d.Status == "processing", nil
 		}
 	}
 	settings, e := s.store.Settings(ctx)
@@ -488,6 +577,9 @@ func (s *Service) duplicate(ctx context.Context, r domain.Release, allowLocal bo
 	return "", 0, false, nil
 }
 func (s *Service) Download(ctx context.Context, r domain.Release, result domain.SearchResult, sourceType, sourceRef string) (domain.Download, error) {
+	if strings.EqualFold(result.Transport, "http") {
+		return s.queueHTTPDownload(ctx, r, result, sourceType, sourceRef)
+	}
 	provider, providerErr := s.provider(ctx)
 	if providerErr != nil {
 		return domain.Download{}, providerErr
@@ -631,6 +723,262 @@ func (s *Service) verifyAddedToQBittorrent(ctx context.Context, qb QBittorrent, 
 		}
 	}
 	return "", false
+}
+
+func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, result domain.SearchResult, sourceType, sourceRef string) (domain.Download, error) {
+	if !result.Accepted && !result.Forced {
+		return s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", Error: "HTTP result did not exactly match the release ID"})
+	}
+	if result.ReplaceExisting {
+		if _, err := s.removeReleaseDownloads(ctx, r.ID, r.VideoID, true); err != nil {
+			return domain.Download{}, err
+		}
+	}
+	if reason, existingID, replaceable, err := s.duplicate(ctx, r, sourceType == "Manual Search" || r.IgnoreLocalForceDownload); err != nil {
+		return domain.Download{}, err
+	} else if reason != "" {
+		return s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "skipped", MatchReason: reason, CanReplace: replaceable, ExistingDownloadID: existingID})
+	}
+	if sourceRef == "" {
+		sourceRef = result.Link
+	}
+	x, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: firstNonEmpty(result.Provider, "JavDB / Keepshare"), SourceType: sourceType, SourceReference: sourceRef, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "queued", MatchReason: result.Reason, BytesTotal: result.SizeBytes})
+	if err != nil {
+		return x, err
+	}
+	go s.runHTTPDownload(context.Background(), x)
+	_, _ = s.store.CreateNotification(ctx, r.ID, "download_started", "HTTP download queued")
+	return x, nil
+}
+
+func (s *Service) httpConcurrency(ctx context.Context) int {
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return 1
+	}
+	n, _ := strconv.Atoi(settings["http_download_concurrency"])
+	if n < 1 {
+		n = 1
+	}
+	if n > 64 {
+		n = 64
+	}
+	return n
+}
+func (s *Service) acquireHTTPSlot(ctx context.Context) bool {
+	for {
+		limit := s.httpConcurrency(ctx)
+		s.httpMu.Lock()
+		if s.httpActive < limit {
+			s.httpActive++
+			s.httpMu.Unlock()
+			return true
+		}
+		s.httpMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+}
+func (s *Service) releaseHTTPSlot() {
+	s.httpMu.Lock()
+	if s.httpActive > 0 {
+		s.httpActive--
+	}
+	s.httpMu.Unlock()
+}
+
+func (s *Service) resumeHTTPDownloads() {
+	time.Sleep(500 * time.Millisecond)
+	rows, err := s.store.Downloads(context.Background(), "")
+	if err != nil {
+		return
+	}
+	for _, row := range rows {
+		if row.Transport == "http" && (row.Status == "queued" || row.Status == "downloading") {
+			row.Status = "queued"
+			row.Error = ""
+			row.Progress = 0
+			row.BytesDownloaded = 0
+			row, _ = s.store.SaveDownload(context.Background(), row)
+			go s.runHTTPDownload(context.Background(), row)
+		}
+	}
+}
+
+func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
+	if !s.acquireHTTPSlot(ctx) {
+		return
+	}
+	defer s.releaseHTTPSlot()
+	settings, err := s.store.Settings(ctx)
+	dir := ""
+	if err == nil {
+		dir = strings.TrimSpace(settings["http_download_directory"])
+	}
+	fail := func(e error) {
+		d.Status = "failed"
+		d.Error = e.Error()
+		d.ETASeconds = 0
+		_, _ = s.store.SaveDownload(context.Background(), d)
+		_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_failed", e.Error())
+	}
+	if err != nil {
+		fail(err)
+		return
+	}
+	if dir == "" {
+		fail(errors.New("HTTP download folder is not configured under Settings → Downloads → HTTP"))
+		return
+	}
+	if err = os.MkdirAll(dir, 0o755); err != nil {
+		fail(fmt.Errorf("create HTTP download folder: %w", err))
+		return
+	}
+	d.Status = "downloading"
+	d.Error = ""
+	d, _ = s.store.SaveDownload(ctx, d)
+	var resolved resolvedHTTPFile
+	var resolver HTTPSourceProvider
+	for _, provider := range httpSourceProviders(s.client, settings) {
+		if provider.CanResolve(d) {
+			resolver = provider
+			break
+		}
+	}
+	if resolver == nil {
+		fail(fmt.Errorf("no HTTP provider can resolve %s", d.Provider))
+		return
+	}
+	resolved, err = resolver.Resolve(ctx, d)
+	if err != nil {
+		fail(fmt.Errorf("resolve %s download: %w", resolver.Name(), err))
+		return
+	}
+	if resolved.Size > 0 {
+		d.BytesTotal = resolved.Size
+	}
+	files, _ := json.Marshal([]string{resolved.Name})
+	d.Files = files
+	finalPath := nextHTTPDestination(dir, strings.ToUpper(strings.TrimSpace(d.Query)))
+	tempPath := finalPath + ".part"
+	out, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		fail(err)
+		return
+	}
+	downloadClient := *s.client
+	downloadClient.Timeout = 0
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, resolved.URL, nil)
+	for key, value := range resolved.Headers {
+		req.Header.Set(key, value)
+	}
+	resp, err := downloadClient.Do(req)
+	if err != nil {
+		out.Close()
+		_ = os.Remove(tempPath)
+		fail(err)
+		return
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		resp.Body.Close()
+		out.Close()
+		_ = os.Remove(tempPath)
+		fail(fmt.Errorf("HTTP download returned %d", resp.StatusCode))
+		return
+	}
+	if resp.ContentLength > 0 {
+		d.BytesTotal = resp.ContentLength
+	}
+	started, lastSave := time.Now(), time.Now()
+	buf := make([]byte, 256*1024)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, err = out.Write(buf[:n]); err != nil {
+				readErr = err
+			}
+			d.BytesDownloaded += int64(n)
+		}
+		if time.Since(lastSave) >= time.Second && d.BytesTotal > 0 {
+			d.Progress = float64(d.BytesDownloaded) / float64(d.BytesTotal)
+			elapsed := time.Since(started).Seconds()
+			if elapsed > 0 && d.BytesDownloaded > 0 {
+				remaining := float64(d.BytesTotal-d.BytesDownloaded) / (float64(d.BytesDownloaded) / elapsed)
+				if remaining > 0 {
+					d.ETASeconds = int64(remaining)
+				}
+			}
+			d, _ = s.store.SaveDownload(context.Background(), d)
+			lastSave = time.Now()
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			err = readErr
+			break
+		}
+	}
+	resp.Body.Close()
+	closeErr := out.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(tempPath)
+		fail(err)
+		return
+	}
+	if err = os.Rename(tempPath, finalPath); err != nil {
+		_ = os.Remove(tempPath)
+		fail(err)
+		return
+	}
+	d.DestinationPath = finalPath
+	d.BytesDownloaded = d.BytesTotal
+	d.Progress = 1
+	d.ETASeconds = 0
+	d.Status = "completed"
+	d.MatchReason = "HTTP file downloaded from Keepshare"
+	d, _ = s.store.SaveDownload(context.Background(), d)
+	_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_completed", "HTTP download completed")
+	s.runEventPipelineAsync(context.Background(), d, Torrent{Name: filepath.Base(finalPath), ContentPath: finalPath, Progress: 1}, pipelineDownloadCompleted, nil)
+}
+
+func nextHTTPDestination(dir, releaseID string) string {
+	base := filepath.Join(dir, releaseID+".mp4")
+	if _, err := os.Stat(base); errors.Is(err, os.ErrNotExist) {
+		return base
+	}
+	for i := 0; ; i++ {
+		candidate := filepath.Join(dir, fmt.Sprintf("%s-%d.mp4", releaseID, i))
+		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
+			return candidate
+		}
+	}
+}
+
+func (s *Service) RetryHTTPDownload(ctx context.Context, downloadID int64) (domain.Download, error) {
+	rows, err := s.store.Downloads(ctx, "")
+	if err != nil {
+		return domain.Download{}, err
+	}
+	for _, row := range rows {
+		if row.ID == downloadID && row.Transport == "http" {
+			if row.Status != "failed" {
+				return domain.Download{}, errors.New("only failed HTTP downloads can be retried")
+			}
+			release, e := s.store.Release(ctx, row.ReleaseID)
+			if e != nil {
+				return domain.Download{}, e
+			}
+			return s.queueHTTPDownload(ctx, release, domain.SearchResult{Provider: row.Provider, Title: row.Name, Link: row.SourceReference, Transport: "http", SizeBytes: row.BytesTotal, Accepted: true, Reason: "retried HTTP download"}, "Manual HTTP Retry", row.SourceReference)
+		}
+	}
+	return domain.Download{}, errors.New("HTTP download not found")
 }
 
 func (s *Service) TestQB(ctx context.Context, baseURL, username, password string) (string, []string, error) {
@@ -888,27 +1236,56 @@ type SearchAndDownloadOutcome struct {
 }
 
 func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Release, trigger string, allowNonPreferred bool) (SearchAndDownloadOutcome, error) {
+	if r.HTTPDownloadPrimary {
+		if outcome, attempted, err := s.searchAndDownloadHTTP(ctx, r, trigger); attempted || err != nil {
+			return outcome, err
+		}
+	}
 	native, e := s.searchNative(ctx, r, trigger)
 	if e != nil {
+		if outcome, attempted, httpErr := s.searchAndDownloadHTTP(ctx, r, trigger); attempted {
+			return outcome, httpErr
+		} else if httpErr != nil {
+			return SearchAndDownloadOutcome{Reason: "Search providers failed: torrent: " + e.Error() + "; HTTP: " + httpErr.Error()}, e
+		}
 		return SearchAndDownloadOutcome{Reason: "Search provider lookup failed: " + e.Error()}, e
 	}
 	sorted := sortSearchResults(native)
 	candidate, found := fallbackSearchCandidate(sorted, native, allowNonPreferred)
 	if !found {
+		if outcome, attempted, httpErr := s.searchAndDownloadHTTP(ctx, r, trigger); attempted || httpErr != nil {
+			return outcome, httpErr
+		}
 		reason := "Search provider returned no results"
 		if len(native) > 0 {
 			reason = "Results were found, but none matched the accepted filename rules"
 		}
 		return SearchAndDownloadOutcome{Reason: reason}, nil
 	}
+	// A filename match with no seeders is not a useful primary download when
+	// the direct provider is configured. Prefer the HTTP fallback immediately
+	// instead of leaving an inert torrent queued indefinitely.
+	if candidate.Seeds <= 0 {
+		if outcome, attempted, httpErr := s.searchAndDownloadHTTP(ctx, r, trigger); attempted || httpErr != nil {
+			return outcome, httpErr
+		}
+	}
 	downloaded, e := s.Download(ctx, r, candidate, trigger, "")
 	outcome := SearchAndDownloadOutcome{Found: true, Result: candidate, Download: downloaded}
 	if e != nil {
+		if httpOutcome, attempted, httpErr := s.searchAndDownloadHTTP(ctx, r, trigger); attempted {
+			return httpOutcome, httpErr
+		}
 		outcome.Reason = downloaded.Error
 		if outcome.Reason == "" {
 			outcome.Reason = e.Error()
 		}
 		return outcome, e
+	}
+	if downloaded.Status == "failed" {
+		if httpOutcome, attempted, httpErr := s.searchAndDownloadHTTP(ctx, r, trigger); attempted {
+			return httpOutcome, httpErr
+		}
 	}
 	if downloaded.Error != "" {
 		outcome.Reason = downloaded.Error
@@ -918,6 +1295,32 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 		outcome.Reason = candidate.Reason
 	}
 	return outcome, nil
+}
+
+func (s *Service) searchAndDownloadHTTP(ctx context.Context, r domain.Release, trigger string) (SearchAndDownloadOutcome, bool, error) {
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return SearchAndDownloadOutcome{}, false, err
+	}
+	// An empty destination keeps HTTP disabled. This makes the new provider a
+	// safe fallback by default without turning every existing installation's
+	// failed torrent search into a predictable configuration error.
+	if strings.TrimSpace(settings["http_download_directory"]) == "" {
+		return SearchAndDownloadOutcome{}, false, nil
+	}
+	rows, err := s.searchHTTP(ctx, r, trigger)
+	if err != nil {
+		return SearchAndDownloadOutcome{Reason: "HTTP provider lookup failed: " + err.Error()}, false, err
+	}
+	if len(rows) == 0 {
+		return SearchAndDownloadOutcome{Reason: "JavDB returned no exact, date-compatible HTTP result"}, false, nil
+	}
+	d, err := s.Download(ctx, r, rows[0], trigger, rows[0].Link)
+	out := SearchAndDownloadOutcome{Found: true, Result: rows[0], Download: d, Reason: d.MatchReason}
+	if err != nil {
+		out.Reason = err.Error()
+	}
+	return out, true, err
 }
 
 // SearchAndDownloadNow keeps the original compact API for callers that only
@@ -1151,34 +1554,19 @@ func (s *Service) runMonitoredSearch(ctx context.Context, schedule string, getJo
 			job.Skipped++
 			continue
 		}
-		native, err := s.searchNative(ctx, release, sourceType)
-		if err != nil {
-			job.Failed++
-			job.Error = err.Error()
-			continue
-		}
-		sorted := sortSearchResults(native)
-		if len(native) > 0 {
+		// Scheduled monitoring deliberately uses the same provider-selection
+		// path as immediate/manual background actions. That keeps HTTP-primary
+		// releases HTTP-first and makes the default torrent-first path fall
+		// back to HTTP for lookup failures, no acceptable torrent, zero
+		// seeders, or a failed qBittorrent submission.
+		outcome, err := s.SearchAndDownloadDetailed(ctx, release, sourceType, release.AllowNonPreferredFilenames)
+		if outcome.Found {
 			job.Found++
 		}
-		// release.AllowNonPreferredFilenames is the persisted form of the
-		// Missing Library Files "allow non-preferred filenames" override
-		// (TODO-2.0 Task A): once a release needed the relaxed
-		// fallbackSearchCandidate chain once - whether from that apply flow
-		// or a manual bulk toggle on this same monitored-releases table -
-		// every future scheduled check for it keeps using the relaxed rule
-		// too, instead of only ever accepting a normal filename-pattern
-		// match like every other monitored release.
-		candidate, found := fallbackSearchCandidate(sorted, native, release.AllowNonPreferredFilenames)
-		if !found {
-			job.Skipped++
-			continue
-		}
-		download, err := s.Download(ctx, release, candidate, sourceType, candidate.Link)
 		if err != nil {
 			job.Failed++
 			job.Error = err.Error()
-		} else if download.Status == "downloading" {
+		} else if outcome.Download.Status == "queued" || outcome.Download.Status == "downloading" {
 			job.Downloaded++
 		} else {
 			job.Skipped++
@@ -1482,6 +1870,74 @@ func (s *Service) safePollDownload(ctx context.Context, qb *QBClient, d domain.D
 	s.pollDownload(ctx, qb, d, torrents, minRatio, rule)
 }
 
+func torrentHTTPFallbackReason(d domain.Download, torrent Torrent, now time.Time, fallbackDelay time.Duration) string {
+	if d.Transport == "http" || d.Status != "downloading" || torrent.Progress >= 1 || d.AddedAt.IsZero() || now.Sub(d.AddedAt) < fallbackDelay {
+		return ""
+	}
+	// Do not replace a torrent that advanced since the previous poll even if
+	// its instantaneous seed count happens to be zero.
+	if torrent.Progress > d.Progress+0.000001 {
+		return ""
+	}
+	state := strings.ToLower(torrent.State)
+	if !strings.Contains(state, "stalled") && !strings.Contains(state, "meta") && !strings.Contains(state, "error") {
+		return ""
+	}
+	if torrent.Seeds <= 0 {
+		return "torrent has no seeders and is not progressing"
+	}
+	if torrent.SeenComplete <= 0 {
+		return "torrent has never been seen complete and is not progressing"
+	}
+	return ""
+}
+
+// tryTorrentHTTPFallback resolves HTTP before replacing anything. Once an
+// exact HTTP candidate exists, ReplaceExisting atomically follows the normal
+// removal path (including deleting the unusable partial torrent files) and
+// queues the HTTP transfer. A missing/temporarily unavailable HTTP result
+// leaves the torrent in place and is retried with a bounded cooldown.
+func (s *Service) tryTorrentHTTPFallback(ctx context.Context, d *domain.Download, reason string) bool {
+	settings, err := s.store.Settings(ctx)
+	if err != nil || strings.TrimSpace(settings["http_download_directory"]) == "" {
+		return false
+	}
+	release, err := s.store.Release(ctx, d.ReleaseID)
+	if err != nil {
+		d.PostStatus = "http_fallback_unavailable"
+		d.Error = "HTTP fallback could not load release: " + err.Error()
+		return false
+	}
+	rows, err := s.searchHTTP(ctx, release, "Automatic HTTP fallback")
+	if err != nil || len(rows) == 0 {
+		d.PostStatus = "http_fallback_unavailable"
+		if err != nil {
+			d.Error = "HTTP fallback lookup failed: " + err.Error()
+		} else {
+			d.Error = "HTTP fallback unavailable: JavDB returned no exact, date-compatible result"
+		}
+		return false
+	}
+	candidate := rows[0]
+	candidate.ReplaceExisting = true
+	downloaded, err := s.Download(ctx, release, candidate, "Automatic HTTP fallback", candidate.Link)
+	if err != nil || (downloaded.Status != "queued" && downloaded.Status != "downloading") {
+		d.PostStatus = "http_fallback_failed"
+		if err != nil {
+			d.Error = "HTTP fallback failed: " + err.Error()
+		} else {
+			d.Error = "HTTP fallback failed: " + firstNonEmpty(downloaded.Error, downloaded.MatchReason, downloaded.Status)
+		}
+		s.log.Warn("stalled torrent HTTP fallback failed", "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", d.TorrentHash, "reason", reason, "error", d.Error)
+		// A candidate was found and the replacement path was attempted. Stop
+		// this poll here: it may already have removed the old history row, and
+		// saving d again below would resurrect stale torrent state.
+		return true
+	}
+	s.log.Info("stalled torrent replaced by HTTP download", "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", d.TorrentHash, "reason", reason, "http_download_id", downloaded.ID)
+	return true
+}
+
 func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Download, torrents []Torrent, minRatio float64, rule string) {
 	matched := false
 	for _, t := range torrents {
@@ -1509,6 +1965,7 @@ func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Downl
 			continue
 		}
 		matched = true
+		fallbackReason := torrentHTTPFallbackReason(d, t, time.Now(), s.torrentHTTPFallbackDelay(ctx))
 		wasCompleted := d.Status == "completed"
 		d.TorrentHash = t.Hash
 		d.Name = t.Name
@@ -1520,6 +1977,14 @@ func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Downl
 		d.SeenComplete = t.SeenComplete
 		state := strings.ToLower(t.State)
 		isCompleteState := strings.Contains(state, "upload") || strings.HasSuffix(state, "up")
+		if fallbackReason != "" && s.httpFallbackDue(d.ID) {
+			d.PostStatus = "http_fallback_searching"
+			d.Error = ""
+			_, _ = s.store.SaveDownload(ctx, d)
+			if s.tryTorrentHTTPFallback(ctx, &d, fallbackReason) {
+				return
+			}
+		}
 		// The file list rarely changes once a torrent is added, so
 		// it's only worth its own qBittorrent API call the first time
 		// this row sees it (d.Files still empty) and once more right

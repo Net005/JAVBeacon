@@ -87,6 +87,48 @@ func TestFallbackSearchCandidate(t *testing.T) {
 	})
 }
 
+func TestTorrentHTTPFallbackReasonRequiresStalledUnhealthyTorrent(t *testing.T) {
+	now := time.Now().UTC()
+	download := domain.Download{Transport: "torrent", Status: "downloading", AddedAt: now.Add(-defaultTorrentHTTPFallbackDelay - time.Second), Progress: .25}
+
+	if got := torrentHTTPFallbackReason(download, Torrent{State: "stalledDL", Progress: .25, Seeds: 0, SeenComplete: 0}, now, defaultTorrentHTTPFallbackDelay); !strings.Contains(got, "no seeders") {
+		t.Fatalf("zero-seed stalled torrent fallback reason = %q", got)
+	}
+	if got := torrentHTTPFallbackReason(download, Torrent{State: "stalledDL", Progress: .25, Seeds: 2, SeenComplete: 0}, now, defaultTorrentHTTPFallbackDelay); !strings.Contains(got, "never been seen complete") {
+		t.Fatalf("never-completed stalled torrent fallback reason = %q", got)
+	}
+	if got := torrentHTTPFallbackReason(download, Torrent{State: "downloading", Progress: .25, Seeds: 0, SeenComplete: 0}, now, defaultTorrentHTTPFallbackDelay); got != "" {
+		t.Fatalf("actively downloading torrent must not fall back, got %q", got)
+	}
+	if got := torrentHTTPFallbackReason(download, Torrent{State: "stalledDL", Progress: .30, Seeds: 0, SeenComplete: 0}, now, defaultTorrentHTTPFallbackDelay); got != "" {
+		t.Fatalf("torrent whose progress advanced must not fall back, got %q", got)
+	}
+	fresh := download
+	fresh.AddedAt = now.Add(-defaultTorrentHTTPFallbackDelay + time.Second)
+	if got := torrentHTTPFallbackReason(fresh, Torrent{State: "stalledDL", Progress: .25, Seeds: 0}, now, defaultTorrentHTTPFallbackDelay); got != "" {
+		t.Fatalf("fresh torrent must receive its grace period, got %q", got)
+	}
+}
+
+func TestTorrentHTTPFallbackDelayIsPersistentAndDefaultsToEightHours(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "http-fallback-delay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	service := New(st, time.Second, slog.Default())
+	if got := service.torrentHTTPFallbackDelay(ctx); got != 8*time.Hour {
+		t.Fatalf("default fallback delay = %s, want 8h", got)
+	}
+	if err := st.SaveSettings(ctx, map[string]string{"http_fallback_delay": "90m"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := service.torrentHTTPFallbackDelay(ctx); got != 90*time.Minute {
+		t.Fatalf("configured fallback delay = %s, want 90m", got)
+	}
+}
+
 // TestDownloadMarksFilenamePatternExcludedForForcedAndFallbackResults covers
 // the unification point in Service.Download: both the pre-existing manual
 // "Force download" override (SearchResult.Forced) and the new Missing

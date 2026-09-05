@@ -204,3 +204,53 @@ func TestStartSearchOlderOnlyChecksOlderReleases(t *testing.T) {
 		t.Fatalf("expected the recent schedule's job to be untouched, got %+v", recent)
 	}
 }
+
+func TestScheduledMonitoredSearchAlsoChecksHTTPFallback(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "scheduled-http-fallback.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	feedHits, httpHits := 0, 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/feed", func(w http.ResponseWriter, _ *http.Request) {
+		feedHits++
+		_, _ = w.Write([]byte(`<rss><channel></channel></rss>`))
+	})
+	mux.HandleFunc("/search", func(w http.ResponseWriter, _ *http.Request) {
+		httpHits++
+		_, _ = w.Write([]byte(`<html><body></body></html>`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	if err := st.SaveSettings(ctx, map[string]string{
+		"search_url_template":     server.URL + "/feed?q=<release_id>",
+		"javdb_url":               server.URL,
+		"http_download_directory": t.TempDir(),
+		"monitor_recent_days":     "30",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "HTTP-101", Title: "Fallback", Source: "JavLibrary", Released: true, MonitorDownload: true, ReleaseDate: time.Now().UTC().Format("2006-01-02")}); err != nil {
+		t.Fatal(err)
+	}
+
+	service := New(st, 2*time.Second, slog.Default())
+	if err := service.StartSearch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for service.SearchStatus().Running && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if service.SearchStatus().Running {
+		t.Fatal("scheduled monitored search did not finish")
+	}
+	if feedHits != 1 || httpHits != 1 {
+		t.Fatalf("scheduled provider hits: torrent=%d HTTP=%d, want 1 each", feedHits, httpHits)
+	}
+}
