@@ -524,14 +524,18 @@ type FilterPreset struct {
 }
 
 type Download struct {
-	ID              int64           `json:"id"`
-	ReleaseID       int64           `json:"release_id"`
-	VideoID         string          `json:"video_id,omitempty"`
-	ImageURL        string          `json:"image_url,omitempty"`
-	Provider        string          `json:"provider"`
-	SourceType      string          `json:"source_type"`
-	SourceReference string          `json:"source_reference"`
-	SourcePageURL   string          `json:"source_page_url,omitempty"`
+	ID              int64  `json:"id"`
+	ReleaseID       int64  `json:"release_id"`
+	VideoID         string `json:"video_id,omitempty"`
+	ImageURL        string `json:"image_url,omitempty"`
+	Provider        string `json:"provider"`
+	SourceType      string `json:"source_type"`
+	SourceReference string `json:"source_reference"`
+	SourcePageURL   string `json:"source_page_url,omitempty"`
+	// ProviderFileID pins an HTTP download to the exact file selected while
+	// inspecting a multi-file provider share. It prevents download-time share
+	// resolution from silently choosing a different release-ID-matching file.
+	ProviderFileID  string          `json:"provider_file_id,omitempty"`
 	Query           string          `json:"query"`
 	TorrentHash     string          `json:"torrent_hash"`
 	Transport       string          `json:"transport"`
@@ -579,7 +583,11 @@ type SearchResult struct {
 	Files                  []string     `json:"files,omitempty"`
 	FileDetails            []SearchFile `json:"file_details,omitempty"`
 	MatchedFile            string       `json:"matched_file,omitempty"`
+	ProviderFileID         string       `json:"provider_file_id,omitempty"`
 	PreferredFilenameMatch bool         `json:"preferred_filename_match,omitempty"`
+	// PreferredFilenamePriority is the configured matching-pattern priority.
+	// Lower positive numbers are preferred; zero means no preferred match.
+	PreferredFilenamePriority int `json:"preferred_filename_priority,omitempty"`
 	// DownloadPreferenceReason records why the configured download method
 	// selected this transport. Service.Download carries it into Download
 	// Activity/history without changing whether the provider result matched.

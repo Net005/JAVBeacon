@@ -87,6 +87,16 @@ func TestFallbackSearchCandidate(t *testing.T) {
 	})
 }
 
+func TestSortSearchResultsUsesFilenamePriorityBeforeSeedCount(t *testing.T) {
+	rows := sortSearchResults([]domain.SearchResult{
+		{Title: "priority-ten", Accepted: true, PreferredFilenamePriority: 10, Seeds: 100},
+		{Title: "priority-one", Accepted: true, PreferredFilenamePriority: 1, Seeds: 1},
+	})
+	if len(rows) != 2 || rows[0].Title != "priority-one" {
+		t.Fatalf("priority order = %+v", rows)
+	}
+}
+
 func TestEffectiveDownloadMethodHonorsStrictReleaseOverride(t *testing.T) {
 	settings := map[string]string{"default_download_method": "torrent_http"}
 	if got := effectiveDownloadMethod(settings, domain.Release{DownloadMethodOverride: "HTTP"}); got != downloadHTTPOnly {

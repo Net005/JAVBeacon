@@ -442,6 +442,27 @@ func TestDownloadActivityShowsFullFailureReason(t *testing.T) {
 	}
 }
 
+func TestHTTPDownloadActivityUsesCompactLiveSpeedGraph(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{`const httpSpeedHistory=new Map()`, `function httpSpeedSparkline(download)`, `HTTP_SPEED_SAMPLES=30`, `class="downloadTransferCompact"`, `httpSpeedSparkline(x)`, `pruneHTTPDownloadSpeedHistory()`, `Cancel this HTTP download?`, `without contacting qBittorrent`} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("HTTP Download Activity is missing speed-history marker %q", marker)
+		}
+	}
+	for _, marker := range []string{`.downloadTransferCompact{`, `.httpSpeedGraph svg{`, `.httpSpeedGraph polyline{`, `.httpDownloadRow .downloadTiming{gap:3px}`} {
+		if !strings.Contains(string(css), marker) {
+			t.Fatalf("compact HTTP speed graph styling is missing %q", marker)
+		}
+	}
+}
+
 func TestLiveLogSupportsEntryCopyAndFilteredExport(t *testing.T) {
 	markup, err := assets.ReadFile("static/index.html")
 	if err != nil {
@@ -1207,7 +1228,7 @@ func TestSearchResultsShowProviderProgressAndFileDetails(t *testing.T) {
 			`_releaseDownloadTransport=release?.download_transport==='http'?'http':'torrent'`,
 			`An active download of the same type is never duplicated.`,
 			`Waiting for enabled providers so the final priority appears once without shifting`,
-			`formatTransferRate(x.bytes_per_second)`,
+			`httpSpeedSparkline(x)`,
 			`Transferred / speed`,
 		},
 		"static/app.css": {

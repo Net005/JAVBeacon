@@ -20,9 +20,10 @@ type SearchProvider interface {
 }
 
 type Nyaa struct {
-	Client           *http.Client
-	URLTemplate      string
-	AcceptedPatterns []string
+	Client            *http.Client
+	URLTemplate       string
+	AcceptedPatterns  []string
+	PreferredPatterns []PreferredFilenamePattern
 }
 
 var (
@@ -99,8 +100,8 @@ func (n *Nyaa) Search(ctx context.Context, releaseID string) ([]domain.SearchRes
 			if !strings.Contains(canonical(title), canonical(releaseID)) {
 				continue
 			}
-			accepted, reason := n.accept(title)
-			results = append(results, domain.SearchResult{Provider: n.Name(), Title: title, Link: html.UnescapeString(string(m[1])), Accepted: accepted, Reason: reason})
+			accepted, reason, priority, matchedFile := n.matchFiles(title, nil)
+			results = append(results, domain.SearchResult{Provider: n.Name(), Title: title, MatchedFile: matchedFile, PreferredFilenameMatch: accepted, PreferredFilenamePriority: priority, Link: html.UnescapeString(string(m[1])), Accepted: accepted, Reason: reason})
 		}
 	}
 	return results, nil
@@ -133,13 +134,7 @@ func (n *Nyaa) resolveResult(ctx context.Context, title, detailURL, directURL st
 			fileDetails = []domain.SearchFile{{Name: magnetName}}
 		}
 	}
-	accepted, reason := n.acceptFiles(title, files)
-	matchedFile := ""
-	if accepted {
-		if parts := strings.SplitN(reason, ": ", 2); len(parts) == 2 {
-			matchedFile = parts[1]
-		}
-	}
+	accepted, reason, priority, matchedFile := n.matchFiles(title, files)
 	if link == "" {
 		accepted = false
 		reason = "torrent detail did not expose a magnet or .torrent link"
@@ -151,7 +146,7 @@ func (n *Nyaa) resolveResult(ctx context.Context, title, detailURL, directURL st
 	for i := range fileDetails {
 		fileDetails[i].Matched = fileDetails[i].Name == matchedFile
 	}
-	return domain.SearchResult{Provider: n.Name(), Title: title, Files: files, FileDetails: fileDetails, MatchedFile: matchedFile, PreferredFilenameMatch: accepted && matchedFile != "", Link: link, SourceURL: sourceURL, Accepted: accepted, Reason: reason}
+	return domain.SearchResult{Provider: n.Name(), Title: title, Files: files, FileDetails: fileDetails, MatchedFile: matchedFile, PreferredFilenameMatch: accepted && matchedFile != "", PreferredFilenamePriority: priority, Link: link, SourceURL: sourceURL, Accepted: accepted, Reason: reason}
 }
 
 func (n *Nyaa) resolveDetail(ctx context.Context, rawURL string) (string, string, []string, []domain.SearchFile, error) {
@@ -221,21 +216,29 @@ func (n *Nyaa) accept(title string) (bool, string) {
 }
 
 func (n *Nyaa) acceptFiles(title string, files []string) (bool, string) {
-	patterns := n.AcceptedPatterns
+	accepted, reason, _, _ := n.matchFiles(title, files)
+	return accepted, reason
+}
+
+func (n *Nyaa) matchFiles(title string, files []string) (bool, string, int, string) {
+	patterns := normalizePreferredFilenamePatterns(n.PreferredPatterns)
 	if len(patterns) == 0 {
-		patterns = []string{"4k688.com@", "hhd800.com@"}
+		patterns = legacyPreferredFilenamePatterns(n.AcceptedPatterns)
+	}
+	if len(patterns) == 0 {
+		patterns = defaultPreferredFilenamePatternRows()
 	}
 	candidates := files
 	if len(candidates) == 0 {
 		candidates = []string{title}
 	}
-	for _, p := range patterns {
-		p = strings.TrimSpace(p)
+	for _, item := range patterns {
+		p := strings.TrimSpace(item.Pattern)
 		for _, candidate := range candidates {
 			if p != "" && strings.Contains(strings.ToLower(candidate), strings.ToLower(p)) {
-				return true, "torrent file matched " + p + ": " + candidate
+				return true, fmt.Sprintf("torrent file matched priority %d pattern %s: %s", item.Priority, p, candidate), item.Priority, candidate
 			}
 		}
 	}
-	return false, "filename did not match preferred patterns"
+	return false, "filename did not match preferred patterns", 0, ""
 }
