@@ -7,6 +7,25 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.81] - 2026-09-05
+
+### Added
+
+- Search now reports Torrent/Nyaa and HTTP/JavDB → Keepshare as independent
+  provider stages, showing live searching, completion counts, and provider
+  failures while results appear as each provider finishes.
+- Torrent and HTTP search results now expose structured file contents with a
+  checked matched-file indicator and per-file sizes whenever the provider
+  supplies them.
+
+### Changed
+
+- Preferred filename results are visually distinguished with a dedicated
+  badge, accent border, and background treatment so the preferred choice is
+  immediately apparent in mixed Torrent and HTTP results.
+- Search result file lists use a denser, cleaner layout with a separate matched
+  file summary and expandable overflow for larger contents lists.
+
 ## [1.0.80] - 2026-09-05
 
 ### Changed

@@ -30,7 +30,7 @@ var (
 	nyaaPageTitle   = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 	nyaaMagnetLink  = regexp.MustCompile(`(?is)href=["'](magnet:\?[^"']+)["']`)
 	nyaaTorrentLink = regexp.MustCompile(`(?is)href=["']([^"']+/download/[^"']+\.torrent[^"']*)["']`)
-	nyaaFileName    = regexp.MustCompile(`(?is)<li[^>]*>\s*<i[^>]*fa-file[^>]*></i>\s*(.*?)\s*<span[^>]*class=["'][^"']*file-size`)
+	nyaaFileEntry   = regexp.MustCompile(`(?is)<li[^>]*>\s*<i[^>]*fa-file[^>]*></i>\s*(.*?)\s*<span[^>]*class=["'][^"']*file-size[^"']*["'][^>]*>\s*\(?\s*([^<)]+?)\s*\)?\s*</span>`)
 	htmlElement     = regexp.MustCompile(`(?is)<[^>]+>`)
 )
 
@@ -110,9 +110,10 @@ func (n *Nyaa) resolveResult(ctx context.Context, title, detailURL, directURL st
 	title = cleanHTMLText(title)
 	link := strings.TrimSpace(directURL)
 	files := []string{}
+	fileDetails := []domain.SearchFile{}
 	isDetail := detailURL != "" && strings.Contains(detailURL, "/view/")
 	if isDetail {
-		if resolvedTitle, resolvedLink, resolvedFiles, err := n.resolveDetail(ctx, detailURL); err == nil {
+		if resolvedTitle, resolvedLink, resolvedFiles, resolvedDetails, err := n.resolveDetail(ctx, detailURL); err == nil {
 			if resolvedTitle != "" {
 				title = resolvedTitle
 			}
@@ -120,6 +121,7 @@ func (n *Nyaa) resolveResult(ctx context.Context, title, detailURL, directURL st
 				link = resolvedLink
 			}
 			files = resolvedFiles
+			fileDetails = resolvedDetails
 		}
 	}
 	if link == "" && !isDetail {
@@ -128,9 +130,16 @@ func (n *Nyaa) resolveResult(ctx context.Context, title, detailURL, directURL st
 	if len(files) == 0 {
 		if magnetName := magnetDisplayName(link); magnetName != "" {
 			files = []string{magnetName}
+			fileDetails = []domain.SearchFile{{Name: magnetName}}
 		}
 	}
 	accepted, reason := n.acceptFiles(title, files)
+	matchedFile := ""
+	if accepted {
+		if parts := strings.SplitN(reason, ": ", 2); len(parts) == 2 {
+			matchedFile = parts[1]
+		}
+	}
 	if link == "" {
 		accepted = false
 		reason = "torrent detail did not expose a magnet or .torrent link"
@@ -139,26 +148,29 @@ func (n *Nyaa) resolveResult(ctx context.Context, title, detailURL, directURL st
 	if isDetail {
 		sourceURL = detailURL
 	}
-	return domain.SearchResult{Provider: n.Name(), Title: title, Files: files, Link: link, SourceURL: sourceURL, Accepted: accepted, Reason: reason}
+	for i := range fileDetails {
+		fileDetails[i].Matched = fileDetails[i].Name == matchedFile
+	}
+	return domain.SearchResult{Provider: n.Name(), Title: title, Files: files, FileDetails: fileDetails, MatchedFile: matchedFile, PreferredFilenameMatch: accepted && matchedFile != "", Link: link, SourceURL: sourceURL, Accepted: accepted, Reason: reason}
 }
 
-func (n *Nyaa) resolveDetail(ctx context.Context, rawURL string) (string, string, []string, error) {
+func (n *Nyaa) resolveDetail(ctx context.Context, rawURL string) (string, string, []string, []domain.SearchFile, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", nil, nil, err
 	}
 	req.Header.Set("User-Agent", "JAVBeacon/1.0")
 	resp, err := n.Client.Do(req)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", nil, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return "", "", nil, fmt.Errorf("Nyaa detail returned %s", resp.Status)
+		return "", "", nil, nil, fmt.Errorf("Nyaa detail returned %s", resp.Status)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return "", "", nil, err
+		return "", "", nil, nil, err
 	}
 	text := string(body)
 	title := ""
@@ -174,12 +186,14 @@ func (n *Nyaa) resolveDetail(ctx context.Context, rawURL string) (string, string
 		link = absoluteURL(rawURL, html.UnescapeString(match[1]))
 	}
 	files := []string{}
-	for _, match := range nyaaFileName.FindAllStringSubmatch(text, -1) {
+	details := []domain.SearchFile{}
+	for _, match := range nyaaFileEntry.FindAllStringSubmatch(text, -1) {
 		if name := cleanHTMLText(match[1]); name != "" {
 			files = append(files, name)
+			details = append(details, domain.SearchFile{Name: name, SizeBytes: parseHumanBytes(match[2])})
 		}
 	}
-	return title, link, files, nil
+	return title, link, files, details, nil
 }
 
 func cleanHTMLText(value string) string {

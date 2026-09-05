@@ -72,6 +72,20 @@ func TestPikPakFileSelectionUsesPreferredPatternsThenLargestFallback(t *testing.
 	}
 }
 
+func TestPikPakSearchFilesExposeSizesAndMatchedFile(t *testing.T) {
+	files := []pikPakFile{
+		{ID: "noise", Name: "sample.mp4", Size: "10485760"},
+		{ID: "matched", Name: "hhd800.com@DLDSS-530.mp4", Size: "4294967296"},
+	}
+	names, details := pikPakSearchFiles(files, files[1])
+	if len(names) != 2 || len(details) != 2 {
+		t.Fatalf("unexpected search file metadata: names=%+v details=%+v", names, details)
+	}
+	if details[0].Matched || details[0].SizeBytes != 10485760 || !details[1].Matched || details[1].SizeBytes != 4294967296 {
+		t.Fatalf("file sizes or matched marker were not preserved: %+v", details)
+	}
+}
+
 func TestNextHTTPDestinationUsesStableCollisionSuffixes(t *testing.T) {
 	dir := t.TempDir()
 	if got := nextHTTPDestination(dir, "ADN-803"); got != filepath.Join(dir, "ADN-803.mp4") {

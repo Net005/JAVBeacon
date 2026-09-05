@@ -1093,6 +1093,36 @@ func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testin
 	}
 }
 
+func TestSearchResultsShowProviderProgressAndFileDetails(t *testing.T) {
+	files := map[string][]string{
+		"static/app.js": {
+			`heading:'Searching Torrent providers',provider:'Nyaa'`,
+			`heading:'Searching HTTP providers',provider:'JavDB → Keepshare'`,
+			`search?provider=${provider}`,
+			`preferred_filename_match`,
+			`Matched file`,
+			`file.size_bytes`,
+			`kind=x.transport==='http'?'HTTP':'Torrent'`,
+		},
+		"static/app.css": {
+			`.searchResult.preferredFilename`,
+			`.searchMatchedFile{`,
+			`.searchProviderProgress{`,
+		},
+	}
+	for name, markers := range files {
+		body, err := assets.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, marker := range markers {
+			if !strings.Contains(string(body), marker) {
+				t.Errorf("%s missing %q", name, marker)
+			}
+		}
+	}
+}
+
 func TestMissingScanFolderScopeUIExplainsMultipleRows(t *testing.T) {
 	body, err := assets.ReadFile("static/index.html")
 	if err != nil {

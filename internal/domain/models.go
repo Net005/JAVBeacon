@@ -557,10 +557,19 @@ type Download struct {
 	ExistingDownloadID      int64 `json:"existing_download_id,omitempty"`
 }
 
+type SearchFile struct {
+	Name      string `json:"name"`
+	SizeBytes int64  `json:"size_bytes,omitempty"`
+	Matched   bool   `json:"matched,omitempty"`
+}
+
 type SearchResult struct {
-	Provider string   `json:"provider"`
-	Title    string   `json:"title"`
-	Files    []string `json:"files,omitempty"`
+	Provider               string       `json:"provider"`
+	Title                  string       `json:"title"`
+	Files                  []string     `json:"files,omitempty"`
+	FileDetails            []SearchFile `json:"file_details,omitempty"`
+	MatchedFile            string       `json:"matched_file,omitempty"`
+	PreferredFilenameMatch bool         `json:"preferred_filename_match,omitempty"`
 	// Link is the magnet/.torrent URL actually submitted to qBittorrent.
 	Link string `json:"link"`
 	// SourceURL is the human-facing torrent detail page (e.g. a Sukebei/Nyaa
