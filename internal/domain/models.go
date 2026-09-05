@@ -151,9 +151,9 @@ type Release struct {
 	// for any other release whose local copy is known bad/gone despite
 	// still being linked in StashApp.
 	IgnoreLocalForceDownload bool `json:"ignore_local_force_download"`
-	// HTTPDownloadPrimary makes the JavDB/Keepshare HTTP provider the first
-	// choice for automatic Search + Download attempts on this release. The
-	// default is false: qBittorrent remains primary and HTTP is a fallback.
+	// HTTPDownloadPrimary is retained for database/API compatibility with
+	// releases saved before the global Default Download Method setting. New
+	// provider selection deliberately ignores it.
 	HTTPDownloadPrimary bool `json:"http_download_primary"`
 	// OCounter, PlayCount, LastPlayedAt, and LastOCountAt mirror
 	// StashMissingScene's identically-named/purposed fields (stash_missing.go)
@@ -572,6 +572,10 @@ type SearchResult struct {
 	FileDetails            []SearchFile `json:"file_details,omitempty"`
 	MatchedFile            string       `json:"matched_file,omitempty"`
 	PreferredFilenameMatch bool         `json:"preferred_filename_match,omitempty"`
+	// DownloadPreferenceReason records why the configured download method
+	// selected this transport. Service.Download carries it into Download
+	// Activity/history without changing whether the provider result matched.
+	DownloadPreferenceReason string `json:"download_preference_reason,omitempty"`
 	// Link is the magnet/.torrent URL actually submitted to qBittorrent.
 	Link string `json:"link"`
 	// SourceURL is the human-facing torrent detail page (e.g. a Sukebei/Nyaa

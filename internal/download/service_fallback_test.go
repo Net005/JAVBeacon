@@ -129,6 +129,35 @@ func TestTorrentHTTPFallbackDelayIsPersistentAndDefaultsToEightHours(t *testing.
 	}
 }
 
+func TestDownloadMethodAndEquivalentPreferredTieBreak(t *testing.T) {
+	if got := normalizeDownloadMethod(""); got != downloadTorrentHTTP {
+		t.Fatalf("blank method = %q, want torrent_http", got)
+	}
+	if got := effectiveDownloadMethod(map[string]string{"default_download_method": "http_torrent"}, domain.Release{HTTPDownloadPrimary: true}); got != downloadHTTPTorrent {
+		t.Fatalf("configured method = %q, want http_torrent", got)
+	}
+
+	torrent := domain.SearchResult{Accepted: true, PreferredFilenameMatch: true, MatchedFile: "folder/HHD800.com@ABC-123.mp4", SizeBytes: 10_000}
+	httpResult := domain.SearchResult{Accepted: true, PreferredFilenameMatch: true, MatchedFile: "hhd800.com@abc-123.mp4", SizeBytes: 9_100}
+	if !equivalentPreferredMatches(torrent, httpResult) {
+		t.Fatal("same preferred filename within 10% should prefer HTTP")
+	}
+	httpResult.SizeBytes = 8_999
+	if equivalentPreferredMatches(torrent, httpResult) {
+		t.Fatal("size difference greater than 10% must not trigger HTTP tie-break")
+	}
+	httpResult.SizeBytes = 9_100
+	httpResult.MatchedFile = "different.mp4"
+	if equivalentPreferredMatches(torrent, httpResult) {
+		t.Fatal("different matched filenames must not trigger HTTP tie-break")
+	}
+	httpResult.MatchedFile = "hhd800.com@abc-123.mp4"
+	httpResult.PreferredFilenameMatch = false
+	if equivalentPreferredMatches(torrent, httpResult) {
+		t.Fatal("non-preferred HTTP match must not trigger HTTP tie-break")
+	}
+}
+
 // TestDownloadMarksFilenamePatternExcludedForForcedAndFallbackResults covers
 // the unification point in Service.Download: both the pre-existing manual
 // "Force download" override (SearchResult.Forced) and the new Missing

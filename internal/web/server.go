@@ -1246,8 +1246,20 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "api_key": true, "stash_watchlist_tag_id": true, "stash_watchlist_sync_enabled": true, "stash_watchlist_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
-	for _, key := range []string{"javdb_url", "http_download_directory", "http_download_concurrency", "http_fallback_delay"} {
+	for _, key := range []string{"javdb_url", "http_download_directory", "http_download_concurrency", "http_fallback_delay", "default_download_method", "prefer_http_equivalent"} {
 		allowed[key] = true
+	}
+	if raw, present := x["default_download_method"]; present {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "torrent_http", "http_torrent", "torrent_only", "http_only":
+		default:
+			s.problem(w, http.StatusUnprocessableEntity, "default download method must be Torrent → HTTP fallback, HTTP → Torrent fallback, Torrent only, or HTTP only")
+			return
+		}
+	}
+	if raw, present := x["prefer_http_equivalent"]; present && raw != "true" && raw != "false" {
+		s.problem(w, http.StatusUnprocessableEntity, "equivalent preferred-match HTTP priority must be true or false")
+		return
 	}
 	if raw, present := x["http_fallback_delay"]; present {
 		if delay, err := time.ParseDuration(strings.TrimSpace(raw)); err != nil || delay <= 0 {

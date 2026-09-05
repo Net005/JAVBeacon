@@ -180,7 +180,7 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		return nil, fmt.Errorf("initialize version tracking: %w", err)
 	}
 	if len(settings) == 0 {
-		_ = st.SaveSettings(context.Background(), map[string]string{"page_limit": fmt.Sprint(defaultPageLimit), "refresh_interval": cfg.RefreshText, "recent_limit": "200", "hide_local": "false", "sort": "release", "view": "grid", "notification_sort": "added", "flaresolverr_url": cfg.FlareSolverrURL, "flaresolverr_cooldown": fmt.Sprint(cfg.FlareSolverrCooldown), "cover_directory": cfg.CoverDirectory, "session_lifetime": "720h", "notification_interval": "15m", "rss_interval": "5m", "search_url_template": "https://sukebei.nyaa.si/?page=rss&f=0&c=2_0&q=<release_id>", "accepted_patterns": "4k688.com@\nhhd800.com@", "minimum_seed_ratio": "1.0", "qb_completed_action": "remove_at_ratio", "javdb_url": "https://javdb.com", "http_download_concurrency": "1", "http_fallback_delay": "8h"})
+		_ = st.SaveSettings(context.Background(), map[string]string{"page_limit": fmt.Sprint(defaultPageLimit), "refresh_interval": cfg.RefreshText, "recent_limit": "200", "hide_local": "false", "sort": "release", "view": "grid", "notification_sort": "added", "flaresolverr_url": cfg.FlareSolverrURL, "flaresolverr_cooldown": fmt.Sprint(cfg.FlareSolverrCooldown), "cover_directory": cfg.CoverDirectory, "session_lifetime": "720h", "notification_interval": "15m", "rss_interval": "5m", "search_url_template": "https://sukebei.nyaa.si/?page=rss&f=0&c=2_0&q=<release_id>", "accepted_patterns": "4k688.com@\nhhd800.com@", "minimum_seed_ratio": "1.0", "qb_completed_action": "remove_at_ratio", "javdb_url": "https://javdb.com", "http_download_concurrency": "1", "http_fallback_delay": "8h", "default_download_method": "torrent_http", "prefer_http_equivalent": "true"})
 	}
 	missing := map[string]string{}
 	if settings["javdb_url"] == "" {
@@ -191,6 +191,12 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 	}
 	if settings["http_fallback_delay"] == "" {
 		missing["http_fallback_delay"] = "8h"
+	}
+	if settings["default_download_method"] == "" {
+		missing["default_download_method"] = "torrent_http"
+	}
+	if settings["prefer_http_equivalent"] == "" {
+		missing["prefer_http_equivalent"] = "true"
 	}
 	if settings["screenshot_directory"] == "" {
 		missing["screenshot_directory"] = cfg.ScreenshotDirectory
