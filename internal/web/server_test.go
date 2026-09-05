@@ -1088,6 +1088,44 @@ func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testin
 	}
 }
 
+func TestMissingLibrarySearchDownloadUsesNonBlockingActiveTasksView(t *testing.T) {
+	files := map[string][]string{
+		"static/app.js": {
+			`data-missing-status="active_tasks"`,
+			`id="missingActiveTaskStateFilter"`,
+			`<option value="success">Success</option>`,
+			`<option value="failed">Failed</option>`,
+			`function renderMissingActiveTasks(j)`,
+			`missingActiveTasksCount.textContent=remaining`,
+			`if(!downloadTask&&!missingJobDialog.open)`,
+			`prefs.missingActiveTasks=true`,
+			`function missingTaskCard(result)`,
+			`Last seen complete: ${formatSeenComplete(result.seen_complete)}`,
+			`result.error||result.reason||result.match_reason`,
+			`function retryMissingTasks(ids)`,
+			`.filter(missingTaskFailed).map(result=>result.scene_id)`,
+			`allow_non_preferred_filenames:!!missingActiveTaskStatus.allow_non_preferred_filenames`,
+		},
+		"static/app.css": {
+			`#missingActiveTasksTab.tasksRunning{`,
+			`.missingTaskCard{display:grid;`,
+			`.missingTaskHealth{grid-template-columns:`,
+			`.missingTaskRetry{`,
+		},
+	}
+	for name, markers := range files {
+		body, err := assets.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, marker := range markers {
+			if !strings.Contains(string(body), marker) {
+				t.Errorf("%s missing %q", name, marker)
+			}
+		}
+	}
+}
+
 // TestReleasesCountEndpointMatchesReleasesFilter covers Phase 4A: the new
 // /api/releases/count endpoint accepts the same filter params as
 // /api/releases and reports the true total, ignoring limit/offset.

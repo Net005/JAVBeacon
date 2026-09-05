@@ -694,10 +694,25 @@ const (
 
 // ApplyResult is one scene's outcome from an ApplySelection run.
 type ApplyResult struct {
-	SceneID int64  `json:"scene_id"`
-	VideoID string `json:"video_id,omitempty"`
-	Status  string `json:"status"` // monitored | found | not_found | failed
-	Error   string `json:"error,omitempty"`
+	SceneID       int64   `json:"scene_id"`
+	ReleaseID     int64   `json:"release_id,omitempty"`
+	VideoID       string  `json:"video_id,omitempty"`
+	Title         string  `json:"title,omitempty"`
+	Stage         string  `json:"stage,omitempty"`
+	Status        string  `json:"status"` // queued | working | monitored | found | not_found | failed
+	Reason        string  `json:"reason,omitempty"`
+	Error         string  `json:"error,omitempty"`
+	Provider      string  `json:"provider,omitempty"`
+	TorrentTitle  string  `json:"torrent_title,omitempty"`
+	SourceURL     string  `json:"source_url,omitempty"`
+	Size          string  `json:"size,omitempty"`
+	DownloadState string  `json:"download_state,omitempty"`
+	MatchReason   string  `json:"match_reason,omitempty"`
+	Seeds         int     `json:"seeds"`
+	Peers         int     `json:"peers"`
+	Progress      float64 `json:"progress"`
+	ETASeconds    int64   `json:"eta_seconds"`
+	SeenComplete  int64   `json:"seen_complete"`
 }
 
 // ApplyStatus is the pollable progress/result of an ApplySelection run.
@@ -707,23 +722,28 @@ type ApplyResult struct {
 // selection's search-and-download apply run is still in progress, rather
 // than a progress bar stuck at 0 until the whole batch finishes.
 type ApplyStatus struct {
-	Running     bool          `json:"running"`
-	StartedAt   time.Time     `json:"started_at,omitempty"`
-	FinishedAt  time.Time     `json:"finished_at,omitempty"`
-	Total       int           `json:"total"`
-	CurrentItem string        `json:"current_item,omitempty"`
-	Monitored   int           `json:"monitored"`
-	Found       int           `json:"found"`
-	NotFound    int           `json:"not_found"`
-	Failed      int           `json:"failed"`
-	Results     []ApplyResult `json:"results,omitempty"`
-	Error       string        `json:"error,omitempty"`
+	Running           bool          `json:"running"`
+	Mode              string        `json:"mode,omitempty"`
+	AllowNonPreferred bool          `json:"allow_non_preferred_filenames,omitempty"`
+	StartedAt         time.Time     `json:"started_at,omitempty"`
+	FinishedAt        time.Time     `json:"finished_at,omitempty"`
+	Total             int           `json:"total"`
+	Processed         int           `json:"processed"`
+	CurrentItem       string        `json:"current_item,omitempty"`
+	Monitored         int           `json:"monitored"`
+	Found             int           `json:"found"`
+	NotFound          int           `json:"not_found"`
+	Failed            int           `json:"failed"`
+	Results           []ApplyResult `json:"results,omitempty"`
+	Error             string        `json:"error,omitempty"`
 }
 
 func (s *Service) ApplyRunStatus() ApplyStatus {
 	s.applyMu.RLock()
 	defer s.applyMu.RUnlock()
-	return s.applyStatus
+	status := s.applyStatus
+	status.Results = append([]ApplyResult(nil), s.applyStatus.Results...)
+	return status
 }
 
 // StartApply kicks off a background run applying one of the two
@@ -745,7 +765,7 @@ func (s *Service) StartApply(ctx context.Context, ids []int64, mode string, allo
 		s.applyMu.Unlock()
 		return errors.New("apply already running")
 	}
-	s.applyStatus = ApplyStatus{Running: true, StartedAt: time.Now().UTC(), Total: len(ids)}
+	s.applyStatus = ApplyStatus{Running: true, Mode: mode, AllowNonPreferred: allowNonPreferred, StartedAt: time.Now().UTC(), Total: len(ids)}
 	s.applyMu.Unlock()
 	go s.runApply(context.WithoutCancel(ctx), ids, mode, allowNonPreferred)
 	return nil
@@ -753,6 +773,10 @@ func (s *Service) StartApply(ctx context.Context, ids []int64, mode string, allo
 
 func (s *Service) runApply(ctx context.Context, ids []int64, mode string, allowNonPreferred bool) {
 	result := s.ApplyRunStatus()
+	result.Results = make([]ApplyResult, len(ids))
+	for index, id := range ids {
+		result.Results[index] = ApplyResult{SceneID: id, Stage: "queued", Status: "queued"}
+	}
 	flush := func() {
 		s.applyMu.Lock()
 		s.applyStatus = result
@@ -764,32 +788,64 @@ func (s *Service) runApply(ctx context.Context, ids []int64, mode string, allowN
 		result.CurrentItem = ""
 		flush()
 	}()
-	record := func(r ApplyResult, failed bool) {
+	update := func(index int, r ApplyResult) {
+		result.Results[index] = r
+		flush()
+	}
+	record := func(index int, r ApplyResult, failed bool) {
 		if failed {
 			result.Failed++
 		}
-		result.Results = append(result.Results, r)
+		result.Processed++
+		result.Results[index] = r
 		flush()
 	}
-	for _, id := range ids {
+	flush()
+	for index, id := range ids {
 		result.CurrentItem = fmt.Sprintf("scene #%d", id)
-		flush()
+		task := ApplyResult{SceneID: id, Stage: "database_lookup", Status: "working"}
+		update(index, task)
 		scene, err := s.store.StashMissingScene(ctx, id)
-		if err != nil || scene.ReleaseID == 0 {
-			msg := "scene has no linked release yet - retrieve it first"
-			if err != nil {
-				msg = err.Error()
+		if err != nil {
+			task.Status = "failed"
+			task.Error = "JAVBeacon database lookup failed: " + err.Error()
+			record(index, task, true)
+			continue
+		}
+		task.Title = scene.Title
+		task.VideoID = scene.Code
+		if scene.ReleaseID == 0 {
+			task.Status = "failed"
+			switch {
+			case scene.Status == "retrieve_failed" && scene.Message != "":
+				task.Stage = "javlibrary_lookup"
+				task.Error = "JavLibrary lookup failed: " + scene.Message
+			case scene.JavLibraryURL == "":
+				task.Error = "Release is not in the JAVBeacon database and this StashApp scene has no JavLibrary URL"
+			default:
+				task.Error = "Release is not in the JAVBeacon database; retrieve it from JavLibrary first"
 			}
-			record(ApplyResult{SceneID: id, Status: "failed", Error: msg}, true)
+			record(index, task, true)
 			continue
 		}
 		result.CurrentItem = retrieveSceneLabel(scene)
+		task.ReleaseID = scene.ReleaseID
+		task.VideoID = scene.ReleaseVideoID
+		task.Stage = "release_lookup"
+		update(index, task)
 		release, err := s.store.Release(ctx, scene.ReleaseID)
 		if err != nil {
-			record(ApplyResult{SceneID: id, Status: "failed", Error: err.Error()}, true)
+			task.Status = "failed"
+			task.Error = "Linked JAVBeacon release lookup failed: " + err.Error()
+			record(index, task, true)
 			continue
 		}
 		result.CurrentItem = release.VideoID
+		task.ReleaseID = release.ID
+		task.VideoID = release.VideoID
+		task.Title = release.Title
+		task.Stage = "monitoring"
+		update(index, task)
 		monitor := true
 		// Persist allowNonPreferred onto the release itself (not just this
 		// one apply run) whenever the toggle was on: the scheduled
@@ -813,7 +869,9 @@ func (s *Service) runApply(ctx context.Context, ids []int64, mode string, allowN
 		// forever, since they show as already linked in StashApp.
 		ignoreLocal := true
 		if err := s.store.PatchRelease(ctx, release.ID, nil, nil, nil, nil, nil, &monitor, nil, allowNonPreferredFlag, &ignoreLocal); err != nil {
-			record(ApplyResult{SceneID: id, VideoID: release.VideoID, Status: "failed", Error: err.Error()}, true)
+			task.Status = "failed"
+			task.Error = "Could not set release monitoring: " + err.Error()
+			record(index, task, true)
 			continue
 		}
 		if allowNonPreferred {
@@ -822,29 +880,69 @@ func (s *Service) runApply(ctx context.Context, ids []int64, mode string, allowN
 		release.IgnoreLocalForceDownload = true
 		result.Monitored++
 		if mode != ApplyModeMonitorDownload {
-			record(ApplyResult{SceneID: id, VideoID: release.VideoID, Status: "monitored"}, false)
+			task.Stage = "complete"
+			task.Status = "monitored"
+			task.Reason = "Release monitoring enabled"
+			record(index, task, false)
 			continue
 		}
 		if s.downloads == nil {
-			record(ApplyResult{SceneID: id, VideoID: release.VideoID, Status: "failed", Error: "download service is not available"}, true)
+			task.Stage = "download"
+			task.Status = "failed"
+			task.Error = "Download service is not available"
+			record(index, task, true)
 			continue
 		}
 		release.MonitorDownload = true
 		result.CurrentItem = "Searching for " + release.VideoID + "…"
-		flush()
-		found, err := s.downloads.SearchAndDownloadNow(ctx, release, "Missing Library Recovery", allowNonPreferred)
+		task.Stage = "searching"
+		update(index, task)
+		outcome, err := s.downloads.SearchAndDownloadDetailed(ctx, release, "Missing Library Recovery", allowNonPreferred)
+		task.Provider = outcome.Result.Provider
+		task.TorrentTitle = outcome.Result.Title
+		task.SourceURL = outcome.Result.SourceURL
+		if task.SourceURL == "" {
+			task.SourceURL = outcome.Result.Link
+		}
+		task.Size = outcome.Result.Size
+		task.Seeds = outcome.Result.Seeds
+		task.Peers = outcome.Result.Peers
+		task.DownloadState = outcome.Download.Status
+		task.MatchReason = outcome.Download.MatchReason
+		task.Progress = outcome.Download.Progress
+		task.ETASeconds = outcome.Download.ETASeconds
+		task.SeenComplete = outcome.Download.SeenComplete
 		if err != nil {
 			s.log.Error("Missing Library Files apply: search+download failed", "release", release.VideoID, "error", err)
-			record(ApplyResult{SceneID: id, VideoID: release.VideoID, Status: "failed", Error: err.Error()}, true)
+			task.Stage = "download"
+			task.Status = "failed"
+			task.Error = outcome.Reason
+			if task.Error == "" {
+				task.Error = err.Error()
+			}
+			record(index, task, true)
 			continue
 		}
-		if found {
+		if outcome.Found {
 			result.Found++
+			if outcome.Download.Status == "failed" {
+				task.Stage = "download"
+				task.Status = "failed"
+				task.Error = outcome.Reason
+				record(index, task, true)
+				continue
+			}
 			s.log.Info("Missing Library Files apply: found and downloading", "release", release.VideoID)
-			record(ApplyResult{SceneID: id, VideoID: release.VideoID, Status: "found"}, false)
+			task.Stage = "complete"
+			task.Status = "found"
+			task.Reason = outcome.Reason
+			record(index, task, false)
 		} else {
 			result.NotFound++
-			record(ApplyResult{SceneID: id, VideoID: release.VideoID, Status: "not_found"}, false)
+			task.Stage = "searching"
+			task.Status = "not_found"
+			task.Reason = outcome.Reason
+			record(index, task, false)
 		}
 	}
 }
