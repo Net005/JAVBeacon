@@ -581,23 +581,32 @@ func inspectPikPakShare(ctx context.Context, client *http.Client, keepshareURL, 
 	return pp, shareID, selected, all, nil
 }
 
-// discoverPikPakShareID deliberately does not follow Keepshare's redirect to
-// the public PikPak player. The redirect Location already contains the share
-// ID, while loading the full ?act=play page can hang until Client.Timeout even
-// though the share API remains healthy. Direct PikPak URLs and HTML/JS-based
-// Keepshare responses are retained as fallbacks.
+// discoverPikPakShareID follows Keepshare's own intermediate redirects but
+// deliberately stops before requesting the public PikPak player. Keepshare
+// currently redirects keepshare.org -> keepshare.cc -> mypikpak.com; stopping
+// at the first hop loses the share ID, while loading the final ?act=play page
+// can hang until Client.Timeout even though the share API remains healthy.
+// Direct PikPak URLs and HTML/JS-based responses remain supported fallbacks.
 func discoverPikPakShareID(ctx context.Context, client *http.Client, sourceURL string) (string, error) {
 	if match := publicShareURLPattern.FindStringSubmatch(sourceURL); match != nil {
 		return match[1], nil
 	}
-	noRedirect := *client
-	noRedirect.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	noPlayer := *client
+	noPlayer.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if publicShareURLPattern.MatchString(req.URL.String()) {
+			return http.ErrUseLastResponse
+		}
+		if len(via) >= 10 {
+			return errors.New("too many Keepshare redirects")
+		}
+		return nil
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", publicShareUserAgent)
-	resp, err := noRedirect.Do(req)
+	resp, err := noPlayer.Do(req)
 	if err != nil {
 		return "", err
 	}
