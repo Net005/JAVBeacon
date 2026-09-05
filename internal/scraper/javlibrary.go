@@ -343,6 +343,12 @@ func (j *JavLibrary) ScrapeFilteredThroughEnd(ctx context.Context, base string, 
 	return j.scrapeFiltered(ctx, base, pages, include, false, concurrency, progress...)
 }
 
+var errJavLibraryGIGARelease = errors.New("GIGA studio releases are excluded from JavLibrary; use the dedicated Akiba-web/GIGA scraper")
+
+func isJavLibraryGIGAStudio(studio string) bool {
+	return strings.EqualFold(strings.TrimSpace(studio), "GIGA")
+}
+
 func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int, include func(string) bool, stopWhenNoIncluded bool, concurrency ScrapeConcurrency, progress ...Progress) ([]domain.Release, error) {
 	started := time.Now()
 	if strings.TrimSpace(base) == "" {
@@ -478,8 +484,17 @@ func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int,
 			}
 			fetched[i] = r
 		})
-		out = append(out, fetched...)
-		added := len(candidates)
+		includedCandidates := len(candidates)
+		accepted := fetched[:0]
+		for _, r := range fetched {
+			if isJavLibraryGIGAStudio(r.Studio) {
+				j.log.Info("release excluded from JavLibrary", "provider", "JavLibrary", "video_id", r.VideoID, "studio", r.Studio, "reason", "dedicated GIGA source required")
+				continue
+			}
+			accepted = append(accepted, r)
+		}
+		out = append(out, accepted...)
+		added := len(accepted)
 		if discovered == 0 && page > 1 {
 			if len(progress) > 0 && progress[0] != nil {
 				progress[0](page-1, page-1, 0, 0, "")
@@ -487,7 +502,7 @@ func (j *JavLibrary) scrapeFiltered(ctx context.Context, base string, pages int,
 			j.log.Info("online listing end reached", "provider", "JavLibrary", "last_page", page-1, "reason", "empty or repeated page")
 			break
 		}
-		if added == 0 {
+		if includedCandidates == 0 {
 			if include != nil && stopWhenNoIncluded {
 				j.log.Info("listing page contained no new releases", "provider", "JavLibrary", "page", page)
 				break
@@ -650,6 +665,9 @@ func (j *JavLibrary) Refresh(ctx context.Context, release domain.Release, stage 
 	if err != nil {
 		return release, err
 	}
+	if isJavLibraryGIGAStudio(detail.Studio) {
+		return release, errJavLibraryGIGARelease
+	}
 	mergeJav(&release, detail)
 	return release, nil
 }
@@ -672,6 +690,9 @@ func (j *JavLibrary) AddByURL(ctx context.Context, productURL, fallbackVideoID s
 	detail, err := j.detail(ctx, productURL, stage...)
 	if err != nil {
 		return domain.Release{}, err
+	}
+	if isJavLibraryGIGAStudio(detail.Studio) {
+		return domain.Release{}, errJavLibraryGIGARelease
 	}
 	videoID := ""
 	if m := idPattern.FindStringSubmatch(detail.Title); len(m) > 0 {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -42,6 +43,63 @@ func TestSQLiteReleaseLifecycle(t *testing.T) {
 	}
 	if stats.Sites != 1 || stats.Releases != 1 || stats.Released != 1 || stats.Local != 1 {
 		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
+func TestSQLiteRemovesAndRejectsJavLibraryGIGAReleases(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "javlibrary-giga.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	javSite, err := s.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gigaSite, err := s.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dedicated, err := s.UpsertRelease(ctx, domain.Release{SiteID: gigaSite.ID, VideoID: "GIGA-KEEP", Title: "Dedicated", Source: "GIGA", Studio: "GIGA"})
+	if err != nil || !dedicated {
+		t.Fatalf("dedicated created=%v err=%v", dedicated, err)
+	}
+	if created, err := s.UpsertRelease(ctx, domain.Release{SiteID: javSite.ID, VideoID: "GIGA-BLOCK", Title: "Blocked", Source: "JavLibrary", Studio: "giga"}); err != nil || created {
+		t.Fatalf("blocked created=%v err=%v", created, err)
+	}
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `INSERT INTO releases(site_id,video_id,title,source,studio,added_at,updated_at) VALUES(?,?,?,?,?,?,?)`, javSite.ID, "GIGA-OLD", "Legacy duplicate", " JavLibrary ", " GIGA ", now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingID, err := s.UpsertStashMissingScene(ctx, domain.StashMissingScene{StashSceneID: "scene-giga-old", Code: "GIGA-OLD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LinkStashMissingRelease(ctx, missingID, legacyID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM settings WHERE key='remove_javlibrary_giga_releases_v1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.removeJavLibraryGIGAReleases(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Release(ctx, legacyID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("legacy release lookup error=%v, want sql.ErrNoRows", err)
+	}
+	kept, err := s.Releases(ctx, domain.ReleaseFilter{Search: "GIGA-KEEP", Limit: 10})
+	if err != nil || len(kept) != 1 || kept[0].Source != "GIGA" {
+		t.Fatalf("dedicated releases=%+v err=%v", kept, err)
+	}
+	missing, err := s.StashMissingScene(ctx, missingID)
+	if err != nil || missing.ReleaseID != 0 || missing.Status != "missing" {
+		t.Fatalf("missing scene=%+v err=%v", missing, err)
 	}
 }
 

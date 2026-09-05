@@ -379,6 +379,9 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 		err = s.migrateNormalizedReleaseMetadata(context.Background())
 	}
 	if err == nil {
+		err = s.removeJavLibraryGIGAReleases(context.Background())
+	}
+	if err == nil {
 		_, err = s.db.Exec(`UPDATE sites SET download_mode='future' WHERE download=1 AND download_mode=''`)
 	}
 	if err == nil {
@@ -394,6 +397,37 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 		_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_releases_released_date ON releases(released,release_date DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_local_created ON releases(is_local,stash_created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_watchlist_date ON releases(watchlist,watchlist_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_updated ON releases(updated_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_title_order ON releases(title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS idx_releases_preferred ON releases(is_preferred,id); CREATE INDEX IF NOT EXISTS idx_releases_stash_file_path_ci ON releases(LOWER(stash_file_path)) WHERE stash_file_path<>'';`)
 	}
 	return err
+}
+
+// removeJavLibraryGIGAReleases removes only duplicate GIGA catalogue records
+// learned from JavLibrary. The dedicated Akiba-web provider stores
+// source="GIGA" and is deliberately untouched. Missing-file scenes linked to
+// a removed duplicate return to the normal unmatched state so they can resolve
+// against the authoritative dedicated release.
+func (s *SQLite) removeJavLibraryGIGAReleases(ctx context.Context) error {
+	const migrationKey = "remove_javlibrary_giga_releases_v1"
+	var complete string
+	if err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=?`, migrationKey).Scan(&complete); err == nil && complete == "true" {
+		return nil
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	match := `LOWER(TRIM(source))='javlibrary' AND LOWER(TRIM(studio))='giga'`
+	if _, err = tx.ExecContext(ctx, `UPDATE stash_missing_scenes SET release_id=0,status='missing',message='',updated_at=? WHERE release_id IN (SELECT id FROM releases WHERE `+match+`)`, time.Now().UTC()); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM releases WHERE `+match); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO settings(key,value,updated_at) VALUES(?,'true',?) ON CONFLICT(key) DO UPDATE SET value='true',updated_at=excluded.updated_at`, migrationKey, time.Now().UTC()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // migrateSiteMonitoringRedesign converts the retired site-level automatic
@@ -1814,6 +1848,12 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 	x.Label = cleanText(x.Label)
 	x.Duration = cleanText(x.Duration)
 	x.Story = cleanText(x.Story)
+	// GIGA has a first-party Akiba-web scraper with richer, authoritative
+	// metadata. Keep JavLibrary's duplicate catalogue entries out even when a
+	// caller bypasses the normal monitoring/backfill scraper paths.
+	if strings.EqualFold(x.Source, "JavLibrary") && strings.EqualFold(x.Studio, "GIGA") {
+		return false, nil
+	}
 	x.Genres = uniqueMetadataValues(x.Genres)
 	x.Screenshots = uniqueMetadataValues(x.Screenshots)
 	identity := releaseIdentity(x.Source, x.VideoID)
