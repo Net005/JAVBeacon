@@ -69,13 +69,13 @@ type Release struct {
 	// and exposed through the release API for consumers such as JAVBeaconSubs.
 	StashFilePath string `json:"stash_file_path,omitempty"`
 	WatchlistSync string `json:"watchlist_sync,omitempty"`
-	// DownloadStatus is computed: "downloading" when an active torrent
+	// DownloadStatus is computed: "downloading" when an active Torrent or HTTP
 	// exists for this release, "completed" when the most recent finished
 	// download for it succeeded, or "" when there is none (Phase 6A).
 	DownloadStatus string `json:"download_status,omitempty"`
-	// DownloadSourceReference is the torrent detail-page URL belonging to the
-	// same download row selected for DownloadStatus. It lets every status pill
-	// open the exact external result that is downloading or was downloaded.
+	// DownloadSourceReference is the Torrent source or HTTP share URL belonging
+	// to the same download row selected for DownloadStatus. It lets every status
+	// pill open the exact external result that is downloading or was downloaded.
 	DownloadSourceReference string `json:"download_source_reference,omitempty"`
 	// Download telemetry belongs to the same active/completed download row as
 	// DownloadStatus and is populated for the single-release detail endpoint.
@@ -86,6 +86,7 @@ type Release struct {
 	DownloadTransport    string    `json:"download_transport,omitempty"`
 	DownloadBytesTotal   int64     `json:"download_bytes_total,omitempty"`
 	DownloadBytesDone    int64     `json:"download_bytes_downloaded,omitempty"`
+	DownloadBytesPerSec  int64     `json:"download_bytes_per_second,omitempty"`
 	DownloadETASeconds   int64     `json:"download_eta_seconds"`
 	DownloadSeenComplete int64     `json:"download_seen_complete"`
 	DownloadAddedAt      time.Time `json:"download_added_at,omitempty"`

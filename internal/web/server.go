@@ -1787,6 +1787,7 @@ func (s *Server) release(w http.ResponseWriter, r *http.Request) {
 			x.DownloadTransport = download.Transport
 			x.DownloadBytesTotal = download.BytesTotal
 			x.DownloadBytesDone = download.BytesDownloaded
+			x.DownloadBytesPerSec = download.BytesPerSecond
 			x.DownloadSeeds = download.Seeds
 			x.DownloadPeers = download.Peers
 			x.DownloadETASeconds = download.ETASeconds

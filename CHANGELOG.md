@@ -7,6 +7,31 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.85] - 2026-09-05
+
+### Added
+
+- HTTP Download Activity now reports the live transfer rate alongside
+  transferred size and ETA.
+
+### Changed
+
+- Release cards and Release Details now retain and visibly distinguish the
+  linked download transport; HTTP status links open the exact Keepshare source
+  and show HTTP-specific telemetry.
+- Force Download now ignores completed or historical download records and
+  active downloads using the other transport, while preserving any queued,
+  downloading, or processing job using the same transport.
+- Manual and scheduled force-redownload paths now share the same
+  transport-aware duplicate protection.
+
+### Fixed
+
+- HTTP releases no longer inherit Torrent-specific status presentation or
+  seeds and peers telemetry.
+- Historical download rows no longer prevent an explicitly requested Force
+  Download.
+
 ## [1.0.84] - 2026-09-05
 
 ### Changed

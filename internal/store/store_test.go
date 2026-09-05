@@ -951,19 +951,19 @@ func TestReleaseLabelAndDownloadStatus(t *testing.T) {
 		t.Fatalf("partial rescrape erased label: %+v", got)
 	}
 
-	dl, err := s.SaveDownload(ctx, domain.Download{ReleaseID: got.ID, Provider: "Sukebei", Query: "LBL-1", Status: "downloading"})
+	dl, err := s.SaveDownload(ctx, domain.Download{ReleaseID: got.ID, Provider: "JavDB / Keepshare", SourceReference: "https://keepshare.org/example", Query: "LBL-1", Transport: "http", Status: "downloading"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fetch(); got.DownloadStatus != "downloading" {
-		t.Fatalf("expected downloading status: %+v", got)
+	if got := fetch(); got.DownloadStatus != "downloading" || got.DownloadTransport != "http" || got.DownloadSourceReference != "https://keepshare.org/example" {
+		t.Fatalf("expected linked HTTP downloading status: %+v", got)
 	}
 	dl.Status = "completed"
 	if _, err := s.SaveDownload(ctx, dl); err != nil {
 		t.Fatal(err)
 	}
-	if got := fetch(); got.DownloadStatus != "completed" {
-		t.Fatalf("expected completed status: %+v", got)
+	if got := fetch(); got.DownloadStatus != "completed" || got.DownloadTransport != "http" || got.DownloadSourceReference != "https://keepshare.org/example" {
+		t.Fatalf("expected linked HTTP completed status: %+v", got)
 	}
 
 	updated := "Patched Label"
