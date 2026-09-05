@@ -1254,6 +1254,11 @@ html.releaseOverlayOpen,body.releaseOverlayOpen{overflow:hidden!important;oversc
 .downloadRemove.iconActionButton{display:grid!important;gap:0}.downloadRemove.iconActionButton>.actionIcon{width:18px;height:18px;font-size:18px}
 .bulkBar label>.actionIcon{margin:0 1px 0 0}
 .bulkBar button[hidden]{display:none!important}
+#monitoredBulkBar{gap:7px;padding:7px 9px}
+#monitoredBulkBar>span{min-width:auto;margin-right:5px;font-size:11px}
+#monitoredBulkBar>button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:34px;height:34px;padding:6px 10px;border-radius:7px;font-size:11px;font-weight:650;line-height:1;white-space:nowrap}
+#monitoredBulkBar>button.primary{font-weight:750}
+#monitoredBulkBar>button>.actionIcon{width:14px;height:14px;font-size:14px;flex:0 0 14px}
 
 /* Earlier touch controls were intentionally doubled, but they dominate phone
    landscape. Scale them to a comfortable, consistent tap target instead. */
