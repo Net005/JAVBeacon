@@ -8,7 +8,9 @@
 
 ## What is JAVBeacon?
 
-JAVBeacon watches configured JAV release sources, builds a searchable release library, reconciles releases with your local StashApp collection, finds matching torrents, and manages downloads through qBittorrent.
+JAVBeacon watches configured JAV release sources, builds a searchable release
+library, reconciles releases with your local StashApp collection, and finds
+matching downloads through qBittorrent or direct HTTP sources.
 
 It is designed as a private, single-user application. The recommended Docker Compose stack stores application data in PostgreSQL; standalone installs can still use SQLite.
 
@@ -21,9 +23,13 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete version history.
 - Monitor GIGA/Akiba and JavLibrary sources for new and updated releases.
 - Browse a responsive cover library with structured filters for actresses, studios, labels, tags, dates, duration, and release state.
 - Track upcoming, watchlist, local, downloading, completed, failed, and missing releases.
-- Search Sukebei/Nyaa-compatible providers and submit vetted torrents to qBittorrent.
-- Run scheduled searches for recent and older monitored releases, with independent intervals and filename acceptance rules.
-- Use per-site RSS monitoring, duplicate prevention, torrent progress, seed/peer status, and download history.
+- Search Sukebei/Nyaa-compatible providers and JavDB/Keepshare together, then
+  download through qBittorrent or the built-in direct HTTP downloader.
+- Run scheduled searches for recent and older monitored releases, with
+  independent intervals and preferred filename rules shared by Torrent and
+  HTTP candidate ranking.
+- Use per-site RSS monitoring, duplicate prevention, Torrent seed/peer status,
+  HTTP progress and ETA, automatic provider fallback, and download history.
 - Reconcile releases with StashApp, synchronize Watchlist tags, and scan the Stash library for missing files.
 - Run ordered post-download and post-removal pipelines, including path mapping, shell commands, moves, and StashApp scans.
 - Cache cover artwork and JavLibrary screenshots locally, preview screenshots
@@ -234,9 +240,55 @@ version is shown at the bottom of the web sidebar near **Sign out**.
 1. Sign in and replace the default credentials.
 2. Confirm **Settings → Scraping → Byparr / FlareSolverr** shows `http://byparr:8191/v1` for Compose, or the reachable `/v1` endpoint you configured for a standalone install. Byparr (or a compatible FlareSolverr service) is required for JavLibrary scraping.
 3. Add monitoring sources under **Sites** and choose whether each source should notify, add releases to the Watchlist, or automate searches. JavLibrary URLs must include `&mode=2` to include future releases.
-4. Open **Settings → Downloads** and configure the search URL template, preferred filename patterns, and qBittorrent connection.
+4. Open **Settings → Downloads** and configure the Torrent search URL,
+   preferred filename patterns, qBittorrent connection, and the HTTP download
+   destination. JavDB/Keepshare is available as the HTTP provider without a
+   PikPak account.
 5. Optionally configure **Settings → StashApp** for local-library synchronization, Watchlist-tag synchronization, missing-file scans, and path remapping.
 6. Review automation schedules before enabling unattended scraping or downloading.
+
+## Torrent and HTTP downloads
+
+Manual **Search** and **Search + Download** requests combine results from the
+configured Sukebei/Nyaa-compatible Torrent provider and the modular HTTP
+provider system. HTTP discovery currently uses JavDB release pages and their
+public Keepshare/PikPak shares. Search results identify the transport clearly
+and provide separate **Open JavDB** and **Open Keepshare** links. JAVBeacon
+stores both links with the HTTP download, so they remain available in
+**Download Activity** during progress, after completion, and when retrying a
+failure.
+
+JavDB matching is intentionally strict: the release ID must match
+case-insensitively, with or without separators such as the hyphen, and the
+JavDB release date must be within 60 days of the date stored in JAVBeacon. For
+every matching release page, JAVBeacon collects every distinct Keepshare link
+and inspects its actual downloadable files. Candidate priority is:
+
+1. Files whose names contain a configured **Preferred filename pattern**.
+2. Non-`-U` filenames before equivalent `-U` variants.
+3. Larger matching video files before smaller alternatives.
+
+If no file matches a preferred pattern, JAVBeacon automatically continues with
+the normal non-`-U` and filesize ordering. Preferred patterns are therefore a
+ranking preference, not a requirement that hides otherwise usable HTTP
+downloads.
+
+Under **Settings → Downloads → HTTP Downloads**, configure:
+
+- **JavDB URL** — the HTTP discovery provider base URL.
+- **Download folder** — where completed HTTP videos are written.
+- **Parallel HTTP downloads** — the maximum simultaneous HTTP transfers.
+- **Stalled torrent fallback delay** — how long a non-progressing torrent with
+  no seeders or no recorded completed peer may wait before HTTP is attempted;
+  the default is eight hours.
+
+A release uses Torrent first by default, with HTTP as its fallback. Release
+Details can make HTTP primary for an individual release. Completed HTTP files
+are named `<RELEASE-ID>.mp4`; if that name exists, JAVBeacon appends `-0`,
+`-1`, and so on. The HTTP tab in Download Activity reports transferred bytes,
+progress, ETA, completion or failure state, and offers retry for failed items.
+Blocked or expired public shares and provider data-center restrictions are
+reported as explicit failures instead of producing an HTML file.
 
 ## Configuration
 
