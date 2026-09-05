@@ -7,6 +7,24 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.94] - 2026-09-05
+
+### Changed
+
+- Manual HTTP search now keeps an exact, date-compatible JavDB metadata match
+  visible when the release has no published Keepshare/PikPak download link,
+  linking to its JavDB page and clearly marking it as non-downloadable.
+- Manual, monitored bulk, and scheduled HTTP searches now write the complete
+  provider stage, source page, normalized release ID, and failure reason to
+  the application log.
+
+### Fixed
+
+- Exact JavDB matches without a downloadable share are no longer hidden behind
+  a generic `no exact, date-compatible result` message.
+- Monitored bulk search now preserves the provider's specific unavailable-share
+  reason instead of replacing it with a generic no-candidate summary.
+
 ## [1.0.93] - 2026-09-05
 
 ### Changed

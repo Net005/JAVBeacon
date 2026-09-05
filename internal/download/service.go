@@ -407,9 +407,13 @@ func (s *Service) searchHTTP(ctx context.Context, release domain.Release, source
 		if searchErr != nil {
 			history.Status, history.Error = "failed", searchErr.Error()
 			_, _ = s.store.SaveDownload(ctx, history)
+			if s.log != nil {
+				s.log.Warn("HTTP provider search failed", "release_id", release.ID, "video_id", release.VideoID, "normalized_video_id", normalizeReleaseID(release.VideoID), "provider", provider.Name(), "source_type", sourceType, "error", searchErr)
+			}
 			providerErrors = append(providerErrors, provider.Name()+": "+searchErr.Error())
 			continue
 		}
+		accepted := 0
 		for _, result := range found {
 			item := history
 			item.Name = result.Title
@@ -419,10 +423,14 @@ func (s *Service) searchHTTP(ctx context.Context, release domain.Release, source
 			item.MatchReason = result.Reason
 			if result.Accepted {
 				item.Status = "search_accepted"
+				accepted++
 			} else {
 				item.Status = "search_rejected"
 			}
 			_, _ = s.store.SaveDownload(ctx, item)
+		}
+		if accepted == 0 && len(found) > 0 && s.log != nil {
+			s.log.Warn("HTTP provider search found no downloadable candidate", "release_id", release.ID, "video_id", release.VideoID, "normalized_video_id", normalizeReleaseID(release.VideoID), "provider", provider.Name(), "source_type", sourceType, "results", len(found), "reason", found[0].Reason, "source_page_url", found[0].SourceURL)
 		}
 		rows = append(rows, found...)
 	}
@@ -1688,6 +1696,7 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 	httpConfigured := strings.TrimSpace(settings["http_download_directory"]) != ""
 
 	var torrentCandidate, httpCandidate domain.SearchResult
+	var httpUnavailableReason string
 	var torrentFound, httpFound, torrentSearched, httpSearched bool
 	var torrentErr, httpErr error
 	var torrentRows []domain.SearchResult
@@ -1717,6 +1726,9 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 					httpCandidate, httpFound = row, true
 					break
 				}
+				if httpUnavailableReason == "" {
+					httpUnavailableReason = row.Reason
+				}
 			}
 		}
 	}
@@ -1744,7 +1756,7 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 			if httpErr != nil {
 				return SearchAndDownloadOutcome{Reason: "HTTP provider lookup failed: " + httpErr.Error()}, httpErr
 			}
-			return SearchAndDownloadOutcome{Reason: "HTTP only: provider returned no downloadable candidate"}, nil
+			return SearchAndDownloadOutcome{Reason: "HTTP only: " + firstNonEmpty(httpUnavailableReason, "provider returned no downloadable candidate")}, nil
 		}
 	}
 
@@ -1797,6 +1809,9 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 	}
 	if httpErr != nil && !torrentSearched {
 		return SearchAndDownloadOutcome{Reason: "HTTP provider lookup failed: " + httpErr.Error()}, httpErr
+	}
+	if !torrentFound && httpUnavailableReason != "" {
+		return SearchAndDownloadOutcome{Reason: methodLabel + ": " + httpUnavailableReason}, nil
 	}
 	reason := "Search providers returned no results"
 	if len(torrentRows) > 0 {
