@@ -232,7 +232,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`className='actionGroup statusGroup'`,
 		`status.innerHTML='<div class="actionGroupTitle">Status</div>'`,
 		`items.className='statusItems'`,
-		`items.append(httpOverride)`,
+		`items.append(...badges.children)`,
 		`function detailFilterList(values,category)`,
 		`function syncDetailValueOverflow(root=releaseDetail)`,
 		`class="detailValueMore"`,
@@ -1102,7 +1102,7 @@ func TestSearchResultsShowProviderProgressAndFileDetails(t *testing.T) {
 		"static/app.js": {
 			`heading:'Searching Torrent providers',provider:'Nyaa'`,
 			`heading:'Searching HTTP providers',provider:'JavDB → Keepshare'`,
-			`search?provider=${provider}`,
+			`search?provider=${key}`,
 			`preferred_filename_match`,
 			`Array.isArray(rows)?[...rows]:[]`,
 			`Matched file`,
@@ -1116,7 +1116,7 @@ func TestSearchResultsShowProviderProgressAndFileDetails(t *testing.T) {
 			`local||hasHistory`,
 			`_releaseDownloadTransport=release?.download_transport==='http'?'http':'torrent'`,
 			`An active download of the same type is never duplicated.`,
-			`Waiting for both providers so the final ranking appears once without shifting`,
+			`Waiting for enabled providers so the final priority appears once without shifting`,
 			`formatTransferRate(x.bytes_per_second)`,
 			`Transferred / speed`,
 		},
@@ -1362,6 +1362,26 @@ func TestSettingsRejectsInvalidSiteGroupSchedules(t *testing.T) {
 				t.Fatalf("status=%d body=%s, want 422", rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestSettingsRejectsInvalidDownloadMethod(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "download-method-validation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{store: st, log: slog.Default()}
+	for _, body := range []string{
+		`{"default_download_method":"automatic"}`,
+		`{"prefer_http_equivalent":"yes"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.settings(rec, req)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body=%s status=%d response=%s, want 422", body, rec.Code, rec.Body.String())
+		}
 	}
 }
 

@@ -96,6 +96,8 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .searchResult.noSeeds{border-color:#8b6b20;background:linear-gradient(135deg,#2c2411,#17140d)}
 .searchResult.noSeeds .matchState{color:#f1c75b}
 .searchResult.preferredFilename:not(.noSeeds){border-color:#45b98b;background:linear-gradient(135deg,#10261d,#111820 72%);box-shadow:inset 3px 0 #45b98b}
+.searchResult.downloadPriority{outline:2px solid #e3b64f;outline-offset:-2px;box-shadow:inset 4px 0 #e3b64f}
+.downloadPriorityBadge{margin-left:auto;padding:3px 7px;border:1px solid #a87b25;border-radius:5px;background:#33270f;color:#f3d27d;font-size:9px;font-weight:850;letter-spacing:.04em;white-space:nowrap}
 .searchResult.preferredFilename .matchState{padding:3px 7px;border:1px solid #45b98b;border-radius:5px;background:#123425;color:#a9f3d2;font-size:10px;font-weight:850}
 .searchResult.pendingProvider{grid-template-columns:auto minmax(0,1fr) auto;align-items:center;min-height:150px;border-style:dashed;border-color:#3b4655;background:#0d1219;color:#9ca8b8}.searchResult.pendingProvider>div{display:grid;gap:5px}.searchResult.pendingProvider small{color:var(--muted)}.searchResult.pendingProvider>i{width:18px;height:18px;border:2px solid #526071;border-top-color:var(--accent);border-radius:50%;animation:searchProviderSpin .8s linear infinite}
 .searchMatchedFile{display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:7px;margin-top:8px;padding:7px 9px;border:1px solid #386e5a;border-radius:7px;background:#0d2119}.searchMatchedFile>span:nth-child(2){display:grid;min-width:0}.searchMatchedFile small{color:#86bda8;font-size:9px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}.searchMatchedFile b{overflow:hidden;color:#d9f8eb;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.searchMatchedFile em{color:#9ecdbb;font-size:10px;font-style:normal;font-variant-numeric:tabular-nums;white-space:nowrap}.fileMatchCheck{display:grid;place-items:center;width:17px;height:17px;border:1px solid #3e4959;border-radius:4px;color:transparent;font-size:11px;font-weight:900}.searchMatchedFile .fileMatchCheck,.searchFiles li.matched .fileMatchCheck{border-color:#45b98b;background:#174833;color:#c0f8df}.searchFiles{margin-top:8px;padding:8px 9px;border:1px solid #29313d;border-radius:7px;background:#090c11}.searchFiles>small{display:block;margin-bottom:5px;color:#98a1b0;font-size:10px;font-weight:700}.searchFiles ul,.searchFiles details ul{display:grid;gap:3px;margin:0;padding:0;list-style:none}.searchFiles li{display:grid;grid-template-columns:17px minmax(0,1fr) auto;align-items:center;gap:7px;min-width:0;padding:4px 0;color:#b9c0cb;font-size:10px}.searchFiles li.matched{color:#d9f8eb}.searchFileName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.searchFileSize{color:#8f9bad;font-variant-numeric:tabular-nums;white-space:nowrap}.searchFiles details{margin-top:5px;padding-top:5px;border-top:1px solid #252c36}.searchFiles summary{cursor:pointer;color:#d88794;font-size:10px;font-weight:750}.searchProviderProgress{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:10px}.searchProviderProgress>div{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 11px;border:1px solid #303846;border-radius:8px;background:#0d1117}.searchProviderProgress span{display:grid}.searchProviderProgress small{color:#8993a2;font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.searchProviderProgress b{margin-top:2px;color:#e1e6ed;font-size:11px}.searchProviderProgress strong{display:flex;align-items:center;gap:6px;color:#a8b0bd;font-size:10px;white-space:nowrap}.searchProviderProgress strong.done{color:#83e8bd}.searchProviderProgress strong.failed{max-width:50%;overflow:hidden;color:#ef9ca6;text-overflow:ellipsis}.searchProviderProgress strong.searching i{width:12px;height:12px;border:2px solid #465366;border-top-color:#ec5d6e;border-radius:50%;animation:searchProviderSpin .7s linear infinite}@keyframes searchProviderSpin{to{transform:rotate(360deg)}}@media(max-width:650px){.searchProviderProgress{grid-template-columns:1fr}}
@@ -1291,8 +1293,6 @@ html.releaseOverlayOpen,body.releaseOverlayOpen{overflow:hidden!important;oversc
 .stateActions .monitorButton{border-color:#38626c;background:#132126;color:#91c9d6}
 .stateActions .monitorButton.on{border-color:#45b7cc;background:#154f5b;color:#d4f8ff;box-shadow:inset 0 0 0 1px #62d5ea33}
 .stateActions{grid-template-columns:repeat(4,minmax(0,1fr))}
-.stateActions .httpPrimaryButton{border-color:#44566b;background:#141c27;color:#a9bfd8}
-.stateActions .httpPrimaryButton.on{border-color:#438fc2;background:#173c56;color:#d9efff;box-shadow:inset 0 0 0 1px #5db5ee33}
 
 /* Release Library cards mirror the same fixed labels, checkbox state and
    active/inactive color language as Release Details. */
@@ -1385,13 +1385,11 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 .actionGroup{grid-template-columns:76px repeat(3,minmax(0,1fr))!important;align-items:stretch;padding:6px 7px!important;gap:6px!important}
 .actionGroupTitle{display:flex;align-items:center;padding:0 8px 0 3px;border-right:1px solid #2f3641;color:#929ba8;font-size:9px;font-weight:850;line-height:1.2;letter-spacing:1.1px;text-transform:uppercase}
 .statusGroup{grid-template-columns:76px minmax(0,1fr)!important}
-.statusItems{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;min-width:0}
+.statusItems{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;min-width:0}
 .statusItems .downloadPillWrap{display:flex;width:100%;min-width:0}
 .statusItems .downloadPill.inline{width:100%;min-height:34px;margin-left:0;padding:5px 8px;justify-content:center;border-radius:7px;font-size:11px;line-height:1.2;box-shadow:inset 0 0 0 1px #ffffff05;text-shadow:none}
 .statusItems .releaseStatusInfo{height:100%;min-height:34px;border-radius:7px}
 .statusItems .releaseStatusInfo b{font-size:11px}
-.statusItems .httpPrimaryButton{min-width:0;min-height:34px;padding:5px 8px;border-color:#44566b;border-radius:7px;background:#141c27;color:#a9bfd8;font-size:11px;line-height:1.2;white-space:nowrap}
-.statusItems .httpPrimaryButton.on{border-color:#438fc2;background:#173c56;color:#d9efff;box-shadow:inset 0 0 0 1px #5db5ee33}
 .detailValueOverflow{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:5px;width:100%;min-width:0}
 .detailValueOverflow:not(.hasOverflow){grid-template-columns:minmax(0,1fr);gap:0}
 .detailValuePreview{display:flex;align-items:center;min-width:0;gap:6px;overflow:hidden}
@@ -1440,7 +1438,7 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
   .actionGroup{grid-template-columns:repeat(3,minmax(0,1fr))!important;padding:7px!important}
   .actionGroupTitle{grid-column:1/-1;min-height:25px;padding:0 4px 5px;border-right:0;border-bottom:1px solid #2f3641}
   .statusGroup{grid-template-columns:1fr!important}
-  .statusItems{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .statusItems{grid-template-columns:repeat(2,minmax(0,1fr))}
   .detailMeta dt,.detailMeta dd{padding-block:7px!important}
   .detailValuePopover{position:fixed;top:50%;right:14px;left:14px;max-width:none;max-height:48vh;transform:translateY(-50%);padding:12px}
 }

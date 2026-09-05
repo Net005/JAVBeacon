@@ -7,6 +7,29 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.86] - 2026-09-05
+
+### Added
+
+- Added a persistent Default Download Method setting with Torrent to HTTP
+  fallback, HTTP to Torrent fallback, Torrent-only, and HTTP-only strategies.
+- Added an optional HTTP priority rule when Torrent and HTTP both match the
+  same preferred filename and their known matched-file sizes are within 10%.
+- Search results now highlight the result selected by the configured download
+  strategy, while Download Activity and server logs explain transport choices
+  and fallback reasons.
+
+### Changed
+
+- Manual Search & Download, Missing Files recovery, scheduled monitored
+  searches, stalled Torrent handling, and failed HTTP transfers now use the
+  same configured transport strategy.
+- Torrent-only and HTTP-only modes strictly avoid contacting or falling back
+  to the other transport.
+- Removed the obsolete per-release HTTP-primary control and restored Release
+  Details Status to a compact two-column Download and StashApp layout without
+  an empty slot.
+
 ## [1.0.85] - 2026-09-05
 
 ### Added

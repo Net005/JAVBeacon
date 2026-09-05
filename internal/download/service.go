@@ -95,6 +95,113 @@ const cleanupRetryInterval = 5 * time.Minute
 const defaultTorrentHTTPFallbackDelay = 8 * time.Hour
 const httpFallbackRetryInterval = 30 * time.Minute
 
+type downloadMethod string
+
+const (
+	downloadTorrentHTTP downloadMethod = "torrent_http"
+	downloadHTTPTorrent downloadMethod = "http_torrent"
+	downloadTorrentOnly downloadMethod = "torrent_only"
+	downloadHTTPOnly    downloadMethod = "http_only"
+)
+
+func normalizeDownloadMethod(raw string) downloadMethod {
+	switch downloadMethod(strings.ToLower(strings.TrimSpace(raw))) {
+	case downloadHTTPTorrent:
+		return downloadHTTPTorrent
+	case downloadTorrentOnly:
+		return downloadTorrentOnly
+	case downloadHTTPOnly:
+		return downloadHTTPOnly
+	default:
+		return downloadTorrentHTTP
+	}
+}
+
+func downloadMethodLabel(method downloadMethod) string {
+	switch method {
+	case downloadHTTPTorrent:
+		return "HTTP → Torrent fallback"
+	case downloadTorrentOnly:
+		return "Torrent only"
+	case downloadHTTPOnly:
+		return "HTTP only"
+	default:
+		return "Torrent → HTTP fallback"
+	}
+}
+
+func effectiveDownloadMethod(settings map[string]string, release domain.Release) downloadMethod {
+	return normalizeDownloadMethod(settings["default_download_method"])
+}
+
+func methodAllowsTorrent(method downloadMethod) bool { return method != downloadHTTPOnly }
+func methodAllowsHTTP(method downloadMethod) bool    { return method != downloadTorrentOnly }
+
+func preferredMatchSize(result domain.SearchResult) int64 {
+	for _, file := range result.FileDetails {
+		if file.Matched && file.SizeBytes > 0 {
+			return file.SizeBytes
+		}
+	}
+	return result.SizeBytes
+}
+
+func normalizedMatchedFilename(result domain.SearchResult) string {
+	name := strings.TrimSpace(result.MatchedFile)
+	if name == "" {
+		for _, file := range result.FileDetails {
+			if file.Matched {
+				name = file.Name
+				break
+			}
+		}
+	}
+	return strings.ToLower(filepath.Base(strings.ReplaceAll(name, "\\", "/")))
+}
+
+// equivalentPreferredMatches implements the optional HTTP tie-break: both
+// providers must have accepted the same preferred filename and their known
+// matched-file sizes may differ by no more than ten percent.
+func equivalentPreferredMatches(torrent, httpResult domain.SearchResult) bool {
+	if !torrent.Accepted || !httpResult.Accepted || !torrent.PreferredFilenameMatch || !httpResult.PreferredFilenameMatch {
+		return false
+	}
+	if torrentName, httpName := normalizedMatchedFilename(torrent), normalizedMatchedFilename(httpResult); torrentName == "" || torrentName != httpName {
+		return false
+	}
+	torrentSize, httpSize := preferredMatchSize(torrent), preferredMatchSize(httpResult)
+	if torrentSize <= 0 || httpSize <= 0 {
+		return false
+	}
+	larger := torrentSize
+	if httpSize > larger {
+		larger = httpSize
+	}
+	difference := torrentSize - httpSize
+	if difference < 0 {
+		difference = -difference
+	}
+	return float64(difference)/float64(larger) <= 0.10
+}
+
+func appendDownloadPreference(reason, preference string) string {
+	reason, preference = strings.TrimSpace(reason), strings.TrimSpace(preference)
+	if preference == "" {
+		return reason
+	}
+	if reason == "" {
+		return preference
+	}
+	return preference + "; " + reason
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 func (s *Service) torrentHTTPFallbackDelay(ctx context.Context) time.Duration {
 	settings, err := s.store.Settings(ctx)
 	if err != nil {
@@ -320,12 +427,26 @@ func (s *Service) searchHTTP(ctx context.Context, release domain.Release, source
 }
 
 func (s *Service) SearchAll(ctx context.Context, release domain.Release) ([]domain.SearchResult, error) {
+	settings, settingsErr := s.store.Settings(ctx)
+	if settingsErr != nil {
+		return nil, settingsErr
+	}
+	method := effectiveDownloadMethod(settings, release)
+	if method == downloadTorrentOnly {
+		return s.Search(ctx, release)
+	}
+	if method == downloadHTTPOnly {
+		return s.SearchHTTP(ctx, release)
+	}
 	torrent, torrentErr := s.Search(ctx, release)
 	httpRows, httpErr := s.SearchHTTP(ctx, release)
 	if torrentErr != nil && httpErr != nil {
 		return nil, fmt.Errorf("torrent: %v; HTTP: %v", torrentErr, httpErr)
 	}
-	if release.HTTPDownloadPrimary {
+	if method == downloadHTTPTorrent {
+		return append(append(make([]domain.SearchResult, 0, len(httpRows)+len(torrent)), httpRows...), torrent...), nil
+	}
+	if settings["prefer_http_equivalent"] != "false" && len(torrent) > 0 && len(httpRows) > 0 && equivalentPreferredMatches(torrent[0], httpRows[0]) {
 		return append(append(make([]domain.SearchResult, 0, len(httpRows)+len(torrent)), httpRows...), torrent...), nil
 	}
 	return append(append(make([]domain.SearchResult, 0, len(torrent)+len(httpRows)), torrent...), httpRows...), nil
@@ -642,6 +763,7 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 	case excluded:
 		matchReason = "non-preferred filename allowed by Missing Library Files fallback search despite automatic match result: " + result.Reason
 	}
+	matchReason = appendDownloadPreference(matchReason, result.DownloadPreferenceReason)
 	if result.SourceURL != "" {
 		sourceRef = result.SourceURL
 	} else if sourceRef == "" {
@@ -791,7 +913,7 @@ func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, resul
 	if sourceRef == "" {
 		sourceRef = result.Link
 	}
-	matchReason := result.Reason
+	matchReason := appendDownloadPreference(result.Reason, result.DownloadPreferenceReason)
 	if result.IgnoreLocal {
 		matchReason = "manually forced redownload"
 		if r.Local {
@@ -868,6 +990,45 @@ func (s *Service) resumeHTTPDownloads() {
 	}
 }
 
+func (s *Service) tryFailedHTTPTorrentFallback(d domain.Download, httpFailure string) {
+	ctx := context.Background()
+	settings, err := s.store.Settings(ctx)
+	if err != nil || !strings.Contains(d.MatchReason, "Download method: HTTP → Torrent fallback") {
+		return
+	}
+	release, err := s.store.Release(ctx, d.ReleaseID)
+	if err != nil || effectiveDownloadMethod(settings, release) != downloadHTTPTorrent {
+		return
+	}
+	native, err := s.searchNative(ctx, release, "Automatic Torrent fallback after HTTP failure")
+	if err != nil {
+		d.PostStatus = "torrent_fallback_failed"
+		d.Error = httpFailure + "; Torrent fallback lookup failed: " + err.Error()
+		_, _ = s.store.SaveDownload(ctx, d)
+		return
+	}
+	candidate, found := fallbackSearchCandidate(sortSearchResults(native), native, release.AllowNonPreferredFilenames)
+	if !found {
+		d.PostStatus = "torrent_fallback_unavailable"
+		d.Error = httpFailure + "; Torrent fallback found no acceptable result"
+		_, _ = s.store.SaveDownload(ctx, d)
+		return
+	}
+	candidate.DownloadPreferenceReason = "Download method: HTTP → Torrent fallback — Torrent selected after HTTP transfer failed"
+	downloaded, fallbackErr := s.Download(ctx, release, candidate, "Automatic Torrent fallback after HTTP failure", candidate.Link)
+	if fallbackErr != nil || (downloaded.Status != "queued" && downloaded.Status != "downloading") {
+		d.PostStatus = "torrent_fallback_failed"
+		d.Error = httpFailure + "; Torrent fallback failed: " + firstNonEmpty(errorText(fallbackErr), downloaded.Error, downloaded.MatchReason)
+		_, _ = s.store.SaveDownload(ctx, d)
+		s.log.Warn("failed HTTP download could not switch to Torrent fallback", "release_id", d.ReleaseID, "video_id", d.Query, "download_id", d.ID, "error", d.Error)
+		return
+	}
+	d.PostStatus = "torrent_fallback_started"
+	d.Error = httpFailure + "; switched to Torrent download " + strconv.FormatInt(downloaded.ID, 10)
+	_, _ = s.store.SaveDownload(ctx, d)
+	s.log.Info("failed HTTP download switched to Torrent fallback", "release_id", d.ReleaseID, "video_id", d.Query, "http_download_id", d.ID, "torrent_download_id", downloaded.ID, "reason", httpFailure)
+}
+
 func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	if !s.acquireHTTPSlot(ctx) {
 		return
@@ -879,12 +1040,14 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		dir = strings.TrimSpace(settings["http_download_directory"])
 	}
 	fail := func(e error) {
+		failure := e.Error()
 		d.Status = "failed"
-		d.Error = e.Error()
+		d.Error = failure
 		d.ETASeconds = 0
 		d.BytesPerSecond = 0
 		_, _ = s.store.SaveDownload(context.Background(), d)
-		_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_failed", e.Error())
+		_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_failed", failure)
+		go s.tryFailedHTTPTorrentFallback(d, failure)
 	}
 	if err != nil {
 		fail(err)
@@ -1009,7 +1172,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	d.ETASeconds = 0
 	d.BytesPerSecond = 0
 	d.Status = "completed"
-	d.MatchReason = "HTTP file downloaded from Keepshare"
+	d.MatchReason = appendDownloadPreference("HTTP file downloaded from Keepshare", d.MatchReason)
 	d, _ = s.store.SaveDownload(context.Background(), d)
 	_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_completed", "HTTP download completed")
 	s.runEventPipelineAsync(context.Background(), d, Torrent{Name: filepath.Base(finalPath), ContentPath: finalPath, Progress: 1}, pipelineDownloadCompleted, nil)
@@ -1342,65 +1505,131 @@ type SearchAndDownloadOutcome struct {
 }
 
 func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Release, trigger string, allowNonPreferred bool) (SearchAndDownloadOutcome, error) {
-	if r.HTTPDownloadPrimary {
-		if outcome, attempted, err := s.searchAndDownloadHTTP(ctx, r, trigger); attempted || err != nil {
+	settings, settingsErr := s.store.Settings(ctx)
+	if settingsErr != nil {
+		return SearchAndDownloadOutcome{}, settingsErr
+	}
+	method := effectiveDownloadMethod(settings, r)
+	methodLabel := downloadMethodLabel(method)
+	preferEquivalentHTTP := settings["prefer_http_equivalent"] != "false"
+	httpConfigured := strings.TrimSpace(settings["http_download_directory"]) != ""
+
+	var torrentCandidate, httpCandidate domain.SearchResult
+	var torrentFound, httpFound, torrentSearched, httpSearched bool
+	var torrentErr, httpErr error
+	var torrentRows []domain.SearchResult
+
+	loadTorrent := func() {
+		if torrentSearched || !methodAllowsTorrent(method) {
+			return
+		}
+		torrentSearched = true
+		var native []domain.SearchResult
+		native, torrentErr = s.searchNative(ctx, r, trigger)
+		torrentRows = native
+		if torrentErr == nil {
+			torrentCandidate, torrentFound = fallbackSearchCandidate(sortSearchResults(native), native, allowNonPreferred)
+		}
+	}
+	loadHTTP := func() {
+		if httpSearched || !methodAllowsHTTP(method) || !httpConfigured {
+			return
+		}
+		httpSearched = true
+		var rows []domain.SearchResult
+		rows, httpErr = s.searchHTTP(ctx, r, trigger)
+		if httpErr == nil {
+			for _, row := range rows {
+				if row.Accepted {
+					httpCandidate, httpFound = row, true
+					break
+				}
+			}
+		}
+	}
+	attempt := func(candidate domain.SearchResult, selection string) (SearchAndDownloadOutcome, error) {
+		candidate.DownloadPreferenceReason = "Download method: " + methodLabel + " — " + selection
+		s.log.Info("download method selected", "release_id", r.ID, "video_id", r.VideoID, "method", methodLabel, "transport", normalizedDownloadTransport(candidate.Transport), "reason", selection)
+		downloaded, err := s.Download(ctx, r, candidate, trigger, candidate.Link)
+		outcome := SearchAndDownloadOutcome{Found: true, Result: candidate, Download: downloaded, Reason: firstNonEmpty(downloaded.Error, downloaded.MatchReason, candidate.Reason)}
+		return outcome, err
+	}
+	failed := func(outcome SearchAndDownloadOutcome, err error) bool {
+		return err != nil || outcome.Download.Status == "failed"
+	}
+
+	if method == downloadHTTPTorrent || method == downloadHTTPOnly {
+		loadHTTP()
+		if httpFound {
+			outcome, err := attempt(httpCandidate, "HTTP selected as primary")
+			if !failed(outcome, err) || method == downloadHTTPOnly {
+				return outcome, err
+			}
+			s.log.Warn("primary HTTP download failed; trying Torrent fallback", "release_id", r.ID, "video_id", r.VideoID, "method", methodLabel, "error", firstNonEmpty(outcome.Reason, errorText(err)))
+		}
+		if method == downloadHTTPOnly {
+			if httpErr != nil {
+				return SearchAndDownloadOutcome{Reason: "HTTP provider lookup failed: " + httpErr.Error()}, httpErr
+			}
+			return SearchAndDownloadOutcome{Reason: "HTTP only: JavDB returned no exact, date-compatible result"}, nil
+		}
+	}
+
+	loadTorrent()
+	if torrentFound && method == downloadTorrentHTTP && preferEquivalentHTTP && httpConfigured {
+		loadHTTP()
+		if httpFound && equivalentPreferredMatches(torrentCandidate, httpCandidate) {
+			outcome, err := attempt(httpCandidate, "HTTP won the equivalent preferred-file tie-break (same filename; size within 10%)")
+			if !failed(outcome, err) {
+				return outcome, err
+			}
+			s.log.Warn("equivalent preferred HTTP choice failed; returning to Torrent primary", "release_id", r.ID, "video_id", r.VideoID, "method", methodLabel, "error", firstNonEmpty(outcome.Reason, errorText(err)))
+		}
+	}
+
+	if torrentFound && (torrentCandidate.Seeds > 0 || !methodAllowsHTTP(method) || !httpConfigured) {
+		selection := "Torrent selected as primary"
+		if method == downloadHTTPTorrent {
+			selection = "Torrent selected after HTTP was unavailable or failed"
+		}
+		outcome, err := attempt(torrentCandidate, selection)
+		if !failed(outcome, err) || !methodAllowsHTTP(method) {
 			return outcome, err
 		}
+		s.log.Warn("primary Torrent download failed; trying HTTP fallback", "release_id", r.ID, "video_id", r.VideoID, "method", methodLabel, "error", firstNonEmpty(outcome.Reason, errorText(err)))
 	}
-	native, e := s.searchNative(ctx, r, trigger)
-	if e != nil {
-		if outcome, attempted, httpErr := s.searchAndDownloadHTTP(ctx, r, trigger); attempted {
-			return outcome, httpErr
-		} else if httpErr != nil {
-			return SearchAndDownloadOutcome{Reason: "Search providers failed: torrent: " + e.Error() + "; HTTP: " + httpErr.Error()}, e
-		}
-		return SearchAndDownloadOutcome{Reason: "Search provider lookup failed: " + e.Error()}, e
-	}
-	sorted := sortSearchResults(native)
-	candidate, found := fallbackSearchCandidate(sorted, native, allowNonPreferred)
-	if !found {
-		if outcome, attempted, httpErr := s.searchAndDownloadHTTP(ctx, r, trigger); attempted || httpErr != nil {
-			return outcome, httpErr
-		}
-		reason := "Search provider returned no results"
-		if len(native) > 0 {
-			reason = "Results were found, but none matched the preferred filename rules"
-		}
-		return SearchAndDownloadOutcome{Reason: reason}, nil
-	}
-	// A filename match with no seeders is not a useful primary download when
-	// the direct provider is configured. Prefer the HTTP fallback immediately
-	// instead of leaving an inert torrent queued indefinitely.
-	if candidate.Seeds <= 0 {
-		if outcome, attempted, httpErr := s.searchAndDownloadHTTP(ctx, r, trigger); attempted || httpErr != nil {
-			return outcome, httpErr
+
+	if methodAllowsHTTP(method) {
+		loadHTTP()
+		if httpFound {
+			selection := "HTTP selected as fallback"
+			if torrentFound && torrentCandidate.Seeds <= 0 {
+				selection = "HTTP selected because the preferred Torrent result has no seeders"
+			}
+			return attempt(httpCandidate, selection)
 		}
 	}
-	downloaded, e := s.Download(ctx, r, candidate, trigger, "")
-	outcome := SearchAndDownloadOutcome{Found: true, Result: candidate, Download: downloaded}
-	if e != nil {
-		if httpOutcome, attempted, httpErr := s.searchAndDownloadHTTP(ctx, r, trigger); attempted {
-			return httpOutcome, httpErr
-		}
-		outcome.Reason = downloaded.Error
-		if outcome.Reason == "" {
-			outcome.Reason = e.Error()
-		}
-		return outcome, e
+
+	// If an HTTP attempt was unavailable/failed, retain the old safe behavior
+	// of queueing the matched Torrent (even with zero seeders) rather than
+	// reporting that no candidate existed at all.
+	if torrentFound {
+		return attempt(torrentCandidate, "Torrent selected because HTTP fallback was unavailable")
 	}
-	if downloaded.Status == "failed" {
-		if httpOutcome, attempted, httpErr := s.searchAndDownloadHTTP(ctx, r, trigger); attempted {
-			return httpOutcome, httpErr
-		}
+	if torrentErr != nil && httpErr != nil {
+		return SearchAndDownloadOutcome{Reason: "Search providers failed: torrent: " + torrentErr.Error() + "; HTTP: " + httpErr.Error()}, torrentErr
 	}
-	if downloaded.Error != "" {
-		outcome.Reason = downloaded.Error
-	} else if downloaded.MatchReason != "" {
-		outcome.Reason = downloaded.MatchReason
-	} else {
-		outcome.Reason = candidate.Reason
+	if torrentErr != nil {
+		return SearchAndDownloadOutcome{Reason: "Torrent provider lookup failed: " + torrentErr.Error()}, torrentErr
 	}
-	return outcome, nil
+	if httpErr != nil && !torrentSearched {
+		return SearchAndDownloadOutcome{Reason: "HTTP provider lookup failed: " + httpErr.Error()}, httpErr
+	}
+	reason := "Search providers returned no results"
+	if len(torrentRows) > 0 {
+		reason = "Results were found, but none matched the preferred filename rules"
+	}
+	return SearchAndDownloadOutcome{Reason: methodLabel + ": " + reason}, nil
 }
 
 func (s *Service) searchAndDownloadHTTP(ctx context.Context, r domain.Release, trigger string) (SearchAndDownloadOutcome, bool, error) {
@@ -2017,6 +2246,11 @@ func (s *Service) tryTorrentHTTPFallback(ctx context.Context, d *domain.Download
 	if err != nil {
 		d.PostStatus = "http_fallback_unavailable"
 		d.Error = "HTTP fallback could not load release: " + err.Error()
+		return false
+	}
+	if !methodAllowsHTTP(effectiveDownloadMethod(settings, release)) {
+		d.PostStatus = "http_fallback_disabled"
+		d.Error = "HTTP fallback disabled by Default Download Method: Torrent only"
 		return false
 	}
 	rows, err := s.searchHTTP(ctx, release, "Automatic HTTP fallback")
