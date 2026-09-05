@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Net005/JAVBeacon/internal/domain"
 	"golang.org/x/net/html"
 )
 
@@ -24,7 +25,7 @@ func TestReleaseIDMatchesTextIsCaseInsensitiveAndRejectsHalfMatches(t *testing.T
 
 func TestJavDBCandidatesRequireExactIDAndCarryFileSize(t *testing.T) {
 	doc, err := html.Parse(strings.NewReader(`<html><body>
-		<div class="item"><span class="name">ADN-803-U.torrent</span><span class="meta">4.43GB, 2 files</span><a href="https://keepshare.org/u">Download</a></div>
+		<div class="item"><span class="name">ADN-803-U.torrent</span><span class="meta">4.43GB, 2 files</span><a href="https://keepshare.org/u">Download</a><a href="https://keepshare.org/u-alternate">Alternate</a></div>
 		<div class="item"><span class="name">ADN803.torrent</span><span class="meta">3.45GB</span><a href="https://keepshare.org/plain">Download</a></div>
 		<div class="item"><span class="name">ADN-8030.torrent</span><span class="meta">9.99GB</span><a href="https://keepshare.org/wrong">Download</a></div>
 	</body></html>`))
@@ -32,11 +33,42 @@ func TestJavDBCandidatesRequireExactIDAndCarryFileSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows := parseJavDBDownloadCandidates(doc, "https://javdb.com/v/example", "adn-803")
-	if len(rows) != 2 {
-		t.Fatalf("got %d candidates, want 2", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("got %d candidates, want every distinct Keepshare link (3)", len(rows))
 	}
 	if rows[0].SizeBytes == 0 || rows[1].SizeBytes == 0 {
 		t.Fatal("expected parsed byte sizes")
+	}
+}
+
+func TestJavDBSortingPrefersConfiguredFilenamePatternsBeforeNormalHTTPOrder(t *testing.T) {
+	rows := []domain.SearchResult{
+		{Title: "ADN-803.mp4", SizeBytes: 9 << 30},
+		{Title: "trusted@ ADN-803-U.mp4", SizeBytes: 5 << 30},
+		{Title: "trusted@ ADN-803.mp4", SizeBytes: 3 << 30},
+	}
+	sortJavDBDownloadCandidates(rows, "ADN-803", []string{"trusted@"})
+	if rows[0].Title != "trusted@ ADN-803.mp4" || rows[1].Title != "trusted@ ADN-803-U.mp4" || rows[2].Title != "ADN-803.mp4" {
+		t.Fatalf("unexpected preferred HTTP order: %+v", rows)
+	}
+	if !strings.Contains(rows[0].Reason, "trusted@") || !strings.Contains(rows[1].Reason, "trusted@") {
+		t.Fatalf("preferred candidates should explain their matching pattern: %+v", rows)
+	}
+}
+
+func TestPikPakFileSelectionUsesPreferredPatternsThenLargestFallback(t *testing.T) {
+	files := []pikPakFile{
+		{ID: "large", Name: "ADN-803.mp4", Size: "9000"},
+		{ID: "preferred", Name: "trusted@ ADN-803.mp4", Size: "3000"},
+		{ID: "other", Name: "ADN-803 sample.mp4", Size: "1000"},
+	}
+	selected, found := selectPikPakFile(files, "ADN-803", []string{"trusted@"})
+	if !found || selected.ID != "preferred" {
+		t.Fatalf("preferred file was not selected: %+v, found=%v", selected, found)
+	}
+	selected, found = selectPikPakFile(files, "ADN-803", []string{"does-not-match"})
+	if !found || selected.ID != "large" {
+		t.Fatalf("largest fallback file was not selected: %+v, found=%v", selected, found)
 	}
 }
 

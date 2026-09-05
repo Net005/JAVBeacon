@@ -7,6 +7,26 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.80] - 2026-09-05
+
+### Changed
+
+- HTTP discovery now evaluates every distinct Keepshare link on a matching
+  JavDB release and inspects the actual downloadable filenames before ranking
+  candidates. Files matching the configured preferred filename patterns take
+  priority, followed by the existing non-`-U` and largest-file ordering.
+- Renamed the user-facing "Accepted filename patterns" setting to "Preferred
+  filename patterns" to describe its ranking role more accurately while
+  retaining existing settings and behavior.
+- Manual search results and HTTP Download Activity now expose separate links
+  to both the originating JavDB release and its Keepshare download page.
+
+### Fixed
+
+- SQLite and PostgreSQL downloads now retain both HTTP source links across
+  queueing, progress updates, failures, and retries, with a compatible
+  migration for existing databases.
+
 ## [1.0.79] - 2026-09-05
 
 ### Added

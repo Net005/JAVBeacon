@@ -89,6 +89,8 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 #missingJobResults .row{grid-template-columns:1fr auto;padding:9px}
 .downloadIdentity .nonPreferredBadge{display:inline-block;width:fit-content;margin-top:5px;padding:2px 6px;border:1px solid #6b5423;border-radius:99px;background:#2a2211;color:#e3c46c;font-size:9px;font-weight:700;white-space:nowrap}
 .downloadIdentity .torrentPageBadge{display:inline-flex;align-items:center;gap:4px;width:fit-content;margin-top:5px;padding:2px 7px;border:1px solid #4c596b;border-radius:99px;background:#171d26;color:#c3ccda;font-size:9px;font-weight:700;white-space:nowrap;text-decoration:none;cursor:pointer;transition:border-color .15s,background .15s,color .15s}
+.downloadIdentity .downloadSourceLinks{display:flex;flex-wrap:wrap;gap:5px;width:auto;overflow:visible;white-space:normal}
+.downloadIdentity .downloadSourceLinks .torrentPageBadge{margin-top:5px}
 .downloadIdentity .torrentPageBadge:hover{border-color:var(--accent);background:#222b38;color:#fff}
 .downloadIdentity .torrentPageBadge img{width:11px;height:11px;border-radius:3px;background:#fff}
 .searchResult.noSeeds{border-color:#8b6b20;background:linear-gradient(135deg,#2c2411,#17140d)}

@@ -300,7 +300,8 @@ func (s *Service) searchHTTP(ctx context.Context, release domain.Release, source
 		for _, result := range found {
 			item := history
 			item.Name = result.Title
-			item.SourceReference = result.SourceURL
+			item.SourceReference = result.Link
+			item.SourcePageURL = result.SourceURL
 			item.BytesTotal = result.SizeBytes
 			item.MatchReason = result.Reason
 			if result.Accepted {
@@ -727,7 +728,7 @@ func (s *Service) verifyAddedToQBittorrent(ctx context.Context, qb QBittorrent, 
 
 func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, result domain.SearchResult, sourceType, sourceRef string) (domain.Download, error) {
 	if !result.Accepted && !result.Forced {
-		return s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", Error: "HTTP result did not exactly match the release ID"})
+		return s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", Error: "HTTP result did not exactly match the release ID"})
 	}
 	if result.ReplaceExisting {
 		if _, err := s.removeReleaseDownloads(ctx, r.ID, r.VideoID, true); err != nil {
@@ -737,12 +738,12 @@ func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, resul
 	if reason, existingID, replaceable, err := s.duplicate(ctx, r, sourceType == "Manual Search" || r.IgnoreLocalForceDownload); err != nil {
 		return domain.Download{}, err
 	} else if reason != "" {
-		return s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "skipped", MatchReason: reason, CanReplace: replaceable, ExistingDownloadID: existingID})
+		return s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "skipped", MatchReason: reason, CanReplace: replaceable, ExistingDownloadID: existingID})
 	}
 	if sourceRef == "" {
 		sourceRef = result.Link
 	}
-	x, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: firstNonEmpty(result.Provider, "JavDB / Keepshare"), SourceType: sourceType, SourceReference: sourceRef, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "queued", MatchReason: result.Reason, BytesTotal: result.SizeBytes})
+	x, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: firstNonEmpty(result.Provider, "JavDB / Keepshare"), SourceType: sourceType, SourceReference: sourceRef, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "queued", MatchReason: result.Reason, BytesTotal: result.SizeBytes})
 	if err != nil {
 		return x, err
 	}
@@ -975,7 +976,7 @@ func (s *Service) RetryHTTPDownload(ctx context.Context, downloadID int64) (doma
 			if e != nil {
 				return domain.Download{}, e
 			}
-			return s.queueHTTPDownload(ctx, release, domain.SearchResult{Provider: row.Provider, Title: row.Name, Link: row.SourceReference, Transport: "http", SizeBytes: row.BytesTotal, Accepted: true, Reason: "retried HTTP download"}, "Manual HTTP Retry", row.SourceReference)
+			return s.queueHTTPDownload(ctx, release, domain.SearchResult{Provider: row.Provider, Title: row.Name, Link: row.SourceReference, SourceURL: row.SourcePageURL, Transport: "http", SizeBytes: row.BytesTotal, Accepted: true, Reason: "retried HTTP download"}, "Manual HTTP Retry", row.SourceReference)
 		}
 	}
 	return domain.Download{}, errors.New("HTTP download not found")
@@ -1258,7 +1259,7 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 		}
 		reason := "Search provider returned no results"
 		if len(native) > 0 {
-			reason = "Results were found, but none matched the accepted filename rules"
+			reason = "Results were found, but none matched the preferred filename rules"
 		}
 		return SearchAndDownloadOutcome{Reason: reason}, nil
 	}

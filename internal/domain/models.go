@@ -522,6 +522,7 @@ type Download struct {
 	Provider        string          `json:"provider"`
 	SourceType      string          `json:"source_type"`
 	SourceReference string          `json:"source_reference"`
+	SourcePageURL   string          `json:"source_page_url,omitempty"`
 	Query           string          `json:"query"`
 	TorrentHash     string          `json:"torrent_hash"`
 	Transport       string          `json:"transport"`

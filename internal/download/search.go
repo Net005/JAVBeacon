@@ -223,5 +223,5 @@ func (n *Nyaa) acceptFiles(title string, files []string) (bool, string) {
 			}
 		}
 	}
-	return false, "filename did not match accepted patterns"
+	return false, "filename did not match preferred patterns"
 }
