@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -41,6 +42,8 @@ type javDBProvider struct {
 	client           *http.Client
 	baseURL          string
 	acceptedPatterns []string
+	log              *slog.Logger
+	inspectCandidate func(context.Context, string, string) (pikPakFile, []pikPakFile, error)
 }
 
 // HTTPSourceProvider is the extension point for direct-download sources.
@@ -60,9 +63,9 @@ type resolvedHTTPFile struct {
 	Headers map[string]string
 }
 
-func httpSourceProviders(client *http.Client, settings map[string]string) []HTTPSourceProvider {
+func httpSourceProviders(client *http.Client, settings map[string]string, logger *slog.Logger) []HTTPSourceProvider {
 	patterns := strings.FieldsFunc(settings["accepted_patterns"], func(r rune) bool { return r == '\n' || r == ',' })
-	return []HTTPSourceProvider{&javDBProvider{client: client, baseURL: settings["javdb_url"], acceptedPatterns: patterns}}
+	return []HTTPSourceProvider{&javDBProvider{client: client, baseURL: settings["javdb_url"], acceptedPatterns: patterns, log: logger}}
 }
 
 func (p *javDBProvider) Name() string { return "JavDB / Keepshare" }
@@ -72,7 +75,7 @@ func (p *javDBProvider) CanResolve(download domain.Download) bool {
 		return true
 	}
 	u, err := url.Parse(download.SourceReference)
-	return err == nil && strings.EqualFold(u.Hostname(), "keepshare.org")
+	return err == nil && isJavDBShareURL(u)
 }
 
 func (p *javDBProvider) Resolve(ctx context.Context, download domain.Download) (resolvedHTTPFile, error) {
@@ -100,12 +103,27 @@ func (p *javDBProvider) Resolve(ctx context.Context, download domain.Download) (
 
 func normalizeReleaseID(s string) string {
 	var b strings.Builder
-	for _, r := range strings.ToUpper(s) {
+	for _, r := range strings.ToUpper(strings.TrimSpace(s)) {
 		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 			b.WriteRune(r)
 		}
 	}
 	return b.String()
+}
+
+func releaseIDsEqual(a, b string) bool {
+	a, b = normalizeReleaseID(a), normalizeReleaseID(b)
+	return a != "" && a == b
+}
+
+var javDBLabeledIDPattern = regexp.MustCompile(`(?i)\bID\s*[:：]\s*([A-Z]{2,}[-_ .]*[0-9]{2,}(?:[-_ .]*U)?)`)
+
+func extractJavDBReleaseID(text string) string {
+	text = strings.TrimSpace(text)
+	if match := javDBLabeledIDPattern.FindStringSubmatch(text); len(match) > 1 {
+		return strings.TrimSpace(match[1])
+	}
+	return text
 }
 
 func releaseIDMatchesText(text, releaseID string) bool {
@@ -117,49 +135,99 @@ func releaseIDMatchesText(text, releaseID string) bool {
 	return regexp.MustCompile(pattern).MatchString(text)
 }
 
+type javDBSearchHit struct {
+	href string
+	id   string
+	date string
+}
+
+type javDBDownloadDiscovery struct {
+	rows                 []domain.SearchResult
+	downloadSectionFound bool
+	shareLinkCount       int
+	pikPakLinkCount      int
+	actionURLs           []string
+}
+
 func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]domain.SearchResult, error) {
 	base := strings.TrimRight(strings.TrimSpace(p.baseURL), "/")
 	if base == "" {
 		base = defaultJavDBURL
 	}
 	searchURL := base + "/search?q=" + url.QueryEscape(release.VideoID) + "&f=all"
-	doc, err := p.getHTML(ctx, searchURL)
+	doc, searchStatus, err := p.getHTML(ctx, searchURL)
 	if err != nil {
-		return nil, fmt.Errorf("JavDB search failed: %w", err)
+		return nil, fmt.Errorf("JavDB search request failed (video_id=%s search_url=%s status=%d): %w", release.VideoID, searchURL, searchStatus, err)
 	}
-	type hit struct{ href, id, date string }
-	var hits []hit
-	for _, item := range descendantsWithClass(doc, "item") {
-		a := firstDescendant(item, "a", "box")
-		strong := firstDescendant(item, "strong", "")
-		meta := firstDescendant(item, "div", "meta")
-		if a == nil || strong == nil || normalizeReleaseID(nodeText(strong)) != normalizeReleaseID(release.VideoID) {
-			continue
-		}
-		href := attrValue(a, "href")
-		if href == "" {
-			continue
-		}
-		hits = append(hits, hit{href: resolveURL(base, href), id: strings.TrimSpace(nodeText(strong)), date: strings.TrimSpace(nodeText(meta))})
-	}
+	hits := parseJavDBSearchHits(doc, base)
 	if len(hits) == 0 {
-		return []domain.SearchResult{}, nil
+		return nil, fmt.Errorf("JavDB search page returned no parsable release results (video_id=%s normalized_video_id=%s search_url=%s status=%d)", release.VideoID, normalizeReleaseID(release.VideoID), searchURL, searchStatus)
 	}
-	knownDate, _ := time.Parse("2006-01-02", release.ReleaseDate)
-	var rows []domain.SearchResult
-	for _, h := range hits {
-		pageDate := parseJavDBDate(h.date)
-		if !knownDate.IsZero() && !pageDate.IsZero() {
-			delta := pageDate.Sub(knownDate)
-			if delta < -60*24*time.Hour || delta > 60*24*time.Hour {
-				continue
+	exact := make([]javDBSearchHit, 0, len(hits))
+	for _, hit := range hits {
+		if releaseIDsEqual(hit.id, release.VideoID) {
+			exact = append(exact, hit)
+			if p.log != nil && hit.id != release.VideoID {
+				p.log.Info("JavDB HTTP search matched canonical release ID", "requested_id", release.VideoID, "normalized_requested_id", normalizeReleaseID(release.VideoID), "javdb_id", hit.id, "normalized_javdb_id", normalizeReleaseID(hit.id))
 			}
 		}
-		page, getErr := p.getHTML(ctx, h.href)
-		if getErr != nil {
+	}
+	if len(exact) == 0 {
+		return nil, fmt.Errorf("JavDB returned search results but no exact release ID match (requested_id=%s normalized_requested_id=%s search_results=%d)", release.VideoID, normalizeReleaseID(release.VideoID), len(hits))
+	}
+	knownDate, _ := time.Parse("2006-01-02", release.ReleaseDate)
+	compatible := make([]javDBSearchHit, 0, len(exact))
+	var mismatchReason string
+	for _, hit := range exact {
+		pageDate := parseJavDBDate(hit.date)
+		deltaDays := calendarDeltaDays(knownDate, pageDate)
+		if !knownDate.IsZero() && !pageDate.IsZero() && (deltaDays < -60 || deltaDays > 60) {
+			mismatchReason = fmt.Sprintf("JavDB exact release ID matched but release date is incompatible (requested_id=%s matched_id=%s stored_release_date=%s javdb_release_date=%s date_delta_days=%d allowed_delta_days=60)", release.VideoID, hit.id, release.ReleaseDate, pageDate.Format("2006-01-02"), deltaDays)
 			continue
 		}
-		rows = append(rows, parseJavDBDownloadCandidates(page, h.href, release.VideoID)...)
+		compatible = append(compatible, hit)
+	}
+	if len(compatible) == 0 {
+		return nil, errors.New(mismatchReason)
+	}
+	var rows []domain.SearchResult
+	var stageErrors []string
+	for _, h := range compatible {
+		pageDate := parseJavDBDate(h.date)
+		page, detailStatus, getErr := p.getHTML(ctx, h.href)
+		if getErr != nil {
+			stageErrors = append(stageErrors, fmt.Sprintf("JavDB exact release found but detail page fetch failed (requested_id=%s matched_id=%s detail_url=%s status=%d): %v", release.VideoID, h.id, h.href, detailStatus, getErr))
+			continue
+		}
+		detailID := parseJavDBDetailID(page)
+		if detailID != "" && !releaseIDsEqual(detailID, release.VideoID) {
+			stageErrors = append(stageErrors, fmt.Sprintf("JavDB detail page release ID did not match (requested_id=%s normalized_requested_id=%s detail_page_id=%s normalized_detail_page_id=%s detail_url=%s)", release.VideoID, normalizeReleaseID(release.VideoID), detailID, normalizeReleaseID(detailID), h.href))
+			continue
+		}
+		discovery := discoverJavDBDownloads(page, h.href, release.VideoID)
+		for _, actionURL := range discovery.actionURLs {
+			actionPage, actionStatus, actionErr := p.getHTML(ctx, actionURL)
+			if actionErr != nil {
+				stageErrors = append(stageErrors, fmt.Sprintf("JavDB exact release found but download action fetch failed (requested_id=%s matched_id=%s download_url=%s status=%d): %v", release.VideoID, h.id, actionURL, actionStatus, actionErr))
+				continue
+			}
+			mergeJavDBDiscovery(&discovery, discoverJavDBDownloads(actionPage, actionURL, release.VideoID))
+		}
+		if len(discovery.rows) == 0 {
+			if discovery.downloadSectionFound {
+				stageErrors = append(stageErrors, fmt.Sprintf("JavDB exact release found but no downloadable HTTP links were found (requested_id=%s matched_id=%s detail_url=%s detail_status=%d)", release.VideoID, h.id, h.href, detailStatus))
+			} else {
+				stageErrors = append(stageErrors, fmt.Sprintf("JavDB exact release found but download section could not be parsed (requested_id=%s matched_id=%s detail_url=%s detail_status=%d)", release.VideoID, h.id, h.href, detailStatus))
+			}
+			continue
+		}
+		rows = appendUniqueJavDBRows(rows, discovery.rows...)
+		if p.log != nil {
+			p.log.Info("JavDB HTTP search matched release", "requested_id", release.VideoID, "normalized_id", normalizeReleaseID(release.VideoID), "search_url", searchURL, "search_status", searchStatus, "search_results", len(hits), "exact_matches", len(exact), "matched_id", h.id, "stored_date", release.ReleaseDate, "javdb_date", formatOptionalDate(pageDate), "date_delta_days", calendarDeltaDays(knownDate, pageDate), "date_compatible", true, "detail_url", h.href, "detail_status", detailStatus, "detail_page_id", detailID, "download_section_found", discovery.downloadSectionFound, "keepshare_links", discovery.shareLinkCount, "pikpak_links", discovery.pikPakLinkCount, "candidates", len(discovery.rows))
+		}
+	}
+	if len(rows) == 0 {
+		return nil, errors.New(strings.Join(stageErrors, "; "))
 	}
 	// JavDB's visible row title is not always the actual video filename in
 	// the Keepshare/PikPak share. Inspect every distinct candidate now so
@@ -172,9 +240,15 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 	// JavDB row title. A later download resolution would then appear to
 	// "discover" the preferred filename after the search had already missed it.
 	// Keeping this phase ordered also makes the final HTTP ranking deterministic.
+	inspectionFailures := 0
 	for i := range rows {
-		selected, files, inspectErr := p.inspectSearchCandidate(ctx, rows[i].Link, release.VideoID)
+		inspect := p.inspectSearchCandidate
+		if p.inspectCandidate != nil {
+			inspect = p.inspectCandidate
+		}
+		selected, files, inspectErr := inspect(ctx, rows[i].Link, release.VideoID)
 		if inspectErr != nil {
+			inspectionFailures++
 			rows[i].Reason = "release ID matched; Keepshare filename inspection failed: " + inspectErr.Error()
 			continue
 		}
@@ -187,6 +261,9 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 		}
 	}
 	sortJavDBDownloadCandidates(rows, release.VideoID, p.acceptedPatterns)
+	if p.log != nil {
+		p.log.Info("JavDB HTTP candidate inspection completed", "requested_id", release.VideoID, "normalized_id", normalizeReleaseID(release.VideoID), "candidate_inspection_count", len(rows), "candidate_inspection_failures", inspectionFailures, "final_candidate_count", len(rows))
+	}
 	return rows, nil
 }
 
@@ -244,59 +321,243 @@ func matchesAcceptedHTTPPattern(name string, patterns []string) (bool, string) {
 	return false, ""
 }
 
-func (p *javDBProvider) getHTML(ctx context.Context, raw string) (*html.Node, error) {
+func (p *javDBProvider) getHTML(ctx context.Context, raw string) (*html.Node, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req.Header.Set("User-Agent", publicShareUserAgent)
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	return html.Parse(io.LimitReader(resp.Body, 8<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	if looksLikeAccessChallenge(body) {
+		return nil, resp.StatusCode, errors.New("JavDB request was blocked or returned a challenge page")
+	}
+	doc, err := html.Parse(strings.NewReader(string(body)))
+	return doc, resp.StatusCode, err
 }
 
 func parseJavDBDownloadCandidates(doc *html.Node, sourceURL, releaseID string) []domain.SearchResult {
-	var out []domain.SearchResult
-	seenLinks := map[string]bool{}
-	for _, item := range descendantsWithClass(doc, "item") {
-		nameNode := firstDescendant(item, "span", "name")
-		if nameNode == nil {
-			continue
-		}
-		name := strings.TrimSpace(nodeText(nameNode))
-		if !releaseIDMatchesText(name, releaseID) {
-			continue
-		}
-		var keeps []string
-		for _, a := range descendants(item, "a") {
-			href := html.UnescapeString(attrValue(a, "href"))
-			if u, err := url.Parse(href); err == nil && strings.EqualFold(u.Hostname(), "keepshare.org") && !seenLinks[href] {
-				seenLinks[href] = true
-				keeps = append(keeps, href)
-			}
-		}
-		if len(keeps) == 0 {
-			continue
-		}
-		meta := nodeText(firstDescendant(item, "span", "meta"))
-		size := parseHumanBytes(meta)
-		if raw := attrValue(item, "data-size"); size == 0 && raw != "" {
-			mb, _ := strconv.ParseInt(raw, 10, 64)
-			size = mb << 20
-		}
-		published := strings.TrimSpace(nodeText(firstDescendant(item, "span", "time")))
-		for _, keep := range keeps {
-			out = append(out, domain.SearchResult{Provider: "JavDB / Keepshare", Title: name, Link: keep, SourceURL: sourceURL, Transport: "http", SizeBytes: size, PublishedAt: published, Accepted: true, Reason: "exact release ID match available as HTTP download"})
+	return discoverJavDBDownloads(doc, sourceURL, releaseID).rows
+}
+
+func looksLikeAccessChallenge(body []byte) bool {
+	text := strings.ToLower(string(body))
+	normalPage := strings.Contains(text, `class="movie-list`) || strings.Contains(text, `class="video-detail`) || strings.Contains(text, `id="video-search"`)
+	if normalPage {
+		return false
+	}
+	for _, signal := range []string{"cf-chl-", "cloudflare ray id", "checking your browser", "just a moment...", "attention required!", "captcha", "challenge-platform"} {
+		if strings.Contains(text, signal) {
+			return true
 		}
 	}
-	return out
+	return false
+}
+
+func parseJavDBSearchHits(doc *html.Node, base string) []javDBSearchHit {
+	seen := map[string]bool{}
+	var hits []javDBSearchHit
+	for _, anchor := range descendants(doc, "a") {
+		href := resolveURL(base, html.UnescapeString(strings.TrimSpace(attrValue(anchor, "href"))))
+		u, err := url.Parse(href)
+		if err != nil || !strings.Contains(u.Path, "/v/") || seen[href] {
+			continue
+		}
+		container := javDBResultContainer(anchor)
+		idNode := firstDescendant(anchor, "strong", "")
+		if idNode == nil {
+			idNode = firstDescendant(container, "strong", "")
+		}
+		id := extractJavDBReleaseID(nodeText(idNode))
+		if normalizeReleaseID(id) == "" {
+			continue
+		}
+		meta := firstDescendant(container, "div", "meta")
+		if meta == nil {
+			meta = firstDescendant(container, "span", "meta")
+		}
+		seen[href] = true
+		hits = append(hits, javDBSearchHit{href: href, id: id, date: strings.TrimSpace(nodeText(meta))})
+	}
+	return hits
+}
+
+func javDBResultContainer(node *html.Node) *html.Node {
+	var fallback *html.Node
+	for current, depth := node, 0; current != nil && depth < 8; current, depth = current.Parent, depth+1 {
+		if hasClass(current, "item") || hasClass(current, "movie-list") {
+			return current
+		}
+		if fallback == nil && hasClass(current, "box") {
+			fallback = current
+		}
+	}
+	if fallback != nil {
+		return fallback
+	}
+	return node.Parent
+}
+
+func parseJavDBDetailID(doc *html.Node) string {
+	if match := javDBLabeledIDPattern.FindStringSubmatch(nodeText(doc)); len(match) > 1 {
+		return strings.TrimSpace(match[1])
+	}
+	for _, node := range descendants(doc, "a") {
+		if value := strings.TrimSpace(attrValue(node, "data-clipboard-text")); releaseLikeTextPattern.MatchString(value) {
+			return value
+		}
+	}
+	for _, heading := range descendants(doc, "h2") {
+		if value := strings.TrimSpace(nodeText(firstDescendant(heading, "strong", ""))); releaseLikeTextPattern.MatchString(value) {
+			return value
+		}
+	}
+	return ""
+}
+
+func discoverJavDBDownloads(doc *html.Node, sourceURL, releaseID string) javDBDownloadDiscovery {
+	discovery := javDBDownloadDiscovery{}
+	seenShares, seenActions := map[string]bool{}, map[string]bool{}
+	for _, anchor := range descendants(doc, "a") {
+		raw := html.UnescapeString(strings.TrimSpace(attrValue(anchor, "href")))
+		if raw == "" {
+			continue
+		}
+		href := resolveURL(sourceURL, raw)
+		u, err := url.Parse(href)
+		if err != nil {
+			continue
+		}
+		if isJavDBShareURL(u) {
+			discovery.downloadSectionFound = true
+			if seenShares[href] {
+				continue
+			}
+			seenShares[href] = true
+			discovery.shareLinkCount++
+			if strings.EqualFold(u.Hostname(), "mypikpak.com") || strings.HasSuffix(strings.ToLower(u.Hostname()), ".mypikpak.com") {
+				discovery.pikPakLinkCount++
+			}
+			container := javDBDownloadContainer(anchor)
+			name, matchesRelease := javDBCandidateName(container, anchor, releaseID)
+			if !matchesRelease {
+				continue
+			}
+			size := parseHumanBytes(nodeText(container))
+			if rawSize := attrValue(container, "data-size"); size == 0 && rawSize != "" {
+				mb, _ := strconv.ParseInt(rawSize, 10, 64)
+				size = mb << 20
+			}
+			published := strings.TrimSpace(nodeText(firstDescendant(container, "span", "time")))
+			discovery.rows = append(discovery.rows, domain.SearchResult{Provider: "JavDB / Keepshare", Title: name, Link: href, SourceURL: sourceURL, Transport: "http", SizeBytes: size, PublishedAt: published, Accepted: true, Reason: "exact release ID match available as HTTP download"})
+			continue
+		}
+		if javDBDownloadAction(anchor, sourceURL, href) {
+			discovery.downloadSectionFound = true
+			if !seenActions[href] {
+				seenActions[href] = true
+				discovery.actionURLs = append(discovery.actionURLs, href)
+			}
+		}
+	}
+	if !discovery.downloadSectionFound {
+		for _, tag := range []string{"button", "section", "div"} {
+			for _, node := range descendants(doc, tag) {
+				marker := strings.ToLower(strings.Join([]string{attrValue(node, "id"), attrValue(node, "class"), attrValue(node, "title"), nodeText(node)}, " "))
+				if strings.Contains(marker, "download") || strings.Contains(marker, "magnet") {
+					discovery.downloadSectionFound = true
+					break
+				}
+			}
+			if discovery.downloadSectionFound {
+				break
+			}
+		}
+	}
+	return discovery
+}
+
+func isJavDBShareHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	return host == "keepshare.org" || strings.HasSuffix(host, ".keepshare.org") || host == "keepshare.cc" || strings.HasSuffix(host, ".keepshare.cc") || host == "mypikpak.com" || strings.HasSuffix(host, ".mypikpak.com")
+}
+
+func isJavDBShareURL(value *url.URL) bool {
+	if value == nil || !isJavDBShareHost(value.Hostname()) {
+		return false
+	}
+	host := strings.ToLower(value.Hostname())
+	path := strings.Trim(value.EscapedPath(), "/")
+	if host == "mypikpak.com" || strings.HasSuffix(host, ".mypikpak.com") {
+		return strings.HasPrefix(path, "s/") && len(strings.Split(path, "/")) >= 2
+	}
+	return path != ""
+}
+
+func javDBDownloadAction(anchor *html.Node, sourceURL, href string) bool {
+	source, sourceErr := url.Parse(sourceURL)
+	target, targetErr := url.Parse(href)
+	if sourceErr != nil || targetErr != nil || !strings.EqualFold(source.Hostname(), target.Hostname()) || source.String() == target.String() {
+		return false
+	}
+	marker := strings.ToLower(strings.Join([]string{nodeText(anchor), attrValue(anchor, "class"), attrValue(anchor, "id"), attrValue(anchor, "title"), target.Path}, " "))
+	return strings.Contains(marker, "download")
+}
+
+func javDBDownloadContainer(anchor *html.Node) *html.Node {
+	for current, depth := anchor, 0; current != nil && depth < 6; current, depth = current.Parent, depth+1 {
+		if hasClass(current, "item") || hasClass(current, "download") || current.Data == "li" || current.Data == "tr" {
+			return current
+		}
+	}
+	return anchor.Parent
+}
+
+var releaseLikeTextPattern = regexp.MustCompile(`(?i)(?:^|[^A-Z0-9])[A-Z]{2,}[-_ .]*[0-9]{2,}(?:[-_ .]*U)?(?:[^A-Z0-9]|$)`)
+
+func javDBCandidateName(container, anchor *html.Node, releaseID string) (string, bool) {
+	for _, candidate := range []string{nodeText(firstDescendant(container, "span", "name")), attrValue(anchor, "download"), attrValue(anchor, "title"), nodeText(anchor), nodeText(container)} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" && releaseIDMatchesText(candidate, releaseID) {
+			return candidate, true
+		}
+		if candidate != "" && releaseLikeTextPattern.MatchString(candidate) {
+			return candidate, false
+		}
+	}
+	return releaseID, true
+}
+
+func mergeJavDBDiscovery(dst *javDBDownloadDiscovery, src javDBDownloadDiscovery) {
+	dst.downloadSectionFound = dst.downloadSectionFound || src.downloadSectionFound
+	dst.shareLinkCount += src.shareLinkCount
+	dst.pikPakLinkCount += src.pikPakLinkCount
+	dst.rows = appendUniqueJavDBRows(dst.rows, src.rows...)
+}
+
+func appendUniqueJavDBRows(rows []domain.SearchResult, candidates ...domain.SearchResult) []domain.SearchResult {
+	seen := make(map[string]bool, len(rows)+len(candidates))
+	for _, row := range rows {
+		seen[row.Link] = true
+	}
+	for _, candidate := range candidates {
+		if candidate.Link != "" && !seen[candidate.Link] {
+			seen[candidate.Link] = true
+			rows = append(rows, candidate)
+		}
+	}
+	return rows
 }
 
 var humanSizePattern = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*(TIB|TB|GIB|GB|MIB|MB|KIB|KB)`)
@@ -313,12 +574,30 @@ func parseHumanBytes(s string) int64 {
 }
 
 func parseJavDBDate(s string) time.Time {
+	match := regexp.MustCompile(`\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}/\d{1,2}/\d{4})\b`).FindString(strings.TrimSpace(s))
+	if match != "" {
+		s = match
+	}
 	for _, layout := range []string{"01/02/2006", "2006-01-02", "2006/01/02"} {
 		if t, err := time.Parse(layout, strings.TrimSpace(s)); err == nil {
 			return t
 		}
 	}
 	return time.Time{}
+}
+
+func calendarDeltaDays(from, to time.Time) int {
+	if from.IsZero() || to.IsZero() {
+		return 0
+	}
+	return int(to.Sub(from).Hours() / 24)
+}
+
+func formatOptionalDate(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.Format("2006-01-02")
 }
 
 func hasUVariant(name, releaseID string) bool {

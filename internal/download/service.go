@@ -401,7 +401,7 @@ func (s *Service) searchHTTP(ctx context.Context, release domain.Release, source
 	}
 	rows := make([]domain.SearchResult, 0)
 	var providerErrors []string
-	for _, provider := range httpSourceProviders(s.client, settings) {
+	for _, provider := range httpSourceProviders(s.client, settings, s.log) {
 		found, searchErr := provider.Search(ctx, release)
 		history := domain.Download{ReleaseID: release.ID, Provider: provider.Name(), SourceType: sourceType, Query: release.VideoID, Status: "searched", Transport: "http"}
 		if searchErr != nil {
@@ -1111,7 +1111,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	d, _ = s.store.SaveDownload(ctx, d)
 	var resolved resolvedHTTPFile
 	var resolver HTTPSourceProvider
-	for _, provider := range httpSourceProviders(s.client, settings) {
+	for _, provider := range httpSourceProviders(s.client, settings, s.log) {
 		if provider.CanResolve(d) {
 			resolver = provider
 			break
@@ -1744,7 +1744,7 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 			if httpErr != nil {
 				return SearchAndDownloadOutcome{Reason: "HTTP provider lookup failed: " + httpErr.Error()}, httpErr
 			}
-			return SearchAndDownloadOutcome{Reason: "HTTP only: JavDB returned no exact, date-compatible result"}, nil
+			return SearchAndDownloadOutcome{Reason: "HTTP only: provider returned no downloadable candidate"}, nil
 		}
 	}
 
@@ -1821,7 +1821,7 @@ func (s *Service) searchAndDownloadHTTP(ctx context.Context, r domain.Release, t
 		return SearchAndDownloadOutcome{Reason: "HTTP provider lookup failed: " + err.Error()}, false, err
 	}
 	if len(rows) == 0 {
-		return SearchAndDownloadOutcome{Reason: "JavDB returned no exact, date-compatible HTTP result"}, false, nil
+		return SearchAndDownloadOutcome{Reason: "HTTP provider returned no downloadable candidate"}, false, nil
 	}
 	d, err := s.Download(ctx, r, rows[0], trigger, rows[0].Link)
 	out := SearchAndDownloadOutcome{Found: true, Result: rows[0], Download: d, Reason: d.MatchReason}
@@ -2432,7 +2432,7 @@ func (s *Service) tryTorrentHTTPFallback(ctx context.Context, d *domain.Download
 		if err != nil {
 			d.Error = "HTTP fallback lookup failed: " + err.Error()
 		} else {
-			d.Error = "HTTP fallback unavailable: JavDB returned no exact, date-compatible result"
+			d.Error = "HTTP fallback unavailable: provider returned no downloadable candidate"
 		}
 		return false
 	}
