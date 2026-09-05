@@ -286,7 +286,7 @@ func (s *Service) searchHTTP(ctx context.Context, release domain.Release, source
 	if err != nil {
 		return nil, err
 	}
-	var rows []domain.SearchResult
+	rows := make([]domain.SearchResult, 0)
 	var providerErrors []string
 	for _, provider := range httpSourceProviders(s.client, settings) {
 		found, searchErr := provider.Search(ctx, release)
@@ -326,9 +326,9 @@ func (s *Service) SearchAll(ctx context.Context, release domain.Release) ([]doma
 		return nil, fmt.Errorf("torrent: %v; HTTP: %v", torrentErr, httpErr)
 	}
 	if release.HTTPDownloadPrimary {
-		return append(httpRows, torrent...), nil
+		return append(append(make([]domain.SearchResult, 0, len(httpRows)+len(torrent)), httpRows...), torrent...), nil
 	}
-	return append(torrent, httpRows...), nil
+	return append(append(make([]domain.SearchResult, 0, len(torrent)+len(httpRows)), torrent...), httpRows...), nil
 }
 func (s *Service) search(ctx context.Context, release domain.Release, sourceType string) ([]domain.SearchResult, error) {
 	rows, e := s.searchNative(ctx, release, sourceType)
@@ -547,7 +547,7 @@ func hasReleaseSite(release domain.Release, siteID int64) bool {
 	}
 	return false
 }
-func (s *Service) duplicate(ctx context.Context, r domain.Release, allowLocal bool) (string, int64, bool, error) {
+func (s *Service) duplicateStored(ctx context.Context, r domain.Release, allowLocal bool) (string, int64, bool, error) {
 	if r.Local && !allowLocal {
 		return "release already exists in StashApp", 0, false, nil
 	}
@@ -559,6 +559,12 @@ func (s *Service) duplicate(ctx context.Context, r domain.Release, allowLocal bo
 		if d.ReleaseID == r.ID && (d.Status == "queued" || d.Status == "downloading" || d.Status == "completed" || d.Status == "processing") {
 			return "release already has download history in state " + d.Status, d.ID, d.Status == "queued" || d.Status == "downloading" || d.Status == "processing", nil
 		}
+	}
+	return "", 0, false, nil
+}
+func (s *Service) duplicate(ctx context.Context, r domain.Release, allowLocal bool) (string, int64, bool, error) {
+	if reason, existingID, replaceable, err := s.duplicateStored(ctx, r, allowLocal); err != nil || reason != "" {
+		return reason, existingID, replaceable, err
 	}
 	settings, e := s.store.Settings(ctx)
 	if e != nil {
@@ -631,7 +637,15 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 			return x, e
 		}
 	}
-	if reason, existingID, replaceable, e := s.duplicate(ctx, r, sourceType == "Manual Search" || r.IgnoreLocalForceDownload); e != nil {
+	if result.IgnoreLocal {
+		if matchReason != "" {
+			matchReason = "manually forced redownload despite existing StashApp match: " + matchReason
+		} else {
+			matchReason = "manually forced redownload despite existing StashApp match"
+		}
+		x.MatchReason = matchReason
+	}
+	if reason, existingID, replaceable, e := s.duplicate(ctx, r, result.IgnoreLocal || r.IgnoreLocalForceDownload); e != nil {
 		x.Status = "failed"
 		x.Error = e.Error()
 		x, _ = s.store.SaveDownload(ctx, x)
@@ -735,7 +749,11 @@ func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, resul
 			return domain.Download{}, err
 		}
 	}
-	if reason, existingID, replaceable, err := s.duplicate(ctx, r, sourceType == "Manual Search" || r.IgnoreLocalForceDownload); err != nil {
+	// HTTP downloads have no qBittorrent dependency. Only inspect JAVBeacon's
+	// stored local/download state here; contacting qBittorrent would make a
+	// healthy direct download fail merely because the unrelated torrent client
+	// is offline.
+	if reason, existingID, replaceable, err := s.duplicateStored(ctx, r, result.IgnoreLocal || r.IgnoreLocalForceDownload); err != nil {
 		return domain.Download{}, err
 	} else if reason != "" {
 		return s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "skipped", MatchReason: reason, CanReplace: replaceable, ExistingDownloadID: existingID})
@@ -743,7 +761,14 @@ func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, resul
 	if sourceRef == "" {
 		sourceRef = result.Link
 	}
-	x, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: firstNonEmpty(result.Provider, "JavDB / Keepshare"), SourceType: sourceType, SourceReference: sourceRef, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "queued", MatchReason: result.Reason, BytesTotal: result.SizeBytes})
+	matchReason := result.Reason
+	if result.IgnoreLocal {
+		matchReason = "manually forced redownload despite existing StashApp match"
+		if result.Reason != "" {
+			matchReason += ": " + result.Reason
+		}
+	}
+	x, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: firstNonEmpty(result.Provider, "JavDB / Keepshare"), SourceType: sourceType, SourceReference: sourceRef, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "queued", MatchReason: matchReason, BytesTotal: result.SizeBytes})
 	if err != nil {
 		return x, err
 	}

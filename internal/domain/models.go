@@ -589,6 +589,11 @@ type SearchResult struct {
 	// resulting Download's history clearly shows it was not an automatic
 	// accept.
 	Forced bool `json:"forced,omitempty"`
+	// IgnoreLocal is a one-shot manual override of the StashApp-local
+	// duplicate guard. It is deliberately separate from Forced: an otherwise
+	// preferred result can be a valid redownload without being mislabeled as
+	// a filename-rule exception in Download Activity.
+	IgnoreLocal bool `json:"ignore_local,omitempty"`
 	// FilenamePatternExcluded marks a result selected by the Missing
 	// Library Files "allow non-preferred filenames" fallback chain
 	// (TODO-2.0 Task A) rather than a normal accepted-pattern match -

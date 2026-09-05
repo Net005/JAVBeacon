@@ -714,7 +714,7 @@ func (s *Server) searchRelease(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, 404, "release not found")
 		return
 	}
-	var rows []domain.SearchResult
+	rows := make([]domain.SearchResult, 0)
 	switch strings.ToLower(r.URL.Query().Get("provider")) {
 	case "http":
 		rows, e = s.downloads.SearchHTTP(r.Context(), release)
