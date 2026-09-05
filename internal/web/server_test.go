@@ -970,6 +970,124 @@ func TestPatchReleasesBulkRejectsEmptyPatch(t *testing.T) {
 	}
 }
 
+// TestBulkMonitorAndDownloadReleasesPersistsFlagsAndQueuesEveryRelease covers
+// the Release Library multi-select action. The endpoint must commit all
+// durable flags before replying, then visit every selected release in the
+// background rather than only the cards currently rendered in the browser.
+func TestBulkMonitorAndDownloadReleasesPersistsFlagsAndQueuesEveryRelease(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "release-library-bulk.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	feedMux := http.NewServeMux()
+	feedMux.HandleFunc("/feed", func(w http.ResponseWriter, r *http.Request) {
+		videoID := r.URL.Query().Get("q")
+		_, _ = fmt.Fprintf(w, `<rss><channel><item><title>trusted@ %s</title><link>magnet:?xt=urn:btih:%s</link></item></channel></rss>`, videoID, videoID)
+	})
+	feed := httptest.NewServer(feedMux)
+	defer feed.Close()
+	if err := st.SaveSettings(ctx, map[string]string{
+		"accepted_patterns":   "trusted@",
+		"search_url_template": feed.URL + "/feed?q=<release_id>",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Bulk Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, videoID := range []string{"LIBBULK-1", "LIBBULK-2"} {
+		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: videoID, Source: "JavLibrary", Released: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "LIBBULK", Limit: 10})
+	if err != nil || len(releases) != 2 {
+		t.Fatalf("seed release lookup: items=%d err=%v", len(releases), err)
+	}
+	ids := []int64{releases[0].ID, releases[1].ID}
+	s := &Server{store: st, downloads: download.New(st, time.Second, slog.Default()), log: slog.Default()}
+	body, _ := json.Marshal(map[string]any{
+		"ids":                           ids,
+		"ignore_local_force_download":   true,
+		"allow_non_preferred_filenames": true,
+	})
+	rec := httptest.NewRecorder()
+	s.bulkMonitorAndDownloadReleases(rec, httptest.NewRequest(http.MethodPost, "/api/releases/bulk/monitor-download", bytes.NewReader(body)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	for _, id := range ids {
+		got, err := st.Release(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.MonitorDownload || got.MonitorReason != "manual" || !got.IgnoreLocalForceDownload || !got.AllowNonPreferredFilenames {
+			t.Fatalf("release %d flags were not committed before reply: %+v", id, got)
+		}
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		downloads, err := st.Downloads(ctx, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := map[int64]bool{}
+		for _, item := range downloads {
+			if item.SourceType == "Release Library Bulk" && item.Status == "search_accepted" {
+				seen[item.ReleaseID] = true
+			}
+		}
+		if len(seen) == len(ids) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("background Search + Download did not visit every selected release")
+}
+
+func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testing.T) {
+	files := map[string][]string{
+		"static/index.html": {
+			`id="releaseBulkHeader"`,
+			`id="releaseBulkDownloadDialog"`,
+			`id="releaseBulkIgnoreLocal"`,
+			`id="releaseBulkAllowNonPreferred"`,
+			`>Monitor + Search</button>`,
+		},
+		"static/app.js": {
+			`let releaseSelection=new Set()`,
+			`releaseSelection.has(Number(x.id))`,
+			`function appendReleases(rows)`,
+			`api('/releases/bulk/monitor-download'`,
+			`ignore_local_force_download:releaseBulkIgnoreLocal.checked`,
+			`allow_non_preferred_filenames:releaseBulkAllowNonPreferred.checked`,
+		},
+		"static/app.css": {
+			`.releaseSelect{position:absolute`,
+			`.card.selected{border-color:`,
+			`.releaseBulkDownloadDialog{width:`,
+		},
+	}
+	for name, markers := range files {
+		body, err := assets.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		for _, marker := range markers {
+			if !strings.Contains(text, marker) {
+				t.Errorf("%s missing %q", name, marker)
+			}
+		}
+	}
+}
+
 // TestReleasesCountEndpointMatchesReleasesFilter covers Phase 4A: the new
 // /api/releases/count endpoint accepts the same filter params as
 // /api/releases and reports the true total, ignoring limit/offset.

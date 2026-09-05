@@ -1398,3 +1398,32 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
   .detailMeta:has(.detailValueOverflow.hasOverflow:hover){position:relative;z-index:75;overflow:visible!important}
   .detailMeta dd:has(.detailValueOverflow.hasOverflow:hover){position:relative;z-index:76;max-height:none!important;overflow:visible!important}
 }
+
+/* Release Library bulk selection */
+.headerActions{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.releaseBulkHeader{display:flex;align-items:center;gap:7px;padding:4px;border:1px solid #5f3440;border-radius:9px;background:#171219}
+.releaseBulkHeader[hidden]{display:none}
+.releaseBulkHeader>span{padding-left:7px;color:#e6b5bd;font-size:11px;font-weight:750;white-space:nowrap}
+.releaseBulkHeader button{min-height:32px;padding:6px 10px;font-size:10px}
+.releaseBulkHeader #releaseBulkClear{width:28px;padding:0;color:#aeb5c1}
+.releaseSelect{position:absolute;z-index:5;top:var(--cover-pill-inset,4px);left:var(--cover-pill-inset,4px);display:grid;place-items:center;width:26px;height:26px;margin:0;border:1px solid #ffffff4a;border-radius:7px;background:#080b10e8;box-shadow:0 3px 12px #000c;cursor:pointer}
+.releaseSelect input{width:16px!important;height:16px;min-height:0;margin:0;padding:0;accent-color:var(--accent)}
+.card .coverBadges{padding-left:32px}
+.card.selected{border-color:#d35468;box-shadow:0 0 0 2px #d3546866,0 10px 26px #0008}
+.card.selected:hover{border-color:#ed7184}
+.releaseBulkDownloadDialog{width:min(92vw,620px)}
+.releaseBulkOptions{display:grid;gap:10px;margin:16px 0}
+.releaseBulkOptions label{align-items:flex-start!important;margin:0;padding:13px;border:1px solid var(--line);border-radius:9px;background:#0d1118;cursor:pointer}
+.releaseBulkOptions label:has(input:checked){border-color:#b64558;background:#24151b}
+.releaseBulkOptions input{margin-top:3px}
+.releaseBulkOptions span{display:grid;gap:2px}
+.releaseBulkOptions b{color:#f3edf0}
+.releaseBulkOptions small{color:var(--muted);line-height:1.4}
+@media(max-width:650px){
+  .headerActions{align-items:flex-end;flex-direction:column}
+  .releaseBulkHeader{order:-1}
+  .releaseBulkHeader>span{display:none}
+  .releaseBulkHeader #releaseBulkClear{display:grid}
+  .releaseBulkHeader #releaseBulkOpen{white-space:nowrap}
+  .card .coverBadges{padding-left:30px}
+}

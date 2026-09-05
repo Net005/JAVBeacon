@@ -7,6 +7,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.73] - 2026-09-05
+
+### Added
+
+- Release Library cards now support multi-selection across incrementally
+  loaded pages. Selected releases can be marked as monitored and sent through
+  Search + Download immediately from one compact bulk dialog, with optional
+  per-release overrides for StashApp-local detection and non-preferred
+  filenames. The background work is processed sequentially to avoid flooding
+  the configured search provider or download client.
+
 ## [1.0.72] - 2026-09-05
 
 ### Fixed

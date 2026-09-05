@@ -57,11 +57,13 @@ type Server struct {
 	screenshotJob screenshotBackfillStatus
 	// migrationMu guards migration (DB Phase 7's migration-wizard status,
 	// see migration.go) - in-memory only, single-user app.
-	migrationMu       sync.Mutex
-	migration         migrationState
-	queryCacheMu      sync.Mutex
-	releaseCountCache map[string]cachedReleaseCount
-	filterOptionCache map[string]cachedFilterOptions
+	migrationMu        sync.Mutex
+	migration          migrationState
+	queryCacheMu       sync.Mutex
+	releaseCountCache  map[string]cachedReleaseCount
+	filterOptionCache  map[string]cachedFilterOptions
+	bulkReleaseMu      sync.Mutex
+	bulkReleaseRunning bool
 }
 
 type cachedReleaseCount struct {
@@ -245,6 +247,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/releases/count", s.releasesCount)
 	s.mux.HandleFunc("GET /api/release-filter-options", s.releaseFilterOptions)
 	s.mux.HandleFunc("PATCH /api/releases/bulk", s.patchReleasesBulk)
+	s.mux.HandleFunc("POST /api/releases/bulk/monitor-download", s.bulkMonitorAndDownloadReleases)
 	s.mux.HandleFunc("GET /api/releases/{id}", s.release)
 	s.mux.HandleFunc("PATCH /api/releases/{id}", s.patchRelease)
 	s.mux.HandleFunc("GET /api/releases/{id}/search", s.searchRelease)
@@ -1812,6 +1815,104 @@ func (s *Server) patchReleasesBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, 200, map[string]any{"updated": n})
+}
+
+// bulkMonitorAndDownloadReleases backs the Release Library's multi-select
+// action. The durable monitoring and override flags are applied before the
+// response is sent, then each selected release is searched and downloaded
+// sequentially in the background so a large selection never blocks the UI or
+// floods the configured search provider/qBittorrent with concurrent work.
+func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		IDs                        []int64 `json:"ids"`
+		AllowNonPreferredFilenames bool    `json:"allow_non_preferred_filenames"`
+		IgnoreLocalForceDownload   bool    `json:"ignore_local_force_download"`
+	}
+	if !s.decode(w, r, &payload) {
+		return
+	}
+	seen := make(map[int64]bool, len(payload.IDs))
+	ids := make([]int64, 0, len(payload.IDs))
+	for _, releaseID := range payload.IDs {
+		if releaseID > 0 && !seen[releaseID] {
+			seen[releaseID] = true
+			ids = append(ids, releaseID)
+		}
+	}
+	if len(ids) == 0 {
+		s.problem(w, http.StatusUnprocessableEntity, "select at least one release")
+		return
+	}
+	if s.downloads == nil {
+		s.problem(w, http.StatusServiceUnavailable, "download service is unavailable")
+		return
+	}
+
+	s.bulkReleaseMu.Lock()
+	if s.bulkReleaseRunning {
+		s.bulkReleaseMu.Unlock()
+		s.problem(w, http.StatusConflict, "a Release Library monitor and download job is already running")
+		return
+	}
+	s.bulkReleaseRunning = true
+	s.bulkReleaseMu.Unlock()
+	resetRunning := func() {
+		s.bulkReleaseMu.Lock()
+		s.bulkReleaseRunning = false
+		s.bulkReleaseMu.Unlock()
+	}
+
+	monitor := true
+	updated, err := s.store.BulkSetReleaseFlags(r.Context(), ids, &monitor, &payload.AllowNonPreferredFilenames, &payload.IgnoreLocalForceDownload)
+	if err != nil {
+		resetRunning()
+		s.problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	selected := make([]domain.Release, 0, len(ids))
+	for _, releaseID := range ids {
+		release, releaseErr := s.store.Release(r.Context(), releaseID)
+		if errors.Is(releaseErr, sql.ErrNoRows) {
+			continue
+		}
+		if releaseErr != nil {
+			resetRunning()
+			s.problem(w, http.StatusInternalServerError, releaseErr.Error())
+			return
+		}
+		selected = append(selected, release)
+		s.broadcastRelease(release)
+	}
+	if len(selected) == 0 {
+		resetRunning()
+		s.problem(w, http.StatusNotFound, "none of the selected releases exist")
+		return
+	}
+
+	go func(releases []domain.Release, allowNonPreferred bool) {
+		defer resetRunning()
+		background := context.Background()
+		downloaded, skipped, failed := 0, 0, 0
+		for _, release := range releases {
+			started, searchErr := s.downloads.SearchAndDownloadNow(background, release, "Release Library Bulk", allowNonPreferred)
+			switch {
+			case searchErr != nil:
+				failed++
+				if s.log != nil {
+					s.log.Error("Release Library bulk search and download failed", "release_id", release.ID, "video_id", release.VideoID, "error", searchErr)
+				}
+			case started:
+				downloaded++
+			default:
+				skipped++
+			}
+		}
+		if s.log != nil {
+			s.log.Info("Release Library bulk monitor and download completed", "selected", len(releases), "downloaded", downloaded, "skipped", skipped, "failed", failed)
+		}
+	}(selected, payload.AllowNonPreferredFilenames)
+
+	s.json(w, http.StatusAccepted, map[string]any{"queued": len(selected), "updated": updated})
 }
 func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 	var p struct {
