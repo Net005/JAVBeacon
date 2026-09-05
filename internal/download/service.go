@@ -828,6 +828,7 @@ func (s *Service) resumeHTTPDownloads() {
 			row.Error = ""
 			row.Progress = 0
 			row.BytesDownloaded = 0
+			row.BytesPerSecond = 0
 			row, _ = s.store.SaveDownload(context.Background(), row)
 			go s.runHTTPDownload(context.Background(), row)
 		}
@@ -848,6 +849,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		d.Status = "failed"
 		d.Error = e.Error()
 		d.ETASeconds = 0
+		d.BytesPerSecond = 0
 		_, _ = s.store.SaveDownload(context.Background(), d)
 		_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_failed", e.Error())
 	}
@@ -919,6 +921,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		d.BytesTotal = resp.ContentLength
 	}
 	started, lastSave := time.Now(), time.Now()
+	lastSavedBytes := d.BytesDownloaded
 	buf := make([]byte, 256*1024)
 	for {
 		n, readErr := resp.Body.Read(buf)
@@ -928,10 +931,13 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 			}
 			d.BytesDownloaded += int64(n)
 		}
-		if time.Since(lastSave) >= time.Second && d.BytesTotal > 0 {
-			d.Progress = float64(d.BytesDownloaded) / float64(d.BytesTotal)
+		if sinceSave := time.Since(lastSave); sinceSave >= time.Second {
+			d.BytesPerSecond = int64(float64(d.BytesDownloaded-lastSavedBytes) / sinceSave.Seconds())
+			if d.BytesTotal > 0 {
+				d.Progress = float64(d.BytesDownloaded) / float64(d.BytesTotal)
+			}
 			elapsed := time.Since(started).Seconds()
-			if elapsed > 0 && d.BytesDownloaded > 0 {
+			if d.BytesTotal > 0 && elapsed > 0 && d.BytesDownloaded > 0 {
 				remaining := float64(d.BytesTotal-d.BytesDownloaded) / (float64(d.BytesDownloaded) / elapsed)
 				if remaining > 0 {
 					d.ETASeconds = int64(remaining)
@@ -939,6 +945,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 			}
 			d, _ = s.store.SaveDownload(context.Background(), d)
 			lastSave = time.Now()
+			lastSavedBytes = d.BytesDownloaded
 		}
 		if readErr == io.EOF {
 			break
@@ -967,6 +974,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	d.BytesDownloaded = d.BytesTotal
 	d.Progress = 1
 	d.ETASeconds = 0
+	d.BytesPerSecond = 0
 	d.Status = "completed"
 	d.MatchReason = "HTTP file downloaded from Keepshare"
 	d, _ = s.store.SaveDownload(context.Background(), d)

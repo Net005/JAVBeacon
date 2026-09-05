@@ -1112,6 +1112,8 @@ func TestSearchResultsShowProviderProgressAndFileDetails(t *testing.T) {
 			`ignore_local:ignoreLocal`,
 			`function forceLocalDownload`,
 			`Waiting for both providers so the final ranking appears once without shifting`,
+			`formatTransferRate(x.bytes_per_second)`,
+			`Transferred / speed`,
 		},
 		"static/app.css": {
 			`#searchDialog{width:min(82vw,1120px)`,
@@ -1120,6 +1122,7 @@ func TestSearchResultsShowProviderProgressAndFileDetails(t *testing.T) {
 			`.searchResult.preferredFilename`,
 			`.searchMatchedFile{`,
 			`.searchProviderProgress{`,
+			`.downloadSwarm.httpTransfer{`,
 		},
 	}
 	for name, markers := range files {

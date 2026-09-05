@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS filter_presets (id INTEGER PRIMARY KEY, user_id INTEG
 CREATE TABLE IF NOT EXISTS job_history (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, mode TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', scheduled INTEGER NOT NULL DEFAULT 0, site_count INTEGER NOT NULL DEFAULT 0, site_title TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', started_at DATETIME, finished_at DATETIME, added INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS download_search_runs (id INTEGER PRIMARY KEY, schedule TEXT NOT NULL, started_at DATETIME NOT NULL, finished_at DATETIME NOT NULL, checked INTEGER NOT NULL DEFAULT 0, found INTEGER NOT NULL DEFAULT 0, downloaded INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_download_search_runs_schedule_finished ON download_search_runs(schedule,finished_at DESC);
-CREATE TABLE IF NOT EXISTS downloads (id INTEGER PRIMARY KEY, release_id INTEGER REFERENCES releases(id) ON DELETE SET NULL, provider TEXT NOT NULL DEFAULT '', source_type TEXT NOT NULL DEFAULT '', source_reference TEXT NOT NULL DEFAULT '', source_page_url TEXT NOT NULL DEFAULT '', query TEXT NOT NULL DEFAULT '', torrent_hash TEXT NOT NULL DEFAULT '', transport TEXT NOT NULL DEFAULT 'torrent', destination_path TEXT NOT NULL DEFAULT '', bytes_total INTEGER NOT NULL DEFAULT 0, bytes_downloaded INTEGER NOT NULL DEFAULT 0, name TEXT NOT NULL DEFAULT '', files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL, match_reason TEXT NOT NULL DEFAULT '', qb_response TEXT NOT NULL DEFAULT '', post_status TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', seed_ratio REAL NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, seeds INTEGER NOT NULL DEFAULT 0, peers INTEGER NOT NULL DEFAULT 0, eta_seconds INTEGER NOT NULL DEFAULT 0, seen_complete INTEGER NOT NULL DEFAULT 0, filename_pattern_excluded INTEGER NOT NULL DEFAULT 0, added_at DATETIME NOT NULL, updated_at DATETIME NOT NULL);
+CREATE TABLE IF NOT EXISTS downloads (id INTEGER PRIMARY KEY, release_id INTEGER REFERENCES releases(id) ON DELETE SET NULL, provider TEXT NOT NULL DEFAULT '', source_type TEXT NOT NULL DEFAULT '', source_reference TEXT NOT NULL DEFAULT '', source_page_url TEXT NOT NULL DEFAULT '', query TEXT NOT NULL DEFAULT '', torrent_hash TEXT NOT NULL DEFAULT '', transport TEXT NOT NULL DEFAULT 'torrent', destination_path TEXT NOT NULL DEFAULT '', bytes_total INTEGER NOT NULL DEFAULT 0, bytes_downloaded INTEGER NOT NULL DEFAULT 0, bytes_per_second INTEGER NOT NULL DEFAULT 0, name TEXT NOT NULL DEFAULT '', files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL, match_reason TEXT NOT NULL DEFAULT '', qb_response TEXT NOT NULL DEFAULT '', post_status TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', seed_ratio REAL NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, seeds INTEGER NOT NULL DEFAULT 0, peers INTEGER NOT NULL DEFAULT 0, eta_seconds INTEGER NOT NULL DEFAULT 0, seen_complete INTEGER NOT NULL DEFAULT 0, filename_pattern_excluded INTEGER NOT NULL DEFAULT 0, added_at DATETIME NOT NULL, updated_at DATETIME NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_downloads_status ON downloads(status);
 CREATE INDEX IF NOT EXISTS idx_downloads_release ON downloads(release_id);
 CREATE INDEX IF NOT EXISTS idx_downloads_release_status_updated ON downloads(release_id,status,updated_at DESC);
@@ -273,6 +273,7 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 			`ALTER TABLE downloads ADD COLUMN destination_path TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE downloads ADD COLUMN bytes_total INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE downloads ADD COLUMN bytes_downloaded INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE downloads ADD COLUMN bytes_per_second INTEGER NOT NULL DEFAULT 0`,
 		} {
 			if _, alterErr := s.db.Exec(statement); alterErr != nil && !strings.Contains(strings.ToLower(alterErr.Error()), "duplicate column") {
 				return alterErr
@@ -2980,13 +2981,13 @@ func (s *SQLite) SaveDownload(ctx context.Context, x domain.Download) (domain.Do
 	}
 	if x.ID == 0 {
 		var err error
-		x.ID, err = s.dialect.InsertReturningID(ctx, s.db, `INSERT INTO downloads(release_id,provider,source_type,source_reference,source_page_url,query,torrent_hash,transport,destination_path,bytes_total,bytes_downloaded,name,files,status,match_reason,qb_response,post_status,error,seed_ratio,progress,seeds,peers,eta_seconds,seen_complete,filename_pattern_excluded,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ReleaseID, x.Provider, x.SourceType, x.SourceReference, x.SourcePageURL, x.Query, x.TorrentHash, x.Transport, x.DestinationPath, x.BytesTotal, x.BytesDownloaded, x.Name, string(x.Files), x.Status, x.MatchReason, x.QBResponse, x.PostStatus, x.Error, x.SeedRatio, x.Progress, x.Seeds, x.Peers, x.ETASeconds, x.SeenComplete, x.FilenamePatternExcluded, now, now)
+		x.ID, err = s.dialect.InsertReturningID(ctx, s.db, `INSERT INTO downloads(release_id,provider,source_type,source_reference,source_page_url,query,torrent_hash,transport,destination_path,bytes_total,bytes_downloaded,bytes_per_second,name,files,status,match_reason,qb_response,post_status,error,seed_ratio,progress,seeds,peers,eta_seconds,seen_complete,filename_pattern_excluded,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ReleaseID, x.Provider, x.SourceType, x.SourceReference, x.SourcePageURL, x.Query, x.TorrentHash, x.Transport, x.DestinationPath, x.BytesTotal, x.BytesDownloaded, x.BytesPerSecond, x.Name, string(x.Files), x.Status, x.MatchReason, x.QBResponse, x.PostStatus, x.Error, x.SeedRatio, x.Progress, x.Seeds, x.Peers, x.ETASeconds, x.SeenComplete, x.FilenamePatternExcluded, now, now)
 		if err != nil {
 			return x, err
 		}
 		x.AddedAt = now
 	} else {
-		_, err := s.db.ExecContext(ctx, `UPDATE downloads SET source_page_url=?,torrent_hash=?,transport=?,destination_path=?,bytes_total=?,bytes_downloaded=?,name=?,files=?,status=?,match_reason=?,qb_response=?,post_status=?,error=?,seed_ratio=?,progress=?,seeds=?,peers=?,eta_seconds=?,seen_complete=?,filename_pattern_excluded=?,updated_at=? WHERE id=?`, x.SourcePageURL, x.TorrentHash, x.Transport, x.DestinationPath, x.BytesTotal, x.BytesDownloaded, x.Name, string(x.Files), x.Status, x.MatchReason, x.QBResponse, x.PostStatus, x.Error, x.SeedRatio, x.Progress, x.Seeds, x.Peers, x.ETASeconds, x.SeenComplete, x.FilenamePatternExcluded, now, x.ID)
+		_, err := s.db.ExecContext(ctx, `UPDATE downloads SET source_page_url=?,torrent_hash=?,transport=?,destination_path=?,bytes_total=?,bytes_downloaded=?,bytes_per_second=?,name=?,files=?,status=?,match_reason=?,qb_response=?,post_status=?,error=?,seed_ratio=?,progress=?,seeds=?,peers=?,eta_seconds=?,seen_complete=?,filename_pattern_excluded=?,updated_at=? WHERE id=?`, x.SourcePageURL, x.TorrentHash, x.Transport, x.DestinationPath, x.BytesTotal, x.BytesDownloaded, x.BytesPerSecond, x.Name, string(x.Files), x.Status, x.MatchReason, x.QBResponse, x.PostStatus, x.Error, x.SeedRatio, x.Progress, x.Seeds, x.Peers, x.ETASeconds, x.SeenComplete, x.FilenamePatternExcluded, now, x.ID)
 		if err != nil {
 			return x, err
 		}
@@ -2995,14 +2996,14 @@ func (s *SQLite) SaveDownload(ctx context.Context, x domain.Download) (domain.Do
 	return x, nil
 }
 
-const downloadSelect = `SELECT d.id,COALESCE(d.release_id,0),COALESCE(r.video_id,''),COALESCE(r.image_url,''),d.provider,d.source_type,d.source_reference,d.source_page_url,d.query,d.torrent_hash,d.transport,d.destination_path,d.bytes_total,d.bytes_downloaded,d.name,d.files,d.status,d.match_reason,d.qb_response,d.post_status,d.error,d.seed_ratio,d.progress,d.seeds,d.peers,d.eta_seconds,d.seen_complete,d.filename_pattern_excluded,d.added_at,d.updated_at FROM downloads d LEFT JOIN releases r ON r.id=d.release_id`
+const downloadSelect = `SELECT d.id,COALESCE(d.release_id,0),COALESCE(r.video_id,''),COALESCE(r.image_url,''),d.provider,d.source_type,d.source_reference,d.source_page_url,d.query,d.torrent_hash,d.transport,d.destination_path,d.bytes_total,d.bytes_downloaded,d.bytes_per_second,d.name,d.files,d.status,d.match_reason,d.qb_response,d.post_status,d.error,d.seed_ratio,d.progress,d.seeds,d.peers,d.eta_seconds,d.seen_complete,d.filename_pattern_excluded,d.added_at,d.updated_at FROM downloads d LEFT JOIN releases r ON r.id=d.release_id`
 
 func scanDownloads(rows *sql.Rows) ([]domain.Download, error) {
 	out := []domain.Download{}
 	for rows.Next() {
 		var x domain.Download
 		var files string
-		if err := rows.Scan(&x.ID, &x.ReleaseID, &x.VideoID, &x.ImageURL, &x.Provider, &x.SourceType, &x.SourceReference, &x.SourcePageURL, &x.Query, &x.TorrentHash, &x.Transport, &x.DestinationPath, &x.BytesTotal, &x.BytesDownloaded, &x.Name, &files, &x.Status, &x.MatchReason, &x.QBResponse, &x.PostStatus, &x.Error, &x.SeedRatio, &x.Progress, &x.Seeds, &x.Peers, &x.ETASeconds, &x.SeenComplete, &x.FilenamePatternExcluded, &x.AddedAt, &x.UpdatedAt); err != nil {
+		if err := rows.Scan(&x.ID, &x.ReleaseID, &x.VideoID, &x.ImageURL, &x.Provider, &x.SourceType, &x.SourceReference, &x.SourcePageURL, &x.Query, &x.TorrentHash, &x.Transport, &x.DestinationPath, &x.BytesTotal, &x.BytesDownloaded, &x.BytesPerSecond, &x.Name, &files, &x.Status, &x.MatchReason, &x.QBResponse, &x.PostStatus, &x.Error, &x.SeedRatio, &x.Progress, &x.Seeds, &x.Peers, &x.ETASeconds, &x.SeenComplete, &x.FilenamePatternExcluded, &x.AddedAt, &x.UpdatedAt); err != nil {
 			return nil, err
 		}
 		x.Files = json.RawMessage(files)

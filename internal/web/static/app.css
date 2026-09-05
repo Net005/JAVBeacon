@@ -104,6 +104,8 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .downloadTable.bulkSelectable .downloadCover{left:36px}
 .downloadTable.bulkSelectable .downloadIdentity{padding-left:calc(var(--download-cover) + 38px)}
 .downloadTable.bulkSelectable .downloadTableHead{padding-left:calc(var(--download-cover) + 50px)}
+.downloadSwarm.httpTransfer{grid-template-columns:repeat(3,minmax(0,1fr))}
+.downloadSwarm.httpTransfer .httpSpeed{border-color:#286473;background:#10272e;color:#91c9d6}
 
 /* Keep Search & Download compact while fitting three or four result cards in
    the existing dialog footprint. Long result sets scroll inside the dialog. */
