@@ -982,6 +982,45 @@ func (s *Service) RetryHTTPDownload(ctx context.Context, downloadID int64) (doma
 	return domain.Download{}, errors.New("HTTP download not found")
 }
 
+// RetryFailedHTTPDownloads queues either the selected failed HTTP rows or all
+// failed HTTP rows. Releases are deduplicated so stale history cannot start the
+// same media download more than once in a single bulk action.
+func (s *Service) RetryFailedHTTPDownloads(ctx context.Context, downloadIDs []int64, all bool) (map[string]any, error) {
+	if !all && len(downloadIDs) == 0 {
+		return nil, errors.New("select at least one failed HTTP download")
+	}
+	rows, err := s.store.Downloads(ctx, "failed")
+	if err != nil {
+		return nil, err
+	}
+	wanted := make(map[int64]bool, len(downloadIDs))
+	for _, id := range downloadIDs {
+		wanted[id] = true
+	}
+	selected := make([]domain.Download, 0, len(rows))
+	seenReleases := map[int64]bool{}
+	for _, row := range rows {
+		if row.Transport != "http" || (!all && !wanted[row.ID]) || seenReleases[row.ReleaseID] {
+			continue
+		}
+		seenReleases[row.ReleaseID] = true
+		selected = append(selected, row)
+	}
+	if len(selected) == 0 {
+		return nil, errors.New("no failed HTTP downloads matched this request")
+	}
+	retried := 0
+	failures := make([]string, 0)
+	for _, row := range selected {
+		if _, err := s.RetryHTTPDownload(ctx, row.ID); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", firstNonEmpty(row.Query, row.Name), err))
+			continue
+		}
+		retried++
+	}
+	return map[string]any{"matched": len(selected), "retried": retried, "failed": len(failures), "errors": failures}, nil
+}
+
 func (s *Service) TestQB(ctx context.Context, baseURL, username, password string) (string, []string, error) {
 	qb := NewQB(baseURL, username, password)
 	qb.Client.Timeout = s.client.Timeout

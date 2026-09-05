@@ -254,6 +254,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/releases/{id}/download", s.downloadRelease)
 	s.mux.HandleFunc("GET /api/downloads", s.downloadList)
 	s.mux.HandleFunc("POST /api/downloads/{id}/retry", s.retryDownload)
+	s.mux.HandleFunc("POST /api/downloads/bulk-retry", s.bulkRetryDownloads)
 	s.mux.HandleFunc("DELETE /api/downloads/{id}", s.removeDownload)
 	s.mux.HandleFunc("POST /api/downloads/bulk-remove", s.bulkRemoveDownloads)
 	s.mux.HandleFunc("GET /api/jobs/download-replacements", func(w http.ResponseWriter, r *http.Request) {
@@ -816,6 +817,21 @@ func (s *Server) retryDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, http.StatusAccepted, x)
+}
+func (s *Server) bulkRetryDownloads(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		IDs []int64 `json:"ids"`
+		All bool    `json:"all"`
+	}
+	if !s.decode(w, r, &payload) {
+		return
+	}
+	result, err := s.downloads.RetryFailedHTTPDownloads(r.Context(), payload.IDs, payload.All)
+	if err != nil {
+		s.problem(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	s.json(w, http.StatusAccepted, result)
 }
 func (s *Server) removeDownload(w http.ResponseWriter, r *http.Request) {
 	n, err := id(r)

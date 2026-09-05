@@ -97,6 +97,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .searchResult.noSeeds .matchState{color:#f1c75b}
 .searchResult.preferredFilename:not(.noSeeds){border-color:#45b98b;background:linear-gradient(135deg,#10261d,#111820 72%);box-shadow:inset 3px 0 #45b98b}
 .searchResult.preferredFilename .matchState{padding:3px 7px;border:1px solid #45b98b;border-radius:5px;background:#123425;color:#a9f3d2;font-size:10px;font-weight:850}
+.searchResult.pendingProvider{grid-template-columns:auto minmax(0,1fr) auto;align-items:center;min-height:150px;border-style:dashed;border-color:#3b4655;background:#0d1219;color:#9ca8b8}.searchResult.pendingProvider>div{display:grid;gap:5px}.searchResult.pendingProvider small{color:var(--muted)}.searchResult.pendingProvider>i{width:18px;height:18px;border:2px solid #526071;border-top-color:var(--accent);border-radius:50%;animation:searchProviderSpin .8s linear infinite}
 .searchMatchedFile{display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:7px;margin-top:8px;padding:7px 9px;border:1px solid #386e5a;border-radius:7px;background:#0d2119}.searchMatchedFile>span:nth-child(2){display:grid;min-width:0}.searchMatchedFile small{color:#86bda8;font-size:9px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}.searchMatchedFile b{overflow:hidden;color:#d9f8eb;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.searchMatchedFile em{color:#9ecdbb;font-size:10px;font-style:normal;font-variant-numeric:tabular-nums;white-space:nowrap}.fileMatchCheck{display:grid;place-items:center;width:17px;height:17px;border:1px solid #3e4959;border-radius:4px;color:transparent;font-size:11px;font-weight:900}.searchMatchedFile .fileMatchCheck,.searchFiles li.matched .fileMatchCheck{border-color:#45b98b;background:#174833;color:#c0f8df}.searchFiles{margin-top:8px;padding:8px 9px;border:1px solid #29313d;border-radius:7px;background:#090c11}.searchFiles>small{display:block;margin-bottom:5px;color:#98a1b0;font-size:10px;font-weight:700}.searchFiles ul,.searchFiles details ul{display:grid;gap:3px;margin:0;padding:0;list-style:none}.searchFiles li{display:grid;grid-template-columns:17px minmax(0,1fr) auto;align-items:center;gap:7px;min-width:0;padding:4px 0;color:#b9c0cb;font-size:10px}.searchFiles li.matched{color:#d9f8eb}.searchFileName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.searchFileSize{color:#8f9bad;font-variant-numeric:tabular-nums;white-space:nowrap}.searchFiles details{margin-top:5px;padding-top:5px;border-top:1px solid #252c36}.searchFiles summary{cursor:pointer;color:#d88794;font-size:10px;font-weight:750}.searchProviderProgress{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:10px}.searchProviderProgress>div{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 11px;border:1px solid #303846;border-radius:8px;background:#0d1117}.searchProviderProgress span{display:grid}.searchProviderProgress small{color:#8993a2;font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.searchProviderProgress b{margin-top:2px;color:#e1e6ed;font-size:11px}.searchProviderProgress strong{display:flex;align-items:center;gap:6px;color:#a8b0bd;font-size:10px;white-space:nowrap}.searchProviderProgress strong.done{color:#83e8bd}.searchProviderProgress strong.failed{max-width:50%;overflow:hidden;color:#ef9ca6;text-overflow:ellipsis}.searchProviderProgress strong.searching i{width:12px;height:12px;border:2px solid #465366;border-top-color:#ec5d6e;border-radius:50%;animation:searchProviderSpin .7s linear infinite}@keyframes searchProviderSpin{to{transform:rotate(360deg)}}@media(max-width:650px){.searchProviderProgress{grid-template-columns:1fr}}
 .downloadTable.bulkSelectable .downloadTableHead,.downloadTable.bulkSelectable .downloadTableRow{position:relative}
 .downloadTable.bulkSelectable .downloadRowSelect{position:absolute;left:8px;top:10px;z-index:3;margin:0!important}
@@ -106,7 +107,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 
 /* Search is a decision screen, so give filenames, match evidence, and provider
    telemetry enough room to be read without zooming the browser. */
-#searchDialog{width:min(98vw,1580px);padding:30px}
+#searchDialog{width:min(88vw,1320px);max-height:82vh;padding:22px}
 #searchDialog>form>header h2{font-size:24px}
 #searchDialog #searchResultFilter{min-height:52px;padding:13px 16px;font-size:15px}
 .searchSummary{font-size:14px}
@@ -115,7 +116,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .searchProviderProgress small{font-size:11px}.searchProviderProgress b{font-size:15px}.searchProviderProgress strong{font-size:13px}
 .searchProviderProgress strong.searching i{width:17px;height:17px}
 .searchGroup{gap:14px}.searchGroup>header{padding:13px 16px}.searchGroup>header h3{font-size:16px}.searchGroup>header span{font-size:13px}
-.searchResultGrid{grid-template-columns:repeat(auto-fit,minmax(min(100%,600px),1fr));gap:14px}
+.searchResultGrid{grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:14px}
 .searchResult{gap:12px 18px;padding:20px;font-size:15px}
 .searchResultTitle{gap:10px}.searchResultTitle>b{font-size:17px;line-height:1.45}
 .searchTransport{padding:4px 8px;font-size:11px}
@@ -128,7 +129,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .searchFiles{margin-top:11px;padding:11px 13px}.searchFiles>small{margin-bottom:8px;font-size:12px}
 .searchFiles li{grid-template-columns:22px minmax(0,1fr) auto;gap:10px;padding:6px 0;font-size:13px}
 .searchFiles summary{font-size:12px}.searchResult .actions button{min-height:46px;font-size:13px}
-@media(max-width:820px){#searchDialog{padding:18px}.searchResultGrid{grid-template-columns:1fr}.searchResult{padding:16px}.searchResultTitle>b{font-size:15px}}
+@media(max-width:820px){#searchDialog{width:min(94vw,720px);max-height:90vh;padding:18px}.searchResultGrid{grid-template-columns:1fr}.searchResult{padding:16px}.searchResultTitle>b{font-size:15px}}
 
 /* Release detail viewport fix: keep the desktop detail layout inside the dialog
    and make the right-hand metadata/story pane scroll instead of overflowing. */
@@ -1237,6 +1238,11 @@ html.releaseOverlayOpen,body.releaseOverlayOpen{overflow:hidden!important;oversc
 .actionIcon{display:inline-grid!important;flex:0 0 auto;width:1.15em;height:1.15em;place-items:center;filter:none!important;opacity:.9!important}
 .actionIcon svg{display:block;width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .stateButton .actionIcon{font-size:14px}.stateActions .actionIcon{font-size:17px}
+.iconActionButton{display:inline-flex!important;align-items:center;justify-content:center;gap:7px}
+.iconActionButton>.actionIcon,.bulkBar .actionIcon,.downloadRefreshControls .actionIcon,.missingTaskRetry .actionIcon{width:16px;height:16px;font-size:16px}
+.downloadRemove.iconActionButton{display:grid!important;gap:0}.downloadRemove.iconActionButton>.actionIcon{width:18px;height:18px;font-size:18px}
+.bulkBar label>.actionIcon{margin:0 1px 0 0}
+.bulkBar button[hidden]{display:none!important}
 
 /* Earlier touch controls were intentionally doubled, but they dominate phone
    landscape. Scale them to a comfortable, consistent tap target instead. */
@@ -1370,11 +1376,13 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 .actionGroup{grid-template-columns:76px repeat(3,minmax(0,1fr))!important;align-items:stretch;padding:6px 7px!important;gap:6px!important}
 .actionGroupTitle{display:flex;align-items:center;padding:0 8px 0 3px;border-right:1px solid #2f3641;color:#929ba8;font-size:9px;font-weight:850;line-height:1.2;letter-spacing:1.1px;text-transform:uppercase}
 .statusGroup{grid-template-columns:76px minmax(0,1fr)!important}
-.statusItems{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;min-width:0}
+.statusItems{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;min-width:0}
 .statusItems .downloadPillWrap{display:flex;width:100%;min-width:0}
 .statusItems .downloadPill.inline{width:100%;min-height:34px;margin-left:0;padding:5px 8px;justify-content:center;border-radius:7px;font-size:11px;line-height:1.2;box-shadow:inset 0 0 0 1px #ffffff05;text-shadow:none}
 .statusItems .releaseStatusInfo{height:100%;min-height:34px;border-radius:7px}
 .statusItems .releaseStatusInfo b{font-size:11px}
+.statusItems .httpPrimaryButton{min-width:0;min-height:34px;padding:5px 8px;border-color:#44566b;border-radius:7px;background:#141c27;color:#a9bfd8;font-size:11px;line-height:1.2;white-space:nowrap}
+.statusItems .httpPrimaryButton.on{border-color:#438fc2;background:#173c56;color:#d9efff;box-shadow:inset 0 0 0 1px #5db5ee33}
 .detailValueOverflow{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:5px;width:100%;min-width:0}
 .detailValueOverflow:not(.hasOverflow){grid-template-columns:minmax(0,1fr);gap:0}
 .detailValuePreview{display:flex;align-items:center;min-width:0;gap:6px;overflow:hidden}
@@ -1423,7 +1431,7 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
   .actionGroup{grid-template-columns:repeat(3,minmax(0,1fr))!important;padding:7px!important}
   .actionGroupTitle{grid-column:1/-1;min-height:25px;padding:0 4px 5px;border-right:0;border-bottom:1px solid #2f3641}
   .statusGroup{grid-template-columns:1fr!important}
-  .statusItems{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .statusItems{grid-template-columns:repeat(3,minmax(0,1fr))}
   .detailMeta dt,.detailMeta dd{padding-block:7px!important}
   .detailValuePopover{position:fixed;top:50%;right:14px;left:14px;max-width:none;max-height:48vh;transform:translateY(-50%);padding:12px}
 }
