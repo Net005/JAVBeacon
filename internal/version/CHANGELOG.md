@@ -7,6 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.91] - 2026-09-05
+
+### Fixed
+
+- Keepshare inspection now follows intermediate redirects such as
+  `keepshare.org` to `keepshare.cc` before stopping at the PikPak player URL.
+  This restores the complete file list, filenames, file sizes, matched-file
+  details, and preferred filename detection without requesting the player page
+  that previously timed out.
+
 ## [1.0.90] - 2026-09-05
 
 ### Added

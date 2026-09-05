@@ -14,12 +14,16 @@ import (
 	"golang.org/x/net/html"
 )
 
-func TestDiscoverPikPakShareIDStopsAtKeepshareRedirect(t *testing.T) {
-	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestDiscoverPikPakShareIDFollowsKeepshareIntermediateAndStopsBeforePikPak(t *testing.T) {
+	intermediate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://mypikpak.com/s/VP-YhHbopMQjt_gRbkB6ORjZo2/AAAAAAfNVsQqoHTeqzJ8lh0Yo2_VP-?act=play", http.StatusFound)
 	}))
-	defer redirect.Close()
-	shareID, err := discoverPikPakShareID(context.Background(), redirect.Client(), redirect.URL)
+	defer intermediate.Close()
+	entry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, intermediate.URL+"/forwarded-share", http.StatusMovedPermanently)
+	}))
+	defer entry.Close()
+	shareID, err := discoverPikPakShareID(context.Background(), entry.Client(), entry.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
