@@ -7,6 +7,25 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.83] - 2026-09-05
+
+### Added
+
+- Failed HTTP downloads can now be retried in bulk, either for the selected
+  rows or for every failed HTTP download across all pages.
+
+### Changed
+
+- Standardized action icons and alignment across Download Activity, Monitored
+  Releases, Missing Files Active Tasks, refresh controls, and Release Details.
+- Moved the per-release HTTP primary/fallback override into the Status block so
+  it no longer wraps into a clipped fourth Tracking row.
+- Bounded the Search & Download dialog to a practical desktop footprint while
+  retaining its larger, readable result cards.
+- Torrent and HTTP provider leaders are now paired first, with preferred
+  filename ranking applied before every incremental render and a reserved HTTP
+  result slot that prevents late provider results from reshuffling the grid.
+
 ## [1.0.82] - 2026-09-05
 
 ### Changed
