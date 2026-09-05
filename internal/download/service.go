@@ -481,7 +481,8 @@ func (s *Service) searchNative(ctx context.Context, release domain.Release, sour
 	if e != nil {
 		history.Status = "failed"
 		history.Error = e.Error()
-		_, _ = s.store.SaveDownload(ctx, history)
+		history, _ = s.store.SaveDownload(ctx, history)
+		s.logDownloadFailure(history)
 	} else {
 		for _, result := range rows {
 			item := history
@@ -779,13 +780,16 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 	if !result.Accepted && !forced && !excluded {
 		x.Status = "failed"
 		x.Error = "result rejected by filename rules"
-		return s.store.SaveDownload(ctx, x)
+		x, e := s.store.SaveDownload(ctx, x)
+		s.logDownloadFailure(x)
+		return x, e
 	}
 	if result.ReplaceExisting {
 		if _, e := s.removeReleaseDownloads(ctx, r.ID, r.VideoID, true); e != nil {
 			x.Status = "failed"
 			x.Error = "existing download could not be deleted before replacement: " + e.Error()
 			x, _ = s.store.SaveDownload(ctx, x)
+			s.logDownloadFailure(x)
 			return x, e
 		}
 	}
@@ -806,6 +810,7 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 		x.Status = "failed"
 		x.Error = e.Error()
 		x, _ = s.store.SaveDownload(ctx, x)
+		s.logDownloadFailure(x)
 		return x, e
 	} else if reason != "" {
 		x.Status = "skipped"
@@ -825,6 +830,7 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 		x.Status = "failed"
 		x.Error = e.Error()
 		x, _ = s.store.SaveDownload(ctx, x)
+		s.logDownloadFailure(x)
 		_, _ = s.store.CreateNotification(ctx, r.ID, "download_failed", e.Error())
 		return x, e
 	}
@@ -846,8 +852,32 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 	x.Status = "failed"
 	x.Error = "qBittorrent accepted the request but the torrent never appeared in its list - check the category, the magnet/torrent link, and qBittorrent's own logs"
 	x, _ = s.store.SaveDownload(ctx, x)
+	s.logDownloadFailure(x)
 	_, _ = s.store.CreateNotification(ctx, r.ID, "download_failed", x.Error)
 	return x, nil
+}
+
+// logDownloadFailure emits the same complete reason persisted for Download
+// Activity, together with enough identity and source context to diagnose the
+// failed transfer from container/server logs without reproducing it first.
+func (s *Service) logDownloadFailure(d domain.Download) {
+	if s.log == nil {
+		return
+	}
+	s.log.Error("download failed",
+		"download_id", d.ID,
+		"release_id", d.ReleaseID,
+		"video_id", d.Query,
+		"transport", normalizedDownloadTransport(d.Transport),
+		"provider", d.Provider,
+		"source_type", d.SourceType,
+		"source_reference", d.SourceReference,
+		"source_page_url", d.SourcePageURL,
+		"error", d.Error,
+		"match_reason", d.MatchReason,
+		"provider_response", d.QBResponse,
+		"post_status", d.PostStatus,
+	)
 }
 
 // magnetHashPattern pulls the BitTorrent info-hash out of a magnet URI's
@@ -899,7 +929,9 @@ func (s *Service) verifyAddedToQBittorrent(ctx context.Context, qb QBittorrent, 
 
 func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, result domain.SearchResult, sourceType, sourceRef string) (domain.Download, error) {
 	if !result.Accepted && !result.Forced {
-		return s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", Error: "HTTP result did not exactly match the release ID"})
+		d, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", Error: "HTTP result did not exactly match the release ID"})
+		s.logDownloadFailure(d)
+		return d, err
 	}
 	if result.ReplaceExisting {
 		if _, err := s.removeReleaseDownloads(ctx, r.ID, r.VideoID, true); err != nil {
@@ -1010,14 +1042,16 @@ func (s *Service) tryFailedHTTPTorrentFallback(d domain.Download, httpFailure st
 	if err != nil {
 		d.PostStatus = "torrent_fallback_failed"
 		d.Error = httpFailure + "; Torrent fallback lookup failed: " + err.Error()
-		_, _ = s.store.SaveDownload(ctx, d)
+		d, _ = s.store.SaveDownload(ctx, d)
+		s.logDownloadFailure(d)
 		return
 	}
 	candidate, found := fallbackSearchCandidate(sortSearchResults(native), native, release.AllowNonPreferredFilenames)
 	if !found {
 		d.PostStatus = "torrent_fallback_unavailable"
 		d.Error = httpFailure + "; Torrent fallback found no acceptable result"
-		_, _ = s.store.SaveDownload(ctx, d)
+		d, _ = s.store.SaveDownload(ctx, d)
+		s.logDownloadFailure(d)
 		return
 	}
 	candidate.DownloadPreferenceReason = "Download method: HTTP → Torrent fallback — Torrent selected after HTTP transfer failed"
@@ -1025,7 +1059,8 @@ func (s *Service) tryFailedHTTPTorrentFallback(d domain.Download, httpFailure st
 	if fallbackErr != nil || (downloaded.Status != "queued" && downloaded.Status != "downloading") {
 		d.PostStatus = "torrent_fallback_failed"
 		d.Error = httpFailure + "; Torrent fallback failed: " + firstNonEmpty(errorText(fallbackErr), downloaded.Error, downloaded.MatchReason)
-		_, _ = s.store.SaveDownload(ctx, d)
+		d, _ = s.store.SaveDownload(ctx, d)
+		s.logDownloadFailure(d)
 		s.log.Warn("failed HTTP download could not switch to Torrent fallback", "release_id", d.ReleaseID, "video_id", d.Query, "download_id", d.ID, "error", d.Error)
 		return
 	}
@@ -1051,7 +1086,8 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		d.Error = failure
 		d.ETASeconds = 0
 		d.BytesPerSecond = 0
-		_, _ = s.store.SaveDownload(context.Background(), d)
+		d, _ = s.store.SaveDownload(context.Background(), d)
+		s.logDownloadFailure(d)
 		_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_failed", failure)
 		go s.tryFailedHTTPTorrentFallback(d, failure)
 	}
@@ -1101,22 +1137,11 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	}
 	downloadClient := *s.client
 	downloadClient.Timeout = 0
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, resolved.URL, nil)
-	for key, value := range resolved.Headers {
-		req.Header.Set(key, value)
-	}
-	resp, err := downloadClient.Do(req)
+	resp, err := openHTTPDownloadStream(ctx, &downloadClient, resolved)
 	if err != nil {
 		out.Close()
 		_ = os.Remove(tempPath)
 		fail(err)
-		return
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		resp.Body.Close()
-		out.Close()
-		_ = os.Remove(tempPath)
-		fail(fmt.Errorf("HTTP download returned %d", resp.StatusCode))
 		return
 	}
 	if resp.ContentLength > 0 {
@@ -1182,6 +1207,55 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	d, _ = s.store.SaveDownload(context.Background(), d)
 	_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_completed", "HTTP download completed")
 	s.runEventPipelineAsync(context.Background(), d, Torrent{Name: filepath.Base(finalPath), ContentPath: finalPath, Progress: 1}, pipelineDownloadCompleted, nil)
+}
+
+// openHTTPDownloadStream retries temporary gateway/rate-limit failures before
+// marking an otherwise valid Keepshare/PikPak transfer failed. Byparr solves
+// browser challenges on HTML pages; proxying a multi-gigabyte media stream
+// through it is neither supported nor desirable, so CDN failures are retried
+// directly with the provider's required headers instead.
+func openHTTPDownloadStream(ctx context.Context, client *http.Client, resolved resolvedHTTPFile) (*http.Response, error) {
+	const attempts = 3
+	var lastErr error
+	attemptCount := 0
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(time.Duration(attempt) * 500 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+		attemptCount++
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolved.URL, nil)
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range resolved.Headers {
+			req.Header.Set(key, value)
+		}
+		resp, err := client.Do(req)
+		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return resp, nil
+		}
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		detail := strings.TrimSpace(string(data))
+		if detail == "" {
+			detail = http.StatusText(resp.StatusCode)
+		}
+		lastErr = fmt.Errorf("HTTP download returned %d: %s", resp.StatusCode, detail)
+		if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusInternalServerError && resp.StatusCode != http.StatusBadGateway && resp.StatusCode != http.StatusServiceUnavailable && resp.StatusCode != http.StatusGatewayTimeout {
+			break
+		}
+	}
+	return nil, fmt.Errorf("HTTP stream failed after %d attempt(s): %w", attemptCount, lastErr)
 }
 
 func nextHTTPDestination(dir, releaseID string) string {

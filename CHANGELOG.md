@@ -7,6 +7,25 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.89] - 2026-09-05
+
+### Added
+
+- Failed rows in Download Activity now show the complete, wrapped failure
+  reason instead of hiding it in a tiny truncated progress label.
+- Download failures now emit structured server-log entries with the download
+  and release IDs, transport, provider, source, match context, provider
+  response, fallback state, and full error detail.
+
+### Fixed
+
+- Direct HTTP video downloads now retry temporary 429, 500, 502, 503, and 504
+  upstream responses three times before failing, while preserving the required
+  stream headers and reporting the upstream response detail after exhaustion.
+- Keepshare/PikPak media streams remain direct downloads instead of being
+  incorrectly proxied through Byparr, which is reserved for browser challenges
+  on HTML pages.
+
 ## [1.0.88] - 2026-09-05
 
 ### Changed

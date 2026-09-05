@@ -421,6 +421,27 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	}
 }
 
+func TestDownloadActivityShowsFullFailureReason(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{`x.status==='failed'&&detail`, `class="downloadFailureDetail"`, `<b>Failure reason</b>`} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("Download Activity is missing failure-detail marker %q", marker)
+		}
+	}
+	for _, marker := range []string{`.downloadFailureDetail{grid-column:1/-1`, `white-space:pre-wrap`, `overflow-wrap:anywhere`} {
+		if !strings.Contains(string(css), marker) {
+			t.Fatalf("failure-detail styling is missing %q", marker)
+		}
+	}
+}
+
 func TestEmbeddedFrontendLiveReleaseUpdatesReloadActiveQuery(t *testing.T) {
 	javascript, err := assets.ReadFile("static/app.js")
 	if err != nil {

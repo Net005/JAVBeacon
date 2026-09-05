@@ -1,6 +1,7 @@
 package download
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,62 @@ import (
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
+
+func TestDownloadFailureLogIncludesReasonAndContext(t *testing.T) {
+	var output bytes.Buffer
+	service := &Service{log: slog.New(slog.NewJSONHandler(&output, nil))}
+	service.logDownloadFailure(domain.Download{
+		ID:              42,
+		ReleaseID:       17,
+		Query:           "TEST-123",
+		Transport:       "http",
+		Provider:        "JavDB / Keepshare",
+		SourceType:      "Manual Search",
+		SourceReference: "https://example.test/share",
+		Error:           "HTTP download returned 403: access denied",
+	})
+	logged := output.String()
+	for _, want := range []string{`"msg":"download failed"`, `"download_id":42`, `"release_id":17`, `"video_id":"TEST-123"`, `"transport":"http"`, `"provider":"JavDB / Keepshare"`, `"error":"HTTP download returned 403: access denied"`} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("failure log %q does not contain %q", logged, want)
+		}
+	}
+}
+
+func TestOpenHTTPDownloadStreamRetriesTemporaryGatewayFailure(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if r.Header.Get("Referer") != "https://mypikpak.com/" {
+			t.Fatalf("required stream headers were not retained on retry")
+		}
+		if attempts < 3 {
+			http.Error(w, "temporary upstream failure", http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte("video"))
+	}))
+	defer server.Close()
+	resp, err := openHTTPDownloadStream(context.Background(), server.Client(), resolvedHTTPFile{URL: server.URL, Headers: map[string]string{"Referer": "https://mypikpak.com/"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if attempts != 3 {
+		t.Fatalf("attempts=%d, want 3", attempts)
+	}
+}
+
+func TestOpenHTTPDownloadStreamReportsUpstreamFailureDetail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "origin unavailable", http.StatusBadGateway)
+	}))
+	defer server.Close()
+	_, err := openHTTPDownloadStream(context.Background(), server.Client(), resolvedHTTPFile{URL: server.URL})
+	if err == nil || !strings.Contains(err.Error(), "HTTP stream failed after 3 attempt(s): HTTP download returned 502: origin unavailable") {
+		t.Fatalf("unexpected error detail: %v", err)
+	}
+}
 
 func TestDownloadRechecksFilenameRulesServerSide(t *testing.T) {
 	ctx := context.Background()
