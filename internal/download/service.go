@@ -269,6 +269,8 @@ func (s *Service) searchNative(ctx context.Context, release domain.Release, sour
 		for _, result := range rows {
 			item := history
 			item.Name = result.Title
+			item.Seeds = result.Seeds
+			item.Peers = result.Peers
 			item.SourceReference = result.SourceURL
 			if item.SourceReference == "" {
 				item.SourceReference = result.Link
@@ -522,7 +524,7 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 	} else if sourceRef == "" {
 		sourceRef = result.Link
 	}
-	x := domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: sourceRef, Query: r.VideoID, Name: result.Title, Status: "queued", MatchReason: matchReason, FilenamePatternExcluded: forced || excluded}
+	x := domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: sourceRef, Query: r.VideoID, Name: result.Title, Status: "queued", MatchReason: matchReason, Seeds: result.Seeds, Peers: result.Peers, FilenamePatternExcluded: forced || excluded}
 	if !result.Accepted && !forced && !excluded {
 		x.Status = "failed"
 		x.Error = "result rejected by filename rules"
@@ -855,7 +857,7 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 // searches or downloads anything automatically.
 func (s *Service) Auto(context.Context, domain.Release) {}
 
-// SearchAndDownloadNow searches immediately and downloads a result,
+// SearchAndDownloadDetailed searches immediately and downloads a result,
 // for hand-picked actions (e.g. TODO-2.0 Phase 2's StashApp
 // missing-library recovery "Monitor + Download + search" action) where the
 // user has explicitly asked, release by release, for search and download
@@ -874,20 +876,55 @@ func (s *Service) Auto(context.Context, domain.Release) {}
 // chosen by that fallback is marked
 // domain.SearchResult.FilenamePatternExcluded so the resulting download's
 // history is never confused with a normal accepted match.
-func (s *Service) SearchAndDownloadNow(ctx context.Context, r domain.Release, trigger string, allowNonPreferred bool) (bool, error) {
+// SearchAndDownloadOutcome preserves the useful detail from an immediate
+// search/download attempt for callers that present a background task view.
+// Found means a torrent candidate was selected; Download records whether it
+// was actually queued, skipped, or failed at the qBittorrent step.
+type SearchAndDownloadOutcome struct {
+	Found    bool
+	Reason   string
+	Result   domain.SearchResult
+	Download domain.Download
+}
+
+func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Release, trigger string, allowNonPreferred bool) (SearchAndDownloadOutcome, error) {
 	native, e := s.searchNative(ctx, r, trigger)
 	if e != nil {
-		return false, e
+		return SearchAndDownloadOutcome{Reason: "Search provider lookup failed: " + e.Error()}, e
 	}
 	sorted := sortSearchResults(native)
 	candidate, found := fallbackSearchCandidate(sorted, native, allowNonPreferred)
 	if !found {
-		return false, nil
+		reason := "Search provider returned no results"
+		if len(native) > 0 {
+			reason = "Results were found, but none matched the accepted filename rules"
+		}
+		return SearchAndDownloadOutcome{Reason: reason}, nil
 	}
-	if _, e := s.Download(ctx, r, candidate, trigger, ""); e != nil {
-		return false, e
+	downloaded, e := s.Download(ctx, r, candidate, trigger, "")
+	outcome := SearchAndDownloadOutcome{Found: true, Result: candidate, Download: downloaded}
+	if e != nil {
+		outcome.Reason = downloaded.Error
+		if outcome.Reason == "" {
+			outcome.Reason = e.Error()
+		}
+		return outcome, e
 	}
-	return true, nil
+	if downloaded.Error != "" {
+		outcome.Reason = downloaded.Error
+	} else if downloaded.MatchReason != "" {
+		outcome.Reason = downloaded.MatchReason
+	} else {
+		outcome.Reason = candidate.Reason
+	}
+	return outcome, nil
+}
+
+// SearchAndDownloadNow keeps the original compact API for callers that only
+// need to know whether a candidate was found.
+func (s *Service) SearchAndDownloadNow(ctx context.Context, r domain.Release, trigger string, allowNonPreferred bool) (bool, error) {
+	outcome, err := s.SearchAndDownloadDetailed(ctx, r, trigger, allowNonPreferred)
+	return outcome.Found && err == nil, err
 }
 
 // fallbackSearchCandidate picks the single search result SearchAndDownloadNow

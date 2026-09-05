@@ -7,6 +7,19 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.74] - 2026-09-05
+
+### Added
+
+- Missing Library Files Search + Download batches now run without a blocking
+  progress dialog. A highlighted Active tasks tab shows the remaining count,
+  live per-release stages, successful torrent matches, and exact lookup or
+  download failures, while retaining provider, match, size, seeds, peers, ETA,
+  last-seen-complete, and torrent-source details for each result.
+- Active tasks can be filtered to active, successful, or failed states.
+  Failed and not-found searches can be retried individually or together,
+  while preserving the original non-preferred-filename choice.
+
 ## [1.0.73] - 2026-09-05
 
 ### Added

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -506,9 +507,113 @@ func TestApplySelectionMonitorAndDownloadSearchesInBackground(t *testing.T) {
 	if status.Monitored != 1 || status.NotFound != 1 || status.Found != 0 || status.Failed != 0 {
 		t.Fatalf("unexpected apply status: %+v", status)
 	}
+	if status.Processed != 1 || len(status.Results) != 1 || status.Results[0].Status != "not_found" || status.Results[0].Reason != "Search provider returned no results" {
+		t.Fatalf("expected a detailed terminal not-found task, got %+v", status)
+	}
 	release, err := st.Release(ctx, releases[0].ID)
 	if err != nil || !release.MonitorDownload {
 		t.Fatalf("expected MonitorDownload=true even when no torrent match was found: %+v (err=%v)", release, err)
+	}
+}
+
+func TestApplySelectionExplainsDatabaseAndJavLibraryLookupFailures(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "apply-lookup-failures.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	missingID, err := st.UpsertStashMissingScene(ctx, domain.StashMissingScene{StashSceneID: "no-db", Title: "Not in database", Code: "MISS-DB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	javID, err := st.UpsertStashMissingScene(ctx, domain.StashMissingScene{StashSceneID: "jav-failed", Title: "Jav failed", Code: "MISS-JAV", JavLibraryURL: "https://example.invalid/MISS-JAV"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetStashMissingStatus(ctx, javID, "retrieve_failed", "detail page returned HTTP 503"); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(st, time.Second, slog.Default(), nil, nil)
+	s.runApply(ctx, []int64{missingID, javID}, ApplyModeMonitorDownload, false)
+	status := s.ApplyRunStatus()
+	if status.Processed != 2 || status.Failed != 2 || len(status.Results) != 2 {
+		t.Fatalf("unexpected failure task summary: %+v", status)
+	}
+	if !strings.Contains(status.Results[0].Error, "not in the JAVBeacon database") {
+		t.Fatalf("database-miss reason is not explicit: %+v", status.Results[0])
+	}
+	if status.Results[1].Stage != "javlibrary_lookup" || !strings.Contains(status.Results[1].Error, "JavLibrary lookup failed") || !strings.Contains(status.Results[1].Error, "HTTP 503") {
+		t.Fatalf("JavLibrary failure reason is not retained: %+v", status.Results[1])
+	}
+}
+
+func TestApplySelectionCanRetryPreviouslyFailedTask(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "apply-retry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	sceneID, err := st.UpsertStashMissingScene(ctx, domain.StashMissingScene{StashSceneID: "retry-scene", Title: "Retry", Code: "RETRY-1", JavLibraryURL: "https://example.invalid/RETRY-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(st, time.Second, slog.Default(), nil, nil)
+	wait := func() ApplyStatus {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			status := s.ApplyRunStatus()
+			if !status.Running {
+				return status
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatal("apply task did not finish")
+		return ApplyStatus{}
+	}
+	if err := s.StartApply(ctx, []int64{sceneID}, ApplyModeMonitorDownload, true); err != nil {
+		t.Fatal(err)
+	}
+	first := wait()
+	if first.Failed != 1 || len(first.Results) != 1 || first.Results[0].Status != "failed" {
+		t.Fatalf("expected the initial task to fail before retry, got %+v", first)
+	}
+
+	feedMux := http.NewServeMux()
+	feedMux.HandleFunc("/feed", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<rss><channel></channel></rss>`))
+	})
+	feed := httptest.NewServer(feedMux)
+	defer feed.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"search_url_template": feed.URL + "/feed?q=<release_id>"}); err != nil {
+		t.Fatal(err)
+	}
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Retry", Type: "Site", Name: "JavLibrary", Enabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "RETRY-1", Title: "Retry", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "RETRY-1", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("retry release lookup: rows=%d err=%v", len(releases), err)
+	}
+	if err := st.LinkStashMissingRelease(ctx, sceneID, releases[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	s.downloads = download.New(st, time.Second, slog.Default())
+	if err := s.StartApply(ctx, []int64{sceneID}, ApplyModeMonitorDownload, first.AllowNonPreferred); err != nil {
+		t.Fatal(err)
+	}
+	retried := wait()
+	if !retried.AllowNonPreferred || retried.Processed != 1 || retried.Failed != 0 || retried.NotFound != 1 || len(retried.Results) != 1 || retried.Results[0].Status != "not_found" {
+		t.Fatalf("expected retry to replace the failed task and preserve its option, got %+v", retried)
 	}
 }
 
@@ -610,7 +715,7 @@ func TestApplySelectionMonitorDownloadDownloadsDespiteExistingLocalStashScene(t 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/feed", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>` +
-			`<item><title>trusted@ ILF-3 seeded</title><link>magnet:?xt=urn:btih:ilf3hash</link><nyaa:seeders>3</nyaa:seeders></item>` +
+			`<item><title>trusted@ ILF-3 seeded</title><link>magnet:?xt=urn:btih:ilf3hash</link><nyaa:seeders>3</nyaa:seeders><nyaa:leechers>2</nyaa:leechers><nyaa:size>4.2 GiB</nyaa:size></item>` +
 			`</channel></rss>`))
 	})
 	server := httptest.NewServer(mux)
@@ -666,6 +771,9 @@ func TestApplySelectionMonitorDownloadDownloadsDespiteExistingLocalStashScene(t 
 	status := s.ApplyRunStatus()
 	if status.Found != 1 || status.NotFound != 0 || status.Failed != 0 {
 		t.Fatalf("expected found=1 despite the release already being linked in StashApp, got %+v", status)
+	}
+	if status.Processed != 1 || len(status.Results) != 1 || status.Results[0].Status != "found" || status.Results[0].DownloadState != "downloading" || status.Results[0].Seeds != 3 || status.Results[0].Peers != 2 || status.Results[0].Size != "4.2 GiB" || status.Results[0].TorrentTitle == "" {
+		t.Fatalf("expected retained torrent and swarm details in the completed task, got %+v", status.Results)
 	}
 	rows, err := st.Downloads(ctx, "")
 	if err != nil {
@@ -897,7 +1005,8 @@ func TestApplyReportsLiveProgressBetweenScenes(t *testing.T) {
 	defer st.Close()
 
 	var s *Service
-	var midFlightMonitored, midFlightResults int
+	var midFlightMonitored, midFlightProcessed, midFlightResults int
+	var midFlightFirstStatus, midFlightSecondStage string
 	var midFlightCurrentItem string
 
 	mux := http.NewServeMux()
@@ -905,7 +1014,10 @@ func TestApplyReportsLiveProgressBetweenScenes(t *testing.T) {
 		if r.URL.Query().Get("q") == "MON-B" {
 			status := s.ApplyRunStatus()
 			midFlightMonitored = status.Monitored
+			midFlightProcessed = status.Processed
 			midFlightResults = len(status.Results)
+			midFlightFirstStatus = status.Results[0].Status
+			midFlightSecondStage = status.Results[1].Stage
 			midFlightCurrentItem = status.CurrentItem
 		}
 		_, _ = w.Write([]byte(`<rss><channel></channel></rss>`))
@@ -947,9 +1059,11 @@ func TestApplyReportsLiveProgressBetweenScenes(t *testing.T) {
 	// By the time release B's search fires, both releases have already had
 	// PatchRelease's monitor flag set (that happens before each release's
 	// own search) - so Monitored is 2 - but only release A has an entry in
-	// Results, since B's search+download outcome is still in flight.
-	if midFlightMonitored != 2 || midFlightResults != 1 {
-		t.Fatalf("expected release A's result to already be published while release B was still being searched, got monitored=%d results=%d", midFlightMonitored, midFlightResults)
+	// Results contains the whole queue so the Active tasks tab can show what
+	// remains, while Processed and each item's stage distinguish completed A
+	// from currently-searching B.
+	if midFlightMonitored != 2 || midFlightProcessed != 1 || midFlightResults != 2 || midFlightFirstStatus != "not_found" || midFlightSecondStage != "searching" {
+		t.Fatalf("expected release A completed and release B visibly searching, got monitored=%d processed=%d results=%d first=%q second_stage=%q", midFlightMonitored, midFlightProcessed, midFlightResults, midFlightFirstStatus, midFlightSecondStage)
 	}
 	if midFlightCurrentItem != "Searching for MON-B…" {
 		t.Fatalf("expected CurrentItem to already show release B's search while it was in flight, got %q", midFlightCurrentItem)
