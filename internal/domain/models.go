@@ -317,6 +317,7 @@ type StashMissingScene struct {
 	OCounter      int      `json:"o_counter"`
 	PlayCount     int      `json:"play_count"`
 	LastPlayedAt  string   `json:"last_played_at"`
+	LastOCountAt  string   `json:"last_o_count_at"`
 	Studio        string   `json:"studio"`
 	Tags          []string `json:"tags"`
 	URLs          []string `json:"urls"`

@@ -33,7 +33,7 @@ func TestStashMissingScenesUpsertLinkAndFilter(t *testing.T) {
 
 	unmatchedID, err := s.UpsertStashMissingScene(ctx, domain.StashMissingScene{
 		StashSceneID: "1", Title: "Unmatched scene", Code: "XYZ-999", Path: "/data/XYZ-999.mp4",
-		OCounter: 3, PlayCount: 5, Studio: "Some Studio", Tags: []string{"Solowork"},
+		OCounter: 3, PlayCount: 5, LastOCountAt: "2024-05-09T12:00:00Z", Studio: "Some Studio", Tags: []string{"Solowork"},
 		URLs: []string{"https://www.javlibrary.com/en/?v=abc123"}, JavLibraryURL: "https://www.javlibrary.com/en/?v=abc123",
 	})
 	if err != nil {
@@ -72,6 +72,10 @@ func TestStashMissingScenesUpsertLinkAndFilter(t *testing.T) {
 	if linked[0].ReleaseVideoID != "ABC-123" || linked[0].ReleaseID != release.ID {
 		t.Fatalf("linked scene missing release join data: %+v", linked[0])
 	}
+	scraping, err := s.StashMissingScenes(ctx, domain.StashMissingFilter{Status: "scraping", Limit: 10})
+	if err != nil || len(scraping) != 1 || scraping[0].ID != matchedID {
+		t.Fatalf("scraping activity group returned %+v: %v", scraping, err)
+	}
 
 	// has_db_entry condition.
 	hasEntry, err := s.StashMissingScenes(ctx, domain.StashMissingFilter{
@@ -106,6 +110,13 @@ func TestStashMissingScenesUpsertLinkAndFilter(t *testing.T) {
 	})
 	if err != nil || len(byOCount) != 1 || byOCount[0].ID != unmatchedID {
 		t.Fatalf("o_count filter returned %+v: %v", byOCount, err)
+	}
+
+	byLastOCount, err := s.StashMissingScenes(ctx, domain.StashMissingFilter{
+		SearchExpression: `{"logic":"and","conditions":[{"field":"last_o_count","value":"2024-05-01","op":"after"}]}`, Limit: 10,
+	})
+	if err != nil || len(byLastOCount) != 1 || byLastOCount[0].ID != unmatchedID || byLastOCount[0].LastOCountAt != "2024-05-09T12:00:00Z" {
+		t.Fatalf("last_o_count filter returned %+v: %v", byLastOCount, err)
 	}
 
 	// AND/OR combination: studio OR tag, neither of which matches the
@@ -163,6 +174,10 @@ func TestStashMissingScenesEffectiveStatusReflectsLinkedReleaseDownloads(t *test
 	rows, err := s.StashMissingScenes(ctx, domain.StashMissingFilter{Status: "downloading", Limit: 10})
 	if err != nil || len(rows) != 1 || rows[0].ID != id {
 		t.Fatalf("downloading status filter returned %+v: %v", rows, err)
+	}
+	rows, err = s.StashMissingScenes(ctx, domain.StashMissingFilter{Status: "download", Limit: 10})
+	if err != nil || len(rows) != 1 || rows[0].ID != id {
+		t.Fatalf("download activity group returned %+v: %v", rows, err)
 	}
 }
 

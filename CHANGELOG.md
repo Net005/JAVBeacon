@@ -7,6 +7,25 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.76] - 2026-09-05
+
+### Added
+
+- Missing Library Files conditions can now filter on the date of the latest
+  StashApp O-count event. Missing scans persist the newest `o_history` value
+  in both SQLite and PostgreSQL, with an automatic compatibility fallback for
+  older StashApp schemas that do not expose O-history.
+- Missing Library Files now has its own persistent saved-filter presets,
+  separate from Release Library presets. A preset retains the selected state,
+  structured conditions, sort field and direction, and page size.
+
+### Changed
+
+- Missing Library Files states are grouped into compact Scraping and Download
+  families with contextual second-row state tabs, while All, Missing, and
+  Active Tasks remain dedicated tabs. Every tab includes a detailed hover
+  explanation of the records and workflow state it displays.
+
 ## [1.0.75] - 2026-09-05
 
 ### Changed

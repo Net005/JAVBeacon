@@ -47,12 +47,12 @@ const stashMissingEffectiveStatusExpr = `(CASE
 	ELSE 'retrieved'
 END)`
 
-const stashMissingSelect = `SELECT m.id,m.stash_scene_id,m.title,m.code,m.date,m.path,m.paths,m.o_counter,m.play_count,m.last_played_at,m.studio,m.tags,m.urls,m.javlibrary_url,m.release_id,COALESCE(r.video_id,''),COALESCE(r.title,''),COALESCE(r.monitor_download,0),m.status,m.message,` + stashMissingEffectiveStatusExpr + `,m.first_seen_at,m.last_scan_at,m.updated_at FROM stash_missing_scenes m LEFT JOIN releases r ON r.id=m.release_id`
+const stashMissingSelect = `SELECT m.id,m.stash_scene_id,m.title,m.code,m.date,m.path,m.paths,m.o_counter,m.play_count,m.last_played_at,m.last_o_count_at,m.studio,m.tags,m.urls,m.javlibrary_url,m.release_id,COALESCE(r.video_id,''),COALESCE(r.title,''),COALESCE(r.monitor_download,0),m.status,m.message,` + stashMissingEffectiveStatusExpr + `,m.first_seen_at,m.last_scan_at,m.updated_at FROM stash_missing_scenes m LEFT JOIN releases r ON r.id=m.release_id`
 
 func scanStashMissingScene(scanner interface{ Scan(...any) error }) (domain.StashMissingScene, error) {
 	var x domain.StashMissingScene
 	var paths, tags, urls string
-	err := scanner.Scan(&x.ID, &x.StashSceneID, &x.Title, &x.Code, &x.Date, &x.Path, &paths, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.Studio, &tags, &urls, &x.JavLibraryURL, &x.ReleaseID, &x.ReleaseVideoID, &x.ReleaseTitle, &x.ReleaseMonitorDownload, &x.Status, &x.Message, &x.EffectiveStatus, &x.FirstSeenAt, &x.LastScanAt, &x.UpdatedAt)
+	err := scanner.Scan(&x.ID, &x.StashSceneID, &x.Title, &x.Code, &x.Date, &x.Path, &paths, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.Studio, &tags, &urls, &x.JavLibraryURL, &x.ReleaseID, &x.ReleaseVideoID, &x.ReleaseTitle, &x.ReleaseMonitorDownload, &x.Status, &x.Message, &x.EffectiveStatus, &x.FirstSeenAt, &x.LastScanAt, &x.UpdatedAt)
 	if err == nil {
 		_ = json.Unmarshal([]byte(paths), &x.Paths)
 		_ = json.Unmarshal([]byte(tags), &x.Tags)
@@ -82,7 +82,7 @@ func numericConditionOp(op string) string {
 // stashMissingFilterCondition is one row of the Missing Library Files
 // Conditions dialog. Op is an optional numeric/date comparison operator
 // ("gte" default, "lte", "eq", "gt", "lt" for o_count/play_count; "before"/
-// "after" (default) for last_played) - fields the release Conditions
+// "after" (default) for last_played/last_o_count) - fields the release Conditions
 // builder's Exact/Wildcard toggle has no use for.
 type stashMissingFilterCondition struct {
 	Field    string `json:"field"`
@@ -188,6 +188,16 @@ func stashMissingConditionGroupClause(d Dialect, conditions []stashMissingFilter
 				parts = append(parts, `m.last_played_at<>'' AND m.last_played_at > ?`)
 			}
 			a = append(a, value)
+		case "last_o_count":
+			if value == "" {
+				continue
+			}
+			if strings.EqualFold(c.Op, "before") {
+				parts = append(parts, `m.last_o_count_at<>'' AND m.last_o_count_at < ?`)
+			} else {
+				parts = append(parts, `m.last_o_count_at<>'' AND m.last_o_count_at > ?`)
+			}
+			a = append(a, value)
 		case "has_javlibrary_url":
 			if value == "false" {
 				parts = append(parts, `m.javlibrary_url=''`)
@@ -225,8 +235,15 @@ func stashMissingFilterWhere(d Dialect, f domain.StashMissingFilter) (string, []
 	q := ` WHERE 1=1`
 	var a []any
 	if f.Status != "" {
-		q += ` AND ` + stashMissingEffectiveStatusExpr + ` = ?`
-		a = append(a, f.Status)
+		switch f.Status {
+		case "scraping":
+			q += ` AND ` + stashMissingEffectiveStatusExpr + ` IN ('retrieving','retrieve_failed','retrieved')`
+		case "download":
+			q += ` AND ` + stashMissingEffectiveStatusExpr + ` IN ('monitored','downloading','downloaded','failed')`
+		default:
+			q += ` AND ` + stashMissingEffectiveStatusExpr + ` = ?`
+			a = append(a, f.Status)
+		}
 	}
 	if f.SearchExpression != "" {
 		var expression stashMissingSearchExpression
@@ -345,14 +362,14 @@ func (s *SQLite) UpsertStashMissingScene(ctx context.Context, x domain.StashMiss
 	var id int64
 	err := s.db.QueryRowContext(ctx, `SELECT id FROM stash_missing_scenes WHERE stash_scene_id=?`, x.StashSceneID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		return s.dialect.InsertReturningID(ctx, s.db, `INSERT INTO stash_missing_scenes(stash_scene_id,title,code,date,path,paths,o_counter,play_count,last_played_at,studio,tags,urls,javlibrary_url,status,first_seen_at,last_scan_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			x.StashSceneID, x.Title, x.Code, x.Date, x.Path, string(paths), x.OCounter, x.PlayCount, x.LastPlayedAt, x.Studio, string(tags), string(urls), x.JavLibraryURL, "missing", now, now, now)
+		return s.dialect.InsertReturningID(ctx, s.db, `INSERT INTO stash_missing_scenes(stash_scene_id,title,code,date,path,paths,o_counter,play_count,last_played_at,last_o_count_at,studio,tags,urls,javlibrary_url,status,first_seen_at,last_scan_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			x.StashSceneID, x.Title, x.Code, x.Date, x.Path, string(paths), x.OCounter, x.PlayCount, x.LastPlayedAt, x.LastOCountAt, x.Studio, string(tags), string(urls), x.JavLibraryURL, "missing", now, now, now)
 	}
 	if err != nil {
 		return 0, err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE stash_missing_scenes SET title=?,code=?,date=?,path=?,paths=?,o_counter=?,play_count=?,last_played_at=?,studio=?,tags=?,urls=?,javlibrary_url=?,last_scan_at=?,updated_at=? WHERE id=?`,
-		x.Title, x.Code, x.Date, x.Path, string(paths), x.OCounter, x.PlayCount, x.LastPlayedAt, x.Studio, string(tags), string(urls), x.JavLibraryURL, now, now, id)
+	_, err = s.db.ExecContext(ctx, `UPDATE stash_missing_scenes SET title=?,code=?,date=?,path=?,paths=?,o_counter=?,play_count=?,last_played_at=?,last_o_count_at=?,studio=?,tags=?,urls=?,javlibrary_url=?,last_scan_at=?,updated_at=? WHERE id=?`,
+		x.Title, x.Code, x.Date, x.Path, string(paths), x.OCounter, x.PlayCount, x.LastPlayedAt, x.LastOCountAt, x.Studio, string(tags), string(urls), x.JavLibraryURL, now, now, id)
 	return id, err
 }
 
