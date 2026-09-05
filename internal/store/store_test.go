@@ -2035,6 +2035,49 @@ func TestDownloadActivityPaginatesFiltersAndCounts(t *testing.T) {
 	}
 }
 
+func TestHTTPDownloadSourceLinksRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "http-source-links.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	site, err := s.SaveSite(ctx, domain.Site{Title: "HTTP", Type: "Site", Name: "JavDB", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "HTTP-1", Title: "HTTP source links", Source: "JavDB"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := s.Releases(ctx, domain.ReleaseFilter{Search: "HTTP-1", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release lookup: rows=%d err=%v", len(releases), err)
+	}
+
+	download, err := s.SaveDownload(ctx, domain.Download{
+		ReleaseID:       releases[0].ID,
+		Provider:        "JavDB / Keepshare",
+		SourceType:      "HTTP",
+		SourceReference: "https://keepshare.org/share-id",
+		SourcePageURL:   "https://javdb.com/v/release-id",
+		Query:           "HTTP-1",
+		Transport:       "http",
+		Status:          "queued",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.Downloads(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != download.ID || rows[0].SourceReference != "https://keepshare.org/share-id" || rows[0].SourcePageURL != "https://javdb.com/v/release-id" {
+		t.Fatalf("HTTP source links did not round-trip: %+v", rows)
+	}
+}
+
 // TestDownloadFilenamePatternExcludedRoundTripsAndFilters covers TODO-2.0
 // Task A's structured filename-pattern-exclusion flag: SaveDownload must
 // persist it (both on insert and on a later update, since qBittorrent

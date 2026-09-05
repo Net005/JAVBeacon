@@ -234,7 +234,7 @@ version is shown at the bottom of the web sidebar near **Sign out**.
 1. Sign in and replace the default credentials.
 2. Confirm **Settings → Scraping → Byparr / FlareSolverr** shows `http://byparr:8191/v1` for Compose, or the reachable `/v1` endpoint you configured for a standalone install. Byparr (or a compatible FlareSolverr service) is required for JavLibrary scraping.
 3. Add monitoring sources under **Sites** and choose whether each source should notify, add releases to the Watchlist, or automate searches. JavLibrary URLs must include `&mode=2` to include future releases.
-4. Open **Settings → Downloads** and configure the search URL template, accepted filename patterns, and qBittorrent connection.
+4. Open **Settings → Downloads** and configure the search URL template, preferred filename patterns, and qBittorrent connection.
 5. Optionally configure **Settings → StashApp** for local-library synchronization, Watchlist-tag synchronization, missing-file scans, and path remapping.
 6. Review automation schedules before enabling unattended scraping or downloading.
 
