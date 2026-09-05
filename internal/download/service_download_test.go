@@ -3,6 +3,8 @@ package download
 import (
 	"context"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -137,6 +139,83 @@ func TestDownloadForcedOverrideBypassesFilenameRejection(t *testing.T) {
 	}
 	if !strings.Contains(forced.MatchReason, "manually forced") {
 		t.Fatalf("forced download history does not record the manual override: %+v", forced)
+	}
+}
+
+func TestManualLocalRedownloadRequiresExplicitIgnoreLocalOverride(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "local-redownload.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"accepted_patterns": "trusted@"}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "PRED-891", Title: "Test", Source: "JavLibrary", Released: true})
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Search: "PRED-891", Limit: 1})
+	if len(releases) != 1 {
+		t.Fatalf("release setup failed: %+v", releases)
+	}
+	if err := st.SetStashState(ctx, releases[0].ID, true, "stash-scene-891"); err != nil {
+		t.Fatal(err)
+	}
+	release, err := st.Release(ctx, releases[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, time.Second, slog.Default())
+	result := domain.SearchResult{Provider: "Sukebei/Nyaa", Title: "trusted@PRED-891", Link: "magnet:?xt=fake"}
+
+	skipped, err := service.Download(ctx, release, result, "Manual Search", "test")
+	if err != nil || skipped.Status != "skipped" || skipped.MatchReason != "release already exists in StashApp" {
+		t.Fatalf("ordinary manual download should preserve the local guard: %+v err=%v", skipped, err)
+	}
+
+	result.IgnoreLocal = true
+	forced, err := service.Download(ctx, release, result, "Manual Search", "test")
+	if err == nil || forced.Status != "failed" || forced.Error != "qBittorrent URL is not configured" {
+		t.Fatalf("explicit local override did not reach the download client: %+v err=%v", forced, err)
+	}
+	if forced.FilenamePatternExcluded || !strings.Contains(forced.MatchReason, "existing StashApp match") {
+		t.Fatalf("local override was not recorded independently from filename matching: %+v", forced)
+	}
+}
+
+func TestHTTPDownloadDoesNotRequireQBittorrent(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "http-with-qb-down.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	media := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("video"))
+	}))
+	defer media.Close()
+	if err := st.SaveSettings(ctx, map[string]string{
+		"qb_url":                  "http://127.0.0.1:1",
+		"http_download_directory": t.TempDir(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "HTTP-891", Title: "Test", Source: "JavLibrary", Released: true})
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Search: "HTTP-891", Limit: 1})
+	if len(releases) != 1 {
+		t.Fatalf("release setup failed: %+v", releases)
+	}
+	service := New(st, time.Second, slog.Default())
+	queued, err := service.Download(ctx, releases[0], domain.SearchResult{
+		Provider:  "JavDB / Keepshare",
+		Title:     "HTTP-891.mp4",
+		Link:      media.URL,
+		Transport: "http",
+		Accepted:  true,
+	}, "Manual Search", media.URL)
+	if err != nil || queued.Status != "queued" || queued.Transport != "http" {
+		t.Fatalf("HTTP download incorrectly depended on qBittorrent: %+v err=%v", queued, err)
 	}
 }
 
