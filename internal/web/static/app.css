@@ -1275,11 +1275,12 @@ html.releaseOverlayOpen,body.releaseOverlayOpen{overflow:hidden!important;oversc
 .downloadScheduleGrid{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
 .downloadScheduleGrid>.automationPanel{margin:0}
 .downloadActivityBar{display:flex!important}
+.logToolbar>button{align-self:center;margin-top:14px;min-height:36px;padding:7px 10px;font-size:11px}.logEntry{grid-template-columns:82px 82px minmax(180px,1fr) auto}.logCopy{min-height:28px;padding:4px 7px;font:10px/1.2 Inter,system-ui,sans-serif}@media(max-width:650px){.logToolbar>button{margin-top:8px}.logEntry{grid-template-columns:70px minmax(0,1fr) auto}.logCopy{grid-column:3;grid-row:1}}
 .downloadQuickSort{display:flex;align-items:center;gap:7px;margin-left:auto;color:var(--muted);font-size:11px;white-space:nowrap}
 .downloadQuickSort select{min-width:132px}
 .downloadQuickSort button{min-width:40px;padding-inline:10px}
 .downloadTable.bulkSelectable .downloadTableRow{min-height:max(96px,calc(var(--download-cover) * .676 + 20px))}
-.downloadFailureDetail{grid-column:1/-1;display:grid;gap:3px;padding:8px 10px;border:1px solid #783743;border-radius:7px;background:#251319;color:#ffc0c8;font-size:10px;line-height:1.45;overflow-wrap:anywhere;white-space:pre-wrap}.downloadFailureDetail b{color:#ff8e9d;font-size:9px;letter-spacing:.65px;text-transform:uppercase}.downloadFailureDetail span{min-width:0}
+.downloadFailureDetail{grid-column:1/-1;display:grid;gap:3px;min-width:0;margin-left:calc(var(--download-cover) + 38px);padding:8px 10px;border:1px solid #783743;border-radius:7px;background:#251319;color:#ffc0c8;font-size:10px;line-height:1.45;overflow-wrap:anywhere;white-space:pre-wrap}.downloadFailureDetail b{color:#ff8e9d;font-size:9px;letter-spacing:.65px;text-transform:uppercase}.downloadFailureDetail span{min-width:0}@media(max-width:650px){.downloadFailureDetail{margin-left:0}}
 
 /* Release Details action controls use one consistent icon/text baseline and
    explicit checkbox state. Disabled controls keep a restrained color tint;

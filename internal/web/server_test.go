@@ -435,9 +435,30 @@ func TestDownloadActivityShowsFullFailureReason(t *testing.T) {
 			t.Fatalf("Download Activity is missing failure-detail marker %q", marker)
 		}
 	}
-	for _, marker := range []string{`.downloadFailureDetail{grid-column:1/-1`, `white-space:pre-wrap`, `overflow-wrap:anywhere`} {
+	for _, marker := range []string{`.downloadFailureDetail{grid-column:1/-1`, `margin-left:calc(var(--download-cover) + 38px)`, `white-space:pre-wrap`, `overflow-wrap:anywhere`, `@media(max-width:650px){.downloadFailureDetail{margin-left:0}}`} {
 		if !strings.Contains(string(css), marker) {
 			t.Fatalf("failure-detail styling is missing %q", marker)
+		}
+	}
+}
+
+func TestLiveLogSupportsEntryCopyAndFilteredExport(t *testing.T) {
+	markup, err := assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{`id="exportCurrentLog"`, `Export current log`} {
+		if !strings.Contains(string(markup), marker) {
+			t.Fatalf("Logs view is missing marker %q", marker)
+		}
+	}
+	for _, marker := range []string{`function copyLogEntry(seq)`, `function exportCurrentLogFile()`, `filteredLogRows()`, `Copy this complete log entry`} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("Logs behavior is missing marker %q", marker)
 		}
 	}
 }

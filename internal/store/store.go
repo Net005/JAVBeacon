@@ -83,6 +83,7 @@ type Store interface {
 	SaveDownload(context.Context, domain.Download) (domain.Download, error)
 	Downloads(context.Context, string) ([]domain.Download, error)
 	DownloadActivity(context.Context, domain.DownloadFilter) ([]domain.Download, int, error)
+	DeleteDownload(context.Context, int64) (int64, error)
 	DeleteDownloadsForRelease(context.Context, int64) (int64, error)
 	PathMappings(context.Context) ([]domain.PathMapping, error)
 	SavePathMapping(context.Context, domain.PathMapping) (domain.PathMapping, error)
@@ -3166,6 +3167,14 @@ func (s *SQLite) DeleteDownloadsForRelease(ctx context.Context, releaseID int64)
 		return 0, err
 	}
 	return deleted, tx.Commit()
+}
+
+func (s *SQLite) DeleteDownload(ctx context.Context, downloadID int64) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM downloads WHERE id=?`, downloadID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (s *SQLite) PathMappings(ctx context.Context) ([]domain.PathMapping, error) {
