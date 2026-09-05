@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -43,15 +44,145 @@ func TestDiscoverPikPakShareIDParsesDirectPlayerURLWithoutRequest(t *testing.T) 
 }
 
 func TestReleaseIDMatchesTextIsCaseInsensitiveAndRejectsHalfMatches(t *testing.T) {
-	for _, value := range []string{"ADN-803", "adn803.mp4", "[source] AdN_803-U.mp4"} {
-		if !releaseIDMatchesText(value, "ADN-803") {
+	for _, value := range []string{"ADN-803", "adn803.mp4", "[source] AdN_803-U.mp4", "Pred 899", "pred_899", "PRED.899", "pReD-899"} {
+		releaseID := "ADN-803"
+		if strings.Contains(strings.ToUpper(value), "PRED") || strings.Contains(value, "Pred") {
+			releaseID = "PRED-899"
+		}
+		if !releaseIDMatchesText(value, releaseID) {
 			t.Fatalf("expected %q to match", value)
 		}
 	}
-	for _, value := range []string{"ADN-8030.mp4", "XADN-803.mp4", "ADN-80.mp4"} {
-		if releaseIDMatchesText(value, "ADN-803") {
+	for _, value := range []string{"ADN-8030.mp4", "XADN-803.mp4", "ADN-80.mp4", "PRED-8990", "PRED-899A", "XPRED-899"} {
+		releaseID := "ADN-803"
+		if strings.Contains(value, "PRED") {
+			releaseID = "PRED-899"
+		}
+		if releaseIDMatchesText(value, releaseID) {
 			t.Fatalf("expected half-match %q to be rejected", value)
 		}
+	}
+}
+
+func TestReleaseIDsEqualIgnoresCaseAndCommonSeparators(t *testing.T) {
+	for _, candidate := range []string{"pred-899", "PrEd-899", "Pred 899", "pred_899", "PRED.899"} {
+		if !releaseIDsEqual(candidate, "PRED-899") {
+			t.Fatalf("expected %q to canonically match PRED-899", candidate)
+		}
+	}
+	for _, candidate := range []string{"PRED-899A", "PRED-8990", "PRED-899-U"} {
+		if releaseIDsEqual(candidate, "PRED-899") {
+			t.Fatalf("expected %q to remain a distinct ID", candidate)
+		}
+	}
+}
+
+func javDBFixtureProvider(t *testing.T, handler http.HandlerFunc) (*javDBProvider, func()) {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	provider := &javDBProvider{client: server.Client(), baseURL: server.URL}
+	provider.inspectCandidate = func(_ context.Context, _ string, releaseID string) (pikPakFile, []pikPakFile, error) {
+		selected := pikPakFile{ID: "video", Name: "4k688.com@" + releaseID + ".mp4", Size: "4294967296"}
+		return selected, []pikPakFile{selected}, nil
+	}
+	return provider, server.Close
+}
+
+func javDBSearchPage(id, date, detailPath string) string {
+	return `<html><body><div class="item"><a class="box" href="` + detailPath + `"><strong>` + id + `</strong><div class="meta">` + date + `</div></a></div></body></html>`
+}
+
+func TestJavDBSearchMatchesPREDSpacingAndPRPMExactDate(t *testing.T) {
+	for _, test := range []struct {
+		name, requested, displayed string
+	}{
+		{name: "PRED spacing", requested: "PRED-899", displayed: "ID: Pred 899"},
+		{name: "PRPM exact", requested: "PRPM-002", displayed: "ID: PRPM-002"},
+		{name: "PRPM lowercase", requested: "PRPM-002", displayed: "ID: prpm-002"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider, closeServer := javDBFixtureProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/search":
+					_, _ = w.Write([]byte(javDBSearchPage(test.displayed, "2026-09-15", "/v/exact")))
+				case "/v/exact":
+					_, _ = w.Write([]byte(`<html><body><div>` + test.displayed + `</div><section class="new-download-layout"><a href="https://keepshare.org/share">Get file</a></section></body></html>`))
+				default:
+					http.NotFound(w, r)
+				}
+			})
+			defer closeServer()
+			rows, err := provider.Search(context.Background(), domain.Release{VideoID: test.requested, ReleaseDate: "2026-09-15"})
+			if err != nil || len(rows) != 1 {
+				t.Fatalf("rows=%+v err=%v", rows, err)
+			}
+			if rows[0].MatchedFile != "4k688.com@"+test.requested+".mp4" {
+				t.Fatalf("candidate inspection did not run: %+v", rows[0])
+			}
+		})
+	}
+}
+
+func TestJavDBSearchClassifiesPipelineFailures(t *testing.T) {
+	tests := []struct {
+		name, requested, storedDate string
+		handler                     http.HandlerFunc
+		want                        string
+	}{
+		{name: "search forbidden", requested: "PRPM-002", storedDate: "2026-09-15", want: "search request failed", handler: func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "blocked", http.StatusForbidden) }},
+		{name: "search challenge", requested: "PRPM-002", storedDate: "2026-09-15", want: "challenge page", handler: func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`<title>Just a moment...</title><div>cf-chl-widget</div>`))
+		}},
+		{name: "no parsable cards", requested: "PRPM-002", storedDate: "2026-09-15", want: "no parsable release results", handler: func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`<html><body>ordinary empty result markup</body></html>`))
+		}},
+		{name: "no exact ID", requested: "PRPM-002", storedDate: "2026-09-15", want: "no exact release ID match", handler: func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(javDBSearchPage("PRPM-003", "2026-09-15", "/v/wrong")))
+		}},
+		{name: "date mismatch", requested: "PRPM-002", storedDate: "2026-09-15", want: "release date is incompatible", handler: func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(javDBSearchPage("PRPM-002", "2025-01-01", "/v/date")))
+		}},
+		{name: "detail forbidden", requested: "PRPM-002", storedDate: "2026-09-15", want: "detail page fetch failed", handler: func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/search" {
+				_, _ = w.Write([]byte(javDBSearchPage("PRPM-002", "2026-09-15", "/v/blocked")))
+				return
+			}
+			http.Error(w, "blocked", http.StatusForbidden)
+		}},
+		{name: "download parser missing", requested: "PRPM-002", storedDate: "2026-09-15", want: "download section could not be parsed", handler: func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/search" {
+				_, _ = w.Write([]byte(javDBSearchPage("PRPM-002", "2026-09-15", "/v/plain")))
+				return
+			}
+			_, _ = w.Write([]byte(`<html><body>ID: PRPM-002 ordinary detail content</body></html>`))
+		}},
+		{name: "zero links", requested: "PRPM-002", storedDate: "2026-09-15", want: "no downloadable HTTP links", handler: func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/search" {
+				_, _ = w.Write([]byte(javDBSearchPage("PRPM-002", "2026-09-15", "/v/no-links")))
+				return
+			}
+			_, _ = w.Write([]byte(`<html><body>ID: PRPM-002 <section class="download-list"><button>Download unavailable</button></section></body></html>`))
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider, closeServer := javDBFixtureProvider(t, test.handler)
+			defer closeServer()
+			_, err := provider.Search(context.Background(), domain.Release{VideoID: test.requested, ReleaseDate: test.storedDate})
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(test.want)) {
+				t.Fatalf("error=%v, want stage %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestJavDBDateTolerance(t *testing.T) {
+	stored := parseJavDBDate("2026-09-15")
+	if delta := calendarDeltaDays(stored, parseJavDBDate("Released date: 2026-09-10")); delta != -5 {
+		t.Fatalf("within-tolerance delta=%d", delta)
+	}
+	if delta := calendarDeltaDays(stored, parseJavDBDate("2027-01-01")); delta <= 60 {
+		t.Fatalf("outside-tolerance delta=%d", delta)
 	}
 }
 
@@ -70,6 +201,78 @@ func TestJavDBCandidatesRequireExactIDAndCarryFileSize(t *testing.T) {
 	}
 	if rows[0].SizeBytes == 0 || rows[1].SizeBytes == 0 {
 		t.Fatal("expected parsed byte sizes")
+	}
+}
+
+func TestJavDBDownloadDiscoverySurvivesAlternateMarkupAndDeduplicatesLinks(t *testing.T) {
+	doc, err := html.Parse(strings.NewReader(`<html><body>
+		<section data-role="downloads"><article><b>PRPM 002</b><a title="PRPM.002 mirror" href="//keepshare.org/one">Web file</a></article></section>
+		<div class="completely-new-wrapper"><a href="https://keepshare.org/one">Duplicate</a></div>
+		<p><a download="prpm_002.mp4" href="https://keepshare.cc/two">Alternate host</a></p>
+		<table class="help"><tr><td><a href="https://mypikpak.com">PikPak help</a></td></tr></table>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery := discoverJavDBDownloads(doc, "https://javdb.com/v/example", "PRPM-002")
+	if !discovery.downloadSectionFound || len(discovery.rows) != 2 {
+		t.Fatalf("alternate markup discovery=%+v", discovery)
+	}
+	if discovery.rows[0].Link != "https://keepshare.org/one" || discovery.rows[1].Link != "https://keepshare.cc/two" {
+		t.Fatalf("unexpected deduplicated links: %+v", discovery.rows)
+	}
+}
+
+func TestParseJavDBDetailIDSupportsLiveClipboardMarkupAndSpacing(t *testing.T) {
+	for _, fixture := range []string{
+		`<html><body><a data-clipboard-text="PRPM-002">copy</a></body></html>`,
+		`<html><body><h2><strong>Pred 899</strong><strong>Title</strong></h2></body></html>`,
+	} {
+		doc, err := html.Parse(strings.NewReader(fixture))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id := parseJavDBDetailID(doc); !releaseIDsEqual(id, map[bool]string{true: "PRPM-002", false: "PRED-899"}[strings.Contains(fixture, "PRPM")]) {
+			t.Fatalf("detail ID %q was not parsed canonically from %s", id, fixture)
+		}
+	}
+}
+
+func TestJavDBSearchFollowsSeparateDownloadAction(t *testing.T) {
+	provider, closeServer := javDBFixtureProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search":
+			_, _ = w.Write([]byte(javDBSearchPage("PRPM-002", "2026-09-15", "/v/prpm")))
+		case "/v/prpm":
+			_, _ = w.Write([]byte(`<html><body>ID: PRPM-002 <a class="download-action" href="/download/prpm">Download</a></body></html>`))
+		case "/download/prpm":
+			_, _ = w.Write([]byte(`<html><body><aside><a href="https://keepshare.org/prpm">PRPM 002 file</a></aside></body></html>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	defer closeServer()
+	rows, err := provider.Search(context.Background(), domain.Release{VideoID: "PRPM-002", ReleaseDate: "2026-09-15"})
+	if err != nil || len(rows) != 1 || rows[0].Link != "https://keepshare.org/prpm" {
+		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
+}
+
+func TestJavDBSearchSurfacesKeepshareInspectionFailureOnCandidate(t *testing.T) {
+	provider, closeServer := javDBFixtureProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search" {
+			_, _ = w.Write([]byte(javDBSearchPage("PRPM-002", "2026-09-15", "/v/prpm")))
+			return
+		}
+		_, _ = w.Write([]byte(`<html><body>ID: PRPM-002 <a href="https://keepshare.org/expired">PRPM-002</a></body></html>`))
+	})
+	defer closeServer()
+	provider.inspectCandidate = func(context.Context, string, string) (pikPakFile, []pikPakFile, error) {
+		return pikPakFile{}, nil, errors.New("share expired")
+	}
+	rows, err := provider.Search(context.Background(), domain.Release{VideoID: "PRPM-002", ReleaseDate: "2026-09-15"})
+	if err != nil || len(rows) != 1 || !strings.Contains(rows[0].Reason, "share expired") {
+		t.Fatalf("rows=%+v err=%v", rows, err)
 	}
 }
 
