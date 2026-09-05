@@ -1673,6 +1673,44 @@ func TestBulkSetReleaseFlagsAppliesIgnoreLocalForceDownloadFlag(t *testing.T) {
 	}
 }
 
+func TestBulkSetReleaseDownloadOverridesReplacesEverySelectedPolicy(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "bulk-download-overrides.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, _ := s.SaveSite(ctx, domain.Site{Title: "Bulk overrides", Type: "Site", Name: "GIGA", Enabled: true})
+	for _, videoID := range []string{"OVERRIDE-1", "OVERRIDE-2"} {
+		_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: "T", Source: "GIGA"})
+	}
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("release setup failed: rows=%+v err=%v", rows, err)
+	}
+	ids := []int64{rows[0].ID, rows[1].ID}
+	n, err := s.BulkSetReleaseDownloadOverrides(ctx, ids, "HTTP", true, true, true)
+	if err != nil || n != 2 {
+		t.Fatalf("expected two updated rows, got n=%d err=%v", n, err)
+	}
+	for _, id := range ids {
+		got, getErr := s.Release(ctx, id)
+		if getErr != nil || got.DownloadMethodOverride != "http" || !got.AllowNonPreferredFilenames || !got.IgnoreLocalForceDownload || !got.IgnoreDownloadHistory {
+			t.Fatalf("download overrides were not persisted together: %+v err=%v", got, getErr)
+		}
+	}
+	if _, err := s.BulkSetReleaseDownloadOverrides(ctx, ids, "torrent", false, false, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Release(ctx, ids[0])
+	if err != nil || got.DownloadMethodOverride != "torrent" || got.AllowNonPreferredFilenames || got.IgnoreLocalForceDownload || got.IgnoreDownloadHistory {
+		t.Fatalf("unchecked overrides must clear previous values: %+v err=%v", got, err)
+	}
+	if _, err := s.BulkSetReleaseDownloadOverrides(ctx, ids, "fallback", false, false, false); err == nil {
+		t.Fatal("expected invalid method override to be rejected")
+	}
+}
+
 func TestNotificationDeduplication(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "notify.db"))

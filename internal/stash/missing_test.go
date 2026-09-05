@@ -507,7 +507,7 @@ func TestApplySelectionMonitorAndDownloadSearchesInBackground(t *testing.T) {
 	if status.Monitored != 1 || status.NotFound != 1 || status.Found != 0 || status.Failed != 0 {
 		t.Fatalf("unexpected apply status: %+v", status)
 	}
-	if status.Processed != 1 || len(status.Results) != 1 || status.Results[0].Status != "not_found" || status.Results[0].Reason != "Search provider returned no results" {
+	if status.Processed != 1 || len(status.Results) != 1 || status.Results[0].Status != "not_found" || status.Results[0].Reason != "Torrent → HTTP fallback: Search providers returned no results" {
 		t.Fatalf("expected a detailed terminal not-found task, got %+v", status)
 	}
 	release, err := st.Release(ctx, releases[0].ID)

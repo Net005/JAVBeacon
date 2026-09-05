@@ -131,6 +131,12 @@ func downloadMethodLabel(method downloadMethod) string {
 }
 
 func effectiveDownloadMethod(settings map[string]string, release domain.Release) downloadMethod {
+	switch strings.ToLower(strings.TrimSpace(release.DownloadMethodOverride)) {
+	case "torrent":
+		return downloadTorrentOnly
+	case "http":
+		return downloadHTTPOnly
+	}
 	return normalizeDownloadMethod(settings["default_download_method"])
 }
 
@@ -795,7 +801,7 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 		}
 		x.MatchReason = matchReason
 	}
-	forceRequested := result.Forced || result.IgnoreLocal || r.IgnoreLocalForceDownload
+	forceRequested := result.Forced || result.IgnoreLocal || r.IgnoreDownloadHistory
 	if reason, existingID, replaceable, e := s.duplicate(ctx, r, result.IgnoreLocal || r.IgnoreLocalForceDownload, forceRequested, "torrent"); e != nil {
 		x.Status = "failed"
 		x.Error = e.Error()
@@ -904,7 +910,7 @@ func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, resul
 	// stored local/download state here; contacting qBittorrent would make a
 	// healthy direct download fail merely because the unrelated torrent client
 	// is offline.
-	forceRequested := result.Forced || result.IgnoreLocal || r.IgnoreLocalForceDownload
+	forceRequested := result.Forced || result.IgnoreLocal || r.IgnoreDownloadHistory
 	if reason, existingID, replaceable, err := s.duplicateStored(ctx, r, result.IgnoreLocal || r.IgnoreLocalForceDownload, forceRequested, "http"); err != nil {
 		return domain.Download{}, err
 	} else if reason != "" {
@@ -1511,6 +1517,9 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 	}
 	method := effectiveDownloadMethod(settings, r)
 	methodLabel := downloadMethodLabel(method)
+	if strings.TrimSpace(r.DownloadMethodOverride) != "" {
+		methodLabel += " (release override)"
+	}
 	preferEquivalentHTTP := settings["prefer_http_equivalent"] != "false"
 	httpConfigured := strings.TrimSpace(settings["http_download_directory"]) != ""
 
@@ -1884,7 +1893,7 @@ func (s *Service) runMonitoredSearch(ctx context.Context, schedule string, getJo
 		// A forced monitored search must reach provider selection so the
 		// transport-specific guard can ignore history but retain an active
 		// download of the same category.
-		if !release.IgnoreLocalForceDownload {
+		if !release.IgnoreLocalForceDownload && !release.IgnoreDownloadHistory {
 			if reason, _, _, err := s.duplicate(ctx, release, false, false, "torrent"); err != nil {
 				job.Failed++
 				job.Error = err.Error()

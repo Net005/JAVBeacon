@@ -189,10 +189,27 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`screenshotLightbox.querySelector('.screenshotLightboxClose').onclick=closeScreenshotLightbox`,
 		`$('#releaseMobileClose').onclick=closeReleaseDetails`,
 		`function lockDesktopReleaseScroll(){return matchMedia('(min-width:651px) and (pointer:fine)').matches}`,
+		`downloadLoadRequest=0`,
+		`request!==downloadLoadRequest||downloadTransport!==requestedTransport||downloadStatus!==requestedStatus`,
+		`downloadList.dataset.transport=requestedTransport`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("embedded app.js is missing %q", marker)
 		}
+	}
+	preferenceLoader := string(javascript)
+	prefsStart := strings.Index(preferenceLoader, "async function loadPreferences()")
+	if prefsStart < 0 {
+		t.Fatal("could not locate preference initialization")
+	}
+	prefsEnd := strings.Index(preferenceLoader[prefsStart:], "async function loadSettings")
+	if prefsEnd < 0 {
+		t.Fatal("could not locate the end of preference initialization")
+	}
+	prefsBody := preferenceLoader[prefsStart : prefsStart+prefsEnd]
+	monitorIndex, viewIndex := strings.Index(prefsBody, "monitoringTab("), strings.Index(prefsBody, "switchView(")
+	if monitorIndex < 0 || viewIndex < 0 || monitorIndex > viewIndex {
+		t.Fatal("download transport must be restored before the Monitoring view starts its first activity request")
 	}
 	if count := strings.Count(string(javascript), "settingsForm.onsubmit="); count != 1 {
 		t.Fatalf("settings form has %d submit handlers, want one atomic handler", count)
@@ -1093,6 +1110,32 @@ func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testin
 			if !strings.Contains(text, marker) {
 				t.Errorf("%s missing %q", name, marker)
 			}
+		}
+	}
+}
+
+func TestMonitoredBulkDownloadOverrideDialogIncludesIndependentPolicies(t *testing.T) {
+	body, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, marker := range []string{
+		`id="monitoredBulkOverrides"`,
+		`id="monitoredOverrideMethod"`,
+		`<option value="torrent">Torrent only</option>`,
+		`<option value="http">HTTP only</option>`,
+		`id="monitoredOverrideNonPreferred"`,
+		`id="monitoredOverrideLocal"`,
+		`id="monitoredOverrideHistory"`,
+		`download_method_override:$('#monitoredOverrideMethod').value`,
+		`ignore_download_history:$('#monitoredOverrideHistory').checked`,
+		`api('/releases/bulk/monitor-download'`,
+		`queued for forced Search + Download`,
+		`configuredDownloadMethod(release=null)`,
+	} {
+		if !strings.Contains(text, marker) {
+			t.Errorf("monitoring bulk override UI missing %q", marker)
 		}
 	}
 }
