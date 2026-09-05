@@ -1969,6 +1969,15 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 			s.problem(w, http.StatusInternalServerError, releaseErr.Error())
 			return
 		}
+		// Apply the submitted choices to the immediate background run as well as
+		// persisting them. This keeps a forced monitored action authoritative even
+		// if a store implementation returns a cached/pre-update release snapshot.
+		if payload.DownloadMethodOverride != nil {
+			release.DownloadMethodOverride = *payload.DownloadMethodOverride
+			release.AllowNonPreferredFilenames = payload.AllowNonPreferredFilenames
+			release.IgnoreLocalForceDownload = payload.IgnoreLocalForceDownload
+			release.IgnoreDownloadHistory = payload.IgnoreDownloadHistory
+		}
 		selected = append(selected, release)
 		s.broadcastRelease(release)
 	}
@@ -1985,23 +1994,36 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 	go func(releases []domain.Release, allowNonPreferred bool, sourceType string) {
 		defer resetRunning()
 		background := context.Background()
-		downloaded, skipped, failed := 0, 0, 0
+		queued, skipped, notFound, failed := 0, 0, 0, 0
 		for _, release := range releases {
-			started, searchErr := s.downloads.SearchAndDownloadNow(background, release, sourceType, allowNonPreferred)
+			outcome, searchErr := s.downloads.SearchAndDownloadDetailed(background, release, sourceType, allowNonPreferred)
 			switch {
 			case searchErr != nil:
 				failed++
 				if s.log != nil {
-					s.log.Error("Release Library bulk search and download failed", "release_id", release.ID, "video_id", release.VideoID, "error", searchErr)
+					s.log.Error(sourceType+" search and download failed", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "error", searchErr, "reason", outcome.Reason)
 				}
-			case started:
-				downloaded++
-			default:
+			case !outcome.Found:
+				notFound++
+				if s.log != nil {
+					s.log.Warn(sourceType+" search found no downloadable candidate", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "reason", outcome.Reason)
+				}
+			case outcome.Download.Status == "skipped":
 				skipped++
+				if s.log != nil {
+					s.log.Warn(sourceType+" search and download skipped", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "download_status", outcome.Download.Status, "reason", outcome.Reason)
+				}
+			case outcome.Download.Status == "failed":
+				failed++
+				if s.log != nil {
+					s.log.Error(sourceType+" download failed", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "reason", outcome.Reason)
+				}
+			default:
+				queued++
 			}
 		}
 		if s.log != nil {
-			s.log.Info("Release Library bulk monitor and download completed", "selected", len(releases), "downloaded", downloaded, "skipped", skipped, "failed", failed)
+			s.log.Info(sourceType+" search and download completed", "selected", len(releases), "queued", queued, "not_found", notFound, "skipped", skipped, "failed", failed)
 		}
 	}(selected, payload.AllowNonPreferredFilenames, sourceType)
 

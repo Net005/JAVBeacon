@@ -70,7 +70,7 @@ function setupReleaseChromePointerVisibility(){
 }
 setupReleaseChromePointerVisibility();
 
-let sites=[],releases=[],releasesGrandTotal=null,settings={},presets=[],releaseNavIDs=[],releaseNavFromGrid=false,activeReleaseData=null,downloadStatus='downloading',downloadTransport='torrent',notificationType='new_release',notificationRows=[],notificationSelection=new Set(),saveTimer,searchTimer,jobPollTimer,jobPollBusy=false,lastJobRunning=false,logRows=[],activeReleaseID=0,downloadLoading=false,downloadLoadRequest=0,downloadPage=0,downloadSearchTimer,monitoredPage=0,monitoredSearchTimer,notificationPage=0,logOldestSeq=0,logNewestSeq=0,logHasMoreOlder=false,logLoadingOlder=false;
+let sites=[],releases=[],releasesGrandTotal=null,settings={},presets=[],releaseNavIDs=[],releaseNavFromGrid=false,releaseNavSource='',monitoredNavState=null,activeReleaseData=null,downloadStatus='downloading',downloadTransport='torrent',notificationType='new_release',notificationRows=[],notificationSelection=new Set(),saveTimer,searchTimer,jobPollTimer,jobPollBusy=false,lastJobRunning=false,logRows=[],activeReleaseID=0,downloadLoading=false,downloadLoadRequest=0,downloadPage=0,downloadSearchTimer,monitoredPage=0,monitoredSearchTimer,notificationPage=0,logOldestSeq=0,logNewestSeq=0,logHasMoreOlder=false,logLoadingOlder=false;
 // Release Library pagination state (fuzzy infinite scroll). The backend
 // caps a single /releases page at 500 rows and previously the frontend
 // always requested exactly that many with no offset, so any library past
@@ -605,6 +605,24 @@ let downloadSelected=new Set(),downloadVisibleIDs=[];
 function toggleMonitoredSelect(id,checked){if(checked)monitoredSelected.add(id);else monitoredSelected.delete(id);renderMonitoredBulkBar()}
 function toggleMonitoredSelectAll(checked){monitoredVisibleIDs.forEach(id=>{if(checked)monitoredSelected.add(id);else monitoredSelected.delete(id)});loadMonitoredReleases()}
 function renderMonitoredBulkBar(){const n=monitoredSelected.size;monitoredBulkBar.hidden=n===0;monitoredSelectedCount.textContent=`${n} selected`}
+function openMonitoredRelease(id){
+  const{params,limit}=monitoredQuery(),reportedTotal=Number.parseInt(monitoredReleaseCount.textContent,10),total=Number.isFinite(reportedTotal)?reportedTotal:monitoredPage*limit+monitoredVisibleIDs.length,offset=monitoredPage*limit,ids=new Array(total);
+  monitoredVisibleIDs.forEach((releaseID,index)=>{ids[offset+index]=releaseID});
+  params.delete('limit');params.delete('offset');
+  monitoredNavState={params:new URLSearchParams(params),limit,total,loading:new Map()};
+  openRelease(id,true,ids,true,'monitored')
+}
+async function loadMonitoredNavigationIndex(index){
+  const state=monitoredNavState;
+  if(!state||index<0||index>=state.total||releaseNavIDs[index])return releaseNavIDs[index];
+  const offset=Math.floor(index/state.limit)*state.limit;
+  if(!state.loading.has(offset)){
+    const params=new URLSearchParams(state.params);params.set('limit',String(state.limit));params.set('offset',String(offset));
+    state.loading.set(offset,api('/releases?'+params.toString()).then(rows=>{if(monitoredNavState!==state||releaseNavSource!=='monitored')return;const items=Array.isArray(rows)?rows:(rows.items||[]);items.forEach((release,itemIndex)=>{releaseNavIDs[offset+itemIndex]=release.id});updateReleaseNav()}).finally(()=>state.loading.delete(offset)))
+  }
+  await state.loading.get(offset);
+  return releaseNavIDs[index]
+}
 async function monitoredBulkAction(patch,confirmMessage){if(!monitoredSelected.size)return;if(confirmMessage&&!confirm(confirmMessage))return;const ids=[...monitoredSelected];try{const x=await api('/releases/bulk',{method:'PATCH',body:JSON.stringify({ids,...patch})});toast(`Updated ${x.updated??ids.length} release${ids.length===1?'':'s'}`);monitoredSelected.clear();await loadMonitoredReleases()}catch(e){toast(e.message)}}
 function setupMonitoredDownloadOverrides(){
   [monitoredBulkAllowOn,monitoredBulkAllowOff,monitoredBulkIgnoreLocalOn,monitoredBulkIgnoreLocalOff].forEach(button=>button.hidden=true);
@@ -616,6 +634,7 @@ function setupMonitoredDownloadOverrides(){
   form.onsubmit=async event=>{event.preventDefault();if(!monitoredSelected.size){dialog.close();return}const button=form.querySelector('[type="submit"]'),ids=[...monitoredSelected];button.disabled=true;try{const result=await api('/releases/bulk/monitor-download',{method:'POST',body:JSON.stringify({ids,download_method_override:$('#monitoredOverrideMethod').value,allow_non_preferred_filenames:$('#monitoredOverrideNonPreferred').checked,ignore_local_force_download:$('#monitoredOverrideLocal').checked,ignore_download_history:$('#monitoredOverrideHistory').checked})});dialog.close();monitoredSelected.clear();toast(`${result.queued??ids.length} release${ids.length===1?'':'s'} queued for forced Search + Download`);await loadMonitoredReleases()}catch(e){toast(e.message)}finally{button.disabled=false}};
 }
 setupMonitoredDownloadOverrides();
+monitoredReleaseList.addEventListener('click',event=>{const link=event.target.closest?.('a.downloadCover'),row=link?.closest('.downloadTableRow');if(!link||!row||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey||event.button>0)return;event.preventDefault();event.stopImmediatePropagation();openMonitoredRelease(Number(row.dataset.release))},true);
 function sourceLink(x){const href=safe(x.product_url);if(!href)return `<span class="sourceFallback">${esc(x.source||'Source unavailable')}</span>`;let icon='',label=x.source||'Open source';try{const u=new URL(href);icon=new URL('/favicon.ico',u.origin).href;label=x.source||u.hostname}catch{}return `<a class="sourceLink" href="${href}" target="_blank" rel="noreferrer">${icon?`<img src="${safe(icon)}" alt="" onerror="this.hidden=true">`:''}<span>${esc(label)}</span><b>↗</b></a>`}
 function detailOverflowList(items,label,render){
   if(!items.length)return'';const entries=items.map(item=>`<span class="detailValueEntry">${render(item)}</span>`).join(''),all=items.map(render).join('');
@@ -793,11 +812,13 @@ function initializeAppHistory(){
 let releaseOpenRequest=0;
 function closeReleaseDetails(){releaseOpenRequest++;const state=history.state||{},releaseDepth=Math.max(0,Number(state.releaseDepth)||0);if(releaseDialog.open)releaseDialog.close();if(state.javbeacon&&state.releaseID&&releaseDepth>0){history.go(-releaseDepth);return}const view=appHistoryViews.has(state.view)?state.view:(prefs.activeMenu||'releases');history.replaceState({javbeacon:true,view},'',appViewURL(view))}
 function animateReleaseDetailSwap(){if(matchMedia('(prefers-reduced-motion:reduce)').matches)return;releaseDetail.getAnimations?.().forEach(animation=>animation.cancel());releaseDetail.animate?.([{opacity:.96},{opacity:1}],{duration:90,easing:'ease-out'})}
-async function openRelease(id,navigable=false,navigationIDs=null,recordHistory=true){
+async function openRelease(id,navigable=false,navigationIDs=null,recordHistory=true,navigationSource=''){
   id=Number(id);
   const request=++releaseOpenRequest,wasOpen=releaseDialog.open,previousID=activeReleaseID,previousData=activeReleaseData;
   activeReleaseID=id;
   releaseNavFromGrid=navigable&&!Array.isArray(navigationIDs);
+  releaseNavSource=navigable?(navigationSource||(releaseNavFromGrid?'library':'snapshot')):'';
+  if(releaseNavSource!=='monitored')monitoredNavState=null;
   releaseNavIDs=navigable?(Array.isArray(navigationIDs)?navigationIDs:releases.map(r=>r.id)):[];
   const cached=releaseByID(id),keepPreviousVisible=wasOpen&&!cached&&!!previousData;
   stopDetailScreenshots();
@@ -857,6 +878,10 @@ async function prefetchReleaseNavigation(){
     await loadMoreReleases();
     if(releaseNavFromGrid){releaseNavIDs=releases.map(r=>r.id);updateReleaseNav()}
   }
+  if(releaseNavSource==='monitored'){
+    const releaseCount=Math.round(normalizedDeviceDisplayPreference('releaseDetailPreloadCount',prefs.releaseDetailPreloadCount,8));
+    await Promise.allSettled([idx-releaseCount,idx+releaseCount].filter(index=>index>=0&&index<releaseNavIDs.length&&!releaseNavIDs[index]).map(loadMonitoredNavigationIndex));
+  }
   const nearby=[];
   const releaseCount=Math.round(normalizedDeviceDisplayPreference('releaseDetailPreloadCount',prefs.releaseDetailPreloadCount,8)),availableDistance=Math.min(releaseCount,Math.max(0,releaseNavIDs.length-1));
   for(let distance=1;distance<=availableDistance;distance++){
@@ -875,6 +900,7 @@ async function navigateRelease(delta){
   if(idx===-1)return;
   let next=idx+delta;
   if(next<0)return;
+  if(releaseNavSource==='monitored'&&!releaseNavIDs[next])await loadMonitoredNavigationIndex(next);
   if(next>=releaseNavIDs.length){
     if(delta>0&&releaseNavFromGrid&&releasesHasMore){
       await loadMoreReleases();
@@ -887,7 +913,7 @@ async function navigateRelease(delta){
   // Passing a fixed ID array here would turn a grid-origin navigation into
   // a closed snapshot after the first click. Preserve the live grid origin
   // so prefetching continues for every subsequent release.
-  openRelease(releaseNavIDs[next],true,releaseNavFromGrid?null:releaseNavIDs)
+  openRelease(releaseNavIDs[next],true,releaseNavFromGrid?null:releaseNavIDs,true,releaseNavSource)
 }
 function searchMatchLabel(x){const reason=String(x.reason||'');if(reason.startsWith('torrent file matched ')){const pattern=reason.slice('torrent file matched '.length).split(': ')[0];return `Preferred pattern: ${esc(pattern)}`}if(reason.startsWith('preferred HTTP filename matched pattern '))return `Preferred pattern: ${esc(reason.slice('preferred HTTP filename matched pattern '.length))}`;return esc(reason||(x.accepted?'Matched':'Not matched'))}
 function searchFileRows(x){const rows=x.file_details?.length?x.file_details:(x.files||[]).map(name=>({name,size_bytes:0,matched:name===x.matched_file}));return [...rows].sort((a,b)=>{const aSize=Number(a.size_bytes)||0,bSize=Number(b.size_bytes)||0;return bSize-aSize||String(a.name||'').localeCompare(String(b.name||''),undefined,{sensitivity:'base'})})}
