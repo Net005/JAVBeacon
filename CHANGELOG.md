@@ -7,6 +7,34 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.87] - 2026-09-05
+
+### Added
+
+- Monitored Releases now supports selecting multiple releases and launching a
+  forced Search + Download batch with an explicit Torrent-only or HTTP-only
+  transport.
+- The same bulk action can apply Allow non-preferred filenames, Ignore
+  StashApp, and the new independent Ignore download history override to every
+  selected release at once.
+
+### Changed
+
+- Per-release Torrent/HTTP choices are saved and also govern later scheduled
+  searches, while active downloads using the chosen transport remain protected
+  from duplication.
+- Ignore StashApp and Ignore download history are now separate controls, so a
+  missing local file can be bypassed without automatically discarding valid
+  JAVBeacon download history.
+- Monitoring rows expose strict transport and history overrides, and download
+  activity/log reasons identify when a release-specific method selected the
+  transport.
+
+### Fixed
+
+- Switching to HTTP Download Activity no longer briefly renders stale
+  qBittorrent rows while the HTTP request is loading.
+
 ## [1.0.86] - 2026-09-05
 
 ### Added

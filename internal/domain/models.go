@@ -138,10 +138,9 @@ type Release struct {
 	// release that needed the relaxed rule once keeps getting it on every
 	// future scheduled check too.
 	AllowNonPreferredFilenames bool `json:"allow_non_preferred_filenames"`
-	// IgnoreLocalForceDownload persists a per-release override that makes
-	// download.Service treat this release as needing a download even
-	// though it already has a matched StashApp scene (Local/StashSceneID
-	// set) - the normal rule (download.Service.duplicate) otherwise skips
+	// IgnoreLocalForceDownload persists a per-release override that permits
+	// a download even though it already has a matched StashApp scene
+	// (Local/StashSceneID set) - the normal rule otherwise skips
 	// any release already linked in StashApp, on the assumption its file
 	// already exists. That assumption is wrong for a release recovered
 	// through Missing Library Files: the scene is linked, but its actual
@@ -149,8 +148,17 @@ type Release struct {
 	// automatically whenever it marks such a release monitored. It can
 	// also be set directly (or via the "Monitored releases" bulk actions)
 	// for any other release whose local copy is known bad/gone despite
-	// still being linked in StashApp.
+	// still being linked in StashApp. It does not bypass download history;
+	// IgnoreDownloadHistory is the independent control for that.
 	IgnoreLocalForceDownload bool `json:"ignore_local_force_download"`
+	// IgnoreDownloadHistory permits a fresh download when only completed or
+	// otherwise inactive JAVBeacon history exists. Active downloads of the
+	// selected transport remain protected from duplication.
+	IgnoreDownloadHistory bool `json:"ignore_download_history"`
+	// DownloadMethodOverride pins scheduled monitoring for this release to one
+	// transport. Empty inherits the global default; "torrent" and "http" are
+	// strict (no fallback) overrides.
+	DownloadMethodOverride string `json:"download_method_override,omitempty"`
 	// HTTPDownloadPrimary is retained for database/API compatibility with
 	// releases saved before the global Default Download Method setting. New
 	// provider selection deliberately ignores it.

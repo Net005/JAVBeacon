@@ -87,6 +87,20 @@ func TestFallbackSearchCandidate(t *testing.T) {
 	})
 }
 
+func TestEffectiveDownloadMethodHonorsStrictReleaseOverride(t *testing.T) {
+	settings := map[string]string{"default_download_method": "torrent_http"}
+	if got := effectiveDownloadMethod(settings, domain.Release{DownloadMethodOverride: "HTTP"}); got != downloadHTTPOnly {
+		t.Fatalf("HTTP release override = %q, want %q", got, downloadHTTPOnly)
+	}
+	settings["default_download_method"] = "http_torrent"
+	if got := effectiveDownloadMethod(settings, domain.Release{DownloadMethodOverride: "torrent"}); got != downloadTorrentOnly {
+		t.Fatalf("Torrent release override = %q, want %q", got, downloadTorrentOnly)
+	}
+	if got := effectiveDownloadMethod(settings, domain.Release{}); got != downloadHTTPTorrent {
+		t.Fatalf("empty override should inherit global method, got %q", got)
+	}
+}
+
 func TestTorrentHTTPFallbackReasonRequiresStalledUnhealthyTorrent(t *testing.T) {
 	now := time.Now().UTC()
 	download := domain.Download{Transport: "torrent", Status: "downloading", AddedAt: now.Add(-defaultTorrentHTTPFallbackDelay - time.Second), Progress: .25}

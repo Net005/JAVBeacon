@@ -44,6 +44,7 @@ type Store interface {
 	UpsertReleaseKeepUpdatedAt(context.Context, domain.Release) (bool, error)
 	PatchRelease(context.Context, int64, *bool, *bool, *bool, *bool, *bool, *bool, *string, *bool, *bool, ...*bool) error
 	BulkSetReleaseFlags(context.Context, []int64, *bool, *bool, *bool, ...*bool) (int64, error)
+	BulkSetReleaseDownloadOverrides(context.Context, []int64, string, bool, bool, bool) (int64, error)
 	SetReleaseMonitoring(context.Context, int64, bool, string, int64) error
 	SetStashState(context.Context, int64, bool, string) error
 	SetStashFilePath(context.Context, int64, string) error
@@ -267,6 +268,8 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 			`ALTER TABLE job_history ADD COLUMN scheduled INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE job_history ADD COLUMN site_count INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE releases ADD COLUMN ignore_local_force_download INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE releases ADD COLUMN ignore_download_history INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE releases ADD COLUMN download_method_override TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE releases ADD COLUMN http_download_primary INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE downloads ADD COLUMN transport TEXT NOT NULL DEFAULT 'torrent'`,
 			`ALTER TABLE downloads ADD COLUMN source_page_url TEXT NOT NULL DEFAULT ''`,
@@ -968,7 +971,7 @@ func releaseSelect(d Dialect) string {
 	// completion time. Active downloads take precedence over completed ones so
 	// the status pill and its URL always describe the same download row.
 	tags := d.JSONArrayAgg("name", "SELECT name FROM release_tags WHERE release_id=r.id ORDER BY position")
-	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,r.director,r.studio,r.label,` + tags + `,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_file_path,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.ignore_local_force_download,r.http_download_primary,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.transport FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),'torrent'),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,r.director,r.studio,r.label,` + tags + `,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_file_path,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.ignore_local_force_download,r.ignore_download_history,r.download_method_override,r.http_download_primary,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.transport FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),'torrent'),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 // releaseCardSelect keeps the Release Library payload small. Release Details
@@ -978,14 +981,14 @@ func releaseSelect(d Dialect) string {
 func releaseCardSelect(d Dialect) string {
 	actresses := d.JSONArrayAgg("name", "SELECT name FROM release_actresses WHERE release_id=r.id ORDER BY position")
 	tags := d.JSONArrayAgg("name", "SELECT name FROM release_tags WHERE release_id=r.id ORDER BY position")
-	return `SELECT r.id,r.site_id,s.title,'[]','[]',r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,'',r.studio,r.label,` + tags + `,'','',r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_file_path,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.ignore_local_force_download,r.http_download_primary,0,0,'','',r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.transport FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),'torrent'),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	return `SELECT r.id,r.site_id,s.title,'[]','[]',r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,'',r.studio,r.label,` + tags + `,'','',r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_file_path,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.ignore_local_force_download,r.ignore_download_history,r.download_method_override,r.http_download_primary,0,0,'','',r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.transport FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),'torrent'),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 func scanRelease(scanner interface{ Scan(...any) error }) (domain.Release, error) {
 	var x domain.Release
 	var siteIDs, siteTitles, actresses, genres, shots string
 	var stashAddedAt, stashCreatedAt, watchlistAt, downloadedAt sql.NullTime
-	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Watchlist, &watchlistAt, &x.MonitorDownload, &x.MonitorReason, &x.MonitorSiteID, &x.MonitorSiteTitle, &x.StashSceneID, &x.StashFilePath, &stashAddedAt, &stashCreatedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.IgnoreLocalForceDownload, &x.HTTPDownloadPrimary, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &x.DownloadTransport, &downloadedAt)
+	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Watchlist, &watchlistAt, &x.MonitorDownload, &x.MonitorReason, &x.MonitorSiteID, &x.MonitorSiteTitle, &x.StashSceneID, &x.StashFilePath, &stashAddedAt, &stashCreatedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.IgnoreLocalForceDownload, &x.IgnoreDownloadHistory, &x.DownloadMethodOverride, &x.HTTPDownloadPrimary, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &x.DownloadTransport, &downloadedAt)
 	if err == nil {
 		_ = json.Unmarshal([]byte(siteIDs), &x.SiteIDs)
 		_ = json.Unmarshal([]byte(siteTitles), &x.SiteTitles)
@@ -2455,6 +2458,31 @@ func (s *SQLite) BulkSetReleaseFlags(ctx context.Context, ids []int64, monitorDo
 		return 0, e
 	}
 	return r.RowsAffected()
+}
+
+// BulkSetReleaseDownloadOverrides atomically replaces the complete download
+// policy for selected monitored releases. Unchecked switches intentionally
+// clear their existing overrides, making the dialog a reliable view/edit
+// operation rather than a collection of one-way actions.
+func (s *SQLite) BulkSetReleaseDownloadOverrides(ctx context.Context, ids []int64, method string, allowNonPreferred, ignoreLocal, ignoreHistory bool) (int64, error) {
+	method = strings.ToLower(strings.TrimSpace(method))
+	if method != "" && method != "torrent" && method != "http" {
+		return 0, fmt.Errorf("download method override must be empty, torrent, or http")
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	args := []any{method, allowNonPreferred, ignoreLocal, ignoreHistory, time.Now().UTC()}
+	placeholders := make([]string, len(ids))
+	for i, releaseID := range ids {
+		placeholders[i] = "?"
+		args = append(args, releaseID)
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE releases SET download_method_override=?,allow_non_preferred_filenames=?,ignore_local_force_download=?,ignore_download_history=?,updated_at=? WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 func (s *SQLite) SetReleaseMonitoring(ctx context.Context, id int64, enabled bool, reason string, siteID int64) error {
 	if !enabled {

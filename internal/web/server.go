@@ -1869,6 +1869,8 @@ func (s *Server) patchReleasesBulk(w http.ResponseWriter, r *http.Request) {
 		AllowNonPreferredFilenames *bool   `json:"allow_non_preferred_filenames"`
 		IgnoreLocalForceDownload   *bool   `json:"ignore_local_force_download"`
 		HTTPDownloadPrimary        *bool   `json:"http_download_primary"`
+		DownloadMethodOverride     *string `json:"download_method_override"`
+		IgnoreDownloadHistory      *bool   `json:"ignore_download_history"`
 	}
 	if !s.decode(w, r, &p) {
 		return
@@ -1877,11 +1879,21 @@ func (s *Server) patchReleasesBulk(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusUnprocessableEntity, "select at least one release")
 		return
 	}
-	if p.MonitorDownload == nil && p.AllowNonPreferredFilenames == nil && p.IgnoreLocalForceDownload == nil && p.HTTPDownloadPrimary == nil {
+	if p.MonitorDownload == nil && p.AllowNonPreferredFilenames == nil && p.IgnoreLocalForceDownload == nil && p.HTTPDownloadPrimary == nil && p.DownloadMethodOverride == nil && p.IgnoreDownloadHistory == nil {
 		s.problem(w, http.StatusUnprocessableEntity, "nothing to update")
 		return
 	}
-	n, e := s.store.BulkSetReleaseFlags(r.Context(), p.IDs, p.MonitorDownload, p.AllowNonPreferredFilenames, p.IgnoreLocalForceDownload, p.HTTPDownloadPrimary)
+	var n int64
+	var e error
+	if p.DownloadMethodOverride != nil || p.IgnoreDownloadHistory != nil {
+		if p.DownloadMethodOverride == nil || p.AllowNonPreferredFilenames == nil || p.IgnoreLocalForceDownload == nil || p.IgnoreDownloadHistory == nil {
+			s.problem(w, http.StatusUnprocessableEntity, "download overrides must include method and all three override values")
+			return
+		}
+		n, e = s.store.BulkSetReleaseDownloadOverrides(r.Context(), p.IDs, *p.DownloadMethodOverride, *p.AllowNonPreferredFilenames, *p.IgnoreLocalForceDownload, *p.IgnoreDownloadHistory)
+	} else {
+		n, e = s.store.BulkSetReleaseFlags(r.Context(), p.IDs, p.MonitorDownload, p.AllowNonPreferredFilenames, p.IgnoreLocalForceDownload, p.HTTPDownloadPrimary)
+	}
 	if e != nil {
 		s.problem(w, 500, e.Error())
 		return
@@ -1899,6 +1911,8 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 		IDs                        []int64 `json:"ids"`
 		AllowNonPreferredFilenames bool    `json:"allow_non_preferred_filenames"`
 		IgnoreLocalForceDownload   bool    `json:"ignore_local_force_download"`
+		IgnoreDownloadHistory      bool    `json:"ignore_download_history"`
+		DownloadMethodOverride     *string `json:"download_method_override"`
 	}
 	if !s.decode(w, r, &payload) {
 		return
@@ -1936,6 +1950,9 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 
 	monitor := true
 	updated, err := s.store.BulkSetReleaseFlags(r.Context(), ids, &monitor, &payload.AllowNonPreferredFilenames, &payload.IgnoreLocalForceDownload)
+	if err == nil && payload.DownloadMethodOverride != nil {
+		updated, err = s.store.BulkSetReleaseDownloadOverrides(r.Context(), ids, *payload.DownloadMethodOverride, payload.AllowNonPreferredFilenames, payload.IgnoreLocalForceDownload, payload.IgnoreDownloadHistory)
+	}
 	if err != nil {
 		resetRunning()
 		s.problem(w, http.StatusInternalServerError, err.Error())
@@ -1961,12 +1978,16 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	go func(releases []domain.Release, allowNonPreferred bool) {
+	sourceType := "Release Library Bulk"
+	if payload.DownloadMethodOverride != nil {
+		sourceType = "Monitored Releases Bulk"
+	}
+	go func(releases []domain.Release, allowNonPreferred bool, sourceType string) {
 		defer resetRunning()
 		background := context.Background()
 		downloaded, skipped, failed := 0, 0, 0
 		for _, release := range releases {
-			started, searchErr := s.downloads.SearchAndDownloadNow(background, release, "Release Library Bulk", allowNonPreferred)
+			started, searchErr := s.downloads.SearchAndDownloadNow(background, release, sourceType, allowNonPreferred)
 			switch {
 			case searchErr != nil:
 				failed++
@@ -1982,7 +2003,7 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 		if s.log != nil {
 			s.log.Info("Release Library bulk monitor and download completed", "selected", len(releases), "downloaded", downloaded, "skipped", skipped, "failed", failed)
 		}
-	}(selected, payload.AllowNonPreferredFilenames)
+	}(selected, payload.AllowNonPreferredFilenames, sourceType)
 
 	s.json(w, http.StatusAccepted, map[string]any{"queued": len(selected), "updated": updated})
 }
