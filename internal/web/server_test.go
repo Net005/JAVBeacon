@@ -215,6 +215,9 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`download_peers`,
 		`download_seen_complete`,
 		`download_added_at`,
+		`download_bytes_per_second`,
+		`transport=http?'HTTP':'Torrent'`,
+		`class="releaseStatusInfo downloaded ${transportClass}"`,
 		`class="downloadPillWrap"`,
 		`const x=await fetchReleaseDetail(id)`,
 		`function closeDownloadTelemetry(except=null)`,
@@ -225,7 +228,6 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`actionIcon('watchlist')`,
 		`actionIcon('notification')`,
 		`actionIcon('monitor')`,
-		`class="releaseStatusInfo downloaded"`,
 		`class="releaseStatusInfo local"`,
 		`className='actionGroup statusGroup'`,
 		`status.innerHTML='<div class="actionGroupTitle">Status</div>'`,
@@ -655,7 +657,7 @@ func TestReleaseDetailsIncludesLatestDownloadTelemetry(t *testing.T) {
 		t.Fatalf("release lookup: items=%d err=%v", len(releases), err)
 	}
 	releaseID := releases[0].ID
-	if _, err = st.SaveDownload(ctx, domain.Download{ReleaseID: releaseID, Status: "downloading", SourceReference: "https://sukebei.nyaa.si/view/321", Seeds: 18, Peers: 7, ETASeconds: 456, SeenComplete: 1700000000}); err != nil {
+	if _, err = st.SaveDownload(ctx, domain.Download{ReleaseID: releaseID, Status: "downloading", SourceReference: "https://keepshare.org/example", Transport: "http", BytesPerSecond: 2097152, ETASeconds: 456}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -671,7 +673,7 @@ func TestReleaseDetailsIncludesLatestDownloadTelemetry(t *testing.T) {
 	if err = json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if body.DownloadStatus != "downloading" || body.DownloadSeeds != 18 || body.DownloadPeers != 7 || body.DownloadETASeconds != 456 || body.DownloadSeenComplete != 1700000000 || body.DownloadAddedAt.IsZero() {
+	if body.DownloadStatus != "downloading" || body.DownloadTransport != "http" || body.DownloadSourceReference != "https://keepshare.org/example" || body.DownloadBytesPerSec != 2097152 || body.DownloadETASeconds != 456 || body.DownloadAddedAt.IsZero() {
 		t.Fatalf("release download telemetry response: %+v", body)
 	}
 }
@@ -1111,6 +1113,9 @@ func TestSearchResultsShowProviderProgressAndFileDetails(t *testing.T) {
 			`actionIcon(isHTTP?'webDownload':'torrent')`,
 			`ignore_local:ignoreLocal`,
 			`function forceLocalDownload`,
+			`local||hasHistory`,
+			`_releaseDownloadTransport=release?.download_transport==='http'?'http':'torrent'`,
+			`An active download of the same type is never duplicated.`,
 			`Waiting for both providers so the final ranking appears once without shifting`,
 			`formatTransferRate(x.bytes_per_second)`,
 			`Transferred / speed`,

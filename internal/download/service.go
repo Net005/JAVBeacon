@@ -547,7 +547,14 @@ func hasReleaseSite(release domain.Release, siteID int64) bool {
 	}
 	return false
 }
-func (s *Service) duplicateStored(ctx context.Context, r domain.Release, allowLocal bool) (string, int64, bool, error) {
+func normalizedDownloadTransport(transport string) string {
+	if strings.EqualFold(strings.TrimSpace(transport), "http") {
+		return "http"
+	}
+	return "torrent"
+}
+
+func (s *Service) duplicateStored(ctx context.Context, r domain.Release, allowLocal, force bool, transport string) (string, int64, bool, error) {
 	if r.Local && !allowLocal {
 		return "release already exists in StashApp", 0, false, nil
 	}
@@ -555,16 +562,31 @@ func (s *Service) duplicateStored(ctx context.Context, r domain.Release, allowLo
 	if e != nil {
 		return "", 0, false, e
 	}
+	requestedTransport := normalizedDownloadTransport(transport)
 	for _, d := range downloads {
-		if d.ReleaseID == r.ID && (d.Status == "queued" || d.Status == "downloading" || d.Status == "completed" || d.Status == "processing") {
-			return "release already has download history in state " + d.Status, d.ID, d.Status == "queued" || d.Status == "downloading" || d.Status == "processing", nil
+		if d.ReleaseID != r.ID {
+			continue
+		}
+		active := d.Status == "queued" || d.Status == "downloading" || d.Status == "processing"
+		if force {
+			if active && normalizedDownloadTransport(d.Transport) == requestedTransport {
+				return "release already has an active " + requestedTransport + " download in state " + d.Status, d.ID, false, nil
+			}
+			continue
+		}
+		if active || d.Status == "completed" {
+			return "release already has download history in state " + d.Status, d.ID, active, nil
 		}
 	}
 	return "", 0, false, nil
 }
-func (s *Service) duplicate(ctx context.Context, r domain.Release, allowLocal bool) (string, int64, bool, error) {
-	if reason, existingID, replaceable, err := s.duplicateStored(ctx, r, allowLocal); err != nil || reason != "" {
+func (s *Service) duplicate(ctx context.Context, r domain.Release, allowLocal, force bool, transport string) (string, int64, bool, error) {
+	transport = normalizedDownloadTransport(transport)
+	if reason, existingID, replaceable, err := s.duplicateStored(ctx, r, allowLocal, force, transport); err != nil || reason != "" {
 		return reason, existingID, replaceable, err
+	}
+	if transport != "torrent" {
+		return "", 0, false, nil
 	}
 	settings, e := s.store.Settings(ctx)
 	if e != nil {
@@ -577,7 +599,9 @@ func (s *Service) duplicate(ctx context.Context, r domain.Release, allowLocal bo
 		}
 		for _, t := range torrents {
 			if strings.Contains(canonical(t.Name), canonical(r.VideoID)) {
-				return "release already exists in qBittorrent", 0, true, nil
+				if !force || t.Progress < 1 {
+					return "release already has an active torrent in qBittorrent", 0, !force, nil
+				}
 			}
 		}
 	}
@@ -638,14 +662,19 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 		}
 	}
 	if result.IgnoreLocal {
+		forceReason := "manually forced redownload"
+		if r.Local {
+			forceReason += " despite existing StashApp match"
+		}
 		if matchReason != "" {
-			matchReason = "manually forced redownload despite existing StashApp match: " + matchReason
+			matchReason = forceReason + ": " + matchReason
 		} else {
-			matchReason = "manually forced redownload despite existing StashApp match"
+			matchReason = forceReason
 		}
 		x.MatchReason = matchReason
 	}
-	if reason, existingID, replaceable, e := s.duplicate(ctx, r, result.IgnoreLocal || r.IgnoreLocalForceDownload); e != nil {
+	forceRequested := result.Forced || result.IgnoreLocal || r.IgnoreLocalForceDownload
+	if reason, existingID, replaceable, e := s.duplicate(ctx, r, result.IgnoreLocal || r.IgnoreLocalForceDownload, forceRequested, "torrent"); e != nil {
 		x.Status = "failed"
 		x.Error = e.Error()
 		x, _ = s.store.SaveDownload(ctx, x)
@@ -753,7 +782,8 @@ func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, resul
 	// stored local/download state here; contacting qBittorrent would make a
 	// healthy direct download fail merely because the unrelated torrent client
 	// is offline.
-	if reason, existingID, replaceable, err := s.duplicateStored(ctx, r, result.IgnoreLocal || r.IgnoreLocalForceDownload); err != nil {
+	forceRequested := result.Forced || result.IgnoreLocal || r.IgnoreLocalForceDownload
+	if reason, existingID, replaceable, err := s.duplicateStored(ctx, r, result.IgnoreLocal || r.IgnoreLocalForceDownload, forceRequested, "http"); err != nil {
 		return domain.Download{}, err
 	} else if reason != "" {
 		return s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "skipped", MatchReason: reason, CanReplace: replaceable, ExistingDownloadID: existingID})
@@ -763,7 +793,10 @@ func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, resul
 	}
 	matchReason := result.Reason
 	if result.IgnoreLocal {
-		matchReason = "manually forced redownload despite existing StashApp match"
+		matchReason = "manually forced redownload"
+		if r.Local {
+			matchReason += " despite existing StashApp match"
+		}
 		if result.Reason != "" {
 			matchReason += ": " + result.Reason
 		}
@@ -1619,13 +1652,18 @@ func (s *Service) runMonitoredSearch(ctx context.Context, schedule string, getJo
 			job.Skipped++
 			continue
 		}
-		if reason, _, _, err := s.duplicate(ctx, release, release.IgnoreLocalForceDownload); err != nil {
-			job.Failed++
-			job.Error = err.Error()
-			continue
-		} else if reason != "" {
-			job.Skipped++
-			continue
+		// A forced monitored search must reach provider selection so the
+		// transport-specific guard can ignore history but retain an active
+		// download of the same category.
+		if !release.IgnoreLocalForceDownload {
+			if reason, _, _, err := s.duplicate(ctx, release, false, false, "torrent"); err != nil {
+				job.Failed++
+				job.Error = err.Error()
+				continue
+			} else if reason != "" {
+				job.Skipped++
+				continue
+			}
 		}
 		// Scheduled monitoring deliberately uses the same provider-selection
 		// path as immediate/manual background actions. That keeps HTTP-primary

@@ -219,6 +219,43 @@ func TestHTTPDownloadDoesNotRequireQBittorrent(t *testing.T) {
 	}
 }
 
+func TestForceRedownloadIgnoresHistoryButNotActiveSameTransport(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "force-history.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "FORCE-100", Title: "Test", Source: "JavLibrary", Released: true})
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Search: "FORCE-100", Limit: 1})
+	if len(releases) != 1 {
+		t.Fatalf("release setup failed: %+v", releases)
+	}
+	release := releases[0]
+	service := New(st, time.Second, slog.Default())
+
+	_, _ = st.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Query: release.VideoID, Transport: "torrent", Status: "completed"})
+	if reason, _, _, err := service.duplicateStored(ctx, release, true, true, "torrent"); err != nil || reason != "" {
+		t.Fatalf("forced torrent was blocked by completed history: reason=%q err=%v", reason, err)
+	}
+
+	_, _ = st.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Query: release.VideoID, Transport: "http", Status: "downloading"})
+	if reason, _, _, err := service.duplicateStored(ctx, release, true, true, "torrent"); err != nil || reason != "" {
+		t.Fatalf("forced torrent was blocked by active HTTP download: reason=%q err=%v", reason, err)
+	}
+
+	activeTorrent, _ := st.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Query: release.VideoID, Transport: "torrent", Status: "queued"})
+	reason, existingID, replaceable, err := service.duplicateStored(ctx, release, true, true, "torrent")
+	if err != nil || reason != "release already has an active torrent download in state queued" || existingID != activeTorrent.ID || replaceable {
+		t.Fatalf("active same-transport download was not preserved: reason=%q id=%d replaceable=%v err=%v", reason, existingID, replaceable, err)
+	}
+
+	if reason, _, _, err := service.duplicateStored(ctx, release, true, true, "http"); err != nil || !strings.Contains(reason, "active http download") {
+		t.Fatalf("active HTTP download did not block forced HTTP duplicate: reason=%q err=%v", reason, err)
+	}
+}
+
 func TestSiteWatchlistRuleDoesNotRetroactivelyChangeExistingRelease(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "site-watchlist.db"))
