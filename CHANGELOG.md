@@ -7,6 +7,14 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.78] - 2026-09-05
+
+### Fixed
+
+- Release Details Story text now uses the same readable font sizing and text
+  color as the surrounding release information, including the compact-height
+  layout.
+
 ## [1.0.77] - 2026-09-05
 
 ### Changed
