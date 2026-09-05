@@ -7,6 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.88] - 2026-09-05
+
+### Changed
+
+- Compacted the Monitored Releases selection bar so Stop monitoring, Force
+  download, and Clear selection share the same height, padding, typography,
+  corner radius, and icon scale.
+- Shortened the primary bulk-action label and tightened the surrounding
+  spacing so the controls remain readable without dominating the results.
+
 ## [1.0.87] - 2026-09-05
 
 ### Added
