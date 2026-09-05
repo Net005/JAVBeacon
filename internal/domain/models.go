@@ -83,6 +83,9 @@ type Release struct {
 	// result sets while still giving Release Details current qBittorrent data.
 	DownloadSeeds        int       `json:"download_seeds"`
 	DownloadPeers        int       `json:"download_peers"`
+	DownloadTransport    string    `json:"download_transport,omitempty"`
+	DownloadBytesTotal   int64     `json:"download_bytes_total,omitempty"`
+	DownloadBytesDone    int64     `json:"download_bytes_downloaded,omitempty"`
 	DownloadETASeconds   int64     `json:"download_eta_seconds"`
 	DownloadSeenComplete int64     `json:"download_seen_complete"`
 	DownloadAddedAt      time.Time `json:"download_added_at,omitempty"`
@@ -147,6 +150,10 @@ type Release struct {
 	// for any other release whose local copy is known bad/gone despite
 	// still being linked in StashApp.
 	IgnoreLocalForceDownload bool `json:"ignore_local_force_download"`
+	// HTTPDownloadPrimary makes the JavDB/Keepshare HTTP provider the first
+	// choice for automatic Search + Download attempts on this release. The
+	// default is false: qBittorrent remains primary and HTTP is a fallback.
+	HTTPDownloadPrimary bool `json:"http_download_primary"`
 	// OCounter, PlayCount, LastPlayedAt, and LastOCountAt mirror
 	// StashMissingScene's identically-named/purposed fields (stash_missing.go)
 	// but for a release already matched to a StashApp scene: best-effort,
@@ -282,8 +289,8 @@ func ParseIgnoreList(raw string) []string {
 // Activity table (Phase 4B). Search matches release video ID, the search
 // query, or the torrent name; Source matches provider or source type.
 type DownloadFilter struct {
-	Status, Search, Source, Sort, Direction string
-	Limit, Offset                           int
+	Status, Search, Source, Transport, Sort, Direction string
+	Limit, Offset                                      int
 	// FilenamePatternExcluded, when true, restricts DownloadActivity to
 	// downloads submitted despite not being a normal accepted-filename
 	// match (TODO-2.0 Task A) - see Download.FilenamePatternExcluded. Like
@@ -517,6 +524,10 @@ type Download struct {
 	SourceReference string          `json:"source_reference"`
 	Query           string          `json:"query"`
 	TorrentHash     string          `json:"torrent_hash"`
+	Transport       string          `json:"transport"`
+	DestinationPath string          `json:"destination_path,omitempty"`
+	BytesTotal      int64           `json:"bytes_total,omitempty"`
+	BytesDownloaded int64           `json:"bytes_downloaded,omitempty"`
 	Name            string          `json:"name"`
 	Files           json.RawMessage `json:"files"`
 	Status          string          `json:"status"`
@@ -556,8 +567,13 @@ type SearchResult struct {
 	// Link so the UI can offer "open the source page" without that click
 	// being mistaken for submitting the download.
 	SourceURL string `json:"source_url,omitempty"`
-	Accepted  bool   `json:"accepted"`
-	Reason    string `json:"reason"`
+	// Transport is "torrent" for qBittorrent results and "http" for a
+	// JavDB/Keepshare direct-download candidate.
+	Transport   string `json:"transport,omitempty"`
+	SizeBytes   int64  `json:"size_bytes,omitempty"`
+	PublishedAt string `json:"published_at,omitempty"`
+	Accepted    bool   `json:"accepted"`
+	Reason      string `json:"reason"`
 	// Forced marks a result that was downloaded via an explicit manual
 	// override after automatic matching rejected it (Phase 5B), so the
 	// resulting Download's history clearly shows it was not an automatic

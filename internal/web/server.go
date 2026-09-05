@@ -253,6 +253,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/releases/{id}/search", s.searchRelease)
 	s.mux.HandleFunc("POST /api/releases/{id}/download", s.downloadRelease)
 	s.mux.HandleFunc("GET /api/downloads", s.downloadList)
+	s.mux.HandleFunc("POST /api/downloads/{id}/retry", s.retryDownload)
 	s.mux.HandleFunc("DELETE /api/downloads/{id}", s.removeDownload)
 	s.mux.HandleFunc("POST /api/downloads/bulk-remove", s.bulkRemoveDownloads)
 	s.mux.HandleFunc("GET /api/jobs/download-replacements", func(w http.ResponseWriter, r *http.Request) {
@@ -712,7 +713,15 @@ func (s *Server) searchRelease(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, 404, "release not found")
 		return
 	}
-	rows, e := s.downloads.Search(r.Context(), release)
+	var rows []domain.SearchResult
+	switch strings.ToLower(r.URL.Query().Get("provider")) {
+	case "http":
+		rows, e = s.downloads.SearchHTTP(r.Context(), release)
+	case "torrent":
+		rows, e = s.downloads.Search(r.Context(), release)
+	default:
+		rows, e = s.downloads.SearchAll(r.Context(), release)
+	}
 	if e != nil {
 		s.problem(w, 502, e.Error())
 		return
@@ -788,12 +797,25 @@ func (s *Server) downloadList(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusUnprocessableEntity, "last seen complete date is required for this filter")
 		return
 	}
-	rows, total, e := s.store.DownloadActivity(r.Context(), domain.DownloadFilter{Status: q.Get("status"), Search: q.Get("search"), Source: q.Get("source"), Sort: q.Get("sort"), Direction: q.Get("direction"), FilenamePatternExcluded: q.Get("filename_pattern_excluded") == "true", Stalled: q.Get("stalled") == "true", SeenComplete: seenComplete, SeenCompleteDate: seenCompleteDate, Limit: limit, Offset: offset})
+	rows, total, e := s.store.DownloadActivity(r.Context(), domain.DownloadFilter{Status: q.Get("status"), Search: q.Get("search"), Source: q.Get("source"), Transport: q.Get("transport"), Sort: q.Get("sort"), Direction: q.Get("direction"), FilenamePatternExcluded: q.Get("filename_pattern_excluded") == "true", Stalled: q.Get("stalled") == "true", SeenComplete: seenComplete, SeenCompleteDate: seenCompleteDate, Limit: limit, Offset: offset})
 	if e != nil {
 		s.problem(w, 500, e.Error())
 		return
 	}
 	s.json(w, 200, map[string]any{"items": rows, "total": total})
+}
+func (s *Server) retryDownload(w http.ResponseWriter, r *http.Request) {
+	n, err := id(r)
+	if err != nil {
+		s.problem(w, http.StatusBadRequest, "invalid download id")
+		return
+	}
+	x, err := s.downloads.RetryHTTPDownload(r.Context(), n)
+	if err != nil {
+		s.problem(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.json(w, http.StatusAccepted, x)
 }
 func (s *Server) removeDownload(w http.ResponseWriter, r *http.Request) {
 	n, err := id(r)
@@ -1208,6 +1230,15 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "api_key": true, "stash_watchlist_tag_id": true, "stash_watchlist_sync_enabled": true, "stash_watchlist_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
+	for _, key := range []string{"javdb_url", "http_download_directory", "http_download_concurrency", "http_fallback_delay"} {
+		allowed[key] = true
+	}
+	if raw, present := x["http_fallback_delay"]; present {
+		if delay, err := time.ParseDuration(strings.TrimSpace(raw)); err != nil || delay <= 0 {
+			s.problem(w, http.StatusUnprocessableEntity, "HTTP fallback delay must be a positive duration such as 30m, 8h, or 24h")
+			return
+		}
+	}
 	for _, kind := range monitor.JobPriorityKinds {
 		allowed[monitor.JobPrioritySettingKey(kind)] = true
 	}
@@ -1429,6 +1460,13 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		secs, err := strconv.Atoi(strings.TrimSpace(raw))
 		if err != nil || secs < 2 {
 			s.problem(w, http.StatusUnprocessableEntity, "qBittorrent poll interval must be 2 seconds or greater")
+			return
+		}
+	}
+	if raw, ok := x["http_download_concurrency"]; ok && strings.TrimSpace(raw) != "" {
+		parallel, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || parallel < 1 || parallel > 64 {
+			s.problem(w, http.StatusUnprocessableEntity, "parallel HTTP downloads must be a whole number from 1 to 64")
 			return
 		}
 	}
@@ -1730,6 +1768,9 @@ func (s *Server) release(w http.ResponseWriter, r *http.Request) {
 		if download, err := downloads.LatestReleaseDownload(r.Context(), n); err == nil {
 			x.DownloadStatus = download.Status
 			x.DownloadSourceReference = download.SourceReference
+			x.DownloadTransport = download.Transport
+			x.DownloadBytesTotal = download.BytesTotal
+			x.DownloadBytesDone = download.BytesDownloaded
 			x.DownloadSeeds = download.Seeds
 			x.DownloadPeers = download.Peers
 			x.DownloadETASeconds = download.ETASeconds
@@ -1750,13 +1791,14 @@ func (s *Server) patchRelease(w http.ResponseWriter, r *http.Request) {
 		Label                      *string `json:"label"`
 		AllowNonPreferredFilenames *bool   `json:"allow_non_preferred_filenames"`
 		IgnoreLocalForceDownload   *bool   `json:"ignore_local_force_download"`
+		HTTPDownloadPrimary        *bool   `json:"http_download_primary"`
 	}
 	if !s.decode(w, r, &p) {
 		return
 	}
 	n, e := id(r)
 	if e == nil {
-		e = s.store.PatchRelease(r.Context(), n, p.Released, p.Local, p.Notified, p.NotifyOnRelease, p.Watchlist, p.MonitorDownload, p.Label, p.AllowNonPreferredFilenames, p.IgnoreLocalForceDownload)
+		e = s.store.PatchRelease(r.Context(), n, p.Released, p.Local, p.Notified, p.NotifyOnRelease, p.Watchlist, p.MonitorDownload, p.Label, p.AllowNonPreferredFilenames, p.IgnoreLocalForceDownload, p.HTTPDownloadPrimary)
 	}
 	if errors.Is(e, sql.ErrNoRows) {
 		s.problem(w, 404, "release not found")
@@ -1797,6 +1839,7 @@ func (s *Server) patchReleasesBulk(w http.ResponseWriter, r *http.Request) {
 		MonitorDownload            *bool   `json:"monitor_download"`
 		AllowNonPreferredFilenames *bool   `json:"allow_non_preferred_filenames"`
 		IgnoreLocalForceDownload   *bool   `json:"ignore_local_force_download"`
+		HTTPDownloadPrimary        *bool   `json:"http_download_primary"`
 	}
 	if !s.decode(w, r, &p) {
 		return
@@ -1805,11 +1848,11 @@ func (s *Server) patchReleasesBulk(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusUnprocessableEntity, "select at least one release")
 		return
 	}
-	if p.MonitorDownload == nil && p.AllowNonPreferredFilenames == nil && p.IgnoreLocalForceDownload == nil {
+	if p.MonitorDownload == nil && p.AllowNonPreferredFilenames == nil && p.IgnoreLocalForceDownload == nil && p.HTTPDownloadPrimary == nil {
 		s.problem(w, http.StatusUnprocessableEntity, "nothing to update")
 		return
 	}
-	n, e := s.store.BulkSetReleaseFlags(r.Context(), p.IDs, p.MonitorDownload, p.AllowNonPreferredFilenames, p.IgnoreLocalForceDownload)
+	n, e := s.store.BulkSetReleaseFlags(r.Context(), p.IDs, p.MonitorDownload, p.AllowNonPreferredFilenames, p.IgnoreLocalForceDownload, p.HTTPDownloadPrimary)
 	if e != nil {
 		s.problem(w, 500, e.Error())
 		return

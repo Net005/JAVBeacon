@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS releases (
 	stash_release_date TEXT NOT NULL DEFAULT '',
 	allow_non_preferred_filenames INTEGER NOT NULL DEFAULT 0,
 	ignore_local_force_download INTEGER NOT NULL DEFAULT 0,
+	http_download_primary INTEGER NOT NULL DEFAULT 0,
 	o_counter INTEGER NOT NULL DEFAULT 0,
 	play_count INTEGER NOT NULL DEFAULT 0,
 	last_played_at TEXT NOT NULL DEFAULT '',
@@ -229,6 +230,10 @@ CREATE TABLE IF NOT EXISTS downloads (
 	source_reference TEXT NOT NULL DEFAULT '',
 	query TEXT NOT NULL DEFAULT '',
 	torrent_hash TEXT NOT NULL DEFAULT '',
+	transport TEXT NOT NULL DEFAULT 'torrent',
+	destination_path TEXT NOT NULL DEFAULT '',
+	bytes_total BIGINT NOT NULL DEFAULT 0,
+	bytes_downloaded BIGINT NOT NULL DEFAULT 0,
 	name TEXT NOT NULL DEFAULT '',
 	files TEXT NOT NULL DEFAULT '[]',
 	status TEXT NOT NULL,
@@ -483,6 +488,11 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS monitor_reason TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS monitor_site_id BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS ignore_local_force_download INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS http_download_primary INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE downloads ADD COLUMN IF NOT EXISTS transport TEXT NOT NULL DEFAULT 'torrent'`,
+		`ALTER TABLE downloads ADD COLUMN IF NOT EXISTS destination_path TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE downloads ADD COLUMN IF NOT EXISTS bytes_total BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE downloads ADD COLUMN IF NOT EXISTS bytes_downloaded BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS scheduled INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS site_count INTEGER NOT NULL DEFAULT 0`,
@@ -499,6 +509,7 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		`CREATE INDEX IF NOT EXISTS idx_releases_preferred ON releases(is_preferred,id)`,
 		`CREATE INDEX IF NOT EXISTS idx_releases_local_created ON releases(is_local,stash_created_at DESC,id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_releases_watchlist_date ON releases(watchlist,watchlist_at DESC,id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_downloads_transport_status_updated ON downloads(transport,status,updated_at DESC)`,
 		// This index must remain in the post-ALTER phase rather than
 		// postgresSchemaDDL. CREATE TABLE IF NOT EXISTS does not add a new
 		// column to an existing releases table, so attempting the index during

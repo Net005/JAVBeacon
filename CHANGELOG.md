@@ -7,6 +7,44 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.79] - 2026-09-05
+
+### Added
+
+- Added a modular direct-HTTP download provider system with an initial JavDB,
+  Keepshare, and anonymous PikPak implementation. It matches release IDs
+  case-insensitively with optional separators, rejects partial matches, checks
+  release dates within 60 days, prefers the largest non-`-U` result, and
+  resolves the highest-quality original playable file without requiring a
+  PikPak account.
+- Added an HTTP Download Activity area with separate downloading, completed,
+  and failed views, live byte progress and ETA, configurable parallelism,
+  persistent destination paths, automatic collision-safe filenames, and retry
+  controls.
+- Releases can persist HTTP as their primary download provider while keeping
+  Torrent as the default primary provider.
+
+### Changed
+
+- Manual Search and Search + Download now query Nyaa Torrent and JavDB HTTP
+  together and present both in one combined result list with prominent
+  transport labels, provider details, file sizes, swarm health, and appropriate
+  download actions.
+- Immediate, bulk, and scheduled monitored searches now share the same provider
+  selection logic. Torrent-first searches fall back to HTTP when lookup fails,
+  no acceptable or seeded result exists, or qBittorrent submission fails.
+- Active torrents can switch automatically to HTTP when they are stalled and
+  not progressing with no seeders or no recorded completed peer. The safety
+  delay is persistent and configurable under Downloads → HTTP, defaults to
+  eight hours, preserves the torrent if HTTP discovery fails, and retries the
+  lookup after a cooldown.
+
+### Fixed
+
+- Added compatible SQLite and PostgreSQL columns and indexes for transport,
+  HTTP progress, destination paths, and per-release provider preference so
+  upgrades retain existing Torrent download history safely.
+
 ## [1.0.78] - 2026-09-05
 
 ### Fixed
