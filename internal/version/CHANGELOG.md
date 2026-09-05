@@ -7,6 +7,29 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.92] - 2026-09-05
+
+### Added
+
+- Release Details opened from Monitored Releases now supports Previous and
+  Next navigation across the complete filtered and sorted monitored list,
+  automatically loading adjacent result pages in either direction.
+
+### Changed
+
+- Monitored bulk Search + Download logs now distinguish downloads that were
+  queued, releases for which no provider candidate was found, genuine policy
+  or active-download skips, and failures, with the exact reason recorded for
+  every affected release.
+
+### Fixed
+
+- Forced Monitored Releases actions now apply the selected transport,
+  preferred-filename, StashApp, and download-history overrides directly to the
+  immediate background run as well as persisting them for later searches.
+- Provider misses are no longer misleadingly reported as skipped forced
+  downloads; `skipped` is reserved for an actual duplicate or policy skip.
+
 ## [1.0.91] - 2026-09-05
 
 ### Fixed

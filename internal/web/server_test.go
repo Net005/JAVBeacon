@@ -1175,6 +1175,11 @@ func TestMonitoredBulkDownloadOverrideDialogIncludesIndependentPolicies(t *testi
 		`api('/releases/bulk/monitor-download'`,
 		`queued for forced Search + Download`,
 		`configuredDownloadMethod(release=null)`,
+		`function openMonitoredRelease(id)`,
+		`ids=new Array(total)`,
+		`function loadMonitoredNavigationIndex(index)`,
+		`releaseNavSource==='monitored'`,
+		`openRelease(releaseNavIDs[next],true,releaseNavFromGrid?null:releaseNavIDs,true,releaseNavSource)`,
 	} {
 		if !strings.Contains(text, marker) {
 			t.Errorf("monitoring bulk override UI missing %q", marker)
