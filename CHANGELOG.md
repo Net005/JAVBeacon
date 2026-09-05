@@ -7,6 +7,22 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.82] - 2026-09-05
+
+### Changed
+
+- Enlarged the Search & Download dialog, provider progress, result cards,
+  filenames, file lists, match indicators, and actions for substantially
+  better readability while retaining the desktop two-column layout.
+
+### Fixed
+
+- HTTP search now inspects Keepshare candidates in a stable order and retries
+  transient anonymous-share failures once, preventing a preferred filename
+  from being discovered only after its download has already started.
+- Keepshare inspection failures are now reported on their search result rather
+  than silently presenting an incomplete filename match.
+
 ## [1.0.81] - 2026-09-05
 
 ### Added

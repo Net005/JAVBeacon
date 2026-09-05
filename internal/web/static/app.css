@@ -104,6 +104,32 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .downloadTable.bulkSelectable .downloadIdentity{padding-left:calc(var(--download-cover) + 38px)}
 .downloadTable.bulkSelectable .downloadTableHead{padding-left:calc(var(--download-cover) + 50px)}
 
+/* Search is a decision screen, so give filenames, match evidence, and provider
+   telemetry enough room to be read without zooming the browser. */
+#searchDialog{width:min(98vw,1580px);padding:30px}
+#searchDialog>form>header h2{font-size:24px}
+#searchDialog #searchResultFilter{min-height:52px;padding:13px 16px;font-size:15px}
+.searchSummary{font-size:14px}
+.searchProviderProgress{gap:12px;margin-bottom:16px}
+.searchProviderProgress>div{min-height:72px;padding:13px 16px}
+.searchProviderProgress small{font-size:11px}.searchProviderProgress b{font-size:15px}.searchProviderProgress strong{font-size:13px}
+.searchProviderProgress strong.searching i{width:17px;height:17px}
+.searchGroup{gap:14px}.searchGroup>header{padding:13px 16px}.searchGroup>header h3{font-size:16px}.searchGroup>header span{font-size:13px}
+.searchResultGrid{grid-template-columns:repeat(auto-fit,minmax(min(100%,600px),1fr));gap:14px}
+.searchResult{gap:12px 18px;padding:20px;font-size:15px}
+.searchResultTitle{gap:10px}.searchResultTitle>b{font-size:17px;line-height:1.45}
+.searchTransport{padding:4px 8px;font-size:11px}
+.searchResultMeta{gap:12px;margin-top:5px}.searchResultMeta .searchSource,.searchMatch{font-size:13px}
+.searchSwarm{gap:11px;font-size:13px}.searchResult .matchState{font-size:14px}
+.searchResult.preferredFilename .matchState{padding:5px 9px;font-size:12px}
+.searchMatchedFile{grid-template-columns:25px minmax(0,1fr) auto;gap:10px;margin-top:12px;padding:11px 13px}
+.searchMatchedFile small{font-size:11px}.searchMatchedFile b{font-size:14px}.searchMatchedFile em{font-size:12px}
+.fileMatchCheck{width:22px;height:22px;font-size:14px}
+.searchFiles{margin-top:11px;padding:11px 13px}.searchFiles>small{margin-bottom:8px;font-size:12px}
+.searchFiles li{grid-template-columns:22px minmax(0,1fr) auto;gap:10px;padding:6px 0;font-size:13px}
+.searchFiles summary{font-size:12px}.searchResult .actions button{min-height:46px;font-size:13px}
+@media(max-width:820px){#searchDialog{padding:18px}.searchResultGrid{grid-template-columns:1fr}.searchResult{padding:16px}.searchResultTitle>b{font-size:15px}}
+
 /* Release detail viewport fix: keep the desktop detail layout inside the dialog
    and make the right-hand metadata/story pane scroll instead of overflowing. */
 @media (min-width:651px){

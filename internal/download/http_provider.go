@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
@@ -149,27 +148,47 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 	// preferred filename patterns rank the real downloadable file. A blocked
 	// or expired share retains its JavDB metadata and naturally falls through
 	// to the established non-U/filesize ordering instead of hiding the result.
-	var wg sync.WaitGroup
+	// Inspect shares serially. Each inspection creates an anonymous PikPak
+	// session/CAPTCHA token; firing every share at once can make otherwise valid
+	// public shares fail transiently and leaves the search card with only its
+	// JavDB row title. A later download resolution would then appear to
+	// "discover" the preferred filename after the search had already missed it.
+	// Keeping this phase ordered also makes the final HTTP ranking deterministic.
 	for i := range rows {
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
-			_, _, selected, files, inspectErr := inspectPikPakShare(ctx, p.client, rows[index].Link, release.VideoID, p.acceptedPatterns)
-			if inspectErr != nil {
-				return
-			}
-			rows[index].Title = selected.Name
-			rows[index].MatchedFile = selected.Name
-			rows[index].PreferredFilenameMatch, _ = matchesAcceptedHTTPPattern(selected.Name, p.acceptedPatterns)
-			rows[index].Files, rows[index].FileDetails = pikPakSearchFiles(files, selected)
-			if size, parseErr := strconv.ParseInt(selected.Size, 10, 64); parseErr == nil && size > 0 {
-				rows[index].SizeBytes = size
-			}
-		}(i)
+		selected, files, inspectErr := p.inspectSearchCandidate(ctx, rows[i].Link, release.VideoID)
+		if inspectErr != nil {
+			rows[i].Reason = "release ID matched; Keepshare filename inspection failed: " + inspectErr.Error()
+			continue
+		}
+		rows[i].Title = selected.Name
+		rows[i].MatchedFile = selected.Name
+		rows[i].PreferredFilenameMatch, _ = matchesAcceptedHTTPPattern(selected.Name, p.acceptedPatterns)
+		rows[i].Files, rows[i].FileDetails = pikPakSearchFiles(files, selected)
+		if size, parseErr := strconv.ParseInt(selected.Size, 10, 64); parseErr == nil && size > 0 {
+			rows[i].SizeBytes = size
+		}
 	}
-	wg.Wait()
 	sortJavDBDownloadCandidates(rows, release.VideoID, p.acceptedPatterns)
 	return rows, nil
+}
+
+func (p *javDBProvider) inspectSearchCandidate(ctx context.Context, link, releaseID string) (pikPakFile, []pikPakFile, error) {
+	_, _, selected, files, err := inspectPikPakShare(ctx, p.client, link, releaseID, p.acceptedPatterns)
+	if err == nil || ctx.Err() != nil {
+		return selected, files, err
+	}
+	// Anonymous share endpoints occasionally reject a freshly-created token.
+	// One short, context-aware retry is enough to recover without making a
+	// genuinely blocked or expired share stall the whole search.
+	timer := time.NewTimer(250 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return pikPakFile{}, nil, ctx.Err()
+	case <-timer.C:
+	}
+	_, _, selected, files, err = inspectPikPakShare(ctx, p.client, link, releaseID, p.acceptedPatterns)
+	return selected, files, err
 }
 
 func sortJavDBDownloadCandidates(rows []domain.SearchResult, releaseID string, patterns []string) {
