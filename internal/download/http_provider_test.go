@@ -1,8 +1,10 @@
 package download
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -156,13 +158,6 @@ func TestJavDBSearchClassifiesPipelineFailures(t *testing.T) {
 			}
 			_, _ = w.Write([]byte(`<html><body>ID: PRPM-002 ordinary detail content</body></html>`))
 		}},
-		{name: "zero links", requested: "PRPM-002", storedDate: "2026-09-15", want: "no downloadable HTTP links", handler: func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/search" {
-				_, _ = w.Write([]byte(javDBSearchPage("PRPM-002", "2026-09-15", "/v/no-links")))
-				return
-			}
-			_, _ = w.Write([]byte(`<html><body>ID: PRPM-002 <section class="download-list"><button>Download unavailable</button></section></body></html>`))
-		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -173,6 +168,32 @@ func TestJavDBSearchClassifiesPipelineFailures(t *testing.T) {
 				t.Fatalf("error=%v, want stage %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestJavDBExactReleaseWithoutShareIsVisibleAndLogged(t *testing.T) {
+	provider, closeServer := javDBFixtureProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search" {
+			_, _ = w.Write([]byte(javDBSearchPage("PRPM-002", "2026-09-15", "/v/no-links")))
+			return
+		}
+		_, _ = w.Write([]byte(`<html><body>ID: PRPM-002 <section class="download-list"><button>Download unavailable</button></section></body></html>`))
+	})
+	defer closeServer()
+	var output bytes.Buffer
+	provider.log = slog.New(slog.NewJSONHandler(&output, nil))
+	rows, err := provider.Search(context.Background(), domain.Release{VideoID: "PRPM-002", ReleaseDate: "2026-09-15"})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
+	if rows[0].Accepted || rows[0].SourceURL == "" || !strings.Contains(rows[0].Reason, "no Keepshare/PikPak download link") {
+		t.Fatalf("expected a linked, non-downloadable diagnostic result, got %+v", rows[0])
+	}
+	logged := output.String()
+	for _, want := range []string{`"msg":"JavDB exact release has no downloadable HTTP share"`, `"requested_id":"PRPM-002"`, `"matched_id":"PRPM-002"`, `"keepshare_links":0`} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("log %q does not contain %q", logged, want)
+		}
 	}
 }
 

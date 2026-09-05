@@ -191,6 +191,7 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 		return nil, errors.New(mismatchReason)
 	}
 	var rows []domain.SearchResult
+	var unavailable []domain.SearchResult
 	var stageErrors []string
 	for _, h := range compatible {
 		pageDate := parseJavDBDate(h.date)
@@ -215,7 +216,19 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 		}
 		if len(discovery.rows) == 0 {
 			if discovery.downloadSectionFound {
-				stageErrors = append(stageErrors, fmt.Sprintf("JavDB exact release found but no downloadable HTTP links were found (requested_id=%s matched_id=%s detail_url=%s detail_status=%d)", release.VideoID, h.id, h.href, detailStatus))
+				reason := "Exact JavDB release and date matched, but no Keepshare/PikPak download link is currently published"
+				unavailable = append(unavailable, domain.SearchResult{
+					Provider:    p.Name(),
+					Title:       h.id,
+					SourceURL:   h.href,
+					Transport:   "http",
+					PublishedAt: formatOptionalDate(pageDate),
+					Accepted:    false,
+					Reason:      reason,
+				})
+				if p.log != nil {
+					p.log.Warn("JavDB exact release has no downloadable HTTP share", "requested_id", release.VideoID, "normalized_id", normalizeReleaseID(release.VideoID), "matched_id", h.id, "stored_date", release.ReleaseDate, "javdb_date", formatOptionalDate(pageDate), "date_delta_days", calendarDeltaDays(knownDate, pageDate), "detail_url", h.href, "detail_status", detailStatus, "download_section_found", true, "keepshare_links", discovery.shareLinkCount, "pikpak_links", discovery.pikPakLinkCount, "reason", reason)
+				}
 			} else {
 				stageErrors = append(stageErrors, fmt.Sprintf("JavDB exact release found but download section could not be parsed (requested_id=%s matched_id=%s detail_url=%s detail_status=%d)", release.VideoID, h.id, h.href, detailStatus))
 			}
@@ -227,6 +240,9 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 		}
 	}
 	if len(rows) == 0 {
+		if len(unavailable) > 0 {
+			return unavailable, nil
+		}
 		return nil, errors.New(strings.Join(stageErrors, "; "))
 	}
 	// JavDB's visible row title is not always the actual video filename in
@@ -261,6 +277,7 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 		}
 	}
 	sortJavDBDownloadCandidates(rows, release.VideoID, p.acceptedPatterns)
+	rows = append(rows, unavailable...)
 	if p.log != nil {
 		p.log.Info("JavDB HTTP candidate inspection completed", "requested_id", release.VideoID, "normalized_id", normalizeReleaseID(release.VideoID), "candidate_inspection_count", len(rows), "candidate_inspection_failures", inspectionFailures, "final_candidate_count", len(rows))
 	}
