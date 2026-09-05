@@ -7,6 +7,29 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.84] - 2026-09-05
+
+### Changed
+
+- Search & Download now fits three to four compact result cards in its existing
+  dialog footprint and gives Torrent and Web downloads distinct icons and
+  action labels.
+- Manual searches now offer an explicit force-redownload action for releases
+  already present in StashApp, while ordinary manual downloads retain duplicate
+  protection.
+- Mixed Torrent and HTTP results wait for both providers before presenting the
+  final preferred ordering, preventing late HTTP results from shifting cards.
+
+### Fixed
+
+- Empty HTTP search results are consistently returned as an empty array and the
+  interface defensively handles malformed provider result payloads, preventing
+  the `Symbol.iterator` search failure.
+- Direct HTTP downloads no longer contact or depend on qBittorrent, so they can
+  be queued while the torrent client is unavailable.
+- Torrent and HTTP contents are ordered by file size from largest to smallest,
+  with unknown sizes last and deterministic filename ordering for ties.
+
 ## [1.0.83] - 2026-09-05
 
 ### Added
