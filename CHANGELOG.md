@@ -7,6 +7,30 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.93] - 2026-09-05
+
+### Changed
+
+- JavDB HTTP searches now report their exact failure stage, distinguishing
+  blocked requests, unparseable search results, ID mismatches, date mismatches,
+  detail-page failures, missing download structures or links, and Keepshare
+  inspection failures in manual, monitored, and automatic searches.
+- JavDB download discovery now tolerates alternate wrapper markup, follows
+  separate Download actions, recognizes Keepshare redirect hosts and direct
+  PikPak shares, and removes duplicate share links.
+
+### Fixed
+
+- JavDB release IDs are now matched case-insensitively and independently of
+  spaces, dashes, underscores, and dots while retaining strict boundaries that
+  reject longer or otherwise distinct IDs.
+- Exact JavDB releases such as `PRED-899` and `PRPM-002` now progress through
+  detail/download discovery instead of silently becoming a generic no-result
+  response when a later provider stage fails.
+- Generic PikPak help links are no longer mistaken for downloadable shares,
+  and normal JavDB pages containing Cloudflare's footer script are no longer
+  misclassified as challenge pages.
+
 ## [1.0.92] - 2026-09-05
 
 ### Added
