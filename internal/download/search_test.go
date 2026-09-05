@@ -81,6 +81,9 @@ func TestNyaaSearchResolvesActualFilenameAndMagnetFromDetailPage(t *testing.T) {
 	if rows[0].SourceURL != server.URL+"/view/123" {
 		t.Fatalf("SourceURL was not set to the torrent detail page: %+v", rows[0])
 	}
+	if len(rows[0].FileDetails) != 1 || rows[0].FileDetails[0].SizeBytes != 1<<30 || !rows[0].FileDetails[0].Matched || rows[0].MatchedFile != "4k688.com@PRED-888.mp4" || !rows[0].PreferredFilenameMatch {
+		t.Fatalf("torrent file details did not retain size and preferred match: %+v", rows[0])
+	}
 }
 
 func TestNyaaSearchUsesMagnetDisplayNameWhenNoFileListExists(t *testing.T) {
