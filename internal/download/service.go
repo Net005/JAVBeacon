@@ -71,15 +71,26 @@ type Service struct {
 	httpMu       sync.Mutex
 	httpActive   int
 	httpRuns     map[int64]*httpDownloadRun
+	httpWaiters  []*httpSlotWaiter
 
 	pikPakCheckMu      sync.Mutex
 	pikPakCheckRunning bool
 	pikPakSessionMu    sync.Mutex
+	// pikPakDeleteFile is an optional test seam. Production removals use the
+	// authenticated session and PikPak API directly when it is nil.
+	pikPakDeleteFile func(context.Context, string) error
 }
 
 type httpDownloadRun struct {
 	cancel context.CancelFunc
 	done   chan struct{}
+	waiter *httpSlotWaiter
+}
+
+type httpSlotWaiter struct {
+	downloadID int64
+	ready      chan struct{}
+	granted    bool
 }
 
 // scheduleMaxSleepChunk bounds how long any schedule loop below ever sleeps
@@ -1032,43 +1043,79 @@ func httpConnections(settings map[string]string) int {
 	}
 	return n
 }
-func (s *Service) acquireHTTPSlot(ctx context.Context) bool {
-	for {
-		limit := s.httpConcurrency(ctx)
-		s.httpMu.Lock()
-		if s.httpActive < limit {
-			s.httpActive++
-			s.httpMu.Unlock()
-			return true
-		}
-		s.httpMu.Unlock()
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(300 * time.Millisecond):
+func (s *Service) promoteHTTPWaitersLocked(limit int) {
+	for s.httpActive < limit && len(s.httpWaiters) > 0 {
+		waiter := s.httpWaiters[0]
+		s.httpWaiters = s.httpWaiters[1:]
+		waiter.granted = true
+		s.httpActive++
+		close(waiter.ready)
+	}
+}
+
+func (s *Service) removeHTTPWaiterLocked(target *httpSlotWaiter) {
+	for i, waiter := range s.httpWaiters {
+		if waiter == target {
+			s.httpWaiters = append(s.httpWaiters[:i], s.httpWaiters[i+1:]...)
+			return
 		}
 	}
 }
+
+func (s *Service) waitForHTTPSlot(ctx context.Context, waiter *httpSlotWaiter) bool {
+	select {
+	case <-waiter.ready:
+		if ctx.Err() == nil {
+			return true
+		}
+	case <-ctx.Done():
+	}
+	limit := s.httpConcurrency(context.Background())
+	s.httpMu.Lock()
+	if waiter.granted {
+		if s.httpActive > 0 {
+			s.httpActive--
+		}
+	} else {
+		s.removeHTTPWaiterLocked(waiter)
+	}
+	s.promoteHTTPWaitersLocked(limit)
+	s.httpMu.Unlock()
+	return false
+}
 func (s *Service) releaseHTTPSlot() {
+	limit := s.httpConcurrency(context.Background())
 	s.httpMu.Lock()
 	if s.httpActive > 0 {
 		s.httpActive--
 	}
+	s.promoteHTTPWaitersLocked(limit)
 	s.httpMu.Unlock()
 }
 
 func (s *Service) startHTTPDownload(d domain.Download) {
 	ctx, cancel := context.WithCancel(context.Background())
-	run := &httpDownloadRun{cancel: cancel, done: make(chan struct{})}
+	waiter := &httpSlotWaiter{downloadID: d.ID, ready: make(chan struct{})}
+	run := &httpDownloadRun{cancel: cancel, done: make(chan struct{}), waiter: waiter}
+	limit := s.httpConcurrency(context.Background())
 	s.httpMu.Lock()
 	if s.httpRuns == nil {
 		s.httpRuns = map[int64]*httpDownloadRun{}
 	}
 	if previous := s.httpRuns[d.ID]; previous != nil {
 		previous.cancel()
+		if previous.waiter != nil && !previous.waiter.granted {
+			s.removeHTTPWaiterLocked(previous.waiter)
+		}
 	}
 	s.httpRuns[d.ID] = run
+	s.httpWaiters = append(s.httpWaiters, waiter)
+	s.promoteHTTPWaitersLocked(limit)
+	waiting := !waiter.granted
 	s.httpMu.Unlock()
+	if waiting {
+		s.logHTTPDownloadEvent("HTTP download waiting in parallel-download queue", d)
+	}
 	go func() {
 		defer close(run.done)
 		defer func() {
@@ -1078,6 +1125,10 @@ func (s *Service) startHTTPDownload(d domain.Download) {
 			}
 			s.httpMu.Unlock()
 		}()
+		if !s.waitForHTTPSlot(ctx, waiter) {
+			return
+		}
+		defer s.releaseHTTPSlot()
 		s.runHTTPDownload(ctx, d)
 	}()
 }
@@ -1104,6 +1155,15 @@ func (s *Service) resumeHTTPDownloads() {
 	if err != nil {
 		return
 	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Status != rows[j].Status {
+			return rows[i].Status == "downloading"
+		}
+		if !rows[i].UpdatedAt.Equal(rows[j].UpdatedAt) {
+			return rows[i].UpdatedAt.Before(rows[j].UpdatedAt)
+		}
+		return rows[i].ID < rows[j].ID
+	})
 	for _, row := range rows {
 		if row.Transport == "http" && (row.Status == "queued" || row.Status == "downloading") {
 			row.Status = "queued"
@@ -1161,11 +1221,10 @@ func (s *Service) tryFailedHTTPTorrentFallback(d domain.Download, httpFailure st
 }
 
 func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
-	if !s.acquireHTTPSlot(ctx) {
-		return
-	}
-	defer s.releaseHTTPSlot()
-	s.logHTTPDownloadEvent("HTTP download started", d)
+	d.Status = "downloading"
+	d.Error = ""
+	d, _ = s.store.SaveDownload(ctx, d)
+	s.logHTTPDownloadEvent("HTTP download promoted from queue and started", d)
 	settings, err := s.store.Settings(ctx)
 	dir := ""
 	if err == nil {
@@ -1198,9 +1257,6 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		fail(fmt.Errorf("create HTTP download folder: %w", err))
 		return
 	}
-	d.Status = "downloading"
-	d.Error = ""
-	d, _ = s.store.SaveDownload(ctx, d)
 	var resolved resolvedHTTPFile
 	var resolver HTTPSourceProvider
 	for _, provider := range httpSourceProviders(s.client, settings, s.log, s.authenticatePikPakSession) {
@@ -1222,6 +1278,10 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		d.BytesTotal = resolved.Size
 	}
 	if resolved.Authenticated {
+		if resolved.RestoredFileID != "" {
+			d.RestoredFileID = resolved.RestoredFileID
+			d.RestoredFileOwned = d.RestoredFileOwned || resolved.NewlyRestored
+		}
 		d.MatchReason = appendDownloadPreference("authenticated PikPak original", d.MatchReason)
 		s.log.Info("authenticated PikPak file resolved",
 			"download_id", d.ID,
@@ -1235,6 +1295,10 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	}
 	files, _ := json.Marshal([]string{resolved.Name})
 	d.Files = files
+	// Persist the restored account-drive identity before transfer starts. This
+	// makes explicit Download Activity removal able to clean it up even after a
+	// cancellation, transfer failure, or application restart.
+	d, _ = s.store.SaveDownload(context.Background(), d)
 	finalPath := nextHTTPDestination(dir, strings.ToUpper(strings.TrimSpace(d.Query)))
 	tempPath := finalPath + ".part"
 	out, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
@@ -1315,6 +1379,10 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 			err = fmt.Errorf("HTTP transfer failed: %v; refresh authenticated PikPak URL: %w", err, refreshErr)
 		} else {
 			resolved = refreshed
+			if refreshed.RestoredFileID != "" {
+				d.RestoredFileID = refreshed.RestoredFileID
+				d.RestoredFileOwned = d.RestoredFileOwned || refreshed.NewlyRestored
+			}
 			if refreshed.Size > 0 {
 				d.BytesTotal = refreshed.Size
 			}
@@ -1370,16 +1438,21 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		fail(err)
 		return
 	}
+	cleanupFailed := false
 	for _, cleanup := range cleanupRestored {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		cleanupErr := cleanup(cleanupCtx)
 		cleanupCancel()
 		if cleanupErr != nil {
+			cleanupFailed = true
 			s.log.Warn("HTTP download completed but restored PikPak file cleanup failed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "error", cleanupErr)
 			d.MatchReason = appendDownloadPreference("restored PikPak file cleanup failed: "+cleanupErr.Error(), d.MatchReason)
 		} else {
 			s.logHTTPDownloadEvent("Restored PikPak file deleted after successful HTTP download", d)
 		}
+	}
+	if len(cleanupRestored) > 0 && !cleanupFailed {
+		d.RestoredFileOwned = false
 	}
 	d.DestinationPath = finalPath
 	d.BytesDownloaded = d.BytesTotal
@@ -1995,6 +2068,37 @@ func (s *Service) RemoveDownload(ctx context.Context, downloadID int64) (int64, 
 	return s.removeReleaseDownloads(ctx, selected.ReleaseID, selected.Query, false)
 }
 
+func (s *Service) removeOwnedRestoredPikPakFile(ctx context.Context, d domain.Download, settings map[string]string) error {
+	fileID := strings.TrimSpace(d.RestoredFileID)
+	if !d.RestoredFileOwned || fileID == "" {
+		return nil
+	}
+	var err error
+	if s.pikPakDeleteFile != nil {
+		err = s.pikPakDeleteFile(ctx, fileID)
+	} else {
+		username, password := strings.TrimSpace(settings["pikpak_username"]), settings["pikpak_password"]
+		if username == "" || password == "" {
+			return errors.New("remove restored PikPak file: PikPak credentials are not configured")
+		}
+		client, authErr := s.authenticatePikPakSession(ctx, username, password)
+		if authErr != nil {
+			return fmt.Errorf("remove restored PikPak file: %w", authErr)
+		}
+		err = client.deleteFile(ctx, fileID)
+	}
+	// Deletion is idempotent from the user's perspective. A missing drive file
+	// means the temporary copy has already been removed and must not strand the
+	// local Download Activity row.
+	if err != nil && !strings.Contains(strings.ToLower(err.Error()), "file_not_found") && !strings.Contains(strings.ToLower(err.Error()), "http 404") {
+		return fmt.Errorf("remove restored PikPak file %s: %w", fileID, err)
+	}
+	if s.log != nil {
+		s.log.Info("Restored PikPak file removed with HTTP download", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "restored_file_id", fileID)
+	}
+	return nil
+}
+
 func (s *Service) removeHTTPReleaseDownloads(ctx context.Context, downloadID, releaseID int64, query string) (int64, error) {
 	if err := s.cancelHTTPDownload(ctx, downloadID); err != nil {
 		return 0, fmt.Errorf("cancel HTTP download: %w", err)
@@ -2002,6 +2106,20 @@ func (s *Service) removeHTTPReleaseDownloads(ctx context.Context, downloadID, re
 	rows, err := s.store.Downloads(ctx, "")
 	if err != nil {
 		return 0, err
+	}
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return 0, err
+	}
+	cleaned := map[string]bool{}
+	for _, row := range rows {
+		if row.ReleaseID != releaseID || !strings.EqualFold(row.Transport, "http") || !row.RestoredFileOwned || strings.TrimSpace(row.RestoredFileID) == "" || cleaned[row.RestoredFileID] {
+			continue
+		}
+		if cleanupErr := s.removeOwnedRestoredPikPakFile(ctx, row, settings); cleanupErr != nil {
+			return 0, cleanupErr
+		}
+		cleaned[row.RestoredFileID] = true
 	}
 	deleted := int64(0)
 	for _, row := range rows {
@@ -2015,7 +2133,7 @@ func (s *Service) removeHTTPReleaseDownloads(ctx context.Context, downloadID, re
 		deleted += n
 	}
 	if s.log != nil {
-		s.log.Info("HTTP download canceled and history removed", "download_id", downloadID, "release_id", releaseID, "video_id", query, "history_rows", deleted)
+		s.log.Info("HTTP download canceled, restored PikPak file cleaned up, and history removed", "download_id", downloadID, "release_id", releaseID, "video_id", query, "restored_files", len(cleaned), "history_rows", deleted)
 	}
 	return deleted, nil
 }

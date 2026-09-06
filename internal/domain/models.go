@@ -584,29 +584,34 @@ type Download struct {
 	// ProviderFileID pins an HTTP download to the exact file selected while
 	// inspecting a multi-file provider share. It prevents download-time share
 	// resolution from silently choosing a different release-ID-matching file.
-	ProviderFileID  string          `json:"provider_file_id,omitempty"`
-	Query           string          `json:"query"`
-	TorrentHash     string          `json:"torrent_hash"`
-	Transport       string          `json:"transport"`
-	DestinationPath string          `json:"destination_path,omitempty"`
-	BytesTotal      int64           `json:"bytes_total,omitempty"`
-	BytesDownloaded int64           `json:"bytes_downloaded,omitempty"`
-	BytesPerSecond  int64           `json:"bytes_per_second,omitempty"`
-	Name            string          `json:"name"`
-	Files           json.RawMessage `json:"files"`
-	Status          string          `json:"status"`
-	MatchReason     string          `json:"match_reason"`
-	QBResponse      string          `json:"qb_response"`
-	PostStatus      string          `json:"post_status"`
-	Error           string          `json:"error,omitempty"`
-	SeedRatio       float64         `json:"seed_ratio"`
-	Progress        float64         `json:"progress"`
-	Seeds           int             `json:"seeds"`
-	Peers           int             `json:"peers"`
-	ETASeconds      int64           `json:"eta_seconds"`
-	SeenComplete    int64           `json:"seen_complete"`
-	AddedAt         time.Time       `json:"added_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	ProviderFileID string `json:"provider_file_id,omitempty"`
+	// RestoredFileID identifies the account-drive copy created while resolving
+	// an authenticated PikPak download. RestoredFileOwned is true only when
+	// JAVBeacon created that copy, so removal never deletes a pre-existing file.
+	RestoredFileID    string          `json:"restored_file_id,omitempty"`
+	RestoredFileOwned bool            `json:"restored_file_owned,omitempty"`
+	Query             string          `json:"query"`
+	TorrentHash       string          `json:"torrent_hash"`
+	Transport         string          `json:"transport"`
+	DestinationPath   string          `json:"destination_path,omitempty"`
+	BytesTotal        int64           `json:"bytes_total,omitempty"`
+	BytesDownloaded   int64           `json:"bytes_downloaded,omitempty"`
+	BytesPerSecond    int64           `json:"bytes_per_second,omitempty"`
+	Name              string          `json:"name"`
+	Files             json.RawMessage `json:"files"`
+	Status            string          `json:"status"`
+	MatchReason       string          `json:"match_reason"`
+	QBResponse        string          `json:"qb_response"`
+	PostStatus        string          `json:"post_status"`
+	Error             string          `json:"error,omitempty"`
+	SeedRatio         float64         `json:"seed_ratio"`
+	Progress          float64         `json:"progress"`
+	Seeds             int             `json:"seeds"`
+	Peers             int             `json:"peers"`
+	ETASeconds        int64           `json:"eta_seconds"`
+	SeenComplete      int64           `json:"seen_complete"`
+	AddedAt           time.Time       `json:"added_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
 	// FilenamePatternExcluded marks a download that was submitted despite
 	// NOT being a normal accepted-filename-pattern match (TODO-2.0 Task A):
 	// either a manual "Force download" override (SearchResult.Forced), or

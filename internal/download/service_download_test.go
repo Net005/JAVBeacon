@@ -59,6 +59,40 @@ func TestHTTPConnectionsDefaultAndBounds(t *testing.T) {
 	}
 }
 
+func TestHTTPParallelDownloadQueuePromotesFIFO(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "http-fifo.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"http_download_concurrency": "1"}); err != nil {
+		t.Fatal(err)
+	}
+	first := &httpSlotWaiter{downloadID: 101, ready: make(chan struct{})}
+	second := &httpSlotWaiter{downloadID: 102, ready: make(chan struct{})}
+	service := &Service{store: st, httpActive: 1, httpWaiters: []*httpSlotWaiter{first, second}}
+
+	service.releaseHTTPSlot()
+	select {
+	case <-first.ready:
+	default:
+		t.Fatal("oldest queued HTTP download was not promoted first")
+	}
+	select {
+	case <-second.ready:
+		t.Fatal("second queued HTTP download was promoted before capacity was available")
+	default:
+	}
+
+	service.releaseHTTPSlot()
+	select {
+	case <-second.ready:
+	default:
+		t.Fatal("second queued HTTP download was not promoted after the first slot was released")
+	}
+}
+
 func TestVerifyHTTPDownloadFileAgainstPikPakSHA1(t *testing.T) {
 	content := []byte("complete downloaded video payload")
 	path := filepath.Join(t.TempDir(), "video.part")
