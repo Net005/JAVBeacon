@@ -1504,6 +1504,9 @@ func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testin
 		"static/app.js": {
 			`let releaseSelection=new Set()`,
 			`let releaseSelectionAnchor=null`,
+			`id="releaseBulkSelectAll"`,
+			`api('/releases/ids?'`,
+			`params.delete('limit')`,
 			`releaseSelection.has(Number(x.id))`,
 			`handleReleaseCoverClick(event,${x.id})`,
 			`event?.shiftKey&&releaseSelectionAnchor!==null`,
@@ -1518,6 +1521,7 @@ func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testin
 			`.coverGrid.selectionMode .releaseSelect`,
 			`.card.selected{border-color:`,
 			`.releaseBulkDownloadDialog{width:`,
+			`.releaseBulkHeader #releaseBulkSelectAll`,
 		},
 	}
 	for name, markers := range files {
@@ -1699,6 +1703,37 @@ func TestReleasesCountEndpointMatchesReleasesFilter(t *testing.T) {
 	}
 	if body.Total != 3 {
 		t.Fatalf("total=%d, want 3 (count must ignore limit)", body.Total)
+	}
+}
+
+func TestReleaseIDsEndpointReturnsEveryFilteredRow(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "release-ids.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 505; i++ {
+		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: fmt.Sprintf("ALL-%03d", i), Title: "Matching", Source: "JavLibrary", Watchlist: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Server{store: st, log: slog.Default()}
+	rec := httptest.NewRecorder()
+	s.releaseIDs(rec, httptest.NewRequest(http.MethodGet, "/api/releases/ids?watchlist=true&limit=1", nil))
+	var body struct {
+		IDs   []int64 `json:"ids"`
+		Total int     `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Total != 505 || len(body.IDs) != 505 {
+		t.Fatalf("filtered ids total=%d len=%d, want 505", body.Total, len(body.IDs))
 	}
 }
 
