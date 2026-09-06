@@ -400,6 +400,11 @@ func (s *Server) routes() {
 		}
 		s.json(w, 200, x)
 	})
+	s.mux.HandleFunc("GET /api/stash/history", s.stashHistory)
+	s.mux.HandleFunc("GET /api/stash/history/export", s.exportStashHistory)
+	s.mux.HandleFunc("POST /api/stash/history/sync", s.syncStashHistory)
+	s.mux.HandleFunc("POST /api/stash/history/writeback/review", s.reviewStashHistoryWriteback)
+	s.mux.HandleFunc("POST /api/stash/history/writeback/apply", s.applyStashHistoryWriteback)
 
 	// TODO-2.0 Phase 2: "Missing Library Files" - find StashApp scenes whose
 	// file(s) are gone from disk, retrieve a JAVBeacon release for them
@@ -1366,6 +1371,8 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	for _, key := range []string{"javdb_url", "http_download_directory", "http_download_concurrency", "http_download_connections", "http_fallback_delay", "default_download_method", "prefer_http_equivalent", "pikpak_username", "pikpak_password", "pikpak_cleanup_restored", "pikpak_release_id_folder_fallback", "pikpak_check_enabled", "pikpak_check_interval", "pikpak_notify_success", "pikpak_notify_failure", "pushover_app_token", "pushover_user_key"} {
 		allowed[key] = true
 	}
+	allowed["stash_history_writeback_enabled"] = true
+	allowed["stash_history_writeback_interval"] = true
 	if username, password := strings.TrimSpace(x["pikpak_username"]), x["pikpak_password"]; (username == "") != (password == "") {
 		s.problem(w, http.StatusUnprocessableEntity, "PikPak username and password must either both be configured or both be blank")
 		return
@@ -1412,6 +1419,10 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	}
 	if raw, present := x["search_download_background"]; present && raw != "true" && raw != "false" {
 		s.problem(w, http.StatusUnprocessableEntity, "background Search + Download preference must be true or false")
+		return
+	}
+	if raw, present := x["stash_history_writeback_enabled"]; present && raw != "true" && raw != "false" {
+		s.problem(w, http.StatusUnprocessableEntity, "scheduled Stash history write-back must be true or false")
 		return
 	}
 	if raw, present := x["http_fallback_delay"]; present {
@@ -1470,7 +1481,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// up front instead of silently falling back to that schedule's default
 	// interval downstream, which used to look exactly like the schedule
 	// hadn't picked up the change at all.
-	for _, key := range []string{"download_search_interval", "download_search_older_interval", "stash_sync_interval", "stash_watchlist_sync_interval"} {
+	for _, key := range []string{"download_search_interval", "download_search_older_interval", "stash_sync_interval", "stash_watchlist_sync_interval", "stash_history_writeback_interval"} {
 		if raw, ok := x[key]; ok && strings.TrimSpace(raw) != "" {
 			if parsed, err := domain.ParseScheduleDuration(strings.TrimSpace(raw)); err != nil || parsed < time.Minute {
 				s.problem(w, http.StatusUnprocessableEntity, key+": schedule must be a valid duration of at least 1 minute (e.g. \"1h\", \"30m\", \"7d\")")
@@ -1639,8 +1650,8 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// can't hammer qBittorrent's API.
 	if raw, ok := x["qb_poll_interval_seconds"]; ok && strings.TrimSpace(raw) != "" {
 		secs, err := strconv.Atoi(strings.TrimSpace(raw))
-		if err != nil || secs < 2 {
-			s.problem(w, http.StatusUnprocessableEntity, "qBittorrent poll interval must be 2 seconds or greater")
+		if err != nil || secs < 15 {
+			s.problem(w, http.StatusUnprocessableEntity, "qBittorrent poll interval must be 15 seconds or greater")
 			return
 		}
 	}

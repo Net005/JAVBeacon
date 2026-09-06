@@ -382,6 +382,32 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 		}
 	}
 	if err == nil {
+		_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS stash_history_scenes (
+			stash_scene_id TEXT PRIMARY KEY,
+			release_id INTEGER NOT NULL DEFAULT 0,
+			video_id TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL DEFAULT '',
+			javlibrary_url TEXT NOT NULL DEFAULT '',
+			file_path TEXT NOT NULL DEFAULT '',
+			total_play_seconds REAL NOT NULL DEFAULT 0,
+			play_count INTEGER NOT NULL DEFAULT 0,
+			orgasm_count INTEGER NOT NULL DEFAULT 0,
+			observed_at DATETIME NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_stash_history_scenes_release ON stash_history_scenes(release_id);
+		CREATE TABLE IF NOT EXISTS stash_history_events (
+			id INTEGER PRIMARY KEY,
+			stash_scene_id TEXT NOT NULL REFERENCES stash_history_scenes(stash_scene_id) ON DELETE CASCADE,
+			event_type TEXT NOT NULL,
+			occurred_at DATETIME NOT NULL,
+			duration_seconds REAL NOT NULL DEFAULT 0,
+			duration_estimated INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(stash_scene_id,event_type,occurred_at)
+		);
+		CREATE INDEX IF NOT EXISTS idx_stash_history_events_time ON stash_history_events(occurred_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_stash_history_events_type_time ON stash_history_events(event_type,occurred_at DESC);`)
+	}
+	if err == nil {
 		err = s.cleanupStoredReleaseText(context.Background())
 	}
 	if err == nil {

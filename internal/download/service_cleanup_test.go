@@ -1,6 +1,28 @@
 package download
 
-import "testing"
+import (
+	"errors"
+	"io"
+	"log/slog"
+	"testing"
+	"time"
+)
+
+func TestQBPollingUsesQuietMinimumAndTracksOutageState(t *testing.T) {
+	if qbPollIntervalDefault < 15*time.Second || qbPollIntervalFloor < 15*time.Second {
+		t.Fatalf("qBittorrent polling is too aggressive: default=%s floor=%s", qbPollIntervalDefault, qbPollIntervalFloor)
+	}
+	s := &Service{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	s.logQBPollFailure(errors.New("HTTP 502"))
+	s.logQBPollFailure(errors.New("HTTP 502"))
+	if s.qbPollLastError != "HTTP 502" {
+		t.Fatalf("poll outage state=%q", s.qbPollLastError)
+	}
+	s.logQBPollRecovery()
+	if s.qbPollLastError != "" {
+		t.Fatalf("poll recovery did not clear outage state: %q", s.qbPollLastError)
+	}
+}
 
 // TestCleanupRetryThrottlesThenAllowsAnotherAttempt covers the fix for a
 // download that gets permanently stuck once a single removal attempt fails

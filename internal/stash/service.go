@@ -34,13 +34,13 @@ const DefaultQuery = `query JAVBeaconLocalScenes { findScenes(filter: { per_page
 // the safety-critical local-availability matching in run() depends on, and
 // a GraphQL schema validation error (a whole request fails if it asks for
 // any field the server's schema doesn't have) from a field a given StashApp
-// version lacks must not be able to take that down. o_history in particular
-// is newer than o_counter/play_count/last_played_at, hence the two-tier
-// fallback in fetchPlaybackStats: try the full query first, and if the
-// whole request errors, retry without o_history so the O-Counter/Play
-// Count/Last Played figures still sync even when Last O Count Date can't.
-const playbackStatsQueryWithHistory = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id o_counter play_count last_played_at o_history } } }`
-const playbackStatsQueryBasic = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id o_counter play_count last_played_at } } }`
+// version lacks must not be able to take that down. Timestamped histories and
+// play duration are newer than the counter fields, hence the three graceful
+// tiers in fetchPlaybackStats: full history, modern counters/metadata, then
+// the original counter-only query for older StashApp installations.
+const playbackStatsQueryWithHistory = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id title code urls o_counter play_count last_played_at play_duration play_history o_history files { path } } } }`
+const playbackStatsQueryBasic = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id title code urls o_counter play_count last_played_at play_duration files { path } } } }`
+const playbackStatsQueryLegacy = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id o_counter play_count last_played_at } } }`
 const sceneDetailsQuery = `query JAVBeaconSceneCreatedAt { findScenes(filter: { per_page: -1 }) { scenes { id created_at files { path } } } }`
 
 type sceneDetails struct {
@@ -54,10 +54,18 @@ type sceneDetails struct {
 // (the basic-tier query was used, or the scene's o_history was empty) - see
 // SetStashPlaybackStats's doc comment for how run() treats that.
 type playbackStats struct {
-	OCounter     int
-	PlayCount    int
-	LastPlayedAt string
-	LastOCountAt string
+	OCounter         int
+	PlayCount        int
+	LastPlayedAt     string
+	LastOCountAt     string
+	Title            string
+	Code             string
+	URLs             []string
+	FilePath         string
+	PlayDuration     float64
+	PlayHistory      []string
+	OHistory         []string
+	HistoryAvailable bool
 }
 
 var idInText = regexp.MustCompile(`(?i)[a-z]{2,}[\s_-]*0*[0-9]{2,7}`)
@@ -116,6 +124,8 @@ type Service struct {
 	// timing separately. Guarded by mu like the rest of this struct's
 	// mutable fields.
 	scheduleNextAttempt map[string]time.Time
+	historyReviewMu     sync.Mutex
+	historyReviews      map[string]HistoryReview
 }
 
 // scheduleMaxSleepChunk bounds how long Schedule/WatchlistSchedule ever sleep
@@ -128,7 +138,7 @@ type Service struct {
 var scheduleMaxSleepChunk = 30 * time.Second
 
 func New(st store.Store, timeout time.Duration, log *slog.Logger, jav *scraper.JavLibrary, downloads *download.Service) *Service {
-	svc := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, jav: jav, downloads: downloads, scheduleNextAttempt: map[string]time.Time{}}
+	svc := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, jav: jav, downloads: downloads, scheduleNextAttempt: map[string]time.Time{}, historyReviews: map[string]HistoryReview{}}
 	if st != nil {
 		svc.restoreMissingScanStatus(context.Background())
 	}
@@ -230,6 +240,7 @@ func (s *Service) run(ctx context.Context) {
 	result.Total = total
 	result.Phase = "Matching releases"
 	s.publishStatus(result)
+	releaseByScene := map[string]domain.Release{}
 	advanceProgress := func() {
 		result.Processed++
 		if result.Processed%25 == 0 || result.Processed == result.Total {
@@ -249,6 +260,7 @@ func (s *Service) run(ctx context.Context) {
 			sceneID, local := ids[key]
 			if local {
 				result.Matched++
+				releaseByScene[sceneID] = release
 			}
 			if local != release.Local || sceneID != release.StashSceneID {
 				if e := s.store.SetStashState(ctx, release.ID, local, sceneID); e != nil {
@@ -333,6 +345,63 @@ func (s *Service) run(ctx context.Context) {
 			break
 		}
 	}
+	if stats != nil {
+		if history, ok := s.store.(interface {
+			UpsertStashHistory(context.Context, domain.StashHistoryScene, []time.Time, []time.Time) error
+		}); ok {
+			for sceneID, st := range stats {
+				if !st.HistoryAvailable {
+					continue
+				}
+				release := releaseByScene[sceneID]
+				scene := domain.StashHistoryScene{StashSceneID: sceneID, ReleaseID: release.ID, VideoID: release.VideoID, Title: st.Title, JavLibraryURL: firstJavLibraryURL(st.URLs), FilePath: st.FilePath, TotalPlaySeconds: st.PlayDuration, PlayCount: len(st.PlayHistory), OrgasmCount: len(st.OHistory), ObservedAt: time.Now().UTC()}
+				if scene.JavLibraryURL == "" && strings.Contains(strings.ToLower(release.ProductURL), "javlibrary") {
+					scene.JavLibraryURL = release.ProductURL
+				}
+				if scene.Title == "" {
+					scene.Title = release.Title
+				}
+				if scene.VideoID == "" {
+					scene.VideoID = strings.TrimSpace(st.Code)
+				}
+				if scene.VideoID == "" {
+					if raw := idInText.FindString(st.Title); raw != "" {
+						scene.VideoID = strings.ToUpper(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(raw), "_", "-"), " ", "-"))
+					}
+				}
+				plays, playErr := parseHistoryTimes(st.PlayHistory)
+				orgasms, orgasmErr := parseHistoryTimes(st.OHistory)
+				if playErr != nil || orgasmErr != nil {
+					s.log.Warn("Stash history contained an invalid timestamp", "scene_id", sceneID, "play_error", playErr, "orgasm_error", orgasmErr)
+					continue
+				}
+				if err := history.UpsertStashHistory(ctx, scene, plays, orgasms); err != nil {
+					s.log.Error("Stash history persistence failed", "scene_id", sceneID, "error", err)
+				}
+			}
+		}
+	}
+}
+
+func parseHistoryTimes(values []string) ([]time.Time, error) {
+	out := make([]time.Time, 0, len(values))
+	for _, raw := range values {
+		at, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, at.UTC())
+	}
+	return out, nil
+}
+
+func firstJavLibraryURL(values []string) string {
+	for _, value := range values {
+		if strings.Contains(strings.ToLower(value), "javlibrary") {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (s *Service) fetchSceneDetails(ctx context.Context, url, apiKey string) (map[string]sceneDetails, error) {
@@ -441,17 +510,18 @@ func (s *Service) fetch(ctx context.Context, url, query, apiKey string) (map[str
 	return ids, dates, len(payload.Data.FindScenes.Scenes), nil
 }
 
-// fetchPlaybackStats tries playbackStatsQueryWithHistory first and falls
-// back to playbackStatsQueryBasic (dropping o_history) if that whole
-// request fails - see the doc comment on those two consts for why a schema
-// validation error from an older StashApp must not take out the rest of
-// the playback-stats sync.
+// fetchPlaybackStats progressively removes modern history fields when schema
+// validation fails, ensuring an older StashApp cannot take out local sync.
 func (s *Service) fetchPlaybackStats(ctx context.Context, url, apiKey string) (map[string]playbackStats, error) {
 	stats, err := s.fetchPlaybackStatsQuery(ctx, url, apiKey, playbackStatsQueryWithHistory, true)
 	if err == nil {
 		return stats, nil
 	}
-	return s.fetchPlaybackStatsQuery(ctx, url, apiKey, playbackStatsQueryBasic, false)
+	stats, err = s.fetchPlaybackStatsQuery(ctx, url, apiKey, playbackStatsQueryBasic, false)
+	if err == nil {
+		return stats, nil
+	}
+	return s.fetchPlaybackStatsQuery(ctx, url, apiKey, playbackStatsQueryLegacy, false)
 }
 
 func (s *Service) fetchPlaybackStatsQuery(ctx context.Context, url, apiKey, query string, withHistory bool) (map[string]playbackStats, error) {
@@ -477,10 +547,18 @@ func (s *Service) fetchPlaybackStatsQuery(ctx context.Context, url, apiKey, quer
 			FindScenes struct {
 				Scenes []struct {
 					ID           string   `json:"id"`
+					Title        string   `json:"title"`
+					Code         string   `json:"code"`
+					URLs         []string `json:"urls"`
 					OCounter     int      `json:"o_counter"`
 					PlayCount    int      `json:"play_count"`
 					LastPlayedAt string   `json:"last_played_at"`
+					PlayDuration float64  `json:"play_duration"`
+					PlayHistory  []string `json:"play_history"`
 					OHistory     []string `json:"o_history"`
+					Files        []struct {
+						Path string `json:"path"`
+					} `json:"files"`
 				} `json:"scenes"`
 			} `json:"findScenes"`
 		} `json:"data"`
@@ -496,7 +574,10 @@ func (s *Service) fetchPlaybackStatsQuery(ctx context.Context, url, apiKey, quer
 	}
 	out := map[string]playbackStats{}
 	for _, scene := range payload.Data.FindScenes.Scenes {
-		st := playbackStats{OCounter: scene.OCounter, PlayCount: scene.PlayCount, LastPlayedAt: scene.LastPlayedAt}
+		st := playbackStats{OCounter: scene.OCounter, PlayCount: scene.PlayCount, LastPlayedAt: scene.LastPlayedAt, Title: scene.Title, Code: scene.Code, URLs: scene.URLs, PlayDuration: scene.PlayDuration, PlayHistory: scene.PlayHistory, OHistory: scene.OHistory, HistoryAvailable: withHistory}
+		if len(scene.Files) > 0 {
+			st.FilePath = scene.Files[0].Path
+		}
 		if withHistory {
 			for _, t := range scene.OHistory {
 				if t > st.LastOCountAt {
@@ -815,6 +896,7 @@ func (s *Service) ScheduleForecast(ctx context.Context) []domain.ScheduleForecas
 	return []domain.ScheduleForecast{
 		s.intervalScheduleForecast("sync", "Local library sync", syncEnabled, settings["stash_sync_interval"]),
 		s.intervalScheduleForecast("watchlist_sync", "Watchlist-tag sync", watchlistEnabled, settings["stash_watchlist_sync_interval"]),
+		s.intervalScheduleForecast("history_writeback", "History write-back", settings["stash_history_writeback_enabled"] == "true" && settings["stash_base_url"] != "", settings["stash_history_writeback_interval"]),
 	}
 }
 

@@ -1353,12 +1353,15 @@ func TestHeaderSearchDownloadQueueFrontend(t *testing.T) {
 			t.Fatalf("embedded index.html is missing header queue marker %q", marker)
 		}
 	}
-	for _, marker := range []string{"api('/jobs/search-download-queue')", `function openHeaderQueuedDownload`, `downloadStatus='downloading'`, `downloadSearch.value=videoID`} {
+	for _, marker := range []string{"api('/jobs/search-download-queue')", `function openHeaderQueuedDownload`, `downloadStatus='downloading'`, `Searching for download`, `Downloading`, `highlightHeaderQueuedDownload`, `clearDownloadFilters`, `downloadFiltersActive`} {
 		if !bytes.Contains(javascript, []byte(marker)) {
 			t.Fatalf("embedded app.js is missing header queue behavior %q", marker)
 		}
 	}
-	if !bytes.Contains(styles, []byte(`.headerQueueItem`)) {
+	if bytes.Contains(javascript, []byte(`downloadSearch.value=videoID`)) {
+		t.Fatal("header queue navigation still applies a release-ID Download Activity filter")
+	}
+	if !bytes.Contains(styles, []byte(`.headerQueueItem`)) || !bytes.Contains(styles, []byte(`.headerQueueHighlight`)) {
 		t.Fatal("embedded app.css is missing header queue styling")
 	}
 }
@@ -1715,6 +1718,7 @@ func TestSettingsRejectsInvalidDownloadMethod(t *testing.T) {
 		`{"default_download_method":"automatic"}`,
 		`{"prefer_http_equivalent":"yes"}`,
 		`{"pikpak_release_id_folder_fallback":"yes"}`,
+		`{"qb_poll_interval_seconds":"14"}`,
 	} {
 		req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
 		rec := httptest.NewRecorder()
