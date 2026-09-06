@@ -39,6 +39,44 @@ func DefaultPreferredFilenamePatterns() string {
 	return NormalizePreferredFilenamePatterns("4k688.com@\nhhd800.com@")
 }
 
+// ParseBlacklistedFilenamePatterns accepts the settings UI's JSON string list
+// and legacy newline/comma text. Matching is case-insensitive; duplicates are
+// removed while preserving the first configured spelling and order.
+func ParseBlacklistedFilenamePatterns(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	patterns := []string{}
+	if raw != "" && json.Unmarshal([]byte(raw), &patterns) != nil {
+		patterns = strings.FieldsFunc(raw, func(r rune) bool { return r == '\n' || r == ',' })
+	}
+	seen := map[string]bool{}
+	clean := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		pattern = strings.TrimSpace(pattern)
+		key := strings.ToLower(pattern)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		clean = append(clean, pattern)
+	}
+	return clean
+}
+
+func NormalizeBlacklistedFilenamePatterns(raw string) string {
+	encoded, _ := json.Marshal(ParseBlacklistedFilenamePatterns(raw))
+	return string(encoded)
+}
+
+func matchesBlacklistedFilename(name string, patterns []string) (bool, string) {
+	name = strings.ToLower(name)
+	for _, pattern := range patterns {
+		if clean := strings.TrimSpace(pattern); clean != "" && strings.Contains(name, strings.ToLower(clean)) {
+			return true, clean
+		}
+	}
+	return false, ""
+}
+
 func legacyPreferredFilenamePatterns(patterns []string) []PreferredFilenamePattern {
 	items := make([]PreferredFilenamePattern, 0, len(patterns))
 	for _, pattern := range patterns {

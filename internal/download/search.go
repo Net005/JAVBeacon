@@ -20,10 +20,11 @@ type SearchProvider interface {
 }
 
 type Nyaa struct {
-	Client            *http.Client
-	URLTemplate       string
-	AcceptedPatterns  []string
-	PreferredPatterns []PreferredFilenamePattern
+	Client              *http.Client
+	URLTemplate         string
+	AcceptedPatterns    []string
+	PreferredPatterns   []PreferredFilenamePattern
+	BlacklistedPatterns []string
 }
 
 var (
@@ -101,7 +102,8 @@ func (n *Nyaa) Search(ctx context.Context, releaseID string) ([]domain.SearchRes
 				continue
 			}
 			accepted, reason, priority, matchedFile := n.matchFiles(title, nil)
-			results = append(results, domain.SearchResult{Provider: n.Name(), Title: title, MatchedFile: matchedFile, PreferredFilenameMatch: accepted, PreferredFilenamePriority: priority, Link: html.UnescapeString(string(m[1])), Accepted: accepted, Reason: reason})
+			blacklisted, _, _ := n.blacklistMatch(title, nil)
+			results = append(results, domain.SearchResult{Provider: n.Name(), Title: title, MatchedFile: matchedFile, PreferredFilenameMatch: accepted, PreferredFilenamePriority: priority, BlacklistedFilenameMatch: blacklisted, Link: html.UnescapeString(string(m[1])), Accepted: accepted, Reason: reason})
 		}
 	}
 	return results, nil
@@ -135,6 +137,7 @@ func (n *Nyaa) resolveResult(ctx context.Context, title, detailURL, directURL st
 		}
 	}
 	accepted, reason, priority, matchedFile := n.matchFiles(title, files)
+	blacklisted, _, _ := n.blacklistMatch(title, files)
 	if link == "" {
 		accepted = false
 		reason = "torrent detail did not expose a magnet or .torrent link"
@@ -146,7 +149,7 @@ func (n *Nyaa) resolveResult(ctx context.Context, title, detailURL, directURL st
 	for i := range fileDetails {
 		fileDetails[i].Matched = fileDetails[i].Name == matchedFile
 	}
-	return domain.SearchResult{Provider: n.Name(), Title: title, Files: files, FileDetails: fileDetails, MatchedFile: matchedFile, PreferredFilenameMatch: accepted && matchedFile != "", PreferredFilenamePriority: priority, Link: link, SourceURL: sourceURL, Accepted: accepted, Reason: reason}
+	return domain.SearchResult{Provider: n.Name(), Title: title, Files: files, FileDetails: fileDetails, MatchedFile: matchedFile, PreferredFilenameMatch: accepted && matchedFile != "", PreferredFilenamePriority: priority, BlacklistedFilenameMatch: blacklisted, Link: link, SourceURL: sourceURL, Accepted: accepted, Reason: reason}
 }
 
 func (n *Nyaa) resolveDetail(ctx context.Context, rawURL string) (string, string, []string, []domain.SearchFile, error) {
@@ -221,6 +224,9 @@ func (n *Nyaa) acceptFiles(title string, files []string) (bool, string) {
 }
 
 func (n *Nyaa) matchFiles(title string, files []string) (bool, string, int, string) {
+	if matched, pattern, candidate := n.blacklistMatch(title, files); matched {
+		return false, fmt.Sprintf("filename matched blacklist pattern %s: %s", pattern, candidate), 0, ""
+	}
 	patterns := normalizePreferredFilenamePatterns(n.PreferredPatterns)
 	if len(patterns) == 0 {
 		patterns = legacyPreferredFilenamePatterns(n.AcceptedPatterns)
@@ -241,4 +247,17 @@ func (n *Nyaa) matchFiles(title string, files []string) (bool, string, int, stri
 		}
 	}
 	return false, "filename did not match preferred patterns", 0, ""
+}
+
+func (n *Nyaa) blacklistMatch(title string, files []string) (bool, string, string) {
+	candidates := files
+	if len(candidates) == 0 {
+		candidates = []string{title}
+	}
+	for _, candidate := range candidates {
+		if matched, pattern := matchesBlacklistedFilename(candidate, n.BlacklistedPatterns); matched {
+			return true, pattern, candidate
+		}
+	}
+	return false, "", ""
 }

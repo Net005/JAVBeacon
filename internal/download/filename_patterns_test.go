@@ -37,3 +37,22 @@ func TestParsePreferredFilenamePatternsKeepsBestDuplicatePriority(t *testing.T) 
 		t.Fatalf("deduplicated patterns = %+v", patterns)
 	}
 }
+
+func TestParseBlacklistedFilenamePatternsAcceptsJSONAndLegacyValues(t *testing.T) {
+	for _, raw := range []string{`["sample", "CAMRIP", "sample"]`, "sample\nCAMRIP\nSAMPLE"} {
+		patterns := ParseBlacklistedFilenamePatterns(raw)
+		if len(patterns) != 2 || patterns[0] != "sample" || patterns[1] != "CAMRIP" {
+			t.Fatalf("parsed blacklist %q = %+v", raw, patterns)
+		}
+	}
+	if got := NormalizeBlacklistedFilenamePatterns("sample\nCAMRIP"); got != `["sample","CAMRIP"]` {
+		t.Fatalf("normalized blacklist = %q", got)
+	}
+}
+
+func TestBlacklistedFilenameMatchingIsPartialAndCaseInsensitive(t *testing.T) {
+	matched, pattern := matchesBlacklistedFilename("Trusted@PRED-888-CamRip.MP4", []string{"camrip"})
+	if !matched || pattern != "camrip" {
+		t.Fatalf("matched=%v pattern=%q", matched, pattern)
+	}
+}

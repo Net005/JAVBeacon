@@ -455,7 +455,8 @@ func (s *Service) provider(ctx context.Context) (SearchProvider, error) {
 		return nil, e
 	}
 	patterns := ParsePreferredFilenamePatterns(settings["accepted_patterns"])
-	return &Nyaa{Client: s.client, URLTemplate: settings["search_url_template"], PreferredPatterns: patterns}, nil
+	blacklist := ParseBlacklistedFilenamePatterns(settings["blacklisted_filename_patterns"])
+	return &Nyaa{Client: s.client, URLTemplate: settings["search_url_template"], PreferredPatterns: patterns, BlacklistedPatterns: blacklist}, nil
 }
 func (s *Service) Search(ctx context.Context, release domain.Release) ([]domain.SearchResult, error) {
 	return s.search(ctx, release, "Manual Search")
@@ -845,6 +846,7 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 		result.Reason = "torrent filename did not contain release ID"
 	} else if nyaa, ok := provider.(*Nyaa); ok {
 		result.Accepted, result.Reason = nyaa.acceptFiles(result.Title, result.Files)
+		result.BlacklistedFilenameMatch, _, _ = nyaa.blacklistMatch(result.Title, result.Files)
 	}
 	matchReason := result.Reason
 	// A forced or fallback-excluded download is an explicit, intentional
@@ -864,6 +866,13 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 		sourceRef = result.Link
 	}
 	x := domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: sourceRef, Query: r.VideoID, Name: result.Title, Status: "queued", MatchReason: matchReason, Seeds: result.Seeds, Peers: result.Peers, FilenamePatternExcluded: forced || excluded}
+	if result.BlacklistedFilenameMatch {
+		x.Status = "failed"
+		x.Error = "result rejected by filename blacklist"
+		x, e := s.store.SaveDownload(ctx, x)
+		s.logDownloadFailure(x)
+		return x, e
+	}
 	if !result.Accepted && !forced && !excluded {
 		x.Status = "failed"
 		x.Error = "result rejected by filename rules"
@@ -1018,6 +1027,11 @@ func (s *Service) verifyAddedToQBittorrent(ctx context.Context, qb QBittorrent, 
 }
 
 func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, result domain.SearchResult, sourceType, sourceRef string) (domain.Download, error) {
+	if result.BlacklistedFilenameMatch {
+		d, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", MatchReason: result.Reason, Error: "result rejected by filename blacklist"})
+		s.logDownloadFailure(d)
+		return d, err
+	}
 	if !result.Accepted && !result.Forced {
 		d, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", Error: "HTTP result did not exactly match the release ID"})
 		s.logDownloadFailure(d)
@@ -1315,6 +1329,10 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	resolved, err = resolver.Resolve(ctx, d)
 	if err != nil {
 		fail(fmt.Errorf("resolve %s download: %w", resolver.Name(), err))
+		return
+	}
+	if blacklisted, pattern := matchesBlacklistedFilename(resolved.Name, ParseBlacklistedFilenamePatterns(settings["blacklisted_filename_patterns"])); blacklisted {
+		fail(fmt.Errorf("resolved HTTP filename %q matched blacklist pattern %q", resolved.Name, pattern))
 		return
 	}
 	if resolved.Size > 0 {
@@ -2632,7 +2650,8 @@ func (s *Service) SearchAndDownloadNow(ctx context.Context, r domain.Release, tr
 // 2 and 3 set the returned SearchResult.FilenamePatternExcluded so callers
 // never confuse that pick with a normal accepted match.
 func fallbackSearchCandidate(sorted, native []domain.SearchResult, allowNonPreferred bool) (domain.SearchResult, bool) {
-	if len(sorted) > 0 && sorted[0].Accepted && (!allowNonPreferred || sorted[0].Seeds > 0) {
+	selectable := func(result domain.SearchResult) bool { return !result.BlacklistedFilenameMatch }
+	if len(sorted) > 0 && sorted[0].Accepted && selectable(sorted[0]) && (!allowNonPreferred || sorted[0].Seeds > 0) {
 		return sorted[0], true
 	}
 	if !allowNonPreferred {
@@ -2641,7 +2660,7 @@ func fallbackSearchCandidate(sorted, native []domain.SearchResult, allowNonPrefe
 	var best domain.SearchResult
 	bestFound := false
 	for _, result := range sorted {
-		if result.Seeds > 0 && (!bestFound || result.Seeds > best.Seeds) {
+		if selectable(result) && result.Seeds > 0 && (!bestFound || result.Seeds > best.Seeds) {
 			best, bestFound = result, true
 		}
 	}
@@ -2649,10 +2668,11 @@ func fallbackSearchCandidate(sorted, native []domain.SearchResult, allowNonPrefe
 		best.FilenamePatternExcluded = true
 		return best, true
 	}
-	if len(native) > 0 {
-		candidate := native[0]
-		candidate.FilenamePatternExcluded = true
-		return candidate, true
+	for _, candidate := range native {
+		if selectable(candidate) {
+			candidate.FilenamePatternExcluded = true
+			return candidate, true
+		}
 	}
 	return domain.SearchResult{}, false
 }

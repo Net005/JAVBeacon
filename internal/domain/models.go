@@ -642,6 +642,10 @@ type SearchResult struct {
 	// PreferredFilenamePriority is the configured matching-pattern priority.
 	// Lower positive numbers are preferred; zero means no preferred match.
 	PreferredFilenamePriority int `json:"preferred_filename_priority,omitempty"`
+	// BlacklistedFilenameMatch is a hard, case-insensitive partial filename
+	// exclusion. Unlike a non-preferred result it cannot be selected by a
+	// relaxed fallback or manual force-download action.
+	BlacklistedFilenameMatch bool `json:"blacklisted_filename_match,omitempty"`
 	// DownloadPreferenceReason records why the configured download method
 	// selected this transport. Service.Download carries it into Download
 	// Activity/history without changing whether the provider result matched.
