@@ -66,6 +66,9 @@ type Service struct {
 	httpMu       sync.Mutex
 	httpActive   int
 	httpRuns     map[int64]*httpDownloadRun
+
+	pikPakCheckMu      sync.Mutex
+	pikPakCheckRunning bool
 }
 
 type httpDownloadRun struct {
@@ -1201,6 +1204,9 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	if resolved.Size > 0 {
 		d.BytesTotal = resolved.Size
 	}
+	if resolved.Authenticated {
+		d.MatchReason = appendDownloadPreference("authenticated PikPak original", d.MatchReason)
+	}
 	files, _ := json.Marshal([]string{resolved.Name})
 	d.Files = files
 	finalPath := nextHTTPDestination(dir, strings.ToUpper(strings.TrimSpace(d.Query)))
@@ -1223,7 +1229,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		resp.Body.Close()
 		out.Close()
 		_ = os.Remove(tempPath)
-		fail(fmt.Errorf("HTTP provider returned the wrong file size: selected %d bytes, response contains %d bytes", d.BytesTotal, resp.ContentLength))
+		fail(httpDownloadSizeMismatchError(resp, d.BytesTotal, resolved.Authenticated))
 		return
 	}
 	if d.BytesTotal == 0 && resp.ContentLength > 0 {
@@ -1283,6 +1289,17 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		_ = os.Remove(tempPath)
 		fail(err)
 		return
+	}
+	if resolved.Cleanup != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cleanupErr := resolved.Cleanup(cleanupCtx)
+		cleanupCancel()
+		if cleanupErr != nil {
+			s.log.Warn("HTTP download completed but restored PikPak file cleanup failed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "error", cleanupErr)
+			d.MatchReason = appendDownloadPreference("restored PikPak file cleanup failed: "+cleanupErr.Error(), d.MatchReason)
+		} else {
+			s.logHTTPDownloadEvent("Restored PikPak file deleted after successful HTTP download", d)
+		}
 	}
 	d.DestinationPath = finalPath
 	d.BytesDownloaded = d.BytesTotal
@@ -1344,6 +1361,19 @@ func openHTTPDownloadStream(ctx context.Context, client *http.Client, resolved r
 		}
 	}
 	return nil, fmt.Errorf("HTTP stream failed after %d attempt(s): %w", attemptCount, lastErr)
+}
+
+func httpDownloadSizeMismatchError(resp *http.Response, expected int64, authenticated bool) error {
+	if resp.StatusCode == http.StatusPartialContent {
+		var start, end, total int64
+		if count, scanErr := fmt.Sscanf(strings.TrimSpace(resp.Header.Get("Content-Range")), "bytes %d-%d/%d", &start, &end, &total); scanErr == nil && count == 3 && total == expected && end >= start && end-start+1 == resp.ContentLength {
+			if authenticated {
+				return fmt.Errorf("PikPak account authorized only a partial stream: received bytes %d-%d (%d bytes) of the selected %d-byte original; check account storage, transfer quota, and restore status", start, end, resp.ContentLength, expected)
+			}
+			return fmt.Errorf("HTTP provider authorized only a partial anonymous stream: received bytes %d-%d (%d bytes) of the selected %d-byte original; the complete original is unavailable through this public share", start, end, resp.ContentLength, expected)
+		}
+	}
+	return fmt.Errorf("HTTP provider returned the wrong file size: selected %d bytes, response contains %d bytes", expected, resp.ContentLength)
 }
 
 func nextHTTPDestination(dir, releaseID string) string {
@@ -2404,6 +2434,7 @@ func (s *Service) SearchScheduleForecast(ctx context.Context) []domain.ScheduleF
 	forecasts := []domain.ScheduleForecast{
 		s.intervalScheduleForecast("search", "Monitored releases · recent", settings["download_search_enabled"] == "true", settings["download_search_interval"], time.Hour),
 		s.intervalScheduleForecast("older_search", "Monitored releases · older", settings["download_search_older_enabled"] == "true", settings["download_search_older_interval"], 24*time.Hour),
+		s.PikPakScheduleForecast(ctx),
 	}
 	return forecasts
 }

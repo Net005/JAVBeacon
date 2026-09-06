@@ -463,6 +463,52 @@ func TestHTTPDownloadActivityUsesCompactLiveSpeedGraph(t *testing.T) {
 	}
 }
 
+func TestPikPakAccountSettingsAreRenderedAndSubmitted(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{`setupPikPakAccountUI`, `name="pikpak_username"`, `name="pikpak_password"`, `name="pikpak_cleanup_restored"`, `name="pikpak_check_enabled"`, `name="pikpak_check_interval"`, `name="pushover_app_token"`, `name="pushover_user_key"`, `name="pikpak_notify_success"`, `name="pikpak_notify_failure"`, `Test & re-authenticate`, `/settings/pikpak-test`, `/settings/pikpak-status`, `renderPikPakAccountStatus`} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("PikPak account settings are missing marker %q", marker)
+		}
+	}
+	if !strings.Contains(string(css), `.settingsFieldset{`) {
+		t.Fatal("PikPak account settings fieldset styling is missing")
+	}
+}
+
+func TestPikPakStatusEndpointReturnsOnlySafeHealthFields(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "pikpak-status.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{
+		"pikpak_username":           "person@example.test",
+		"pikpak_password":           "secret",
+		"pikpak_check_last_status":  "passed",
+		"pikpak_check_last_message": "drive access passed",
+		"pikpak_check_last_at":      "2026-09-06T12:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, log: slog.Default()}
+	rec := httptest.NewRecorder()
+	s.pikPakStatus(rec, httptest.NewRequest(http.MethodGet, "/api/settings/pikpak-status", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"passed"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "person@example.test") || strings.Contains(rec.Body.String(), "secret") {
+		t.Fatalf("health endpoint leaked account credentials: %s", rec.Body.String())
+	}
+}
+
 func TestLiveLogSupportsEntryCopyAndFilteredExport(t *testing.T) {
 	markup, err := assets.ReadFile("static/index.html")
 	if err != nil {
@@ -1486,6 +1532,29 @@ func TestSettingsRejectsInvalidDownloadMethod(t *testing.T) {
 	for _, body := range []string{
 		`{"default_download_method":"automatic"}`,
 		`{"prefer_http_equivalent":"yes"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.settings(rec, req)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body=%s status=%d response=%s, want 422", body, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestSettingsRejectsInvalidPikPakHealthConfiguration(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "pikpak-health-validation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{store: st, log: slog.Default()}
+	for _, body := range []string{
+		`{"pikpak_check_enabled":"yes"}`,
+		`{"pikpak_check_interval":"30s"}`,
+		`{"pikpak_check_enabled":"true","pikpak_username":"","pikpak_password":""}`,
+		`{"pushover_app_token":"token","pushover_user_key":""}`,
+		`{"pikpak_notify_failure":"true","pushover_app_token":"","pushover_user_key":""}`,
 	} {
 		req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
 		rec := httptest.NewRecorder()

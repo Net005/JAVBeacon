@@ -208,6 +208,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/settings", s.settings)
 	s.mux.HandleFunc("PUT /api/settings", s.settings)
 	s.mux.HandleFunc("POST /api/settings/qb-test", s.testQBittorrent)
+	s.mux.HandleFunc("GET /api/settings/pikpak-status", s.pikPakStatus)
+	s.mux.HandleFunc("POST /api/settings/pikpak-test", s.testPikPak)
 	s.mux.HandleFunc("GET /api/setup/db/status", s.setupDBStatus)
 	s.mux.HandleFunc("GET /api/setup/db/options", s.setupDBOptions)
 	s.mux.HandleFunc("POST /api/setup/db/generate", s.setupDBGenerate)
@@ -1246,8 +1248,40 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "api_key": true, "stash_watchlist_tag_id": true, "stash_watchlist_sync_enabled": true, "stash_watchlist_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
-	for _, key := range []string{"javdb_url", "http_download_directory", "http_download_concurrency", "http_fallback_delay", "default_download_method", "prefer_http_equivalent"} {
+	for _, key := range []string{"javdb_url", "http_download_directory", "http_download_concurrency", "http_fallback_delay", "default_download_method", "prefer_http_equivalent", "pikpak_username", "pikpak_password", "pikpak_cleanup_restored", "pikpak_check_enabled", "pikpak_check_interval", "pikpak_notify_success", "pikpak_notify_failure", "pushover_app_token", "pushover_user_key"} {
 		allowed[key] = true
+	}
+	if username, password := strings.TrimSpace(x["pikpak_username"]), x["pikpak_password"]; (username == "") != (password == "") {
+		s.problem(w, http.StatusUnprocessableEntity, "PikPak username and password must either both be configured or both be blank")
+		return
+	}
+	if raw, present := x["pikpak_cleanup_restored"]; present && raw != "true" && raw != "false" {
+		s.problem(w, http.StatusUnprocessableEntity, "PikPak restored-file cleanup must be true or false")
+		return
+	}
+	for _, key := range []string{"pikpak_check_enabled", "pikpak_notify_success", "pikpak_notify_failure"} {
+		if raw, present := x[key]; present && raw != "true" && raw != "false" {
+			s.problem(w, http.StatusUnprocessableEntity, key+" must be true or false")
+			return
+		}
+	}
+	if raw, present := x["pikpak_check_interval"]; present && strings.TrimSpace(raw) != "" {
+		if interval, err := domain.ParseScheduleDuration(raw); err != nil || interval < time.Minute {
+			s.problem(w, http.StatusUnprocessableEntity, "PikPak account-check interval must be a valid duration of at least 1 minute (e.g. \"1h\", \"24h\", \"7d\")")
+			return
+		}
+	}
+	if x["pikpak_check_enabled"] == "true" && (strings.TrimSpace(x["pikpak_username"]) == "" || x["pikpak_password"] == "") {
+		s.problem(w, http.StatusUnprocessableEntity, "PikPak scheduled checks require a username and password")
+		return
+	}
+	if token, user := strings.TrimSpace(x["pushover_app_token"]), strings.TrimSpace(x["pushover_user_key"]); (token == "") != (user == "") {
+		s.problem(w, http.StatusUnprocessableEntity, "Pushover app token and user/group key must either both be configured or both be blank")
+		return
+	}
+	if (x["pikpak_notify_success"] == "true" || x["pikpak_notify_failure"] == "true") && (strings.TrimSpace(x["pushover_app_token"]) == "" || strings.TrimSpace(x["pushover_user_key"]) == "") {
+		s.problem(w, http.StatusUnprocessableEntity, "PikPak Pushover notifications require an app token and user/group key")
+		return
 	}
 	if raw, present := x["default_download_method"]; present {
 		switch strings.ToLower(strings.TrimSpace(raw)) {
@@ -1568,6 +1602,35 @@ func (s *Server) testQBittorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, http.StatusOK, map[string]any{"status": "connected", "version": version, "categories": categories})
+}
+
+func (s *Server) testPikPak(w http.ResponseWriter, r *http.Request) {
+	var config struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if !s.decode(w, r, &config) {
+		return
+	}
+	status, err := s.downloads.TestPikPakAccount(r.Context(), strings.TrimSpace(config.Username), config.Password)
+	if err != nil {
+		s.problem(w, http.StatusBadGateway, status.Message)
+		return
+	}
+	s.json(w, http.StatusOK, status)
+}
+
+func (s *Server) pikPakStatus(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, map[string]string{
+		"status":     settings["pikpak_check_last_status"],
+		"message":    settings["pikpak_check_last_message"],
+		"checked_at": settings["pikpak_check_last_at"],
+	})
 }
 func (s *Server) sites(w http.ResponseWriter, r *http.Request) {
 	x, e := s.store.Sites(r.Context())

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,81 @@ import (
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"golang.org/x/net/html"
 )
+
+type pikPakRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f pikPakRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func pikPakJSONResponse(status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+}
+
+func TestPreferredPikPakDownloadURLChoosesExplicitOriginal(t *testing.T) {
+	file := pikPakFile{WebContentLink: "https://cdn.test/default-transcode"}
+	file.Medias = make([]struct {
+		Link struct {
+			URL string `json:"url"`
+		} `json:"link"`
+		IsOrigin bool `json:"is_origin"`
+	}, 2)
+	file.Medias[0].Link.URL = "https://cdn.test/transcode"
+	file.Medias[1].Link.URL = "https://cdn.test/original"
+	file.Medias[1].IsOrigin = true
+	if got := preferredPikPakDownloadURL(file); got != "https://cdn.test/original" {
+		t.Fatalf("URL=%q, want explicit original", got)
+	}
+}
+
+func TestAuthenticatedPikPakRestoreAndOriginalResolution(t *testing.T) {
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.URL.Host == "user.mypikpak.com" && req.URL.Path == "/v1/shield/captcha/init":
+			return pikPakJSONResponse(http.StatusOK, `{"captcha_token":"captcha"}`), nil
+		case req.URL.Host == "user.mypikpak.com" && req.URL.Path == "/v1/auth/signin":
+			if req.Header.Get("X-Captcha-Token") != "captcha" {
+				t.Fatalf("sign-in omitted CAPTCHA token")
+			}
+			return pikPakJSONResponse(http.StatusOK, `{"access_token":"access","refresh_token":"refresh","sub":"user-id"}`), nil
+		case req.URL.Path == "/drive/v1/share/restore":
+			if req.Header.Get("Authorization") != "Bearer access" {
+				t.Fatalf("restore omitted account authorization")
+			}
+			body, _ := io.ReadAll(req.Body)
+			if !bytes.Contains(body, []byte(`"file_ids":["shared-file"]`)) {
+				t.Fatalf("restore body did not pin selected file: %s", body)
+			}
+			return pikPakJSONResponse(http.StatusOK, `{"restore_status":"RESTORE_COMPLETE","params":{"trace_file_ids":"restored-file"}}`), nil
+		case req.URL.Path == "/drive/v1/files/restored-file":
+			return pikPakJSONResponse(http.StatusOK, `{"id":"restored-file","name":"TEST-001.mp4","size":"4331682987","medias":[{"is_origin":true,"link":{"url":"https://cdn.test/original"}}]}`), nil
+		case req.URL.Path == "/drive/v1/files:batchDelete":
+			return pikPakJSONResponse(http.StatusOK, `{}`), nil
+		default:
+			t.Fatalf("unexpected PikPak request: %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})}
+	account := newPikPakClient(client)
+	if err := account.login(context.Background(), "person@example.test", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	restoredID, err := account.restoreSharedFile(context.Background(), "share", "shared-file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restoredID != "restored-file" {
+		t.Fatalf("restored ID=%q", restoredID)
+	}
+	file, err := account.authenticatedFile(context.Background(), restoredID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := preferredPikPakDownloadURL(file); got != "https://cdn.test/original" {
+		t.Fatalf("authenticated original URL=%q", got)
+	}
+	if err := account.deleteFile(context.Background(), restoredID); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestDiscoverPikPakShareIDFollowsKeepshareIntermediateAndStopsBeforePikPak(t *testing.T) {
 	intermediate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
