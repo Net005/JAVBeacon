@@ -46,10 +46,18 @@ func TestAuthenticatedPikPakRestoreAndOriginalResolution(t *testing.T) {
 	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch {
 		case req.URL.Host == "user.mypikpak.com" && req.URL.Path == "/v1/shield/captcha/init":
+			body, _ := io.ReadAll(req.Body)
+			if bytes.Contains(body, []byte(`"action":"POST:/v1/auth/signin"`)) && !bytes.Contains(body, []byte(`"username":"person@example.test"`)) {
+				t.Fatalf("sign-in CAPTCHA metadata omitted username: %s", body)
+			}
 			return pikPakJSONResponse(http.StatusOK, `{"captcha_token":"captcha"}`), nil
 		case req.URL.Host == "user.mypikpak.com" && req.URL.Path == "/v1/auth/signin":
 			if req.Header.Get("X-Captcha-Token") != "captcha" {
 				t.Fatalf("sign-in omitted CAPTCHA token")
+			}
+			body, _ := io.ReadAll(req.Body)
+			if !bytes.Contains(body, []byte(`"captcha_token":"captcha"`)) {
+				t.Fatalf("sign-in body omitted CAPTCHA token: %s", body)
 			}
 			return pikPakJSONResponse(http.StatusOK, `{"access_token":"access","refresh_token":"refresh","sub":"user-id"}`), nil
 		case req.URL.Path == "/drive/v1/share/restore":
@@ -90,6 +98,36 @@ func TestAuthenticatedPikPakRestoreAndOriginalResolution(t *testing.T) {
 	}
 	if err := account.deleteFile(context.Background(), restoredID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPikPakSignInErrorRedactsCredentials(t *testing.T) {
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/v1/shield/captcha/init" {
+			return pikPakJSONResponse(http.StatusOK, `{"captcha_token":"captcha"}`), nil
+		}
+		return pikPakJSONResponse(http.StatusBadRequest, `{"error":"captcha_invalid","error_description":"meta.username expect person@example.test and password VerySecret"}`), nil
+	})}
+	err := newPikPakClient(client).login(context.Background(), "person@example.test", "VerySecret")
+	if err == nil || !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("error=%v, want redacted provider failure", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "person@example.test") || strings.Contains(err.Error(), "VerySecret") {
+		t.Fatalf("authentication error leaked credentials: %v", err)
+	}
+}
+
+func TestPikPakHumanVerificationExposesOnlyOfficialURL(t *testing.T) {
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return pikPakJSONResponse(http.StatusBadRequest, `{"error":"captcha_required","url":"https://user.mypikpak.com/verify/challenge"}`), nil
+	})}
+	account := newPikPakClient(client)
+	err := account.login(context.Background(), "person@example.test", "secret")
+	if err == nil || account.verificationURL != "https://user.mypikpak.com/verify/challenge" || !strings.Contains(err.Error(), "human verification") {
+		t.Fatalf("error=%v verification_url=%q", err, account.verificationURL)
+	}
+	if got := safePikPakVerificationURL("https://mypikpak.com.evil.test/steal"); got != "" {
+		t.Fatalf("accepted untrusted verification URL %q", got)
 	}
 }
 

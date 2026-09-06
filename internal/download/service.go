@@ -69,6 +69,7 @@ type Service struct {
 
 	pikPakCheckMu      sync.Mutex
 	pikPakCheckRunning bool
+	pikPakSessionMu    sync.Mutex
 }
 
 type httpDownloadRun struct {
@@ -410,7 +411,7 @@ func (s *Service) searchHTTP(ctx context.Context, release domain.Release, source
 	}
 	rows := make([]domain.SearchResult, 0)
 	var providerErrors []string
-	for _, provider := range httpSourceProviders(s.client, settings, s.log) {
+	for _, provider := range httpSourceProviders(s.client, settings, s.log, s.authenticatePikPakSession) {
 		found, searchErr := provider.Search(ctx, release)
 		history := domain.Download{ReleaseID: release.ID, Provider: provider.Name(), SourceType: sourceType, Query: release.VideoID, Status: "searched", Transport: "http"}
 		if searchErr != nil {
@@ -1186,7 +1187,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	d, _ = s.store.SaveDownload(ctx, d)
 	var resolved resolvedHTTPFile
 	var resolver HTTPSourceProvider
-	for _, provider := range httpSourceProviders(s.client, settings, s.log) {
+	for _, provider := range httpSourceProviders(s.client, settings, s.log, s.authenticatePikPakSession) {
 		if provider.CanResolve(d) {
 			resolver = provider
 			break

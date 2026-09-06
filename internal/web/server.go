@@ -1240,6 +1240,9 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 			s.problem(w, 500, e.Error())
 			return
 		}
+		for _, key := range []string{"pikpak_session_access_token", "pikpak_session_refresh_token", "pikpak_session_device_id", "pikpak_session_user_id", "pikpak_session_username", "pikpak_reauth_alert_active"} {
+			delete(x, key)
+		}
 		s.json(w, 200, x)
 		return
 	}
@@ -1626,10 +1629,14 @@ func (s *Server) pikPakStatus(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.json(w, http.StatusOK, map[string]string{
-		"status":     settings["pikpak_check_last_status"],
-		"message":    settings["pikpak_check_last_message"],
-		"checked_at": settings["pikpak_check_last_at"],
+	s.json(w, http.StatusOK, map[string]any{
+		"status":             settings["pikpak_check_last_status"],
+		"message":            settings["pikpak_check_last_message"],
+		"checked_at":         settings["pikpak_check_last_at"],
+		"session_issued_at":  settings["pikpak_session_issued_at"],
+		"session_expires_at": settings["pikpak_session_expires_at"],
+		"reauth_required":    settings["pikpak_reauth_required"] == "true",
+		"verification_url":   settings["pikpak_verification_url"],
 	})
 }
 func (s *Server) sites(w http.ResponseWriter, r *http.Request) {
