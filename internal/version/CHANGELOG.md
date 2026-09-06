@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.106] - 2026-09-06
+
+### Fixed
+
+- Completed Web downloads now execute both ordered post-processing event
+  stages consecutively, including finalization/removal steps that previously
+  ran only after qBittorrent removal. The Settings help now documents the
+  equivalent HTTP lifecycle explicitly.
+
 ## [1.0.105] - 2026-09-06
 
 ### Added

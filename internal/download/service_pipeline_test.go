@@ -142,6 +142,62 @@ func TestCleanupRunsSuccessfulRemovalEvent(t *testing.T) {
 	}
 }
 
+func TestHTTPCompletionRunsBothPipelineEventsInOrder(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "http-completion-pipeline.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Pipeline", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "HTTP-PIPE-1", Title: "HTTP pipeline", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "HTTP-PIPE-1", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("releases=%+v err=%v", releases, err)
+	}
+	download, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, Status: "completed", Transport: "http"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SavePipelineSteps(ctx, []domain.PipelineStep{
+		{Trigger: pipelineDownloadCompleted, Type: "shell", Name: "HTTP completion", Config: []byte(`{"command":"printf 'completed\\n' >> \"$JAVBEACON_DOWNLOAD_PATH.order\""}`), Enabled: true},
+		{Trigger: pipelineDownloadRemoved, Type: "shell", Name: "HTTP finalization", Config: []byte(`{"command":"printf 'finalized\\n' >> \"$JAVBEACON_DOWNLOAD_PATH.order\""}`), Enabled: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	contentPath := filepath.Join(t.TempDir(), "HTTP-PIPE-1.mp4")
+	service := New(st, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	service.runHTTPCompletionPipelinesAsync(ctx, download, Torrent{Name: filepath.Base(contentPath), ContentPath: contentPath, Progress: 1})
+
+	if run := waitForPipelineRun(t, st, download.ID, pipelineDownloadCompleted); run.State != "completed" {
+		t.Fatalf("completion run=%+v", run)
+	}
+	if run := waitForPipelineRun(t, st, download.ID, pipelineDownloadRemoved); run.State != "completed" {
+		t.Fatalf("finalization run=%+v", run)
+	}
+	stored := waitForDownloadPostStatus(t, service, download.ID, "pipeline_completed")
+	if stored.Error != "" {
+		t.Fatalf("completed HTTP pipeline retained error %q", stored.Error)
+	}
+	got, err := os.ReadFile(contentPath + ".order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "completed\nfinalized\n"; string(got) != want {
+		t.Fatalf("pipeline order = %q, want %q", got, want)
+	}
+	logs, err := st.PipelineLogs(ctx, download.ID)
+	if err != nil || len(logs) != 2 {
+		t.Fatalf("logs=%+v err=%v, want one log per HTTP lifecycle stage", logs, err)
+	}
+}
+
 // TestTestPipelineStepShellPassAndFail covers the TODO-2.0 "test option for
 // each Ordered event pipeline step" feature: a shell step should run against
 // synthetic sample values and report pass/fail with output, without needing
