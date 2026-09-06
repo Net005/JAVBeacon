@@ -7,6 +7,12 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Stash History detail items now include larger, visually distinct branded
+  buttons for JAVBeacon release details, JavLibrary, and the matching StashApp
+  scene. Source buttons use site icons and no longer use a trailing arrow.
+
 ## [1.0.107] - 2026-09-06
 
 ### Changed
