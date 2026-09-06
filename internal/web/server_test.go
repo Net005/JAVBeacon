@@ -1204,6 +1204,165 @@ func TestBulkMonitorAndDownloadReleasesPersistsFlagsAndQueuesEveryRelease(t *tes
 	t.Fatal("background Search + Download did not visit every selected release")
 }
 
+func TestBackgroundSearchAndDownloadReleaseQueuesWithoutChangingMonitoring(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "background-search-download.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `<rss><channel><item><title>trusted@ BACKGROUND-1</title><link>magnet:?xt=urn:btih:background1</link></item></channel></rss>`)
+	}))
+	defer feed.Close()
+	if err := st.SaveSettings(ctx, map[string]string{
+		"accepted_patterns":       "trusted@",
+		"search_url_template":     feed.URL + "?q=<release_id>",
+		"default_download_method": "torrent_only",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Background Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "BACKGROUND-1", Title: "BACKGROUND-1", Source: "JavLibrary", Released: true}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "BACKGROUND-1", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("seed release lookup: items=%d err=%v", len(releases), err)
+	}
+	release := releases[0]
+	s := &Server{store: st, downloads: download.New(st, time.Second, slog.Default()), log: slog.Default()}
+	req := httptest.NewRequest(http.MethodPost, "/api/releases/1/search-download", nil)
+	req.SetPathValue("id", strconv.FormatInt(release.ID, 10))
+	rec := httptest.NewRecorder()
+	s.backgroundSearchAndDownloadRelease(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		downloads, err := st.Downloads(ctx, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range downloads {
+			if item.ReleaseID == release.ID && item.SourceType == "Manual Background Search + Download" && item.Status == "search_accepted" {
+				updated, err := st.Release(ctx, release.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if updated.MonitorDownload {
+					t.Fatal("background Search + Download unexpectedly enabled monitoring")
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("background Search + Download did not run")
+}
+
+func TestBackgroundSearchAndDownloadSettingFrontend(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		`name="search_download_background"`,
+		`settings.search_download_background==='true'`,
+		`name="pikpak_release_id_folder_fallback"`,
+		`settings.pikpak_release_id_folder_fallback==='true'`,
+		`Allow exact release-ID PikPak folder fallback`,
+		"api(`/releases/${id}/search-download`,{method:'POST'})",
+		`Search + Download started in background for ${videoID}`,
+	} {
+		if !bytes.Contains(javascript, []byte(marker)) {
+			t.Fatalf("embedded app.js is missing background Search + Download behavior %q", marker)
+		}
+	}
+}
+
+func TestSearchDownloadQueueMergesSearchingAndActiveDownloads(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "header-download-queue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Queue Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, videoID := range []string{"QUEUE-1", "QUEUE-2"} {
+		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: videoID, Source: "JavLibrary", Released: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "QUEUE-", Limit: 10})
+	if err != nil || len(releases) != 2 {
+		t.Fatalf("seed release lookup: items=%d err=%v", len(releases), err)
+	}
+	byVideoID := map[string]domain.Release{}
+	for _, release := range releases {
+		byVideoID[release.VideoID] = release
+	}
+	if _, err := st.SaveDownload(ctx, domain.Download{ReleaseID: byVideoID["QUEUE-2"].ID, Query: "QUEUE-2", Transport: "http", Status: "downloading"}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, backgroundSearchQueue: map[int64]searchDownloadQueueItem{
+		byVideoID["QUEUE-1"].ID: {ReleaseID: byVideoID["QUEUE-1"].ID, VideoID: "QUEUE-1", Transport: "torrent", Status: "searching"},
+	}}
+	rec := httptest.NewRecorder()
+	s.searchDownloadQueue(rec, httptest.NewRequest(http.MethodGet, "/api/jobs/search-download-queue", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Items []searchDownloadQueueItem `json:"items"`
+		Total int                       `json:"total"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Total != 2 || len(response.Items) != 2 || response.Items[0].VideoID != "QUEUE-1" || response.Items[1].Transport != "http" {
+		t.Fatalf("queue response=%+v", response)
+	}
+}
+
+func TestHeaderSearchDownloadQueueFrontend(t *testing.T) {
+	markup, err := assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{`id="headerDownloadQueue"`, `id="headerDownloadQueueCount"`, `id="headerDownloadQueueList"`} {
+		if !bytes.Contains(markup, []byte(marker)) {
+			t.Fatalf("embedded index.html is missing header queue marker %q", marker)
+		}
+	}
+	for _, marker := range []string{"api('/jobs/search-download-queue')", `function openHeaderQueuedDownload`, `downloadStatus='downloading'`, `downloadSearch.value=videoID`} {
+		if !bytes.Contains(javascript, []byte(marker)) {
+			t.Fatalf("embedded app.js is missing header queue behavior %q", marker)
+		}
+	}
+	if !bytes.Contains(styles, []byte(`.headerQueueItem`)) {
+		t.Fatal("embedded app.css is missing header queue styling")
+	}
+}
+
 func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testing.T) {
 	files := map[string][]string{
 		"static/index.html": {
@@ -1555,6 +1714,7 @@ func TestSettingsRejectsInvalidDownloadMethod(t *testing.T) {
 	for _, body := range []string{
 		`{"default_download_method":"automatic"}`,
 		`{"prefer_http_equivalent":"yes"}`,
+		`{"pikpak_release_id_folder_fallback":"yes"}`,
 	} {
 		req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
 		rec := httptest.NewRecorder()
