@@ -43,6 +43,7 @@ func TestPreferredPikPakDownloadURLChoosesExplicitOriginal(t *testing.T) {
 }
 
 func TestAuthenticatedPikPakRestoreAndOriginalResolution(t *testing.T) {
+	restorePosted := false
 	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch {
 		case req.URL.Host == "user.mypikpak.com" && req.URL.Path == "/v1/shield/captcha/init":
@@ -68,7 +69,19 @@ func TestAuthenticatedPikPakRestoreAndOriginalResolution(t *testing.T) {
 			if !bytes.Contains(body, []byte(`"file_ids":["shared-file"]`)) {
 				t.Fatalf("restore body did not pin selected file: %s", body)
 			}
-			return pikPakJSONResponse(http.StatusOK, `{"restore_status":"RESTORE_COMPLETE","params":{"trace_file_ids":"restored-file"}}`), nil
+			if !bytes.Contains(body, []byte(`"kind":"drive#file"`)) {
+				t.Fatalf("restore body omitted file kind: %s", body)
+			}
+			if bytes.Contains(body, []byte("trace_file_ids")) {
+				t.Fatalf("restore body incorrectly supplied a trace/source ID: %s", body)
+			}
+			restorePosted = true
+			return pikPakJSONResponse(http.StatusOK, `{"restore_status":"RESTORE_COMPLETE"}`), nil
+		case req.URL.Path == "/drive/v1/files":
+			if !restorePosted {
+				return pikPakJSONResponse(http.StatusOK, `{"files":[]}`), nil
+			}
+			return pikPakJSONResponse(http.StatusOK, `{"files":[{"id":"restored-file","name":"TEST-001.mp4","kind":"drive#file","size":"4331682987"}]}`), nil
 		case req.URL.Path == "/drive/v1/files/restored-file":
 			return pikPakJSONResponse(http.StatusOK, `{"id":"restored-file","name":"TEST-001.mp4","size":"4331682987","medias":[{"is_origin":true,"link":{"url":"https://cdn.test/original"}}]}`), nil
 		case req.URL.Path == "/drive/v1/files:batchDelete":
@@ -82,22 +95,36 @@ func TestAuthenticatedPikPakRestoreAndOriginalResolution(t *testing.T) {
 	if err := account.login(context.Background(), "person@example.test", "secret"); err != nil {
 		t.Fatal(err)
 	}
-	restoredID, err := account.restoreSharedFile(context.Background(), "share", "shared-file")
+	restored, newlyRestored, err := account.restoreSharedFile(context.Background(), "share", "shared-file", "TEST-001.mp4", 4331682987)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restoredID != "restored-file" {
-		t.Fatalf("restored ID=%q", restoredID)
+	if restored.ID != "restored-file" || !newlyRestored {
+		t.Fatalf("restored file=%+v newlyRestored=%t", restored, newlyRestored)
 	}
-	file, err := account.authenticatedFile(context.Background(), restoredID)
+	file, err := account.authenticatedFile(context.Background(), restored.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := preferredPikPakDownloadURL(file); got != "https://cdn.test/original" {
 		t.Fatalf("authenticated original URL=%q", got)
 	}
-	if err := account.deleteFile(context.Background(), restoredID); err != nil {
+	if err := account.deleteFile(context.Background(), restored.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestExactPikPakAccountFilePinsNameAndSize(t *testing.T) {
+	files := []pikPakFile{
+		{ID: "wrong-size", Name: "TEST-001.mp4", Size: "1900000000"},
+		{ID: "exact", Name: "test-001.MP4", Size: "4331682987"},
+	}
+	file, found := exactPikPakAccountFile(files, "TEST-001.mp4", 4331682987, nil)
+	if !found || file.ID != "exact" {
+		t.Fatalf("file=%+v found=%t, want exact name/size match", file, found)
+	}
+	if _, found := exactPikPakAccountFile(files, "TEST-001.mp4", 4331682987, map[string]bool{"exact": true}); found {
+		t.Fatal("matched a pre-existing excluded account file")
 	}
 }
 

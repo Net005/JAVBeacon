@@ -7,6 +7,18 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.99] - 2026-09-06
+
+### Fixed
+
+- Authenticated PikPak restores no longer mistake the shared source trace ID for
+  the new account-owned file ID, which caused restored Web downloads to fail
+  with `file_not_found`.
+- JAVBeacon now inventories the PikPak account around a restore, waits for the
+  exact filename and byte size selected during search, safely reuses an exact
+  copy when PikPak deduplicates the restore, and only removes files created by
+  the current restore when cleanup is enabled.
+
 ## [1.0.98] - 2026-09-06
 
 ### Added
