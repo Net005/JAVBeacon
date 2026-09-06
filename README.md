@@ -279,7 +279,7 @@ Under **Settings → Downloads → HTTP Downloads**, configure:
 - **Download folder** — where completed HTTP videos are written.
 - **Parallel HTTP downloads** — the maximum simultaneous HTTP transfers.
 - **Connections per HTTP download** — parallel byte-range connections used for
-  one file (default 4). JAVBeacon verifies the CDN's `Content-Range` response
+  one file (default and maximum 4). JAVBeacon verifies the CDN's `Content-Range` response
   before segmenting and automatically uses one connection when ranges are not
   supported.
 - **PikPak account** — optional email/phone and password used to restore only

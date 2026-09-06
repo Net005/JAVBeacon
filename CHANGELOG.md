@@ -7,6 +7,35 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.101] - 2026-09-06
+
+### Changed
+
+- Connections per HTTP download is now capped at four, matching PikPak's
+  reliable concurrency level and preventing unsupported higher values from
+  overwhelming the media gateway.
+- Parallel Web transfers automatically reduce from four connections to two
+  and finally one after gateway or range-worker failures, with progressive
+  retry delays and a 45-second no-progress watchdog for stalled response
+  bodies.
+- The final single-connection fallback retries interrupted response bodies and
+  resumes from the last confirmed byte when PikPak continues to support range
+  requests.
+- Transient PikPak restore failures are reconciled against the account before
+  up to three safe restore attempts, avoiding duplicate files after ambiguous
+  gateway responses. A transfer that exhausts every connection level refreshes
+  its authenticated signed URL once and repeats the fallback chain.
+
+### Fixed
+
+- PikPak `502` responses and indefinitely stalled range streams no longer
+  strand an HTTP download; JAVBeacon resets the partial layout and retries at
+  the next safe connection level, retaining the existing single-stream path as
+  the final fallback.
+- HTTP logs now distinguish newly restored PikPak files from deduplicated
+  account files and record every automatic connection downgrade with its
+  underlying failure.
+
 ## [1.0.100] - 2026-09-06
 
 ### Added

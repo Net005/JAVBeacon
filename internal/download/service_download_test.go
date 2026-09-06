@@ -46,8 +46,8 @@ func TestHTTPConnectionsDefaultAndBounds(t *testing.T) {
 		want     int
 	}{
 		"default": {map[string]string{}, 4},
-		"custom":  {map[string]string{"http_download_connections": "8"}, 8},
-		"maximum": {map[string]string{"http_download_connections": "99"}, 16},
+		"custom":  {map[string]string{"http_download_connections": "3"}, 3},
+		"maximum": {map[string]string{"http_download_connections": "99"}, 4},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := httpConnections(testCase.settings); got != testCase.want {
@@ -127,7 +127,7 @@ func TestDownloadHTTPToFileUsesParallelValidatedRanges(t *testing.T) {
 	}
 	defer out.Close()
 	var transferred atomic.Int64
-	connections, err := downloadHTTPToFile(context.Background(), server.Client(), resolvedHTTPFile{URL: server.URL}, out, int64(len(content)), 4, &transferred)
+	connections, err := downloadHTTPToFile(context.Background(), server.Client(), resolvedHTTPFile{URL: server.URL}, out, int64(len(content)), 4, &transferred, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,12 +154,89 @@ func TestDownloadHTTPToFileFallsBackWhenRangesUnsupported(t *testing.T) {
 	}
 	defer out.Close()
 	var transferred atomic.Int64
-	connections, err := downloadHTTPToFile(context.Background(), server.Client(), resolvedHTTPFile{URL: server.URL}, out, int64(len(content)), 4, &transferred)
+	connections, err := downloadHTTPToFile(context.Background(), server.Client(), resolvedHTTPFile{URL: server.URL}, out, int64(len(content)), 4, &transferred, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if connections != 1 || requests.Load() != 2 {
 		t.Fatalf("connections=%d requests=%d, want range probe plus single stream", connections, requests.Load())
+	}
+}
+
+func TestDownloadHTTPToFileReducesConnectionsAfterGatewayFailures(t *testing.T) {
+	content := bytes.Repeat([]byte("adaptive"), 7*1024*1024)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") == "bytes=0-0" {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-0/%d", len(content)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(content[:1])
+			return
+		}
+		if r.Header.Get("Range") != "" {
+			http.Error(w, "too many upstream connections", http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write(content)
+	}))
+	defer server.Close()
+	out, err := os.Create(filepath.Join(t.TempDir(), "adaptive.part"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	oldDelay := httpRangeRetryBaseDelay
+	httpRangeRetryBaseDelay = time.Millisecond
+	defer func() { httpRangeRetryBaseDelay = oldDelay }()
+	var transferred atomic.Int64
+	var downgrades []string
+	connections, err := downloadHTTPToFile(context.Background(), server.Client(), resolvedHTTPFile{URL: server.URL}, out, int64(len(content)), 8, &transferred, func(from, to int, _ error) {
+		downgrades = append(downgrades, fmt.Sprintf("%d->%d", from, to))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connections != 1 || strings.Join(downgrades, ",") != "4->2,2->1" {
+		t.Fatalf("connections=%d downgrades=%v", connections, downgrades)
+	}
+	got, _ := os.ReadFile(out.Name())
+	if !bytes.Equal(got, content) || transferred.Load() != int64(len(content)) {
+		t.Fatalf("single-stream fallback differs: bytes=%d transferred=%d", len(got), transferred.Load())
+	}
+}
+
+func TestDownloadHTTPSingleStreamResumesAfterInterruptedBody(t *testing.T) {
+	content := bytes.Repeat([]byte("resume"), 1024*1024)
+	cut := len(content) / 3
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Header.Get("Range") == "" {
+			w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+			_, _ = w.Write(content[:cut])
+			return
+		}
+		startRaw := strings.TrimSuffix(strings.TrimPrefix(r.Header.Get("Range"), "bytes="), fmt.Sprintf("-%d", len(content)-1))
+		start, _ := strconv.Atoi(startRaw)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, len(content)-1, len(content)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(content[start:])
+	}))
+	defer server.Close()
+	out, err := os.Create(filepath.Join(t.TempDir(), "resumed.part"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	oldDelay := httpRangeRetryBaseDelay
+	httpRangeRetryBaseDelay = time.Millisecond
+	defer func() { httpRangeRetryBaseDelay = oldDelay }()
+	var transferred atomic.Int64
+	if err := downloadHTTPSingleStream(context.Background(), server.Client(), resolvedHTTPFile{URL: server.URL}, out, int64(len(content)), &transferred); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(out.Name())
+	if requests.Load() != 2 || !bytes.Equal(got, content) || transferred.Load() != int64(len(content)) {
+		t.Fatalf("requests=%d bytes=%d transferred=%d", requests.Load(), len(got), transferred.Load())
 	}
 }
 
