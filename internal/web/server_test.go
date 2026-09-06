@@ -1240,6 +1240,21 @@ func TestBulkMonitorAndDownloadReleasesPersistsFlagsAndQueuesEveryRelease(t *tes
 	t.Fatal("background Search + Download did not visit every selected release")
 }
 
+func TestBulkReleaseJobsQueueInSubmissionOrderBehindActiveJob(t *testing.T) {
+	s := &Server{bulkReleaseRunning: true}
+	first := bulkReleaseJob{Releases: []domain.Release{{ID: 11}}, SourceType: "Release Library Bulk"}
+	second := bulkReleaseJob{Releases: []domain.Release{{ID: 22}}, SourceType: "Monitored Releases Bulk"}
+	if position := s.enqueueBulkReleaseJob(first); position != 1 {
+		t.Fatalf("first queued position=%d, want 1", position)
+	}
+	if position := s.enqueueBulkReleaseJob(second); position != 2 {
+		t.Fatalf("second queued position=%d, want 2", position)
+	}
+	if len(s.bulkReleaseQueue) != 2 || s.bulkReleaseQueue[0].Releases[0].ID != 11 || s.bulkReleaseQueue[1].Releases[0].ID != 22 {
+		t.Fatalf("bulk jobs were not retained in FIFO order: %+v", s.bulkReleaseQueue)
+	}
+}
+
 func TestBackgroundSearchAndDownloadReleaseQueuesWithoutChangingMonitoring(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "background-search-download.db"))

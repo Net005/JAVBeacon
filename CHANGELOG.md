@@ -7,6 +7,14 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.109] - 2026-09-06
+
+### Changed
+
+- Release Library and Monitored Releases bulk Search + Download submissions
+  now join a FIFO job queue when another bulk job is active instead of being
+  rejected. The UI reports the new job's queue position.
+
 ## [1.0.108] - 2026-09-06
 
 ### Added
