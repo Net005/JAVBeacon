@@ -527,6 +527,9 @@ func TestJavDBSearchSurfacesKeepshareInspectionFailureOnCandidate(t *testing.T) 
 	if err != nil || len(rows) != 1 || !strings.Contains(rows[0].Reason, "share expired") {
 		t.Fatalf("rows=%+v err=%v", rows, err)
 	}
+	if rows[0].Accepted || rows[0].ProviderFileID != "" {
+		t.Fatalf("failed inspection remained downloadable: %+v", rows[0])
+	}
 }
 
 func TestJavDBSortingPrefersConfiguredFilenamePatternsBeforeNormalHTTPOrder(t *testing.T) {
@@ -571,6 +574,70 @@ func TestPikPakFileSelectionUsesPatternPriorityBeforeFileSize(t *testing.T) {
 	})
 	if !found || selected.ID != "priority-one" {
 		t.Fatalf("priority-one file was not selected: %+v, found=%v", selected, found)
+	}
+}
+
+func TestPikPakFolderFallbackUsesPatternPriorityThenLargestVideo(t *testing.T) {
+	files := []pikPakFile{
+		{ID: "priority-ten", Name: "large@movie.mp4", Size: "9000", FolderReleaseMatch: true},
+		{ID: "priority-one-small", Name: "best@movie.mp4", Size: "3000", FolderReleaseMatch: true},
+		{ID: "priority-one-large", Name: "best@movie.mkv", Size: "5000", FolderReleaseMatch: true},
+		{ID: "outside-folder", Name: "best@outside.mp4", Size: "12000"},
+		{ID: "not-video", Name: "best@archive.txt", Size: "15000", FolderReleaseMatch: true},
+	}
+	patterns := []PreferredFilenamePattern{{Pattern: "large@", Priority: 10}, {Pattern: "best@", Priority: 1}}
+	selected, found := selectPikPakFolderFallback(files, patterns)
+	if !found || selected.ID != "priority-one-large" {
+		t.Fatalf("folder fallback did not honor priority then size: %+v, found=%v", selected, found)
+	}
+	selected, found = selectPikPakFolderFallback(files, nil)
+	if !found || selected.ID != "priority-ten" {
+		t.Fatalf("folder fallback did not choose the largest eligible video: %+v, found=%v", selected, found)
+	}
+}
+
+func TestPikPakFolderScopeMarksOnlyExactReleaseIDFolderChildren(t *testing.T) {
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == "user.mypikpak.com" {
+			return pikPakJSONResponse(http.StatusOK, `{"captcha_token":"captcha"}`), nil
+		}
+		switch req.URL.Query().Get("parent_id") {
+		case "":
+			return pikPakJSONResponse(http.StatusOK, `{"share_status":"OK","files":[{"id":"matching","name":"jur_843","kind":"drive#folder"},{"id":"other","name":"OTHER-001","kind":"drive#folder"}]}`), nil
+		case "matching":
+			return pikPakJSONResponse(http.StatusOK, `{"share_status":"OK","files":[{"id":"inside","name":"generic.mp4","kind":"drive#file","size":"5000"}]}`), nil
+		case "other":
+			return pikPakJSONResponse(http.StatusOK, `{"share_status":"OK","files":[{"id":"outside","name":"larger.mp4","kind":"drive#file","size":"9000"}]}`), nil
+		default:
+			t.Fatalf("unexpected parent_id %q", req.URL.Query().Get("parent_id"))
+			return nil, nil
+		}
+	})}
+	pp := newPikPakClient(client)
+	files, err := pp.listShareFilesScoped(context.Background(), "share", "", "JUR-843", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 || !files[0].FolderReleaseMatch || files[1].FolderReleaseMatch {
+		t.Fatalf("unexpected release-folder scope: %+v", files)
+	}
+	strictFiles, err := pp.listShareFilesScoped(context.Background(), "share", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strictFiles[0].FolderReleaseMatch || strictFiles[1].FolderReleaseMatch {
+		t.Fatalf("strict traversal marked fallback children: %+v", strictFiles)
+	}
+}
+
+func TestPikPakFolderFallbackIsNotAcceptedByStrictSelectors(t *testing.T) {
+	files := []pikPakFile{{ID: "generic", Name: "movie.mp4", Size: "5000", FolderReleaseMatch: true}}
+	if selected, found := selectPikPakFile(files, "JUR-843", nil); found {
+		t.Fatalf("strict release-ID selection unexpectedly accepted folder fallback: %+v", selected)
+	}
+	selected, found := selectPikPakFolderFallback(files, nil)
+	if !found || selected.ID != "generic" {
+		t.Fatalf("explicit folder fallback did not accept marked child: %+v, found=%v", selected, found)
 	}
 }
 

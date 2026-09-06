@@ -7,6 +7,26 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.103] - 2026-09-06
+
+### Added
+
+- Added an optional Download setting that makes Search + Download actions on
+  release covers and Release Details run automatic provider selection in the
+  background without opening the interactive results window.
+- Expanded the header status widget with the live Search + Download queue.
+  Its dropdown lists active release IDs and links directly to each release in
+  Download Activity's Downloading view.
+- Added an opt-in PikPak fallback for shares whose exact release-ID folder
+  contains generically named video files. It honors preferred-filename
+  priority first and file size second, while remaining disabled by default.
+
+### Fixed
+
+- Keepshare candidates whose PikPak contents cannot be inspected are now
+  diagnostic-only results and can no longer queue a placeholder folder that
+  is guaranteed to fail during download resolution.
+
 ## [1.0.102] - 2026-09-06
 
 ### Added

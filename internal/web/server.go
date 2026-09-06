@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,13 +58,22 @@ type Server struct {
 	screenshotJob screenshotBackfillStatus
 	// migrationMu guards migration (DB Phase 7's migration-wizard status,
 	// see migration.go) - in-memory only, single-user app.
-	migrationMu        sync.Mutex
-	migration          migrationState
-	queryCacheMu       sync.Mutex
-	releaseCountCache  map[string]cachedReleaseCount
-	filterOptionCache  map[string]cachedFilterOptions
-	bulkReleaseMu      sync.Mutex
-	bulkReleaseRunning bool
+	migrationMu           sync.Mutex
+	migration             migrationState
+	queryCacheMu          sync.Mutex
+	releaseCountCache     map[string]cachedReleaseCount
+	filterOptionCache     map[string]cachedFilterOptions
+	bulkReleaseMu         sync.Mutex
+	bulkReleaseRunning    bool
+	backgroundSearchMu    sync.Mutex
+	backgroundSearchQueue map[int64]searchDownloadQueueItem
+}
+
+type searchDownloadQueueItem struct {
+	ReleaseID int64  `json:"release_id"`
+	VideoID   string `json:"video_id"`
+	Transport string `json:"transport,omitempty"`
+	Status    string `json:"status"`
 }
 
 type cachedReleaseCount struct {
@@ -253,7 +263,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/releases/{id}", s.release)
 	s.mux.HandleFunc("PATCH /api/releases/{id}", s.patchRelease)
 	s.mux.HandleFunc("GET /api/releases/{id}/search", s.searchRelease)
+	s.mux.HandleFunc("POST /api/releases/{id}/search-download", s.backgroundSearchAndDownloadRelease)
 	s.mux.HandleFunc("POST /api/releases/{id}/download", s.downloadRelease)
+	s.mux.HandleFunc("GET /api/jobs/search-download-queue", s.searchDownloadQueue)
 	s.mux.HandleFunc("GET /api/downloads", s.downloadList)
 	s.mux.HandleFunc("POST /api/downloads/{id}/retry", s.retryDownload)
 	s.mux.HandleFunc("POST /api/downloads/bulk-retry", s.bulkRetryDownloads)
@@ -731,6 +743,106 @@ func (s *Server) searchRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	s.json(w, 200, rows)
 }
+
+func (s *Server) backgroundSearchAndDownloadRelease(w http.ResponseWriter, r *http.Request) {
+	n, err := id(r)
+	if err != nil {
+		s.problem(w, http.StatusBadRequest, "invalid release id")
+		return
+	}
+	release, err := s.store.Release(r.Context(), n)
+	if err != nil {
+		s.problem(w, http.StatusNotFound, "release not found")
+		return
+	}
+	if s.downloads == nil {
+		s.problem(w, http.StatusServiceUnavailable, "download service unavailable")
+		return
+	}
+	transport := "torrent"
+	settings, _ := s.store.Settings(r.Context())
+	method := strings.ToLower(strings.TrimSpace(settings["default_download_method"]))
+	if release.DownloadMethodOverride == "http" || (release.DownloadMethodOverride == "" && strings.HasPrefix(method, "http")) {
+		transport = "http"
+	}
+	s.backgroundSearchMu.Lock()
+	if s.backgroundSearchQueue == nil {
+		s.backgroundSearchQueue = make(map[int64]searchDownloadQueueItem)
+	}
+	if _, exists := s.backgroundSearchQueue[release.ID]; exists {
+		s.backgroundSearchMu.Unlock()
+		s.json(w, http.StatusAccepted, map[string]any{"queued": true, "release_id": release.ID, "already_queued": true})
+		return
+	}
+	s.backgroundSearchQueue[release.ID] = searchDownloadQueueItem{ReleaseID: release.ID, VideoID: release.VideoID, Transport: transport, Status: "searching"}
+	s.backgroundSearchMu.Unlock()
+
+	const sourceType = "Manual Background Search + Download"
+	go func(release domain.Release) {
+		defer func() {
+			s.backgroundSearchMu.Lock()
+			delete(s.backgroundSearchQueue, release.ID)
+			s.backgroundSearchMu.Unlock()
+		}()
+		outcome, searchErr := s.downloads.SearchAndDownloadDetailed(context.Background(), release, sourceType, release.AllowNonPreferredFilenames)
+		switch {
+		case searchErr != nil:
+			if s.log != nil {
+				s.log.Error(sourceType+" failed", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "error", searchErr, "reason", outcome.Reason)
+			}
+		case !outcome.Found:
+			if s.log != nil {
+				s.log.Warn(sourceType+" found no downloadable candidate", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "reason", outcome.Reason)
+			}
+		case outcome.Download.Status == "skipped":
+			if s.log != nil {
+				s.log.Warn(sourceType+" skipped", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "download_status", outcome.Download.Status, "reason", outcome.Reason)
+			}
+		case outcome.Download.Status == "failed":
+			if s.log != nil {
+				s.log.Error(sourceType+" download failed", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "reason", outcome.Reason)
+			}
+		default:
+			if s.log != nil {
+				s.log.Info(sourceType+" queued", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "download_id", outcome.Download.ID, "transport", outcome.Download.Transport)
+			}
+		}
+	}(release)
+
+	s.json(w, http.StatusAccepted, map[string]any{"queued": true, "release_id": release.ID})
+}
+
+func (s *Server) searchDownloadQueue(w http.ResponseWriter, r *http.Request) {
+	items := make(map[int64]searchDownloadQueueItem)
+	s.backgroundSearchMu.Lock()
+	for releaseID, item := range s.backgroundSearchQueue {
+		items[releaseID] = item
+	}
+	s.backgroundSearchMu.Unlock()
+
+	downloads, _, err := s.store.DownloadActivity(r.Context(), domain.DownloadFilter{Status: "active", Limit: 500})
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for _, item := range downloads {
+		if item.ReleaseID == 0 {
+			continue
+		}
+		videoID := item.VideoID
+		if videoID == "" {
+			videoID = item.Query
+		}
+		items[item.ReleaseID] = searchDownloadQueueItem{ReleaseID: item.ReleaseID, VideoID: videoID, Transport: item.Transport, Status: item.Status}
+	}
+	queue := make([]searchDownloadQueueItem, 0, len(items))
+	for _, item := range items {
+		queue = append(queue, item)
+	}
+	sort.Slice(queue, func(i, j int) bool { return strings.ToLower(queue[i].VideoID) < strings.ToLower(queue[j].VideoID) })
+	s.json(w, http.StatusOK, map[string]any{"items": queue, "total": len(queue)})
+}
+
 func (s *Server) downloadRelease(w http.ResponseWriter, r *http.Request) {
 	n, e := id(r)
 	if e != nil {
@@ -1250,8 +1362,8 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &x) {
 		return
 	}
-	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "api_key": true, "stash_watchlist_tag_id": true, "stash_watchlist_sync_enabled": true, "stash_watchlist_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
-	for _, key := range []string{"javdb_url", "http_download_directory", "http_download_concurrency", "http_download_connections", "http_fallback_delay", "default_download_method", "prefer_http_equivalent", "pikpak_username", "pikpak_password", "pikpak_cleanup_restored", "pikpak_check_enabled", "pikpak_check_interval", "pikpak_notify_success", "pikpak_notify_failure", "pushover_app_token", "pushover_user_key"} {
+	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "api_key": true, "stash_watchlist_tag_id": true, "stash_watchlist_sync_enabled": true, "stash_watchlist_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "search_auto_close_seconds": true, "search_download_background": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
+	for _, key := range []string{"javdb_url", "http_download_directory", "http_download_concurrency", "http_download_connections", "http_fallback_delay", "default_download_method", "prefer_http_equivalent", "pikpak_username", "pikpak_password", "pikpak_cleanup_restored", "pikpak_release_id_folder_fallback", "pikpak_check_enabled", "pikpak_check_interval", "pikpak_notify_success", "pikpak_notify_failure", "pushover_app_token", "pushover_user_key"} {
 		allowed[key] = true
 	}
 	if username, password := strings.TrimSpace(x["pikpak_username"]), x["pikpak_password"]; (username == "") != (password == "") {
@@ -1262,7 +1374,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusUnprocessableEntity, "PikPak restored-file cleanup must be true or false")
 		return
 	}
-	for _, key := range []string{"pikpak_check_enabled", "pikpak_notify_success", "pikpak_notify_failure"} {
+	for _, key := range []string{"pikpak_release_id_folder_fallback", "pikpak_check_enabled", "pikpak_notify_success", "pikpak_notify_failure"} {
 		if raw, present := x[key]; present && raw != "true" && raw != "false" {
 			s.problem(w, http.StatusUnprocessableEntity, key+" must be true or false")
 			return
@@ -1296,6 +1408,10 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	}
 	if raw, present := x["prefer_http_equivalent"]; present && raw != "true" && raw != "false" {
 		s.problem(w, http.StatusUnprocessableEntity, "equivalent preferred-match HTTP priority must be true or false")
+		return
+	}
+	if raw, present := x["search_download_background"]; present && raw != "true" && raw != "false" {
+		s.problem(w, http.StatusUnprocessableEntity, "background Search + Download preference must be true or false")
 		return
 	}
 	if raw, present := x["http_fallback_delay"]; present {
