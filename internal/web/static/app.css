@@ -1539,3 +1539,15 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 .historyPeriodNavigation{display:grid;grid-template-columns:38px minmax(150px,auto) auto 38px;align-items:center;justify-content:center;gap:8px;margin:12px 0 2px}.historyPeriodNavigation button{min-height:34px;padding:6px 10px}.historyPeriodNavigation strong{min-width:145px;text-align:center;font-size:12px}.historyBar.emptyBar>i{min-height:2px;opacity:.28}.historyChart[data-history-type="play"] .historyBar>i{background:linear-gradient(180deg,#69c8ff,#3979d8);box-shadow:0 0 18px #469de03d}.historyChart[data-history-type="orgasm"] .historyBar>i{background:linear-gradient(180deg,#ff9fc4,#d74682);box-shadow:0 0 20px #f05e9b42}.historyChart[data-history-type="orgasm"] .historyBar>span{color:#ff9fc4}
 @media(max-width:650px){.historyPeriodNavigation{grid-template-columns:34px 1fr 34px}.historyPeriodNavigation #historyCurrent{grid-column:1/-1;grid-row:2}.historyPeriodNavigation strong{min-width:0}}
 .historyListSentinel{height:1px}.historyListLoading{margin:14px 0 2px;text-align:center}
+
+/* Branded links from Stash History to each item's source and local details. */
+.historyItem{grid-template-columns:66px 84px minmax(180px,1fr) 130px minmax(220px,auto)}
+.historyLinks{gap:8px}
+.historyLinks .historySourceButton{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:38px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;font-size:10px;font-weight:750;line-height:1;white-space:nowrap;transition:border-color .15s,background .15s,color .15s}
+.historySourceButton img{width:17px;height:17px;flex:0 0 17px;border-radius:3px;object-fit:contain}
+.historySourceButton.javbeacon{border-color:#79313b;background:#28151a;color:#ffb0bb}
+.historySourceButton.javlibrary{border-color:#59687b;background:#151c26;color:#dbe7f5}
+.historySourceButton.stash{border-color:#287f82;background:#10272b;color:#91e1e4}
+.historySourceButton:hover{filter:brightness(1.16)}
+@media(max-width:900px){.historyItem{grid-template-columns:60px 72px minmax(0,1fr) minmax(220px,auto)}}
+@media(max-width:650px){.historyItem{grid-template-columns:54px 64px minmax(0,1fr)}.historyLinks{width:100%}.historyLinks .historySourceButton{flex:1 1 auto}}

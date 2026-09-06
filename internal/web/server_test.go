@@ -1424,11 +1424,17 @@ func TestStashHistoryUsesNavigableCalendarScopes(t *testing.T) {
 			`limit:'25'`,
 			`new IntersectionObserver`,
 			`data-history-bucket`,
+			`function historyStashSceneURL`,
+			`historySourceButton javbeacon`,
+			`historySourceButton javlibrary`,
+			`historySourceButton stash`,
+			`/assets/favicon-32x32.png`,
 		},
 		"static/app.css": {
 			`.historyPeriodNavigation`,
 			`.historyChart[data-history-type="play"]`,
 			`.historyChart[data-history-type="orgasm"]`,
+			`.historyLinks .historySourceButton`,
 		},
 	}
 	for name, markers := range files {
