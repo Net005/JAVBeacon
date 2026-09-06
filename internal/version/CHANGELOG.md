@@ -7,11 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.108] - 2026-09-06
+
 ### Added
 
 - Stash History detail items now include larger, visually distinct branded
   buttons for JAVBeacon release details, JavLibrary, and the matching StashApp
   scene. Source buttons use site icons and no longer use a trailing arrow.
+- Release Library bulk selection now offers **Select all matching** after the
+  first item is selected. It selects the complete server-side filtered result
+  set rather than only cards already loaded by infinite scrolling.
 
 ## [1.0.107] - 2026-09-06
 

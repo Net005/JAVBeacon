@@ -257,6 +257,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sites/{id}/releases", s.siteReleases)
 	s.mux.HandleFunc("GET /api/releases", s.releases)
 	s.mux.HandleFunc("GET /api/releases/count", s.releasesCount)
+	s.mux.HandleFunc("GET /api/releases/ids", s.releaseIDs)
 	s.mux.HandleFunc("GET /api/release-filter-options", s.releaseFilterOptions)
 	s.mux.HandleFunc("PATCH /api/releases/bulk", s.patchReleasesBulk)
 	s.mux.HandleFunc("POST /api/releases/bulk/monitor-download", s.bulkMonitorAndDownloadReleases)
@@ -1951,6 +1952,38 @@ func (s *Server) releasesCount(w http.ResponseWriter, r *http.Request) {
 	s.releaseCountCache[cacheKey] = cachedReleaseCount{Total: total, Until: now.Add(20 * time.Second)}
 	s.queryCacheMu.Unlock()
 	s.json(w, 200, map[string]any{"total": total})
+}
+
+// releaseIDs returns the complete ID set matching the Release Library's
+// active filters. It deliberately pages through the store instead of obeying
+// the normal 500-row response cap, allowing the infinite-scroll UI's "Select
+// all matching" action to select the entire result set rather than only the
+// cards that happen to be mounted in the browser.
+func (s *Server) releaseIDs(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	filter := releaseFilterFromQuery(r.URL.Query(), settings)
+	filter.Limit = 500
+	filter.Offset = 0
+	ids := make([]int64, 0)
+	for {
+		rows, queryErr := s.store.Releases(r.Context(), filter)
+		if queryErr != nil {
+			s.problem(w, http.StatusInternalServerError, queryErr.Error())
+			return
+		}
+		for _, release := range rows {
+			ids = append(ids, release.ID)
+		}
+		if len(rows) < filter.Limit {
+			break
+		}
+		filter.Offset += len(rows)
+	}
+	s.json(w, http.StatusOK, map[string]any{"ids": ids, "total": len(ids)})
 }
 
 func (s *Server) releaseFilterOptions(w http.ResponseWriter, r *http.Request) {
