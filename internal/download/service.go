@@ -406,6 +406,49 @@ func (s *Service) runEventPipelineAsync(ctx context.Context, d domain.Download, 
 		_, _ = s.store.SaveDownload(ctx, current)
 	}()
 }
+
+// runHTTPCompletionPipelinesAsync gives a completed direct download the same
+// two-stage post-processing lifecycle as a torrent that completes and is then
+// removed from qBittorrent. HTTP has no separate client-removal transition, so
+// both configured events are dispatched here, consecutively on the shared
+// serialized worker. This lets existing "Download successfully removed"
+// steps (commonly file moves followed by a StashApp scan) work for HTTP too.
+func (s *Service) runHTTPCompletionPipelinesAsync(ctx context.Context, d domain.Download, t Torrent) {
+	s.markPipelineInFlight(d.ID, pipelineDownloadCompleted)
+	s.markPipelineInFlight(d.ID, pipelineDownloadRemoved)
+	go func() {
+		defer s.clearPipelineInFlight(d.ID, pipelineDownloadCompleted)
+		defer s.clearPipelineInFlight(d.ID, pipelineDownloadRemoved)
+		var completionErr, removalErr error
+		var completionOutput, completionDetail string
+		_ = s.runPipelineSerialized(func() error {
+			completionErr = s.runPipelineEvent(ctx, &d, t, pipelineDownloadCompleted)
+			completionOutput, completionDetail = d.QBResponse, d.Error
+			removalErr = s.runPipelineEvent(ctx, &d, t, pipelineDownloadRemoved)
+			return errors.Join(completionErr, removalErr)
+		})
+		current, ok := s.downloadByID(ctx, d.ID, "completed")
+		if !ok {
+			return
+		}
+		current.QBResponse = strings.TrimSpace(strings.Join([]string{completionOutput, d.QBResponse}, "\n"))
+		switch {
+		case completionErr != nil && removalErr != nil:
+			current.PostStatus = "pipeline_failed"
+			current.Error = completionDetail + "; finalization pipeline failed: " + d.Error
+		case completionErr != nil:
+			current.PostStatus = "pipeline_failed"
+			current.Error = completionDetail
+		case removalErr != nil:
+			current.PostStatus = "pipeline_failed"
+			current.Error = d.Error
+		default:
+			current.PostStatus = "pipeline_completed"
+			current.Error = ""
+		}
+		_, _ = s.store.SaveDownload(ctx, current)
+	}()
+}
 func (s *Service) provider(ctx context.Context) (SearchProvider, error) {
 	settings, e := s.store.Settings(ctx)
 	if e != nil {
@@ -1464,7 +1507,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	d, _ = s.store.SaveDownload(context.Background(), d)
 	s.logHTTPDownloadEvent("HTTP download completed", d)
 	_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_completed", "HTTP download completed")
-	s.runEventPipelineAsync(context.Background(), d, Torrent{Name: filepath.Base(finalPath), ContentPath: finalPath, Progress: 1}, pipelineDownloadCompleted, nil)
+	s.runHTTPCompletionPipelinesAsync(context.Background(), d, Torrent{Name: filepath.Base(finalPath), ContentPath: finalPath, Progress: 1})
 }
 
 func verifyHTTPDownloadFile(path string, resolved resolvedHTTPFile, expectedSize int64) (string, error) {
