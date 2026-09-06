@@ -7,6 +7,22 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.107] - 2026-09-06
+
+### Changed
+
+- JavDB/Keepshare HTTP discovery now relies on strict canonical release-ID
+  matching and no longer rejects an exact match because its JavDB release date
+  differs from the date stored in JAVBeacon.
+- Reworked Stash History into calendar-scoped Daily, Weekly, Monthly, and
+  Yearly views with previous/current/next navigation. Graph selections now
+  drill into the next level and filter the detail ledger to the same range;
+  Watch and Stash Orgasm charts use distinct blue and pink palettes.
+- Stash History now opens in Daily view by default, remembers the selected
+  period, fetches only the active calendar range, and incrementally loads its
+  detail ledger through infinite scrolling instead of sending every stored
+  watch record to the browser.
+
 ## [1.0.106] - 2026-09-06
 
 ### Fixed
