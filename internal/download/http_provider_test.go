@@ -552,6 +552,20 @@ func TestJavDBSortingPrefersConfiguredFilenamePatternsBeforeNormalHTTPOrder(t *t
 	}
 }
 
+func TestJavDBSortingKeepsBlacklistedHTTPCandidatesRejectedAndLast(t *testing.T) {
+	rows := []domain.SearchResult{
+		{Title: "trusted@ ADN-803-CAMRIP.mp4", BlacklistedFilenameMatch: true, Reason: "filename matched blacklist pattern camrip"},
+		{Title: "ADN-803.mp4", Accepted: true},
+	}
+	sortJavDBDownloadCandidates(rows, "ADN-803", legacyPreferredFilenamePatterns([]string{"trusted@"}))
+	if rows[0].Title != "ADN-803.mp4" || !rows[1].BlacklistedFilenameMatch || rows[1].Accepted {
+		t.Fatalf("unexpected blacklist order/state: %+v", rows)
+	}
+	if !strings.Contains(rows[1].Reason, "blacklist") || rows[1].PreferredFilenameMatch {
+		t.Fatalf("blacklist reason was overwritten: %+v", rows[1])
+	}
+}
+
 func TestPikPakFileSelectionUsesPreferredPatternsThenLargestFallback(t *testing.T) {
 	files := []pikPakFile{
 		{ID: "large", Name: "ADN-803.mp4", Size: "9000"},

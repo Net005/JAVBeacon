@@ -85,6 +85,18 @@ func TestFallbackSearchCandidate(t *testing.T) {
 			t.Fatalf("expected no candidate when the search returned nothing")
 		}
 	})
+
+	t.Run("blacklisted results are excluded from relaxed fallback tiers", func(t *testing.T) {
+		blacklisted := domain.SearchResult{Title: "blacklisted-high-seed", Seeds: 100, BlacklistedFilenameMatch: true}
+		clean := domain.SearchResult{Title: "clean-low-seed", Seeds: 1}
+		got, found := fallbackSearchCandidate([]domain.SearchResult{blacklisted, clean}, []domain.SearchResult{blacklisted, clean}, true)
+		if !found || got.Title != clean.Title {
+			t.Fatalf("expected clean fallback, got %+v found=%v", got, found)
+		}
+		if _, found := fallbackSearchCandidate([]domain.SearchResult{blacklisted}, []domain.SearchResult{blacklisted}, true); found {
+			t.Fatal("blacklisted-only results must not produce a fallback candidate")
+		}
+	})
 }
 
 func TestSortSearchResultsUsesFilenamePriorityBeforeSeedCount(t *testing.T) {

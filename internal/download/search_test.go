@@ -45,6 +45,21 @@ func TestNyaaFilenameMatchingUsesHighestPriorityPatternFirst(t *testing.T) {
 	}
 }
 
+func TestNyaaBlacklistOverridesPreferredFilenameMatch(t *testing.T) {
+	p := &Nyaa{
+		PreferredPatterns:   []PreferredFilenamePattern{{Pattern: "trusted@", Priority: 1}},
+		BlacklistedPatterns: []string{"camrip"},
+	}
+	accepted, reason, _, matched := p.matchFiles("PRED-888", []string{"trusted@PRED-888-CAMRIP.mp4"})
+	if accepted || matched != "" || !strings.Contains(strings.ToLower(reason), "blacklist pattern camrip") {
+		t.Fatalf("accepted=%v reason=%q matched=%q", accepted, reason, matched)
+	}
+	blacklisted, pattern, filename := p.blacklistMatch("PRED-888", []string{"trusted@PRED-888-CAMRIP.mp4"})
+	if !blacklisted || pattern != "camrip" || filename != "trusted@PRED-888-CAMRIP.mp4" {
+		t.Fatalf("blacklisted=%v pattern=%q filename=%q", blacklisted, pattern, filename)
+	}
+}
+
 func TestNyaaSearchParsesSeedersAndLeechersFromNamespacedRSSFields(t *testing.T) {
 	client := &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
 		body := `<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>` +

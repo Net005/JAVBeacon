@@ -43,16 +43,17 @@ var pikPakAlgorithms = []string{
 var pikPakRestoreRetryDelay = time.Second
 
 type javDBProvider struct {
-	client           *http.Client
-	baseURL          string
-	acceptedPatterns []PreferredFilenamePattern
-	pikPakUsername   string
-	pikPakPassword   string
-	cleanupRestored  bool
-	allowFolderMatch bool
-	authenticate     func(context.Context, string, string) (*pikPakClient, error)
-	log              *slog.Logger
-	inspectCandidate func(context.Context, string, string) (pikPakFile, []pikPakFile, error)
+	client              *http.Client
+	baseURL             string
+	acceptedPatterns    []PreferredFilenamePattern
+	blacklistedPatterns []string
+	pikPakUsername      string
+	pikPakPassword      string
+	cleanupRestored     bool
+	allowFolderMatch    bool
+	authenticate        func(context.Context, string, string) (*pikPakClient, error)
+	log                 *slog.Logger
+	inspectCandidate    func(context.Context, string, string) (pikPakFile, []pikPakFile, error)
 }
 
 // HTTPSourceProvider is the extension point for direct-download sources.
@@ -80,16 +81,18 @@ type resolvedHTTPFile struct {
 
 func httpSourceProviders(client *http.Client, settings map[string]string, logger *slog.Logger, authenticate func(context.Context, string, string) (*pikPakClient, error)) []HTTPSourceProvider {
 	patterns := ParsePreferredFilenamePatterns(settings["accepted_patterns"])
+	blacklist := ParseBlacklistedFilenamePatterns(settings["blacklisted_filename_patterns"])
 	return []HTTPSourceProvider{&javDBProvider{
-		client:           client,
-		baseURL:          settings["javdb_url"],
-		acceptedPatterns: patterns,
-		pikPakUsername:   strings.TrimSpace(settings["pikpak_username"]),
-		pikPakPassword:   settings["pikpak_password"],
-		cleanupRestored:  settings["pikpak_cleanup_restored"] == "true",
-		allowFolderMatch: settings["pikpak_release_id_folder_fallback"] == "true",
-		authenticate:     authenticate,
-		log:              logger,
+		client:              client,
+		baseURL:             settings["javdb_url"],
+		acceptedPatterns:    patterns,
+		blacklistedPatterns: blacklist,
+		pikPakUsername:      strings.TrimSpace(settings["pikpak_username"]),
+		pikPakPassword:      settings["pikpak_password"],
+		cleanupRestored:     settings["pikpak_cleanup_restored"] == "true",
+		allowFolderMatch:    settings["pikpak_release_id_folder_fallback"] == "true",
+		authenticate:        authenticate,
+		log:                 logger,
 	}}
 }
 
@@ -296,6 +299,13 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 		rows[i].MatchedFile = selected.Name
 		rows[i].ProviderFileID = selected.ID
 		rows[i].PreferredFilenameMatch, _, rows[i].PreferredFilenamePriority = matchesAcceptedHTTPPattern(selected.Name, p.acceptedPatterns)
+		if blacklisted, pattern := matchesBlacklistedFilename(selected.Name, p.blacklistedPatterns); blacklisted {
+			rows[i].Accepted = false
+			rows[i].BlacklistedFilenameMatch = true
+			rows[i].PreferredFilenameMatch = false
+			rows[i].PreferredFilenamePriority = 0
+			rows[i].Reason = fmt.Sprintf("filename matched blacklist pattern %s: %s", pattern, selected.Name)
+		}
 		if selected.FolderReleaseMatch {
 			rows[i].Reason = "exact release-ID PikPak folder fallback selected the highest-priority/largest child video"
 		}
@@ -333,6 +343,9 @@ func (p *javDBProvider) inspectSearchCandidate(ctx context.Context, link, releas
 
 func sortJavDBDownloadCandidates(rows []domain.SearchResult, releaseID string, patterns []PreferredFilenamePattern) {
 	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].BlacklistedFilenameMatch != rows[j].BlacklistedFilenameMatch {
+			return !rows[i].BlacklistedFilenameMatch
+		}
 		iPreferred, _, iPriority := matchesAcceptedHTTPPattern(rows[i].Title, patterns)
 		jPreferred, _, jPriority := matchesAcceptedHTTPPattern(rows[j].Title, patterns)
 		if iPreferred != jPreferred {
@@ -348,6 +361,9 @@ func sortJavDBDownloadCandidates(rows []domain.SearchResult, releaseID string, p
 		return rows[i].SizeBytes > rows[j].SizeBytes
 	})
 	for i := range rows {
+		if rows[i].BlacklistedFilenameMatch {
+			continue
+		}
 		if preferred, pattern, priority := matchesAcceptedHTTPPattern(rows[i].Title, patterns); preferred {
 			rows[i].PreferredFilenameMatch = true
 			rows[i].PreferredFilenamePriority = priority

@@ -7,6 +7,14 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.110] - 2026-09-06
+
+### Added
+
+- Downloads settings now support a row-based filename blacklist. Partial
+  matches are case-insensitive and are hard exclusions across Torrent and HTTP
+  searches, including relaxed non-preferred and manual force-download paths.
+
 ## [1.0.109] - 2026-09-06
 
 ### Changed
