@@ -7,6 +7,37 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.97] - 2026-09-06
+
+### Added
+
+- Settings → Downloads now supports an optional PikPak account for full-size
+  JavDB/Keepshare downloads when an anonymous public share authorizes only a
+  partial preview stream.
+- Added **Test & re-authenticate**, which performs a fresh PikPak sign-in and
+  authenticated drive-access check and displays the persisted result and
+  timestamp in the settings interface.
+- Added a configurable PikPak account-validation schedule, included in the
+  existing schedule forecast, with independent Pushover notifications for
+  successful and failed checks.
+- Added optional cleanup that permanently removes only the exact file restored
+  into PikPak after JAVBeacon has successfully written the complete local file.
+
+### Changed
+
+- Authenticated HTTP downloads restore only the exact search-selected PikPak
+  file and prefer its explicitly identified original-quality media URL.
+- PikPak and Pushover credentials are excluded from account-check results,
+  application log fields, and Pushover message bodies.
+
+### Fixed
+
+- HTTP downloads now distinguish an anonymous partial-preview response from an
+  authenticated account storage, transfer-quota, or restore limitation instead
+  of reporting either as a generic wrong-filesize failure.
+- Restored PikPak files are revalidated against the selected release ID,
+  filename, and filesize before a download is allowed to start.
+
 ## [1.0.96] - 2026-09-06
 
 ### Changed
