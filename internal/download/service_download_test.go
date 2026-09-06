@@ -3,6 +3,8 @@ package download
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -54,6 +56,37 @@ func TestHTTPConnectionsDefaultAndBounds(t *testing.T) {
 				t.Fatalf("connections=%d, want %d", got, testCase.want)
 			}
 		})
+	}
+}
+
+func TestVerifyHTTPDownloadFileAgainstPikPakSHA1(t *testing.T) {
+	content := []byte("complete downloaded video payload")
+	path := filepath.Join(t.TempDir(), "video.part")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha1.Sum(content)
+	resolved := resolvedHTTPFile{ChecksumType: "sha1", Checksum: hex.EncodeToString(sum[:])}
+	verification, err := verifyHTTPDownloadFile(path, resolved, int64(len(content)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verification != "verified SHA-1 checksum against PikPak" {
+		t.Fatalf("verification=%q", verification)
+	}
+	resolved.Checksum = strings.Repeat("0", 40)
+	if _, err := verifyHTTPDownloadFile(path, resolved, int64(len(content))); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("expected checksum mismatch, got %v", err)
+	}
+}
+
+func TestVerifyHTTPDownloadFileRejectsOnDiskSizeMismatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "video.part")
+	if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyHTTPDownloadFile(path, resolvedHTTPFile{}, 100); err == nil || !strings.Contains(err.Error(), "size mismatch") {
+		t.Fatalf("expected size mismatch, got %v", err)
 	}
 }
 

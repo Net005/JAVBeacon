@@ -68,6 +68,8 @@ type resolvedHTTPFile struct {
 	Name           string
 	Size           int64
 	Headers        map[string]string
+	Checksum       string
+	ChecksumType   string
 	Authenticated  bool
 	RestoredFileID string
 	NewlyRestored  bool
@@ -124,10 +126,7 @@ func (p *javDBProvider) Resolve(ctx context.Context, download domain.Download) (
 		if p.pikPakUsername != "" && p.pikPakPassword != "" {
 			resolved, err = resolveAuthenticatedPikPakShare(ctx, p.client, download.SourceReference, download.Query, p.acceptedPatterns, download.ProviderFileID, download.Name, download.BytesTotal, p.pikPakUsername, p.pikPakPassword, p.cleanupRestored, p.authenticate)
 		} else {
-			var direct, name string
-			var size int64
-			direct, name, size, err = resolvePikPakShare(ctx, p.client, download.SourceReference, download.Query, p.acceptedPatterns, download.ProviderFileID, download.Name, download.BytesTotal)
-			resolved = resolvedHTTPFile{URL: direct, Name: name, Size: size, Headers: map[string]string{"User-Agent": publicShareUserAgent, "Referer": "https://mypikpak.com/"}}
+			resolved, err = resolvePikPakShare(ctx, p.client, download.SourceReference, download.Query, p.acceptedPatterns, download.ProviderFileID, download.Name, download.BytesTotal)
 		}
 		if err == nil {
 			return resolved, nil
@@ -764,6 +763,8 @@ type pikPakFile struct {
 	Name           string `json:"name"`
 	Kind           string `json:"kind"`
 	Size           string `json:"size"`
+	Hash           string `json:"hash"`
+	MD5Checksum    string `json:"md5_checksum"`
 	WebContentLink string `json:"web_content_link"`
 	Links          struct {
 		ApplicationOctetStream struct {
@@ -1390,25 +1391,25 @@ func pikPakSearchFiles(files []pikPakFile, selected pikPakFile) ([]string, []dom
 	return names, details
 }
 
-func resolvePikPakShare(ctx context.Context, client *http.Client, keepshareURL, releaseID string, preferredPatterns []PreferredFilenamePattern, providerFileID, expectedName string, expectedSize int64) (string, string, int64, error) {
+func resolvePikPakShare(ctx context.Context, client *http.Client, keepshareURL, releaseID string, preferredPatterns []PreferredFilenamePattern, providerFileID, expectedName string, expectedSize int64) (resolvedHTTPFile, error) {
 	pp, shareID, selected, _, err := inspectPikPakShare(ctx, client, keepshareURL, releaseID, preferredPatterns, providerFileID, expectedName, expectedSize)
 	if err != nil {
-		return "", "", 0, err
+		return resolvedHTTPFile{}, err
 	}
 	selectedSize, _ := strconv.ParseInt(selected.Size, 10, 64)
 	if expectedName != "" && !strings.EqualFold(strings.TrimSpace(selected.Name), strings.TrimSpace(expectedName)) {
-		return "", "", 0, fmt.Errorf("selected PikPak file changed: expected %q, resolved %q", expectedName, selected.Name)
+		return resolvedHTTPFile{}, fmt.Errorf("selected PikPak file changed: expected %q, resolved %q", expectedName, selected.Name)
 	}
 	if expectedSize > 0 && selectedSize > 0 && expectedSize != selectedSize {
-		return "", "", 0, fmt.Errorf("selected PikPak file size changed: expected %d bytes, resolved %d bytes", expectedSize, selectedSize)
+		return resolvedHTTPFile{}, fmt.Errorf("selected PikPak file size changed: expected %d bytes, resolved %d bytes", expectedSize, selectedSize)
 	}
 	info, err := pp.request(ctx, "/drive/v1/share/file_info", url.Values{"share_id": {shareID}, "file_id": {selected.ID}})
 	if err != nil {
-		return "", "", 0, err
+		return resolvedHTTPFile{}, err
 	}
 	file := info.FileInfo
 	if file.ID != "" && file.ID != selected.ID {
-		return "", "", 0, fmt.Errorf("PikPak returned the wrong file: requested %s, received %s", selected.ID, file.ID)
+		return resolvedHTTPFile{}, fmt.Errorf("PikPak returned the wrong file: requested %s, received %s", selected.ID, file.ID)
 	}
 	// The public player can expose web_content_link as its default transcode,
 	// even when file_info also contains the full-size original. Pin the explicit
@@ -1416,9 +1417,14 @@ func resolvePikPakShare(ctx context.Context, client *http.Client, keepshareURL, 
 	// download helper sees after Play is clicked.
 	direct := preferredPikPakDownloadURL(file)
 	if direct == "" {
-		return "", "", 0, errors.New("PikPak did not return a downloadable URL for the matching file")
+		return resolvedHTTPFile{}, errors.New("PikPak did not return a downloadable URL for the matching file")
 	}
-	return direct, selected.Name, selectedSize, nil
+	checksumType, checksum := pikPakFileChecksum(file, selected)
+	return resolvedHTTPFile{
+		URL: direct, Name: selected.Name, Size: selectedSize,
+		Headers:  map[string]string{"User-Agent": publicShareUserAgent, "Referer": "https://mypikpak.com/"},
+		Checksum: checksum, ChecksumType: checksumType,
+	}, nil
 }
 
 func resolveAuthenticatedPikPakShare(ctx context.Context, client *http.Client, keepshareURL, releaseID string, preferredPatterns []PreferredFilenamePattern, providerFileID, expectedName string, expectedSize int64, username, password string, cleanupRestored bool, authenticate func(context.Context, string, string) (*pikPakClient, error)) (resolvedHTTPFile, error) {
@@ -1474,12 +1480,27 @@ func resolveAuthenticatedPikPakShare(ctx context.Context, client *http.Client, k
 		RestoredFileID: restoredEntry.ID,
 		NewlyRestored:  newlyRestored,
 	}
+	resolved.ChecksumType, resolved.Checksum = pikPakFileChecksum(restored, selected)
 	if cleanupRestored && newlyRestored {
 		resolved.Cleanup = func(cleanupCtx context.Context) error {
 			return authenticated.deleteFile(cleanupCtx, restoredEntry.ID)
 		}
 	}
 	return resolved, nil
+}
+
+func pikPakFileChecksum(files ...pikPakFile) (string, string) {
+	for _, file := range files {
+		value := strings.ToLower(strings.TrimSpace(file.Hash))
+		if decoded, err := hex.DecodeString(value); err == nil && len(decoded) == 20 {
+			return "sha1", value
+		}
+		value = strings.ToLower(strings.TrimSpace(file.MD5Checksum))
+		if decoded, err := hex.DecodeString(value); err == nil && len(decoded) == 16 {
+			return "md5", value
+		}
+	}
+	return "", ""
 }
 
 func preferredPikPakDownloadURL(file pikPakFile) string {

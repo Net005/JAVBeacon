@@ -282,6 +282,9 @@ Under **Settings → Downloads → HTTP Downloads**, configure:
   one file (default and maximum 4). JAVBeacon verifies the CDN's `Content-Range` response
   before segmenting and automatically uses one connection when ranges are not
   supported.
+- Completed files are verified against PikPak's SHA-1 hash (or MD5 checksum)
+  when the provider supplies one. The final on-disk byte size is always checked
+  before the temporary download is renamed to its final `.mp4` filename.
 - **PikPak account** — optional email/phone and password used to restore only
   the selected share file and retrieve its authenticated original. Public
   shares may expose the original filename and size while authorizing only a
