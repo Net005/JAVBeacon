@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.102] - 2026-09-06
+
+### Added
+
+- Completed Web downloads now verify the final on-disk byte size and compare
+  the local file against PikPak's SHA-1 hash (or MD5 checksum when that is the
+  available digest) before the temporary file is promoted to the final MP4.
+  Providers that omit a digest retain strict byte-size and range validation.
+
 ## [1.0.101] - 2026-09-06
 
 ### Changed

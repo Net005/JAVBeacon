@@ -3,6 +3,9 @@ package download
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1347,11 +1350,20 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		fail(err)
 		return
 	}
-	if d.BytesTotal > 0 && d.BytesDownloaded != d.BytesTotal {
+	verification, verifyErr := verifyHTTPDownloadFile(tempPath, resolved, d.BytesTotal)
+	if verifyErr != nil {
 		_ = os.Remove(tempPath)
-		fail(fmt.Errorf("HTTP download size mismatch: selected %d bytes, received %d bytes", d.BytesTotal, d.BytesDownloaded))
+		fail(verifyErr)
 		return
 	}
+	d.MatchReason = appendDownloadPreference(verification, d.MatchReason)
+	s.log.Info("HTTP download integrity verified",
+		"download_id", d.ID,
+		"release_id", d.ReleaseID,
+		"video_id", d.Query,
+		"verification", verification,
+		"bytes", d.BytesDownloaded,
+	)
 	if err = os.Rename(tempPath, finalPath); err != nil {
 		_ = os.Remove(tempPath)
 		fail(err)
@@ -1379,6 +1391,53 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	s.logHTTPDownloadEvent("HTTP download completed", d)
 	_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_completed", "HTTP download completed")
 	s.runEventPipelineAsync(context.Background(), d, Torrent{Name: filepath.Base(finalPath), ContentPath: finalPath, Progress: 1}, pipelineDownloadCompleted, nil)
+}
+
+func verifyHTTPDownloadFile(path string, resolved resolvedHTTPFile, expectedSize int64) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("inspect completed HTTP download: %w", err)
+	}
+	if expectedSize > 0 && info.Size() != expectedSize {
+		return "", fmt.Errorf("HTTP download size mismatch: selected %d bytes, file contains %d bytes", expectedSize, info.Size())
+	}
+	if resolved.Checksum == "" || resolved.ChecksumType == "" {
+		return "remote byte size verified (provider supplied no checksum)", nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open completed HTTP download for checksum verification: %w", err)
+	}
+	defer file.Close()
+	var actual string
+	switch strings.ToLower(resolved.ChecksumType) {
+	case "sha1":
+		h := sha1.New()
+		if _, err := io.Copy(h, file); err != nil {
+			return "", fmt.Errorf("calculate HTTP download SHA-1: %w", err)
+		}
+		actual = hex.EncodeToString(h.Sum(nil))
+	case "md5":
+		h := md5.New()
+		if _, err := io.Copy(h, file); err != nil {
+			return "", fmt.Errorf("calculate HTTP download MD5: %w", err)
+		}
+		actual = hex.EncodeToString(h.Sum(nil))
+	default:
+		return "", fmt.Errorf("unsupported HTTP download checksum type %q", resolved.ChecksumType)
+	}
+	expected := strings.ToLower(strings.TrimSpace(resolved.Checksum))
+	if actual != expected {
+		return "", fmt.Errorf("HTTP download %s checksum mismatch: PikPak reported %s, downloaded file is %s", checksumDisplayName(resolved.ChecksumType), expected, actual)
+	}
+	return "verified " + checksumDisplayName(resolved.ChecksumType) + " checksum against PikPak", nil
+}
+
+func checksumDisplayName(checksumType string) string {
+	if strings.EqualFold(checksumType, "sha1") {
+		return "SHA-1"
+	}
+	return strings.ToUpper(checksumType)
 }
 
 type countingWriter struct {
