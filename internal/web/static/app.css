@@ -1072,6 +1072,8 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .downloadToolbar{align-items:flex-end;column-gap:10px;row-gap:10px}
 .downloadToolbar>label{margin:0}
 .downloadToolbar>.check{align-self:flex-end;min-height:40px}
+.settingsFieldset{display:grid;gap:8px;margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:9px;background:#0d1118}.settingsFieldset legend{padding:0 6px;color:var(--text);font-size:12px;font-weight:800}.settingsFieldset label{margin:4px 0}.settingsFieldset>.settingHelp{margin:0 0 4px}.settingsFieldset .check{align-items:flex-start;padding:9px 10px;border:1px solid #343b47;border-radius:7px;background:#121720}.settingsFieldset .check span{display:grid;gap:3px}.settingsFieldset .check small{color:var(--muted);font-size:10px;line-height:1.4}
+.settingsInlineActions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.settingsInlineActions button{flex:0 0 auto}.pikPakAccountStatus{margin:0;font-size:11px;line-height:1.4}.pikPakAccountStatus.success{color:#83e8bd}.pikPakAccountStatus.error{color:#ff929c}.settingsSubsection{display:grid;gap:8px;margin-top:6px;padding-top:12px;border-top:1px solid var(--line)}.settingsSubsection>.settingHelp{margin:0}
 .downloadToolbar>select,.downloadToolbar>button,.downloadToolbar>input:not([type="range"]){min-height:40px}
 
 /* Mobile release navigation. Everything in this block is below the desktop

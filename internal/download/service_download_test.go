@@ -83,6 +83,34 @@ func TestOpenHTTPDownloadStreamReportsUpstreamFailureDetail(t *testing.T) {
 	}
 }
 
+func TestHTTPDownloadSizeMismatchExplainsAnonymousPreview(t *testing.T) {
+	resp := &http.Response{
+		StatusCode:    http.StatusPartialContent,
+		ContentLength: 2413882923,
+		Header:        http.Header{"Content-Range": []string{"bytes 0-2413882922/4331682987"}},
+	}
+	err := httpDownloadSizeMismatchError(resp, 4331682987, false)
+	for _, want := range []string{"partial anonymous stream", "2413882923 bytes", "4331682987-byte original", "complete original is unavailable"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
+func TestHTTPDownloadSizeMismatchExplainsAuthenticatedAccountLimit(t *testing.T) {
+	resp := &http.Response{
+		StatusCode:    http.StatusPartialContent,
+		ContentLength: 2413882923,
+		Header:        http.Header{"Content-Range": []string{"bytes 0-2413882922/4331682987"}},
+	}
+	err := httpDownloadSizeMismatchError(resp, 4331682987, true)
+	for _, want := range []string{"PikPak account", "partial stream", "storage", "transfer quota", "restore status"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
 func TestDownloadRechecksFilenameRulesServerSide(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "downloads.db"))

@@ -242,8 +242,8 @@ version is shown at the bottom of the web sidebar near **Sign out**.
 3. Add monitoring sources under **Sites** and choose whether each source should notify, add releases to the Watchlist, or automate searches. JavLibrary URLs must include `&mode=2` to include future releases.
 4. Open **Settings → Downloads** and configure the Torrent search URL,
    preferred filename patterns, qBittorrent connection, and the HTTP download
-   destination. JavDB/Keepshare is available as the HTTP provider without a
-   PikPak account.
+   destination. JavDB/Keepshare discovery works anonymously; configure an
+   optional PikPak account when full original files are required.
 5. Optionally configure **Settings → StashApp** for local-library synchronization, Watchlist-tag synchronization, missing-file scans, and path remapping.
 6. Review automation schedules before enabling unattended scraping or downloading.
 
@@ -278,6 +278,21 @@ Under **Settings → Downloads → HTTP Downloads**, configure:
 - **JavDB URL** — the HTTP discovery provider base URL.
 - **Download folder** — where completed HTTP videos are written.
 - **Parallel HTTP downloads** — the maximum simultaneous HTTP transfers.
+- **PikPak account** — optional email/phone and password used to restore only
+  the selected share file and retrieve its authenticated original. Public
+  shares may expose the original filename and size while authorizing only a
+  shorter preview stream. A free account can work when it has sufficient
+  storage and transfer allowance.
+- **Delete restored file after a successful download** — optionally removes
+  the exact restored file from PikPak after JAVBeacon has safely written the
+  complete local file.
+- **Scheduled account validation** — periodically performs a fresh PikPak
+  sign-in and authenticated drive-access check. The latest pass or failure and
+  check time are shown beside **Test & re-authenticate**, and the next runs are
+  included in the normal schedule forecast.
+- **Pushover notifications** — optionally send scheduled validation passes,
+  failures, or both using a Pushover application token and user/group key.
+  Credentials and provider access tokens are never included in the message.
 - **Stalled torrent fallback delay** — how long a non-progressing torrent with
   no seeders or no recorded completed peer may wait before HTTP is attempted;
   the default is eight hours.
@@ -287,8 +302,9 @@ Details can make HTTP primary for an individual release. Completed HTTP files
 are named `<RELEASE-ID>.mp4`; if that name exists, JAVBeacon appends `-0`,
 `-1`, and so on. The HTTP tab in Download Activity reports transferred bytes,
 progress, ETA, completion or failure state, and offers retry for failed items.
-Blocked or expired public shares and provider data-center restrictions are
-reported as explicit failures instead of producing an HTML file.
+Blocked or expired public shares, anonymous preview limits, account quota
+limits, and provider data-center restrictions are reported as explicit
+failures instead of saving an incomplete or HTML file.
 
 ## Configuration
 
