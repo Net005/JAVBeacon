@@ -1410,3 +1410,30 @@ downloadSearchHistoryLimit.onchange=loadDownloadSearchHistory;
 async function loadAll(){try{await loadPreferences();if(!applyTemporaryLibrarySearch())applyTemporaryMetadataFilter();initializeAppHistory();await Promise.all([loadVersion(),loadStats(),loadSites(),loadPresets(),loadIntegrationConfig(),loadAccount(),loadDbStatus()]);applyMonitoringSiteTarget();await loadSettings();await loadReleases();if(directReleaseID)await openRelease(directReleaseID,false,null,false);await showPendingChangelog();pollJob();pollStash()}catch(e){toast(e.message)}}
 function connectStream(){const ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/ws`);ws.onmessage=e=>{try{const x=JSON.parse(e.data);if(x.type==='release'){handleStreamRelease(x.release);loadStats()}}catch{}};ws.onclose=()=>setTimeout(connectStream,3000)}
 autoRefreshDownloads.checked=localStorage.getItem('javbeacon.autoRefreshDownloads')!=='false';refreshDownloadActivity.onclick=()=>loadDownloads(true);autoRefreshDownloads.onchange=()=>{localStorage.setItem('javbeacon.autoRefreshDownloads',String(autoRefreshDownloads.checked));toast(autoRefreshDownloads.checked?'Download activity auto-refresh enabled':'Download activity auto-refresh paused')};document.querySelector('[data-view="activity"] svg').innerHTML='<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M9 7V5h6v2M3 12h18M10 12v2h4v-2"/>';advancedSearch.title='Advanced filter conditions';loadAll();connectStream();setInterval(()=>{if(!logsView.hidden)pollLogsTail()},3000);setInterval(()=>{if(autoRefreshDownloads.checked&&!monitoringView.hidden)loadDownloads()},2000);
+
+// Per-file connections are deliberately separate from the existing parallel
+// download limit: one controls segmented ranges within a file, the other the
+// number of releases transferring at once.
+const httpParallelDownloadsInput=settingsForm.elements.http_download_concurrency;
+if(httpParallelDownloadsInput){
+  const connectionsLabel=document.createElement('label');
+  connectionsLabel.innerHTML='Connections per HTTP download<input name="http_download_connections" type="number" min="1" max="16" step="1" value="4">';
+  const connectionsHelp=document.createElement('p');
+  connectionsHelp.className='settingHelp';
+  connectionsHelp.innerHTML='Splits one file across parallel byte-range connections when supported. Default: <strong>4</strong>. Falls back safely to one connection when ranges are unavailable.';
+  httpParallelDownloadsInput.closest('label').after(connectionsLabel,connectionsHelp);
+}
+const loadSettingsWithoutHTTPConnections=loadSettings;
+loadSettings=async function(){
+  await loadSettingsWithoutHTTPConnections();
+  if(settingsForm.elements.http_download_connections)settingsForm.elements.http_download_connections.value=settings.http_download_connections||'4';
+};
+const apiWithoutHTTPConnections=api;
+api=async function(path,options={}){
+  if(path==='/settings'&&String(options.method||'GET').toUpperCase()==='PUT'&&options.body&&settingsForm.elements.http_download_connections){
+    const payload=JSON.parse(options.body);
+    payload.http_download_connections=String(settingsForm.elements.http_download_connections.value||'4');
+    options={...options,body:JSON.stringify(payload)};
+  }
+  return apiWithoutHTTPConnections(path,options);
+};

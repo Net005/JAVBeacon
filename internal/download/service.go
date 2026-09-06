@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
@@ -1016,6 +1017,17 @@ func (s *Service) httpConcurrency(ctx context.Context) int {
 	}
 	return n
 }
+
+func httpConnections(settings map[string]string) int {
+	n, _ := strconv.Atoi(settings["http_download_connections"])
+	if n < 1 {
+		n = 4
+	}
+	if n > 16 {
+		n = 16
+	}
+	return n
+}
 func (s *Service) acquireHTTPSlot(ctx context.Context) bool {
 	for {
 		limit := s.httpConcurrency(ctx)
@@ -1217,61 +1229,50 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		fail(err)
 		return
 	}
+	d.BytesDownloaded = 0
+	d.Progress = 0
+	d.BytesPerSecond = 0
+	d.ETASeconds = 0
+	var transferred atomic.Int64
+	progressDone := make(chan struct{})
+	progressStopped := make(chan struct{})
+	started := time.Now()
+	go func() {
+		defer close(progressStopped)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		lastSave := started
+		var lastBytes int64
+		for {
+			select {
+			case <-progressDone:
+				return
+			case now := <-ticker.C:
+				d.BytesDownloaded = transferred.Load()
+				d.BytesPerSecond = int64(float64(d.BytesDownloaded-lastBytes) / now.Sub(lastSave).Seconds())
+				if d.BytesTotal > 0 {
+					d.Progress = float64(d.BytesDownloaded) / float64(d.BytesTotal)
+					if d.BytesPerSecond > 0 && d.BytesTotal > d.BytesDownloaded {
+						d.ETASeconds = (d.BytesTotal - d.BytesDownloaded) / d.BytesPerSecond
+					}
+				}
+				d, _ = s.store.SaveDownload(context.Background(), d)
+				lastSave, lastBytes = now, d.BytesDownloaded
+			}
+		}
+	}()
 	downloadClient := *s.client
 	downloadClient.Timeout = 0
-	resp, err := openHTTPDownloadStream(ctx, &downloadClient, resolved)
-	if err != nil {
-		out.Close()
-		_ = os.Remove(tempPath)
-		fail(err)
-		return
+	connections, err := downloadHTTPToFile(ctx, &downloadClient, resolved, out, d.BytesTotal, httpConnections(settings), &transferred)
+	close(progressDone)
+	<-progressStopped
+	d.BytesDownloaded = transferred.Load()
+	if d.BytesTotal == 0 {
+		d.BytesTotal = d.BytesDownloaded
 	}
-	if resp.ContentLength > 0 && d.BytesTotal > 0 && resp.ContentLength != d.BytesTotal {
-		resp.Body.Close()
-		out.Close()
-		_ = os.Remove(tempPath)
-		fail(httpDownloadSizeMismatchError(resp, d.BytesTotal, resolved.Authenticated))
-		return
+	if connections > 1 {
+		d.MatchReason = appendDownloadPreference(fmt.Sprintf("parallel HTTP transfer (%d connections)", connections), d.MatchReason)
 	}
-	if d.BytesTotal == 0 && resp.ContentLength > 0 {
-		d.BytesTotal = resp.ContentLength
-	}
-	started, lastSave := time.Now(), time.Now()
-	lastSavedBytes := d.BytesDownloaded
-	buf := make([]byte, 256*1024)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, err = out.Write(buf[:n]); err != nil {
-				readErr = err
-			}
-			d.BytesDownloaded += int64(n)
-		}
-		if sinceSave := time.Since(lastSave); sinceSave >= time.Second {
-			d.BytesPerSecond = int64(float64(d.BytesDownloaded-lastSavedBytes) / sinceSave.Seconds())
-			if d.BytesTotal > 0 {
-				d.Progress = float64(d.BytesDownloaded) / float64(d.BytesTotal)
-			}
-			elapsed := time.Since(started).Seconds()
-			if d.BytesTotal > 0 && elapsed > 0 && d.BytesDownloaded > 0 {
-				remaining := float64(d.BytesTotal-d.BytesDownloaded) / (float64(d.BytesDownloaded) / elapsed)
-				if remaining > 0 {
-					d.ETASeconds = int64(remaining)
-				}
-			}
-			d, _ = s.store.SaveDownload(context.Background(), d)
-			lastSave = time.Now()
-			lastSavedBytes = d.BytesDownloaded
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			err = readErr
-			break
-		}
-	}
-	resp.Body.Close()
 	closeErr := out.Close()
 	if err == nil {
 		err = closeErr
@@ -1313,6 +1314,159 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	s.logHTTPDownloadEvent("HTTP download completed", d)
 	_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_completed", "HTTP download completed")
 	s.runEventPipelineAsync(context.Background(), d, Torrent{Name: filepath.Base(finalPath), ContentPath: finalPath, Progress: 1}, pipelineDownloadCompleted, nil)
+}
+
+type countingWriter struct {
+	w       io.Writer
+	written *atomic.Int64
+}
+
+func (w countingWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	w.written.Add(int64(n))
+	return n, err
+}
+
+func downloadHTTPToFile(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, out *os.File, total int64, connections int, transferred *atomic.Int64) (int, error) {
+	if connections < 2 || total <= 0 {
+		return 1, downloadHTTPSingleStream(ctx, client, resolved, out, total, transferred)
+	}
+	var probe *http.Response
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		probe, err = openHTTPDownloadRange(ctx, client, resolved, 0, 0, total)
+		if err == nil || errors.Is(err, errHTTPRangeUnsupported) {
+			break
+		}
+		if attempt < 3 {
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
+			}
+		}
+	}
+	if errors.Is(err, errHTTPRangeUnsupported) {
+		return 1, downloadHTTPSingleStream(ctx, client, resolved, out, total, transferred)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("probe HTTP byte ranges: %w", err)
+	}
+	probe.Body.Close()
+	const minimumPartSize = int64(16 * 1024 * 1024)
+	if max := int((total + minimumPartSize - 1) / minimumPartSize); connections > max {
+		connections = max
+	}
+	if connections < 2 {
+		return 1, downloadHTTPSingleStream(ctx, client, resolved, out, total, transferred)
+	}
+	if err := out.Truncate(total); err != nil {
+		return 0, err
+	}
+	partSize := (total + int64(connections) - 1) / int64(connections)
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errCh := make(chan error, connections)
+	var wg sync.WaitGroup
+	for part := 0; part < connections; part++ {
+		start := int64(part) * partSize
+		end := min(total-1, start+partSize-1)
+		if start > end {
+			continue
+		}
+		wg.Add(1)
+		go func(start, end int64) {
+			defer wg.Done()
+			if err := downloadHTTPRange(workerCtx, client, resolved, out, start, end, total, transferred); err != nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+				cancel()
+			}
+		}(start, end)
+	}
+	wg.Wait()
+	close(errCh)
+	if err := <-errCh; err != nil {
+		return connections, err
+	}
+	return connections, nil
+}
+
+func downloadHTTPSingleStream(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, out *os.File, total int64, transferred *atomic.Int64) error {
+	resp, err := openHTTPDownloadStream(ctx, client, resolved)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.ContentLength > 0 && total > 0 && resp.ContentLength != total {
+		return httpDownloadSizeMismatchError(resp, total, resolved.Authenticated)
+	}
+	_, err = io.CopyBuffer(countingWriter{w: out, written: transferred}, resp.Body, make([]byte, 256*1024))
+	return err
+}
+
+var errHTTPRangeUnsupported = errors.New("HTTP server does not support byte ranges")
+
+func openHTTPDownloadRange(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, start, end, total int64) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolved.URL, nil)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range resolved.Headers {
+		req.Header.Set(key, value)
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusOK {
+		resp.Body.Close()
+		return nil, errHTTPRangeUnsupported
+	}
+	if resp.StatusCode != http.StatusPartialContent {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		return nil, fmt.Errorf("HTTP range download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var gotStart, gotEnd, gotTotal int64
+	if n, scanErr := fmt.Sscanf(strings.TrimSpace(resp.Header.Get("Content-Range")), "bytes %d-%d/%d", &gotStart, &gotEnd, &gotTotal); scanErr != nil || n != 3 || gotStart != start || gotEnd != end || gotTotal != total {
+		resp.Body.Close()
+		return nil, fmt.Errorf("HTTP provider returned invalid Content-Range %q for bytes %d-%d/%d", resp.Header.Get("Content-Range"), start, end, total)
+	}
+	return resp, nil
+}
+
+func downloadHTTPRange(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, out *os.File, start, end, total int64, transferred *atomic.Int64) error {
+	offset := start
+	for attempt := 1; offset <= end && attempt <= 3; attempt++ {
+		resp, err := openHTTPDownloadRange(ctx, client, resolved, offset, end, total)
+		if err != nil {
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return ctx.Err()
+			}
+			if attempt == 3 {
+				return err
+			}
+			continue
+		}
+		writer := countingWriter{w: io.NewOffsetWriter(out, offset), written: transferred}
+		n, copyErr := io.CopyBuffer(writer, resp.Body, make([]byte, 256*1024))
+		resp.Body.Close()
+		offset += n
+		if copyErr == nil && offset <= end {
+			copyErr = io.ErrUnexpectedEOF
+		}
+		if copyErr != nil && attempt == 3 {
+			return fmt.Errorf("download bytes %d-%d: %w", start, end, copyErr)
+		}
+	}
+	if offset != end+1 {
+		return fmt.Errorf("download bytes %d-%d stopped at %d", start, end, offset)
+	}
+	return nil
 }
 
 // openHTTPDownloadStream retries temporary gateway/rate-limit failures before

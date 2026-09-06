@@ -3,11 +3,15 @@ package download
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,6 +37,23 @@ func TestDownloadFailureLogIncludesReasonAndContext(t *testing.T) {
 		if !strings.Contains(logged, want) {
 			t.Fatalf("failure log %q does not contain %q", logged, want)
 		}
+	}
+}
+
+func TestHTTPConnectionsDefaultAndBounds(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		settings map[string]string
+		want     int
+	}{
+		"default": {map[string]string{}, 4},
+		"custom":  {map[string]string{"http_download_connections": "8"}, 8},
+		"maximum": {map[string]string{"http_download_connections": "99"}, 16},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := httpConnections(testCase.settings); got != testCase.want {
+				t.Fatalf("connections=%d, want %d", got, testCase.want)
+			}
+		})
 	}
 }
 
@@ -80,6 +101,65 @@ func TestOpenHTTPDownloadStreamReportsUpstreamFailureDetail(t *testing.T) {
 	_, err := openHTTPDownloadStream(context.Background(), server.Client(), resolvedHTTPFile{URL: server.URL})
 	if err == nil || !strings.Contains(err.Error(), "HTTP stream failed after 3 attempt(s): HTTP download returned 502: origin unavailable") {
 		t.Fatalf("unexpected error detail: %v", err)
+	}
+}
+
+func TestDownloadHTTPToFileUsesParallelValidatedRanges(t *testing.T) {
+	content := bytes.Repeat([]byte("0123456789abcdef"), 2*1024*1024)
+	var rangeRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := strings.TrimPrefix(r.Header.Get("Range"), "bytes=")
+		parts := strings.Split(raw, "-")
+		if len(parts) != 2 {
+			t.Fatalf("missing range request: %q", r.Header.Get("Range"))
+		}
+		start, _ := strconv.ParseInt(parts[0], 10, 64)
+		end, _ := strconv.ParseInt(parts[1], 10, 64)
+		rangeRequests.Add(1)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(content)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(content[start : end+1])
+	}))
+	defer server.Close()
+	out, err := os.Create(filepath.Join(t.TempDir(), "parallel.part"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	var transferred atomic.Int64
+	connections, err := downloadHTTPToFile(context.Background(), server.Client(), resolvedHTTPFile{URL: server.URL}, out, int64(len(content)), 4, &transferred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connections != 2 || rangeRequests.Load() < 3 { // one probe plus two 16 MiB parts
+		t.Fatalf("connections=%d range requests=%d", connections, rangeRequests.Load())
+	}
+	got, _ := os.ReadFile(out.Name())
+	if !bytes.Equal(got, content) || transferred.Load() != int64(len(content)) {
+		t.Fatalf("parallel result differs: bytes=%d transferred=%d", len(got), transferred.Load())
+	}
+}
+
+func TestDownloadHTTPToFileFallsBackWhenRangesUnsupported(t *testing.T) {
+	content := []byte("complete original")
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write(content)
+	}))
+	defer server.Close()
+	out, err := os.Create(filepath.Join(t.TempDir(), "single.part"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	var transferred atomic.Int64
+	connections, err := downloadHTTPToFile(context.Background(), server.Client(), resolvedHTTPFile{URL: server.URL}, out, int64(len(content)), 4, &transferred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connections != 1 || requests.Load() != 2 {
+		t.Fatalf("connections=%d requests=%d, want range probe plus single stream", connections, requests.Load())
 	}
 }
 
