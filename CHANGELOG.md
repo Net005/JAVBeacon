@@ -7,6 +7,23 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.100] - 2026-09-06
+
+### Added
+
+- HTTP Downloads now has a separate **Connections per HTTP download** setting,
+  defaulting to four, for accelerating an individual PikPak transfer without
+  changing how many releases may download simultaneously.
+
+### Changed
+
+- Large HTTP files are downloaded through validated parallel byte ranges when
+  supported, with combined progress, speed, and ETA reporting. Interrupted
+  segments resume independently, while providers that ignore range requests
+  automatically retain the safe single-stream download path.
+- Every segment is checked against the selected file's exact total size and
+  expected byte range before it is written to the shared temporary file.
+
 ## [1.0.99] - 2026-09-06
 
 ### Fixed

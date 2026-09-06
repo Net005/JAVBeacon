@@ -463,6 +463,18 @@ func TestHTTPDownloadActivityUsesCompactLiveSpeedGraph(t *testing.T) {
 	}
 }
 
+func TestHTTPConnectionSettingDistinguishesFilesFromSegments(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{`Connections per HTTP download`, `name="http_download_connections"`, `parallel byte-range connections`, `Falls back safely to one connection`} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("HTTP connection setting is missing marker %q", marker)
+		}
+	}
+}
+
 func TestPikPakAccountSettingsAreRenderedAndSubmitted(t *testing.T) {
 	javascript, err := assets.ReadFile("static/app.js")
 	if err != nil {

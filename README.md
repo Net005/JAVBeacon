@@ -278,6 +278,10 @@ Under **Settings → Downloads → HTTP Downloads**, configure:
 - **JavDB URL** — the HTTP discovery provider base URL.
 - **Download folder** — where completed HTTP videos are written.
 - **Parallel HTTP downloads** — the maximum simultaneous HTTP transfers.
+- **Connections per HTTP download** — parallel byte-range connections used for
+  one file (default 4). JAVBeacon verifies the CDN's `Content-Range` response
+  before segmenting and automatically uses one connection when ranges are not
+  supported.
 - **PikPak account** — optional email/phone and password used to restore only
   the selected share file and retrieve its authenticated original. Public
   shares may expose the original filename and size while authorizing only a
