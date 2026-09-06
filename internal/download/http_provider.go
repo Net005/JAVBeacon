@@ -1036,50 +1036,97 @@ type pikPakRestoreResponse struct {
 	Message string `json:"message"`
 }
 
-func restoredPikPakFileID(raw string) string {
-	for _, id := range strings.Split(raw, ",") {
-		if id = strings.TrimSpace(id); id != "" {
-			return id
+func (p *pikPakClient) listDriveFiles(ctx context.Context) ([]pikPakFile, error) {
+	queue := []string{""}
+	seen := map[string]bool{"": true}
+	var all []pikPakFile
+	for len(queue) > 0 {
+		parentID := queue[0]
+		queue = queue[1:]
+		page := ""
+		for {
+			var response pikPakResponse
+			q := url.Values{"parent_id": {parentID}, "thumbnail_size": {"SIZE_LARGE"}, "with_audit": {"true"}, "limit": {"100"}, "page_token": {page}, "filters": {`{"phase":{"eq":"PHASE_TYPE_COMPLETE"},"trashed":{"eq":false}}`}}
+			if err := p.authenticatedJSON(ctx, http.MethodGet, "/drive/v1/files", q, nil, &response); err != nil {
+				return nil, err
+			}
+			for _, file := range response.Files {
+				if file.Kind == "drive#folder" {
+					if file.ID != "" && !seen[file.ID] && len(seen) < 250 {
+						seen[file.ID] = true
+						queue = append(queue, file.ID)
+					}
+					continue
+				}
+				all = append(all, file)
+			}
+			page = response.NextPageToken
+			if page == "" {
+				break
+			}
 		}
 	}
-	return ""
+	return all, nil
 }
 
-func (p *pikPakClient) restoreSharedFile(ctx context.Context, shareID, fileID string) (string, error) {
+func exactPikPakAccountFile(files []pikPakFile, expectedName string, expectedSize int64, exclude map[string]bool) (pikPakFile, bool) {
+	for _, file := range files {
+		size, _ := strconv.ParseInt(file.Size, 10, 64)
+		if exclude[file.ID] || !strings.EqualFold(strings.TrimSpace(file.Name), strings.TrimSpace(expectedName)) || (expectedSize > 0 && size != expectedSize) {
+			continue
+		}
+		return file, true
+	}
+	return pikPakFile{}, false
+}
+
+func (p *pikPakClient) restoreSharedFile(ctx context.Context, shareID, fileID, expectedName string, expectedSize int64) (pikPakFile, bool, error) {
+	before, err := p.listDriveFiles(ctx)
+	if err != nil {
+		return pikPakFile{}, false, fmt.Errorf("inventory PikPak account before restore: %w", err)
+	}
+	beforeIDs := make(map[string]bool, len(before))
+	for _, file := range before {
+		beforeIDs[file.ID] = true
+	}
 	body := map[string]any{
+		"kind":            "drive#file",
 		"share_id":        shareID,
 		"pass_code_token": "",
 		"file_ids":        []string{fileID},
-		"params":          map[string]string{"trace_file_ids": fileID},
 	}
 	var restored pikPakRestoreResponse
 	if err := p.authenticatedJSON(ctx, http.MethodPost, "/drive/v1/share/restore", nil, body, &restored); err != nil {
-		return "", fmt.Errorf("restore selected PikPak share file: %w", err)
+		return pikPakFile{}, false, fmt.Errorf("restore selected PikPak share file: %w", err)
 	}
-	if id := restoredPikPakFileID(restored.Params.TraceFileIDs); id != "" {
-		return id, nil
+	status := strings.ToUpper(restored.RestoreStatus)
+	if status == "" || status == "RESTORE_UNKNOWN" || strings.Contains(status, "ERROR") {
+		return pikPakFile{}, false, fmt.Errorf("PikPak restore failed: %s", firstNonEmpty(restored.Params.ErrorDetail, restored.Message, restored.RestoreStatus))
 	}
-	if restored.RestoreTaskID == "" {
-		return "", fmt.Errorf("PikPak restore did not return a restored file ID (status=%s message=%s)", restored.RestoreStatus, restored.Message)
-	}
+	restoreCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	attempt := 0
 	for {
+		attempt++
+		files, listErr := p.listDriveFiles(restoreCtx)
+		if listErr == nil {
+			if file, found := exactPikPakAccountFile(files, expectedName, expectedSize, beforeIDs); found {
+				return file, true, nil
+			}
+			// PikPak may deduplicate a restore against an existing account file.
+			// Reuse that exact object, but never register cleanup for it.
+			if attempt >= 3 {
+				if file, found := exactPikPakAccountFile(files, expectedName, expectedSize, nil); found {
+					return file, false, nil
+				}
+			}
+		}
 		select {
-		case <-ctx.Done():
-			return "", fmt.Errorf("wait for PikPak restore: %w", ctx.Err())
+		case <-restoreCtx.Done():
+			return pikPakFile{}, false, fmt.Errorf("wait for restored PikPak file %q (%d bytes): %w", expectedName, expectedSize, restoreCtx.Err())
 		case <-ticker.C:
-			var task pikPakRestoreResponse
-			path := "/drive/v1/tasks/" + url.PathEscape(restored.RestoreTaskID)
-			if err := p.authenticatedJSON(ctx, http.MethodGet, path, nil, nil, &task); err != nil {
-				return "", fmt.Errorf("check PikPak restore task: %w", err)
-			}
-			if id := restoredPikPakFileID(task.Params.TraceFileIDs); id != "" {
-				return id, nil
-			}
-			if strings.Contains(strings.ToUpper(task.Phase), "ERROR") || task.Params.ErrorDetail != "" {
-				return "", fmt.Errorf("PikPak restore failed: %s", firstNonEmpty(task.Params.ErrorDetail, task.Message))
-			}
 		}
 	}
 }
@@ -1341,11 +1388,11 @@ func resolveAuthenticatedPikPakShare(ctx context.Context, client *http.Client, k
 	if err != nil {
 		return resolvedHTTPFile{}, err
 	}
-	restoredID, err := authenticated.restoreSharedFile(ctx, shareID, selected.ID)
+	restoredEntry, newlyRestored, err := authenticated.restoreSharedFile(ctx, shareID, selected.ID, selected.Name, selectedSize)
 	if err != nil {
 		return resolvedHTTPFile{}, err
 	}
-	restored, err := authenticated.authenticatedFile(ctx, restoredID)
+	restored, err := authenticated.authenticatedFile(ctx, restoredEntry.ID)
 	if err != nil {
 		return resolvedHTTPFile{}, fmt.Errorf("resolve restored PikPak file: %w", err)
 	}
@@ -1370,9 +1417,9 @@ func resolveAuthenticatedPikPakShare(ctx context.Context, client *http.Client, k
 		Headers:       map[string]string{"User-Agent": publicShareUserAgent, "Referer": "https://mypikpak.com/"},
 		Authenticated: true,
 	}
-	if cleanupRestored {
+	if cleanupRestored && newlyRestored {
 		resolved.Cleanup = func(cleanupCtx context.Context) error {
-			return authenticated.deleteFile(cleanupCtx, restoredID)
+			return authenticated.deleteFile(cleanupCtx, restoredEntry.ID)
 		}
 	}
 	return resolved, nil
