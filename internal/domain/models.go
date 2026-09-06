@@ -6,6 +6,55 @@ import (
 	"time"
 )
 
+// StashHistoryScene is JAVBeacon's durable snapshot of a StashApp scene and
+// its activity identity.  Events are stored separately so a later StashApp
+// rebuild can be reviewed and restored without losing the original history.
+type StashHistoryScene struct {
+	StashSceneID     string    `json:"stash_scene_id"`
+	ReleaseID        int64     `json:"release_id,omitempty"`
+	VideoID          string    `json:"video_id,omitempty"`
+	Title            string    `json:"title"`
+	JavLibraryURL    string    `json:"javlibrary_url,omitempty"`
+	FilePath         string    `json:"file_path,omitempty"`
+	TotalPlaySeconds float64   `json:"total_play_seconds"`
+	PlayCount        int       `json:"play_count"`
+	OrgasmCount      int       `json:"orgasm_count"`
+	ObservedAt       time.Time `json:"observed_at"`
+}
+
+type StashHistoryEvent struct {
+	ID              int64     `json:"id"`
+	StashSceneID    string    `json:"stash_scene_id"`
+	Type            string    `json:"type"`
+	OccurredAt      time.Time `json:"occurred_at"`
+	DurationSeconds float64   `json:"duration_seconds"`
+	Estimated       bool      `json:"duration_estimated"`
+}
+
+// StashHistoryItem is the user-facing, same-day aggregation. Exact event
+// timestamps remain in StashHistoryEvent for export and write-back.
+type StashHistoryItem struct {
+	Date              string  `json:"date"`
+	StashSceneID      string  `json:"stash_scene_id"`
+	ReleaseID         int64   `json:"release_id,omitempty"`
+	VideoID           string  `json:"video_id,omitempty"`
+	Title             string  `json:"title"`
+	JavLibraryURL     string  `json:"javlibrary_url,omitempty"`
+	FilePath          string  `json:"file_path,omitempty"`
+	PlayCount         int     `json:"play_count"`
+	OrgasmCount       int     `json:"orgasm_count"`
+	PlaySeconds       float64 `json:"play_seconds"`
+	DurationEstimated bool    `json:"duration_estimated"`
+}
+
+type StashHistoryExport struct {
+	Format     string              `json:"format"`
+	Version    int                 `json:"version"`
+	ExportedAt time.Time           `json:"exported_at"`
+	Scenes     []StashHistoryScene `json:"scenes"`
+	Events     []StashHistoryEvent `json:"events"`
+}
+
 type Site struct {
 	ID                int64  `json:"id"`
 	Title             string `json:"title"`

@@ -42,16 +42,16 @@ func TestPreferredPikPakDownloadURLChoosesExplicitOriginal(t *testing.T) {
 	}
 }
 
-func TestPikPakFileChecksumPrefersSHA1AndFallsBackToMD5(t *testing.T) {
+func TestPikPakFileChecksumIgnoresResourceHashAndUsesExplicitMD5(t *testing.T) {
 	sha1Value := strings.Repeat("A", 40)
 	md5Value := strings.Repeat("B", 32)
 	checksumType, checksum := pikPakFileChecksum(pikPakFile{Hash: sha1Value, MD5Checksum: md5Value})
-	if checksumType != "sha1" || checksum != strings.ToLower(sha1Value) {
+	if checksumType != "md5" || checksum != strings.ToLower(md5Value) {
 		t.Fatalf("checksum=%s:%s", checksumType, checksum)
 	}
-	checksumType, checksum = pikPakFileChecksum(pikPakFile{Hash: "not-a-hash", MD5Checksum: md5Value})
-	if checksumType != "md5" || checksum != strings.ToLower(md5Value) {
-		t.Fatalf("fallback checksum=%s:%s", checksumType, checksum)
+	checksumType, checksum = pikPakFileChecksum(pikPakFile{Hash: sha1Value})
+	if checksumType != "" || checksum != "" {
+		t.Fatalf("resource hash was incorrectly accepted as a file checksum: %s:%s", checksumType, checksum)
 	}
 }
 

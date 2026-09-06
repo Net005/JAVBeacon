@@ -65,6 +65,7 @@ type Service struct {
 	// re-deriving the loop's own timing separately. Guarded by mu like the
 	// rest of this struct's mutable fields.
 	scheduleNextAttempt map[string]time.Time
+	qbPollLastError     string
 
 	pipelineJobs chan pipelineJob
 	httpMu       sync.Mutex
@@ -1714,6 +1715,11 @@ func openHTTPDownloadRange(ctx context.Context, client *http.Client, resolved re
 		resp.Body.Close()
 		return nil, fmt.Errorf("HTTP provider returned invalid Content-Range %q for bytes %d-%d/%d", resp.Header.Get("Content-Range"), start, end, total)
 	}
+	expectedLength := end - start + 1
+	if resp.ContentLength >= 0 && resp.ContentLength != expectedLength {
+		resp.Body.Close()
+		return nil, fmt.Errorf("HTTP provider returned %d bytes for requested range %d-%d (%d bytes expected)", resp.ContentLength, start, end, expectedLength)
+	}
 	return resp, nil
 }
 
@@ -1738,7 +1744,10 @@ func downloadHTTPRange(ctx context.Context, client *http.Client, resolved resolv
 		var lastProgress atomic.Int64
 		stopGuard, stalled := startHTTPStallGuard(cancel, &lastProgress)
 		writer := countingWriter{w: io.NewOffsetWriter(out, offset), written: transferred, lastProgress: &lastProgress}
-		n, copyErr := io.CopyBuffer(writer, resp.Body, make([]byte, 256*1024))
+		// Do not let a non-conforming response write beyond this range and
+		// overwrite an adjacent segment being downloaded concurrently.
+		remaining := end - offset + 1
+		n, copyErr := io.CopyBuffer(writer, io.LimitReader(resp.Body, remaining), make([]byte, 256*1024))
 		resp.Body.Close()
 		stopGuard()
 		cancel()
@@ -1746,7 +1755,7 @@ func downloadHTTPRange(ctx context.Context, client *http.Client, resolved resolv
 		if stalled.Load() {
 			copyErr = errHTTPReadStalled
 		}
-		if copyErr == nil && offset <= end {
+		if copyErr == nil && n != remaining {
 			copyErr = io.ErrUnexpectedEOF
 		}
 		if copyErr != nil && attempt == 3 {
@@ -2778,12 +2787,12 @@ func (s *Service) OlderSearchSchedule(ctx context.Context) {
 // completes - not on every tick - so a fast interval doesn't multiply
 // qBittorrent's request load the way it would if every field were re-synced
 // per download on every poll.
-const qbPollIntervalDefault = 5 * time.Second
+const qbPollIntervalDefault = 15 * time.Second
 
 // qbPollIntervalFloor is the fastest qb_poll_interval_seconds is ever
 // allowed to run at, no matter what's configured, so a mistyped or
 // deliberately tiny value can't hammer qBittorrent's HTTP API.
-const qbPollIntervalFloor = 2 * time.Second
+const qbPollIntervalFloor = 15 * time.Second
 
 // qbPollInterval resolves the currently configured qBittorrent poll
 // interval, re-read from settings on every call (like every other schedule
@@ -2953,9 +2962,10 @@ func (s *Service) pollTorrents(ctx context.Context) {
 	qb := NewQB(settings["qb_url"], settings["qb_username"], settings["qb_password"])
 	torrents, e := qb.Torrents(ctx)
 	if e != nil {
-		s.log.Warn("qBittorrent poll failed", "error", e)
+		s.logQBPollFailure(e)
 		return
 	}
+	s.logQBPollRecovery()
 	downloads, e := s.store.Downloads(ctx, "downloading")
 	if e != nil {
 		return
@@ -2969,6 +2979,30 @@ func (s *Service) pollTorrents(ctx context.Context) {
 	rule := completedTorrentRule(settings["qb_completed_action"])
 	for _, d := range downloads {
 		s.safePollDownload(ctx, qb, d, torrents, minRatio, rule)
+	}
+}
+
+// qBittorrent outages can last for hours. Record the first failure (and a
+// materially different subsequent failure), then stay quiet until recovery
+// instead of repeating the same connection error every poll interval.
+func (s *Service) logQBPollFailure(err error) {
+	message := err.Error()
+	s.mu.Lock()
+	changed := message != s.qbPollLastError
+	s.qbPollLastError = message
+	s.mu.Unlock()
+	if changed {
+		s.log.Warn("qBittorrent poll failed; further identical failures will be suppressed until recovery", "error", err)
+	}
+}
+
+func (s *Service) logQBPollRecovery() {
+	s.mu.Lock()
+	previous := s.qbPollLastError
+	s.qbPollLastError = ""
+	s.mu.Unlock()
+	if previous != "" {
+		s.log.Info("qBittorrent polling recovered")
 	}
 }
 

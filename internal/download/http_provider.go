@@ -772,10 +772,13 @@ type pikPakClient struct {
 	verificationURL                     string
 }
 type pikPakFile struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	Kind               string `json:"kind"`
-	Size               string `json:"size"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Size string `json:"size"`
+	// Hash is PikPak's resource/torrent identity. Despite being 40 hexadecimal
+	// characters, it is not the SHA-1 digest of the bytes returned by the
+	// download URL and must not be used for downloaded-file verification.
 	Hash               string `json:"hash"`
 	MD5Checksum        string `json:"md5_checksum"`
 	MimeType           string `json:"mime_type"`
@@ -1563,11 +1566,11 @@ func resolveAuthenticatedPikPakShareWithFolderFallback(ctx context.Context, clie
 
 func pikPakFileChecksum(files ...pikPakFile) (string, string) {
 	for _, file := range files {
-		value := strings.ToLower(strings.TrimSpace(file.Hash))
-		if decoded, err := hex.DecodeString(value); err == nil && len(decoded) == 20 {
-			return "sha1", value
-		}
-		value = strings.ToLower(strings.TrimSpace(file.MD5Checksum))
+		// PikPak's `hash` looks like SHA-1 but identifies the underlying
+		// resource (and commonly matches the signed URL's `g` value); it is not
+		// a content checksum. Only the explicit md5_checksum field is safe to
+		// compare with the completed file.
+		value := strings.ToLower(strings.TrimSpace(file.MD5Checksum))
 		if decoded, err := hex.DecodeString(value); err == nil && len(decoded) == 16 {
 			return "md5", value
 		}

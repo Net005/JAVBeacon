@@ -79,7 +79,7 @@ import (
 // migrationTableSpec describes one table's copy: its FK-dependency-ordered
 // position in migrationTables (parents before children - every foreign key
 // among these tables points to a table earlier in the slice), the
-// column(s) that make an ON CONFLICT upsert target, and - for the 9 tables
+// column(s) that make an ON CONFLICT upsert target, and - for tables
 // with an application-assigned identity primary key - the column whose
 // PostgreSQL sequence must be resynchronized once explicit ids have been
 // inserted.
@@ -109,6 +109,8 @@ var migrationTables = []migrationTableSpec{
 	{"historical_backfill_state", []string{"id"}, ""},
 	{"historical_backfill_sources", []string{"url"}, ""},
 	{"historical_backfill_items", []string{"video_id"}, ""},
+	{"stash_history_scenes", []string{"stash_scene_id"}, ""},
+	{"stash_history_events", []string{"id"}, "id"},
 	{"job_history", []string{"id"}, "id"},
 	{"download_search_runs", []string{"id"}, "id"},
 	{"path_mappings", []string{"id"}, "id"},

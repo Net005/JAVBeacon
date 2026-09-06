@@ -5,7 +5,40 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.104] - 2026-09-06
+
+### Changed
+
+- Split the header Search + Download status menu into clearly labeled
+  searching and downloading groups. Opening an active download now keeps the
+  full Download Activity overview intact and highlights the matching row
+  instead of applying a release-ID search filter.
+- qBittorrent status polling now uses a 15-second minimum/default interval and
+  suppresses repeated identical connection errors until polling recovers.
+
+### Fixed
+
+- PikPak's 40-character resource `hash` is no longer treated as the SHA-1 of
+  downloaded file contents. Completed Web downloads retain strict remote byte
+  size verification and use only PikPak's explicit `md5_checksum` when it is
+  present, preventing valid files from being deleted as checksum mismatches.
+- Parallel Web downloads now validate each range response's byte count and cap
+  every response body at its requested boundary, preventing a non-conforming
+  CDN response from overwriting adjacent segments.
+
+### Added
+
+- Download Activity now shows a prominent Clear filters action whenever one
+  or more advanced download filters are active.
+- Added a durable Stash History section with separate watch and “Stash Orgasm
+  history” timelines, same-day event merging, linked covers and Release
+  Details, retained JSON export, and Daily/Weekly/Monthly/Yearly drill-down
+  graphs. Stash exposes only scene-wide play duration, so JAVBeacon marks
+  per-day duration allocations as estimated while preserving the exact total.
+- Added review-first Stash history write-back using JavLibrary URL, release ID,
+  then case-insensitive filename matching. Exact play/O timestamps and missing
+  play-duration totals are shown for review before manual confirmation;
+  optional scheduled write-back is disabled by default.
 
 ## [1.0.103] - 2026-09-06
 

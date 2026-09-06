@@ -173,6 +173,48 @@ func TestDownloadHTTPToFileUsesParallelValidatedRanges(t *testing.T) {
 	}
 }
 
+func TestDownloadHTTPToFileCapsOverlongChunkedRangeBodies(t *testing.T) {
+	content := bytes.Repeat([]byte("0123456789abcdef"), 2*1024*1024)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := strings.TrimPrefix(r.Header.Get("Range"), "bytes=")
+		parts := strings.Split(raw, "-")
+		if len(parts) != 2 {
+			t.Fatalf("missing range request: %q", r.Header.Get("Range"))
+		}
+		start, _ := strconv.ParseInt(parts[0], 10, 64)
+		end, _ := strconv.ParseInt(parts[1], 10, 64)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(content)))
+		w.WriteHeader(http.StatusPartialContent)
+		if start == 0 && end == 0 {
+			_, _ = w.Write(content[:1])
+			return
+		}
+		// Force chunked encoding, then deliberately violate the advertised
+		// range by streaming through EOF. The downloader must cap the body at
+		// the requested segment boundary so adjacent workers cannot overwrite
+		// one another.
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		_, _ = w.Write(content[start:])
+	}))
+	defer server.Close()
+	out, err := os.Create(filepath.Join(t.TempDir(), "overlong-range.part"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	var transferred atomic.Int64
+	connections, err := downloadHTTPToFile(context.Background(), server.Client(), resolvedHTTPFile{URL: server.URL}, out, int64(len(content)), 4, &transferred, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(out.Name())
+	if connections != 2 || !bytes.Equal(got, content) || transferred.Load() != int64(len(content)) {
+		t.Fatalf("connections=%d bytes=%d transferred=%d; overlong ranges corrupted the result", connections, len(got), transferred.Load())
+	}
+}
+
 func TestDownloadHTTPToFileFallsBackWhenRangesUnsupported(t *testing.T) {
 	content := []byte("complete original")
 	var requests atomic.Int64
