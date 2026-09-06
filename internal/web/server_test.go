@@ -1402,6 +1402,90 @@ func TestHeaderSearchDownloadQueueFrontend(t *testing.T) {
 	}
 }
 
+func TestStashHistoryUsesNavigableCalendarScopes(t *testing.T) {
+	files := map[string][]string{
+		"static/index.html": {
+			`id="historyPrevious"`,
+			`id="historyCurrent"`,
+			`id="historyNext"`,
+			`id="historyWindowLabel"`,
+			`id="historyListSentinel"`,
+			`HISTORY DETAILS`,
+		},
+		"static/app.js": {
+			`stashHistoryPeriod:'day'`,
+			`function historyScope()`,
+			`for(let i=0;i<5;i++)`,
+			`for(let i=0;i<4;i++)`,
+			`for(let i=0;i<12;i++)`,
+			`Math.max(2000,endYear-11)`,
+			`function shiftStashHistory(direction)`,
+			`function loadMoreStashHistory`,
+			`limit:'25'`,
+			`new IntersectionObserver`,
+			`data-history-bucket`,
+		},
+		"static/app.css": {
+			`.historyPeriodNavigation`,
+			`.historyChart[data-history-type="play"]`,
+			`.historyChart[data-history-type="orgasm"]`,
+		},
+	}
+	for name, markers := range files {
+		body, err := assets.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, marker := range markers {
+			if !bytes.Contains(body, []byte(marker)) {
+				t.Errorf("%s missing Stash History calendar marker %q", name, marker)
+			}
+		}
+	}
+}
+
+func TestStashHistoryEndpointPaginatesDetailsAndReturnsCompactDailyTotals(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "stash-history-page.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	playedAt := time.Date(2026, 9, 3, 12, 0, 0, 0, time.Local)
+	for i := 0; i < 30; i++ {
+		scene := domain.StashHistoryScene{StashSceneID: fmt.Sprintf("scene-%02d", i), VideoID: fmt.Sprintf("PAGE-%03d", i), Title: fmt.Sprintf("History %02d", i), TotalPlaySeconds: 60}
+		if err := st.UpsertStashHistory(ctx, scene, []time.Time{playedAt}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Server{store: st}
+	req := httptest.NewRequest(http.MethodGet, "/api/stash/history?type=play&from=2026-09-01T00:00:00Z&to=2026-09-08T00:00:00Z&limit=10&offset=10", nil)
+	rec := httptest.NewRecorder()
+	s.stashHistory(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Items []domain.StashHistoryItem `json:"items"`
+		Days  []struct {
+			Date      string `json:"date"`
+			PlayCount int    `json:"play_count"`
+		} `json:"days"`
+		Total      int  `json:"total"`
+		NextOffset int  `json:"next_offset"`
+		HasMore    bool `json:"has_more"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Items) != 10 || response.Total != 30 || response.NextOffset != 20 || !response.HasMore {
+		t.Fatalf("pagination response=%+v", response)
+	}
+	if len(response.Days) != 1 || response.Days[0].PlayCount != 30 {
+		t.Fatalf("daily totals=%+v, want one compact day containing all 30 plays", response.Days)
+	}
+}
+
 func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testing.T) {
 	files := map[string][]string{
 		"static/index.html": {

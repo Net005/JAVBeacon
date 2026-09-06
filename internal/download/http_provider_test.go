@@ -373,9 +373,6 @@ func TestJavDBSearchClassifiesPipelineFailures(t *testing.T) {
 		{name: "no exact ID", requested: "PRPM-002", storedDate: "2026-09-15", want: "no exact release ID match", handler: func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(javDBSearchPage("PRPM-003", "2026-09-15", "/v/wrong")))
 		}},
-		{name: "date mismatch", requested: "PRPM-002", storedDate: "2026-09-15", want: "release date is incompatible", handler: func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(javDBSearchPage("PRPM-002", "2025-01-01", "/v/date")))
-		}},
 		{name: "detail forbidden", requested: "PRPM-002", storedDate: "2026-09-15", want: "detail page fetch failed", handler: func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/search" {
 				_, _ = w.Write([]byte(javDBSearchPage("PRPM-002", "2026-09-15", "/v/blocked")))
@@ -429,13 +426,21 @@ func TestJavDBExactReleaseWithoutShareIsVisibleAndLogged(t *testing.T) {
 	}
 }
 
-func TestJavDBDateTolerance(t *testing.T) {
-	stored := parseJavDBDate("2026-09-15")
-	if delta := calendarDeltaDays(stored, parseJavDBDate("Released date: 2026-09-10")); delta != -5 {
-		t.Fatalf("within-tolerance delta=%d", delta)
-	}
-	if delta := calendarDeltaDays(stored, parseJavDBDate("2027-01-01")); delta <= 60 {
-		t.Fatalf("outside-tolerance delta=%d", delta)
+func TestJavDBSearchReliesOnExactIDInsteadOfReleaseDate(t *testing.T) {
+	provider, closeServer := javDBFixtureProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search":
+			_, _ = w.Write([]byte(javDBSearchPage("PRPM-002", "2020-01-01", "/v/exact-old-date")))
+		case "/v/exact-old-date":
+			_, _ = w.Write([]byte(`<html><body><div>ID: PRPM-002</div><section class="new-download-layout"><a href="https://keepshare.org/share">Get file</a></section></body></html>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	defer closeServer()
+	rows, err := provider.Search(context.Background(), domain.Release{VideoID: "PRPM-002", ReleaseDate: "2026-09-15"})
+	if err != nil || len(rows) != 1 || !rows[0].Accepted {
+		t.Fatalf("far-apart dates must not reject an exact release ID: rows=%+v err=%v", rows, err)
 	}
 }
 

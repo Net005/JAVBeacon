@@ -259,10 +259,11 @@ stores both links with the HTTP download, so they remain available in
 failure.
 
 JavDB matching is intentionally strict: the release ID must match
-case-insensitively, with or without separators such as the hyphen, and the
-JavDB release date must be within 60 days of the date stored in JAVBeacon. For
-every matching release page, JAVBeacon collects every distinct Keepshare link
-and inspects its actual downloadable files. Candidate priority is:
+case-insensitively, with or without separators such as the hyphen. Release
+dates are retained as diagnostic metadata but do not reject an otherwise exact
+ID match. For every matching release page, JAVBeacon collects every distinct
+Keepshare link and inspects its actual downloadable files. Candidate priority
+is:
 
 1. Files whose names contain a configured **Preferred filename pattern**.
 2. Non-`-U` filenames before equivalent `-U` variants.

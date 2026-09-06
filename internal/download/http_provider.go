@@ -212,25 +212,10 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 	if len(exact) == 0 {
 		return nil, fmt.Errorf("JavDB returned search results but no exact release ID match (requested_id=%s normalized_requested_id=%s search_results=%d)", release.VideoID, normalizeReleaseID(release.VideoID), len(hits))
 	}
-	knownDate, _ := time.Parse("2006-01-02", release.ReleaseDate)
-	compatible := make([]javDBSearchHit, 0, len(exact))
-	var mismatchReason string
-	for _, hit := range exact {
-		pageDate := parseJavDBDate(hit.date)
-		deltaDays := calendarDeltaDays(knownDate, pageDate)
-		if !knownDate.IsZero() && !pageDate.IsZero() && (deltaDays < -60 || deltaDays > 60) {
-			mismatchReason = fmt.Sprintf("JavDB exact release ID matched but release date is incompatible (requested_id=%s matched_id=%s stored_release_date=%s javdb_release_date=%s date_delta_days=%d allowed_delta_days=60)", release.VideoID, hit.id, release.ReleaseDate, pageDate.Format("2006-01-02"), deltaDays)
-			continue
-		}
-		compatible = append(compatible, hit)
-	}
-	if len(compatible) == 0 {
-		return nil, errors.New(mismatchReason)
-	}
 	var rows []domain.SearchResult
 	var unavailable []domain.SearchResult
 	var stageErrors []string
-	for _, h := range compatible {
+	for _, h := range exact {
 		pageDate := parseJavDBDate(h.date)
 		page, detailStatus, getErr := p.getHTML(ctx, h.href)
 		if getErr != nil {
@@ -253,7 +238,7 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 		}
 		if len(discovery.rows) == 0 {
 			if discovery.downloadSectionFound {
-				reason := "Exact JavDB release and date matched, but no Keepshare/PikPak download link is currently published"
+				reason := "Exact JavDB release ID matched, but no Keepshare/PikPak download link is currently published"
 				unavailable = append(unavailable, domain.SearchResult{
 					Provider:    p.Name(),
 					Title:       h.id,
@@ -264,7 +249,7 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 					Reason:      reason,
 				})
 				if p.log != nil {
-					p.log.Warn("JavDB exact release has no downloadable HTTP share", "requested_id", release.VideoID, "normalized_id", normalizeReleaseID(release.VideoID), "matched_id", h.id, "stored_date", release.ReleaseDate, "javdb_date", formatOptionalDate(pageDate), "date_delta_days", calendarDeltaDays(knownDate, pageDate), "detail_url", h.href, "detail_status", detailStatus, "download_section_found", true, "keepshare_links", discovery.shareLinkCount, "pikpak_links", discovery.pikPakLinkCount, "reason", reason)
+					p.log.Warn("JavDB exact release has no downloadable HTTP share", "requested_id", release.VideoID, "normalized_id", normalizeReleaseID(release.VideoID), "matched_id", h.id, "stored_date", release.ReleaseDate, "javdb_date", formatOptionalDate(pageDate), "detail_url", h.href, "detail_status", detailStatus, "download_section_found", true, "keepshare_links", discovery.shareLinkCount, "pikpak_links", discovery.pikPakLinkCount, "reason", reason)
 				}
 			} else {
 				stageErrors = append(stageErrors, fmt.Sprintf("JavDB exact release found but download section could not be parsed (requested_id=%s matched_id=%s detail_url=%s detail_status=%d)", release.VideoID, h.id, h.href, detailStatus))
@@ -273,7 +258,7 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 		}
 		rows = appendUniqueJavDBRows(rows, discovery.rows...)
 		if p.log != nil {
-			p.log.Info("JavDB HTTP search matched release", "requested_id", release.VideoID, "normalized_id", normalizeReleaseID(release.VideoID), "search_url", searchURL, "search_status", searchStatus, "search_results", len(hits), "exact_matches", len(exact), "matched_id", h.id, "stored_date", release.ReleaseDate, "javdb_date", formatOptionalDate(pageDate), "date_delta_days", calendarDeltaDays(knownDate, pageDate), "date_compatible", true, "detail_url", h.href, "detail_status", detailStatus, "detail_page_id", detailID, "download_section_found", discovery.downloadSectionFound, "keepshare_links", discovery.shareLinkCount, "pikpak_links", discovery.pikPakLinkCount, "candidates", len(discovery.rows))
+			p.log.Info("JavDB HTTP search matched release", "requested_id", release.VideoID, "normalized_id", normalizeReleaseID(release.VideoID), "search_url", searchURL, "search_status", searchStatus, "search_results", len(hits), "exact_matches", len(exact), "matched_id", h.id, "stored_date", release.ReleaseDate, "javdb_date", formatOptionalDate(pageDate), "detail_url", h.href, "detail_status", detailStatus, "detail_page_id", detailID, "download_section_found", discovery.downloadSectionFound, "keepshare_links", discovery.shareLinkCount, "pikpak_links", discovery.pikPakLinkCount, "candidates", len(discovery.rows))
 		}
 	}
 	if len(rows) == 0 {
@@ -654,13 +639,6 @@ func parseJavDBDate(s string) time.Time {
 		}
 	}
 	return time.Time{}
-}
-
-func calendarDeltaDays(from, to time.Time) int {
-	if from.IsZero() || to.IsZero() {
-		return 0
-	}
-	return int(to.Sub(from).Hours() / 24)
 }
 
 func formatOptionalDate(value time.Time) string {

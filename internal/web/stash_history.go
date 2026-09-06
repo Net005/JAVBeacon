@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
@@ -44,19 +46,78 @@ func (s *Server) stashHistory(w http.ResponseWriter, r *http.Request) {
 	if !to.IsZero() && len(r.URL.Query().Get("to")) == 10 {
 		to = to.AddDate(0, 0, 1)
 	}
-	items, err := store.StashHistory(r.Context(), r.URL.Query().Get("type"), from, to)
+	// Fetch only the selected calendar window. The response below paginates
+	// its detail ledger, while compact daily totals let the browser render the
+	// complete graph without receiving every scene/day record up front.
+	items, err := store.StashHistory(r.Context(), "", from, to)
 	if err != nil {
 		s.problem(w, 500, err.Error())
 		return
 	}
+	type dailyTotal struct {
+		Date        string  `json:"date"`
+		PlayCount   int     `json:"play_count"`
+		OrgasmCount int     `json:"orgasm_count"`
+		PlaySeconds float64 `json:"play_seconds"`
+	}
+	daily := map[string]*dailyTotal{}
 	var plays, orgasms int
 	var seconds float64
 	for _, item := range items {
 		plays += item.PlayCount
 		orgasms += item.OrgasmCount
 		seconds += item.PlaySeconds
+		day := daily[item.Date]
+		if day == nil {
+			day = &dailyTotal{Date: item.Date}
+			daily[item.Date] = day
+		}
+		day.PlayCount += item.PlayCount
+		day.OrgasmCount += item.OrgasmCount
+		day.PlaySeconds += item.PlaySeconds
 	}
-	s.json(w, 200, map[string]any{"items": items, "total": len(items), "play_count": plays, "orgasm_count": orgasms, "play_seconds": seconds})
+	kind := r.URL.Query().Get("type")
+	if kind == "play" || kind == "orgasm" {
+		filtered := items[:0]
+		for _, item := range items {
+			if (kind == "play" && item.PlayCount > 0) || (kind == "orgasm" && item.OrgasmCount > 0) {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+	limit := 25
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, parseErr := strconv.Atoi(raw); parseErr != nil || parsed < 1 {
+			s.problem(w, 400, "invalid history limit")
+			return
+		} else if parsed > 100 {
+			limit = 100
+		} else {
+			limit = parsed
+		}
+	}
+	offset := 0
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		if parsed, parseErr := strconv.Atoi(raw); parseErr != nil || parsed < 0 {
+			s.problem(w, 400, "invalid history offset")
+			return
+		} else {
+			offset = parsed
+		}
+	}
+	total := len(items)
+	if offset > total {
+		offset = total
+	}
+	end := min(total, offset+limit)
+	page := items[offset:end]
+	days := make([]dailyTotal, 0, len(daily))
+	for _, day := range daily {
+		days = append(days, *day)
+	}
+	sort.Slice(days, func(i, j int) bool { return days[i].Date < days[j].Date })
+	s.json(w, 200, map[string]any{"items": page, "days": days, "total": total, "next_offset": end, "has_more": end < total, "play_count": plays, "orgasm_count": orgasms, "play_seconds": seconds})
 }
 
 func (s *Server) exportStashHistory(w http.ResponseWriter, r *http.Request) {
