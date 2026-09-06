@@ -1537,8 +1537,8 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	}
 	if raw, ok := x["http_download_connections"]; ok && strings.TrimSpace(raw) != "" {
 		connections, err := strconv.Atoi(strings.TrimSpace(raw))
-		if err != nil || connections < 1 || connections > 16 {
-			s.problem(w, http.StatusUnprocessableEntity, "connections per HTTP download must be a whole number from 1 to 16")
+		if err != nil || connections < 1 || connections > 4 {
+			s.problem(w, http.StatusUnprocessableEntity, "connections per HTTP download must be a whole number from 1 to 4")
 			return
 		}
 	}

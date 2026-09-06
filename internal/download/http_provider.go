@@ -39,6 +39,8 @@ var pikPakAlgorithms = []string{
 	"E7fP5Pfijd+7K+t6Tg/NhuLq0eEUVChpJSkrKxpO", "ihtqpG6FMt65+Xk+tWUH2", "NhXXU9rg4XXdzo7u5o",
 }
 
+var pikPakRestoreRetryDelay = time.Second
+
 type javDBProvider struct {
 	client           *http.Client
 	baseURL          string
@@ -62,12 +64,14 @@ type HTTPSourceProvider interface {
 }
 
 type resolvedHTTPFile struct {
-	URL           string
-	Name          string
-	Size          int64
-	Headers       map[string]string
-	Authenticated bool
-	Cleanup       func(context.Context) error
+	URL            string
+	Name           string
+	Size           int64
+	Headers        map[string]string
+	Authenticated  bool
+	RestoredFileID string
+	NewlyRestored  bool
+	Cleanup        func(context.Context) error
 }
 
 func httpSourceProviders(client *http.Client, settings map[string]string, logger *slog.Logger, authenticate func(context.Context, string, string) (*pikPakClient, error)) []HTTPSourceProvider {
@@ -1080,6 +1084,39 @@ func exactPikPakAccountFile(files []pikPakFile, expectedName string, expectedSiz
 	return pikPakFile{}, false
 }
 
+func retryablePikPakRestoreError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"http 429", "http 500", "http 502", "http 503", "http 504",
+		"timeout", "deadline exceeded", "connection reset", "connection refused",
+		"unexpected eof", "temporary", "server closed idle connection",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *pikPakClient) findRestoredFile(ctx context.Context, expectedName string, expectedSize int64, beforeIDs map[string]bool, allowExisting bool) (pikPakFile, bool, bool, error) {
+	files, err := p.listDriveFiles(ctx)
+	if err != nil {
+		return pikPakFile{}, false, false, err
+	}
+	if file, found := exactPikPakAccountFile(files, expectedName, expectedSize, beforeIDs); found {
+		return file, true, true, nil
+	}
+	if allowExisting {
+		if file, found := exactPikPakAccountFile(files, expectedName, expectedSize, nil); found {
+			return file, false, true, nil
+		}
+	}
+	return pikPakFile{}, false, false, nil
+}
+
 func (p *pikPakClient) restoreSharedFile(ctx context.Context, shareID, fileID, expectedName string, expectedSize int64) (pikPakFile, bool, error) {
 	before, err := p.listDriveFiles(ctx)
 	if err != nil {
@@ -1095,13 +1132,41 @@ func (p *pikPakClient) restoreSharedFile(ctx context.Context, shareID, fileID, e
 		"pass_code_token": "",
 		"file_ids":        []string{fileID},
 	}
-	var restored pikPakRestoreResponse
-	if err := p.authenticatedJSON(ctx, http.MethodPost, "/drive/v1/share/restore", nil, body, &restored); err != nil {
-		return pikPakFile{}, false, fmt.Errorf("restore selected PikPak share file: %w", err)
+	var restoreErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		var restored pikPakRestoreResponse
+		restoreErr = p.authenticatedJSON(ctx, http.MethodPost, "/drive/v1/share/restore", nil, body, &restored)
+		if restoreErr == nil {
+			status := strings.ToUpper(restored.RestoreStatus)
+			if status != "" && status != "RESTORE_UNKNOWN" && !strings.Contains(status, "ERROR") {
+				restoreErr = nil
+				break
+			}
+			restoreErr = fmt.Errorf("PikPak restore failed: %s", firstNonEmpty(restored.Params.ErrorDetail, restored.Message, restored.RestoreStatus))
+		}
+
+		// A timeout or gateway error can happen after PikPak accepted the
+		// mutation. Reconcile the account before submitting it again so an
+		// ambiguous response never creates duplicate restored files.
+		if retryablePikPakRestoreError(restoreErr) {
+			if file, newlyRestored, found, listErr := p.findRestoredFile(ctx, expectedName, expectedSize, beforeIDs, attempt == 3); listErr == nil && found {
+				return file, newlyRestored, nil
+			}
+		} else {
+			return pikPakFile{}, false, fmt.Errorf("restore selected PikPak share file: %w", restoreErr)
+		}
+		if attempt < 3 {
+			timer := time.NewTimer(time.Duration(attempt) * pikPakRestoreRetryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return pikPakFile{}, false, ctx.Err()
+			case <-timer.C:
+			}
+		}
 	}
-	status := strings.ToUpper(restored.RestoreStatus)
-	if status == "" || status == "RESTORE_UNKNOWN" || strings.Contains(status, "ERROR") {
-		return pikPakFile{}, false, fmt.Errorf("PikPak restore failed: %s", firstNonEmpty(restored.Params.ErrorDetail, restored.Message, restored.RestoreStatus))
+	if restoreErr != nil {
+		return pikPakFile{}, false, fmt.Errorf("restore selected PikPak share file after 3 attempts: %w", restoreErr)
 	}
 	restoreCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
@@ -1110,18 +1175,8 @@ func (p *pikPakClient) restoreSharedFile(ctx context.Context, shareID, fileID, e
 	attempt := 0
 	for {
 		attempt++
-		files, listErr := p.listDriveFiles(restoreCtx)
-		if listErr == nil {
-			if file, found := exactPikPakAccountFile(files, expectedName, expectedSize, beforeIDs); found {
-				return file, true, nil
-			}
-			// PikPak may deduplicate a restore against an existing account file.
-			// Reuse that exact object, but never register cleanup for it.
-			if attempt >= 3 {
-				if file, found := exactPikPakAccountFile(files, expectedName, expectedSize, nil); found {
-					return file, false, nil
-				}
-			}
+		if file, newlyRestored, found, listErr := p.findRestoredFile(restoreCtx, expectedName, expectedSize, beforeIDs, attempt >= 3); listErr == nil && found {
+			return file, newlyRestored, nil
 		}
 		select {
 		case <-restoreCtx.Done():
@@ -1411,11 +1466,13 @@ func resolveAuthenticatedPikPakShare(ctx context.Context, client *http.Client, k
 		return resolvedHTTPFile{}, errors.New("PikPak account restored the matching file but returned no authenticated download URL")
 	}
 	resolved := resolvedHTTPFile{
-		URL:           direct,
-		Name:          selected.Name,
-		Size:          selectedSize,
-		Headers:       map[string]string{"User-Agent": publicShareUserAgent, "Referer": "https://mypikpak.com/"},
-		Authenticated: true,
+		URL:            direct,
+		Name:           selected.Name,
+		Size:           selectedSize,
+		Headers:        map[string]string{"User-Agent": publicShareUserAgent, "Referer": "https://mypikpak.com/"},
+		Authenticated:  true,
+		RestoredFileID: restoredEntry.ID,
+		NewlyRestored:  newlyRestored,
 	}
 	if cleanupRestored && newlyRestored {
 		resolved.Cleanup = func(cleanupCtx context.Context) error {

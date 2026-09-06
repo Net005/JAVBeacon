@@ -1023,8 +1023,8 @@ func httpConnections(settings map[string]string) int {
 	if n < 1 {
 		n = 4
 	}
-	if n > 16 {
-		n = 16
+	if n > 4 {
+		n = 4
 	}
 	return n
 }
@@ -1219,6 +1219,15 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	}
 	if resolved.Authenticated {
 		d.MatchReason = appendDownloadPreference("authenticated PikPak original", d.MatchReason)
+		s.log.Info("authenticated PikPak file resolved",
+			"download_id", d.ID,
+			"release_id", d.ReleaseID,
+			"video_id", d.Query,
+			"restored_file_id", resolved.RestoredFileID,
+			"newly_restored", resolved.NewlyRestored,
+			"filename", resolved.Name,
+			"bytes_total", resolved.Size,
+		)
 	}
 	files, _ := json.Marshal([]string{resolved.Name})
 	d.Files = files
@@ -1249,7 +1258,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 				return
 			case now := <-ticker.C:
 				d.BytesDownloaded = transferred.Load()
-				d.BytesPerSecond = int64(float64(d.BytesDownloaded-lastBytes) / now.Sub(lastSave).Seconds())
+				d.BytesPerSecond = max(0, int64(float64(d.BytesDownloaded-lastBytes)/now.Sub(lastSave).Seconds()))
 				if d.BytesTotal > 0 {
 					d.Progress = float64(d.BytesDownloaded) / float64(d.BytesTotal)
 					if d.BytesPerSecond > 0 && d.BytesTotal > d.BytesDownloaded {
@@ -1263,7 +1272,63 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	}()
 	downloadClient := *s.client
 	downloadClient.Timeout = 0
-	connections, err := downloadHTTPToFile(ctx, &downloadClient, resolved, out, d.BytesTotal, httpConnections(settings), &transferred)
+	if transport, ok := downloadClient.Transport.(*http.Transport); ok {
+		cloned := transport.Clone()
+		cloned.ResponseHeaderTimeout = 30 * time.Second
+		downloadClient.Transport = cloned
+	} else if downloadClient.Transport == nil {
+		cloned := http.DefaultTransport.(*http.Transport).Clone()
+		cloned.ResponseHeaderTimeout = 30 * time.Second
+		downloadClient.Transport = cloned
+	}
+	cleanupRestored := make([]func(context.Context) error, 0, 2)
+	if resolved.Cleanup != nil {
+		cleanupRestored = append(cleanupRestored, resolved.Cleanup)
+	}
+	downgrade := func(from, to int, cause error) {
+		s.log.Warn("PikPak HTTP connection count reduced",
+			"download_id", d.ID,
+			"release_id", d.ReleaseID,
+			"video_id", d.Query,
+			"from_connections", from,
+			"to_connections", to,
+			"error", cause,
+		)
+	}
+	connections, err := downloadHTTPToFile(ctx, &downloadClient, resolved, out, d.BytesTotal, httpConnections(settings), &transferred, downgrade)
+	if err != nil && ctx.Err() == nil && resolved.Authenticated {
+		// Signed PikPak CDN URLs can expire or be invalidated while a large
+		// transfer is retrying. Resolve the exact selected account file once
+		// more, then repeat the adaptive 4 -> 2 -> 1 transfer with a fresh URL.
+		s.log.Warn("PikPak HTTP transfer failed; refreshing authenticated download URL",
+			"download_id", d.ID,
+			"release_id", d.ReleaseID,
+			"video_id", d.Query,
+			"error", err,
+		)
+		refreshed, refreshErr := resolver.Resolve(ctx, d)
+		if refreshErr != nil {
+			err = fmt.Errorf("HTTP transfer failed: %v; refresh authenticated PikPak URL: %w", err, refreshErr)
+		} else {
+			resolved = refreshed
+			if refreshed.Size > 0 {
+				d.BytesTotal = refreshed.Size
+			}
+			if refreshed.Cleanup != nil {
+				cleanupRestored = append(cleanupRestored, refreshed.Cleanup)
+			}
+			files, _ = json.Marshal([]string{refreshed.Name})
+			d.Files = files
+			transferred.Store(0)
+			if truncateErr := out.Truncate(0); truncateErr != nil {
+				err = fmt.Errorf("reset partial HTTP transfer before refreshed URL retry: %w", truncateErr)
+			} else if _, seekErr := out.Seek(0, io.SeekStart); seekErr != nil {
+				err = fmt.Errorf("seek partial HTTP transfer before refreshed URL retry: %w", seekErr)
+			} else {
+				connections, err = downloadHTTPToFile(ctx, &downloadClient, refreshed, out, d.BytesTotal, httpConnections(settings), &transferred, downgrade)
+			}
+		}
+	}
 	close(progressDone)
 	<-progressStopped
 	d.BytesDownloaded = transferred.Load()
@@ -1292,9 +1357,9 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		fail(err)
 		return
 	}
-	if resolved.Cleanup != nil {
+	for _, cleanup := range cleanupRestored {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		cleanupErr := resolved.Cleanup(cleanupCtx)
+		cleanupErr := cleanup(cleanupCtx)
 		cleanupCancel()
 		if cleanupErr != nil {
 			s.log.Warn("HTTP download completed but restored PikPak file cleanup failed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "error", cleanupErr)
@@ -1317,17 +1382,36 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 }
 
 type countingWriter struct {
-	w       io.Writer
-	written *atomic.Int64
+	w            io.Writer
+	written      *atomic.Int64
+	lastProgress *atomic.Int64
 }
 
 func (w countingWriter) Write(p []byte) (int, error) {
 	n, err := w.w.Write(p)
 	w.written.Add(int64(n))
+	if n > 0 && w.lastProgress != nil {
+		w.lastProgress.Store(time.Now().UnixNano())
+	}
 	return n, err
 }
 
-func downloadHTTPToFile(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, out *os.File, total int64, connections int, transferred *atomic.Int64) (int, error) {
+func resetHTTPTransfer(out *os.File, total int64, transferred *atomic.Int64) error {
+	transferred.Store(0)
+	if err := out.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := out.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if total > 0 {
+		return out.Truncate(total)
+	}
+	return nil
+}
+
+func downloadHTTPToFile(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, out *os.File, total int64, connections int, transferred *atomic.Int64, onDowngrade func(int, int, error)) (int, error) {
+	connections = min(connections, 4)
 	if connections < 2 || total <= 0 {
 		return 1, downloadHTTPSingleStream(ctx, client, resolved, out, total, transferred)
 	}
@@ -1350,7 +1434,13 @@ func downloadHTTPToFile(ctx context.Context, client *http.Client, resolved resol
 		return 1, downloadHTTPSingleStream(ctx, client, resolved, out, total, transferred)
 	}
 	if err != nil {
-		return 0, fmt.Errorf("probe HTTP byte ranges: %w", err)
+		if onDowngrade != nil {
+			onDowngrade(connections, 1, err)
+		}
+		if resetErr := resetHTTPTransfer(out, 0, transferred); resetErr != nil {
+			return 0, resetErr
+		}
+		return 1, downloadHTTPSingleStream(ctx, client, resolved, out, total, transferred)
 	}
 	probe.Body.Close()
 	const minimumPartSize = int64(16 * 1024 * 1024)
@@ -1360,9 +1450,33 @@ func downloadHTTPToFile(ctx context.Context, client *http.Client, resolved resol
 	if connections < 2 {
 		return 1, downloadHTTPSingleStream(ctx, client, resolved, out, total, transferred)
 	}
-	if err := out.Truncate(total); err != nil {
+	for current := connections; current >= 2; {
+		if err := resetHTTPTransfer(out, total, transferred); err != nil {
+			return 0, err
+		}
+		if err := downloadHTTPRanges(ctx, client, resolved, out, total, current, transferred); err == nil {
+			return current, nil
+		} else {
+			next := 1
+			if current > 2 {
+				next = 2
+			}
+			if onDowngrade != nil {
+				onDowngrade(current, next, err)
+			}
+			if next == 1 {
+				break
+			}
+			current = next
+		}
+	}
+	if err := resetHTTPTransfer(out, 0, transferred); err != nil {
 		return 0, err
 	}
+	return 1, downloadHTTPSingleStream(ctx, client, resolved, out, total, transferred)
+}
+
+func downloadHTTPRanges(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, out *os.File, total int64, connections int, transferred *atomic.Int64) error {
 	partSize := (total + int64(connections) - 1) / int64(connections)
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1388,26 +1502,131 @@ func downloadHTTPToFile(ctx context.Context, client *http.Client, resolved resol
 	}
 	wg.Wait()
 	close(errCh)
-	if err := <-errCh; err != nil {
-		return connections, err
+	var firstErr error
+	for err := range errCh {
+		if firstErr == nil && err != nil && !errors.Is(err, context.Canceled) {
+			firstErr = err
+		}
 	}
-	return connections, nil
+	return firstErr
 }
 
 func downloadHTTPSingleStream(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, out *os.File, total int64, transferred *atomic.Int64) error {
-	resp, err := openHTTPDownloadStream(ctx, client, resolved)
-	if err != nil {
-		return err
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		offset := transferred.Load()
+		if offset > 0 && total <= 0 {
+			if err := resetHTTPTransfer(out, 0, transferred); err != nil {
+				return err
+			}
+			offset = 0
+		}
+		streamCtx, cancel := context.WithCancel(ctx)
+		var resp *http.Response
+		var err error
+		if offset > 0 && total > 0 {
+			resp, err = openHTTPDownloadRange(streamCtx, client, resolved, offset, total-1, total)
+			if errors.Is(err, errHTTPRangeUnsupported) {
+				if resetErr := resetHTTPTransfer(out, 0, transferred); resetErr != nil {
+					cancel()
+					return resetErr
+				}
+				offset = 0
+				resp, err = openHTTPDownloadStream(streamCtx, client, resolved)
+			}
+		} else {
+			resp, err = openHTTPDownloadStream(streamCtx, client, resolved)
+		}
+		if err != nil {
+			cancel()
+			lastErr = err
+		} else {
+			expectedResponse := total - offset
+			if resp.ContentLength > 0 && total > 0 && resp.ContentLength != expectedResponse {
+				if offset == 0 {
+					lastErr = httpDownloadSizeMismatchError(resp, total, resolved.Authenticated)
+				} else {
+					lastErr = fmt.Errorf("HTTP provider returned the wrong resumed range size: expected %d bytes from offset %d, response contains %d bytes", expectedResponse, offset, resp.ContentLength)
+				}
+				resp.Body.Close()
+				cancel()
+			} else {
+				if _, err := out.Seek(offset, io.SeekStart); err != nil {
+					resp.Body.Close()
+					cancel()
+					return err
+				}
+				var lastProgress atomic.Int64
+				stopGuard, stalled := startHTTPStallGuard(cancel, &lastProgress)
+				written, copyErr := io.CopyBuffer(countingWriter{w: out, written: transferred, lastProgress: &lastProgress}, resp.Body, make([]byte, 256*1024))
+				resp.Body.Close()
+				stopGuard()
+				cancel()
+				if stalled.Load() {
+					copyErr = errHTTPReadStalled
+				}
+				if copyErr == nil && total > 0 && offset+written != total {
+					copyErr = fmt.Errorf("single HTTP stream ended at %d of %d bytes", offset+written, total)
+				}
+				if copyErr == nil {
+					return nil
+				}
+				lastErr = copyErr
+			}
+		}
+		if attempt < 3 {
+			if err := sleepContext(ctx, time.Duration(attempt)*httpRangeRetryBaseDelay); err != nil {
+				return err
+			}
+		}
 	}
-	defer resp.Body.Close()
-	if resp.ContentLength > 0 && total > 0 && resp.ContentLength != total {
-		return httpDownloadSizeMismatchError(resp, total, resolved.Authenticated)
-	}
-	_, err = io.CopyBuffer(countingWriter{w: out, written: transferred}, resp.Body, make([]byte, 256*1024))
-	return err
+	return fmt.Errorf("single HTTP stream failed after 3 attempts: %w", lastErr)
 }
 
-var errHTTPRangeUnsupported = errors.New("HTTP server does not support byte ranges")
+var (
+	errHTTPRangeUnsupported = errors.New("HTTP server does not support byte ranges")
+	errHTTPReadStalled      = errors.New("HTTP stream made no progress for 45 seconds")
+)
+
+const httpReadStallTimeout = 45 * time.Second
+
+var httpRangeRetryBaseDelay = time.Second
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func startHTTPStallGuard(cancel context.CancelFunc, lastProgress *atomic.Int64) (stop func(), stalled *atomic.Bool) {
+	done := make(chan struct{})
+	stalled = &atomic.Bool{}
+	lastProgress.Store(time.Now().UnixNano())
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				last := time.Unix(0, lastProgress.Load())
+				if time.Since(last) >= httpReadStallTimeout {
+					stalled.Store(true)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }, stalled
+}
 
 func openHTTPDownloadRange(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, start, end, total int64) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolved.URL, nil)
@@ -1442,25 +1661,42 @@ func openHTTPDownloadRange(ctx context.Context, client *http.Client, resolved re
 func downloadHTTPRange(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, out *os.File, start, end, total int64, transferred *atomic.Int64) error {
 	offset := start
 	for attempt := 1; offset <= end && attempt <= 3; attempt++ {
-		resp, err := openHTTPDownloadRange(ctx, client, resolved, offset, end, total)
+		attemptCtx, cancel := context.WithCancel(ctx)
+		resp, err := openHTTPDownloadRange(attemptCtx, client, resolved, offset, end, total)
 		if err != nil {
+			cancel()
 			if errors.Is(ctx.Err(), context.Canceled) {
 				return ctx.Err()
 			}
 			if attempt == 3 {
 				return err
 			}
+			if err := sleepContext(ctx, time.Duration(attempt)*httpRangeRetryBaseDelay); err != nil {
+				return err
+			}
 			continue
 		}
-		writer := countingWriter{w: io.NewOffsetWriter(out, offset), written: transferred}
+		var lastProgress atomic.Int64
+		stopGuard, stalled := startHTTPStallGuard(cancel, &lastProgress)
+		writer := countingWriter{w: io.NewOffsetWriter(out, offset), written: transferred, lastProgress: &lastProgress}
 		n, copyErr := io.CopyBuffer(writer, resp.Body, make([]byte, 256*1024))
 		resp.Body.Close()
+		stopGuard()
+		cancel()
 		offset += n
+		if stalled.Load() {
+			copyErr = errHTTPReadStalled
+		}
 		if copyErr == nil && offset <= end {
 			copyErr = io.ErrUnexpectedEOF
 		}
 		if copyErr != nil && attempt == 3 {
 			return fmt.Errorf("download bytes %d-%d: %w", start, end, copyErr)
+		}
+		if copyErr != nil {
+			if err := sleepContext(ctx, time.Duration(attempt)*httpRangeRetryBaseDelay); err != nil {
+				return err
+			}
 		}
 	}
 	if offset != end+1 {

@@ -114,6 +114,81 @@ func TestAuthenticatedPikPakRestoreAndOriginalResolution(t *testing.T) {
 	}
 }
 
+func TestPikPakRestoreRetriesTransientGatewayFailure(t *testing.T) {
+	originalDelay := pikPakRestoreRetryDelay
+	pikPakRestoreRetryDelay = time.Millisecond
+	t.Cleanup(func() { pikPakRestoreRetryDelay = originalDelay })
+
+	restoreAttempts := 0
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/shield/captcha/init":
+			return pikPakJSONResponse(http.StatusOK, `{"captcha_token":"captcha"}`), nil
+		case "/drive/v1/files":
+			if restoreAttempts < 2 {
+				return pikPakJSONResponse(http.StatusOK, `{"files":[]}`), nil
+			}
+			return pikPakJSONResponse(http.StatusOK, `{"files":[{"id":"restored-file","name":"TEST-002.mp4","kind":"drive#file","size":"4000"}]}`), nil
+		case "/drive/v1/share/restore":
+			restoreAttempts++
+			if restoreAttempts == 1 {
+				return pikPakJSONResponse(http.StatusBadGateway, `{"error":"temporary gateway failure"}`), nil
+			}
+			return pikPakJSONResponse(http.StatusOK, `{"restore_status":"RESTORE_COMPLETE"}`), nil
+		default:
+			t.Fatalf("unexpected PikPak request: %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})}
+	account := newPikPakClient(client)
+	account.accessToken = "access"
+	file, newlyRestored, err := account.restoreSharedFile(context.Background(), "share", "shared-file", "TEST-002.mp4", 4000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restoreAttempts != 2 {
+		t.Fatalf("restore attempts=%d, want 2", restoreAttempts)
+	}
+	if file.ID != "restored-file" || !newlyRestored {
+		t.Fatalf("restored file=%+v newlyRestored=%t", file, newlyRestored)
+	}
+}
+
+func TestPikPakRestoreReconcilesAmbiguousFailure(t *testing.T) {
+	restorePosted := false
+	restoreAttempts := 0
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/shield/captcha/init":
+			return pikPakJSONResponse(http.StatusOK, `{"captcha_token":"captcha"}`), nil
+		case "/drive/v1/files":
+			if !restorePosted {
+				return pikPakJSONResponse(http.StatusOK, `{"files":[]}`), nil
+			}
+			return pikPakJSONResponse(http.StatusOK, `{"files":[{"id":"restored-file","name":"TEST-003.mp4","kind":"drive#file","size":"5000"}]}`), nil
+		case "/drive/v1/share/restore":
+			restoreAttempts++
+			restorePosted = true
+			return pikPakJSONResponse(http.StatusBadGateway, `{"error":"response lost after acceptance"}`), nil
+		default:
+			t.Fatalf("unexpected PikPak request: %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})}
+	account := newPikPakClient(client)
+	account.accessToken = "access"
+	file, newlyRestored, err := account.restoreSharedFile(context.Background(), "share", "shared-file", "TEST-003.mp4", 5000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restoreAttempts != 1 {
+		t.Fatalf("restore attempts=%d, want no duplicate submission", restoreAttempts)
+	}
+	if file.ID != "restored-file" || !newlyRestored {
+		t.Fatalf("restored file=%+v newlyRestored=%t", file, newlyRestored)
+	}
+}
+
 func TestExactPikPakAccountFilePinsNameAndSize(t *testing.T) {
 	files := []pikPakFile{
 		{ID: "wrong-size", Name: "TEST-001.mp4", Size: "1900000000"},
