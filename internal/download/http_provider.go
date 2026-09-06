@@ -46,6 +46,7 @@ type javDBProvider struct {
 	pikPakUsername   string
 	pikPakPassword   string
 	cleanupRestored  bool
+	authenticate     func(context.Context, string, string) (*pikPakClient, error)
 	log              *slog.Logger
 	inspectCandidate func(context.Context, string, string) (pikPakFile, []pikPakFile, error)
 }
@@ -69,7 +70,7 @@ type resolvedHTTPFile struct {
 	Cleanup       func(context.Context) error
 }
 
-func httpSourceProviders(client *http.Client, settings map[string]string, logger *slog.Logger) []HTTPSourceProvider {
+func httpSourceProviders(client *http.Client, settings map[string]string, logger *slog.Logger, authenticate func(context.Context, string, string) (*pikPakClient, error)) []HTTPSourceProvider {
 	patterns := ParsePreferredFilenamePatterns(settings["accepted_patterns"])
 	return []HTTPSourceProvider{&javDBProvider{
 		client:           client,
@@ -78,6 +79,7 @@ func httpSourceProviders(client *http.Client, settings map[string]string, logger
 		pikPakUsername:   strings.TrimSpace(settings["pikpak_username"]),
 		pikPakPassword:   settings["pikpak_password"],
 		cleanupRestored:  settings["pikpak_cleanup_restored"] == "true",
+		authenticate:     authenticate,
 		log:              logger,
 	}}
 }
@@ -116,7 +118,7 @@ func (p *javDBProvider) Resolve(ctx context.Context, download domain.Download) (
 			}
 		}
 		if p.pikPakUsername != "" && p.pikPakPassword != "" {
-			resolved, err = resolveAuthenticatedPikPakShare(ctx, p.client, download.SourceReference, download.Query, p.acceptedPatterns, download.ProviderFileID, download.Name, download.BytesTotal, p.pikPakUsername, p.pikPakPassword, p.cleanupRestored)
+			resolved, err = resolveAuthenticatedPikPakShare(ctx, p.client, download.SourceReference, download.Query, p.acceptedPatterns, download.ProviderFileID, download.Name, download.BytesTotal, p.pikPakUsername, p.pikPakPassword, p.cleanupRestored, p.authenticate)
 		} else {
 			var direct, name string
 			var size int64
@@ -749,7 +751,9 @@ func nodeText(n *html.Node) string {
 type pikPakClient struct {
 	http                                *http.Client
 	deviceID, captchaToken, accessToken string
-	userID                              string
+	refreshToken, userID, username      string
+	tokenIssuedAt, tokenExpiresAt       time.Time
+	verificationURL                     string
 }
 type pikPakFile struct {
 	ID             string `json:"id"`
@@ -799,18 +803,32 @@ func (p *pikPakClient) refreshCaptcha(ctx context.Context, action string) error 
 	if p.accessToken != "" || action == "POST:/v1/auth/signin" {
 		redirectURI = "https://api.mypikpak.com/v1/auth/callback"
 	}
-	body := map[string]any{"action": action, "captcha_token": p.captchaToken, "client_id": pikPakClientID, "device_id": p.deviceID, "meta": map[string]string{"captcha_sign": p.captchaSign(ts), "client_version": pikPakClientVersion, "package_name": pikPakPackageName, "timestamp": ts, "user_id": p.userID}, "redirect_uri": redirectURI}
+	meta := map[string]string{"captcha_sign": p.captchaSign(ts), "client_version": pikPakClientVersion, "package_name": pikPakPackageName, "timestamp": ts, "user_id": p.userID}
+	if action == "POST:/v1/auth/signin" {
+		meta["username"] = p.username
+	}
+	body := map[string]any{"action": action, "captcha_token": p.captchaToken, "client_id": pikPakClientID, "device_id": p.deviceID, "meta": meta, "redirect_uri": redirectURI}
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, pikPakUserHost+"/v1/shield/captcha/init", strings.NewReader(string(b)))
 	p.setHeaders(req)
 	var out struct {
 		CaptchaToken     string `json:"captcha_token"`
+		ExpiresIn        int64  `json:"expires_in"`
+		URL              string `json:"url"`
 		ErrorDescription string `json:"error_description"`
 	}
 	if err := p.doJSON(req, &out); err != nil {
+		p.verificationURL = safePikPakVerificationURL(out.URL)
+		if p.verificationURL != "" {
+			return fmt.Errorf("PikPak requires human verification: %s", p.verificationURL)
+		}
 		return err
 	}
 	if out.CaptchaToken == "" {
+		p.verificationURL = safePikPakVerificationURL(out.URL)
+		if p.verificationURL != "" {
+			return fmt.Errorf("PikPak requires human verification: %s", p.verificationURL)
+		}
 		return errors.New("PikPak did not issue an anonymous CAPTCHA token: " + out.ErrorDescription)
 	}
 	p.captchaToken = out.CaptchaToken
@@ -835,6 +853,9 @@ func (p *pikPakClient) doJSON(req *http.Request, out any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if out != nil && len(data) > 0 {
+			_ = json.Unmarshal(data, out)
+		}
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	err = json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(out)
@@ -873,34 +894,109 @@ func (p *pikPakClient) request(ctx context.Context, path string, q url.Values) (
 }
 
 func (p *pikPakClient) login(ctx context.Context, username, password string) error {
+	p.username = username
 	if err := p.refreshCaptcha(ctx, "POST:/v1/auth/signin"); err != nil {
-		return fmt.Errorf("PikPak sign-in CAPTCHA token: %w", err)
+		return fmt.Errorf("PikPak sign-in CAPTCHA token: %w", redactPikPakAuthError(err, username, password))
 	}
 	body, _ := json.Marshal(map[string]string{
 		"client_id":     pikPakClientID,
 		"client_secret": pikPakClientSecret,
+		"captcha_token": p.captchaToken,
 		"username":      username,
 		"password":      password,
 	})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, pikPakUserHost+"/v1/auth/signin", strings.NewReader(string(body)))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, pikPakUserHost+"/v1/auth/signin?client_id="+url.QueryEscape(pikPakClientID), strings.NewReader(string(body)))
 	p.setHeaders(req)
 	var out struct {
 		AccessToken      string `json:"access_token"`
 		RefreshToken     string `json:"refresh_token"`
+		ExpiresIn        int64  `json:"expires_in"`
 		Sub              string `json:"sub"`
 		Error            string `json:"error"`
 		ErrorDescription string `json:"error_description"`
 	}
 	if err := p.doJSON(req, &out); err != nil {
-		return fmt.Errorf("PikPak sign-in failed: %w", err)
+		return fmt.Errorf("PikPak sign-in failed: %w", redactPikPakAuthError(err, username, password))
 	}
 	if out.AccessToken == "" {
-		return fmt.Errorf("PikPak sign-in failed: %s", firstNonEmpty(out.ErrorDescription, out.Error))
+		detail := errors.New(firstNonEmpty(out.ErrorDescription, out.Error, "PikPak returned no access token"))
+		return fmt.Errorf("PikPak sign-in failed: %w", redactPikPakAuthError(detail, username, password))
 	}
 	p.accessToken = out.AccessToken
+	p.refreshToken = out.RefreshToken
 	p.userID = out.Sub
+	p.tokenIssuedAt = time.Now().UTC()
+	if out.ExpiresIn > 0 {
+		p.tokenExpiresAt = p.tokenIssuedAt.Add(time.Duration(out.ExpiresIn) * time.Second)
+	}
 	p.captchaToken = ""
 	return nil
+}
+
+func (p *pikPakClient) refreshLogin(ctx context.Context) error {
+	if strings.TrimSpace(p.refreshToken) == "" {
+		return errors.New("PikPak refresh token is unavailable")
+	}
+	body, _ := json.Marshal(map[string]string{
+		"client_id": pikPakClientID, "client_secret": pikPakClientSecret,
+		"grant_type": "refresh_token", "refresh_token": p.refreshToken,
+	})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, pikPakUserHost+"/v1/auth/token?client_id="+url.QueryEscape(pikPakClientID), strings.NewReader(string(body)))
+	p.setHeaders(req)
+	var out struct {
+		AccessToken      string `json:"access_token"`
+		RefreshToken     string `json:"refresh_token"`
+		Sub              string `json:"sub"`
+		ExpiresIn        int64  `json:"expires_in"`
+		Error            string `json:"error"`
+		ErrorCode        int    `json:"error_code"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if err := p.doJSON(req, &out); err != nil {
+		return fmt.Errorf("PikPak session refresh failed: %w", err)
+	}
+	if out.ErrorCode != 0 || out.AccessToken == "" {
+		return fmt.Errorf("PikPak session refresh failed (%d): %s", out.ErrorCode, firstNonEmpty(out.ErrorDescription, out.Error, "no access token returned"))
+	}
+	p.accessToken = out.AccessToken
+	if out.RefreshToken != "" {
+		p.refreshToken = out.RefreshToken
+	}
+	if out.Sub != "" {
+		p.userID = out.Sub
+	}
+	p.tokenIssuedAt = time.Now().UTC()
+	p.tokenExpiresAt = time.Time{}
+	if out.ExpiresIn > 0 {
+		p.tokenExpiresAt = p.tokenIssuedAt.Add(time.Duration(out.ExpiresIn) * time.Second)
+	}
+	p.captchaToken = ""
+	return nil
+}
+
+func safePikPakVerificationURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "mypikpak.com" && !strings.HasSuffix(host, ".mypikpak.com") && host != "mypikpak.net" && !strings.HasSuffix(host, ".mypikpak.net") {
+		return ""
+	}
+	return u.String()
+}
+
+func redactPikPakAuthError(err error, credentials ...string) error {
+	if err == nil {
+		return nil
+	}
+	message := err.Error()
+	for _, credential := range credentials {
+		if credential = strings.TrimSpace(credential); credential != "" {
+			message = regexp.MustCompile(`(?i)`+regexp.QuoteMeta(credential)).ReplaceAllString(message, "[redacted]")
+		}
+	}
+	return errors.New(message)
 }
 
 func (p *pikPakClient) authenticatedJSON(ctx context.Context, method, path string, q url.Values, body any, out any) error {
@@ -1223,7 +1319,7 @@ func resolvePikPakShare(ctx context.Context, client *http.Client, keepshareURL, 
 	return direct, selected.Name, selectedSize, nil
 }
 
-func resolveAuthenticatedPikPakShare(ctx context.Context, client *http.Client, keepshareURL, releaseID string, preferredPatterns []PreferredFilenamePattern, providerFileID, expectedName string, expectedSize int64, username, password string, cleanupRestored bool) (resolvedHTTPFile, error) {
+func resolveAuthenticatedPikPakShare(ctx context.Context, client *http.Client, keepshareURL, releaseID string, preferredPatterns []PreferredFilenamePattern, providerFileID, expectedName string, expectedSize int64, username, password string, cleanupRestored bool, authenticate func(context.Context, string, string) (*pikPakClient, error)) (resolvedHTTPFile, error) {
 	_, shareID, selected, _, err := inspectPikPakShare(ctx, client, keepshareURL, releaseID, preferredPatterns, providerFileID, expectedName, expectedSize)
 	if err != nil {
 		return resolvedHTTPFile{}, err
@@ -1235,8 +1331,14 @@ func resolveAuthenticatedPikPakShare(ctx context.Context, client *http.Client, k
 	if expectedSize > 0 && selectedSize > 0 && expectedSize != selectedSize {
 		return resolvedHTTPFile{}, fmt.Errorf("selected PikPak file size changed: expected %d bytes, resolved %d bytes", expectedSize, selectedSize)
 	}
-	authenticated := newPikPakClient(client)
-	if err := authenticated.login(ctx, username, password); err != nil {
+	var authenticated *pikPakClient
+	if authenticate != nil {
+		authenticated, err = authenticate(ctx, username, password)
+	} else {
+		authenticated = newPikPakClient(client)
+		err = authenticated.login(ctx, username, password)
+	}
+	if err != nil {
 		return resolvedHTTPFile{}, err
 	}
 	restoredID, err := authenticated.restoreSharedFile(ctx, shareID, selected.ID)

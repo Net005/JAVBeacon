@@ -7,6 +7,37 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.98] - 2026-09-06
+
+### Added
+
+- PikPak account sessions are now persisted with their device identity,
+  renewable refresh token, issue time, and provider-reported expiry so
+  authenticated Web downloads no longer require a fresh login every time.
+- Settings now shows the recorded PikPak session lifetime and exposes PikPak's
+  official human-verification link when the provider requires an interactive
+  CAPTCHA challenge.
+- Failed automatic PikPak re-authentication can send a one-time Pushover alert
+  through the existing failed-validation notification option; another alert is
+  allowed only after authentication recovers and subsequently fails again.
+
+### Changed
+
+- Authenticated downloads and scheduled account checks first rotate the saved
+  refresh token, then automatically fall back to the configured credentials if
+  PikPak rejects that session.
+- Stored PikPak access tokens, refresh tokens, user/device identifiers, and
+  notification state remain backend-only and are omitted from settings API
+  responses.
+
+### Fixed
+
+- PikPak sign-in CAPTCHA initialization now includes the account name expected
+  by the provider, while the sign-in request supplies the issued CAPTCHA token
+  in both its body and header.
+- PikPak authentication failures redact credentials even when the provider
+  echoes an account name or password in its error description.
+
 ## [1.0.97] - 2026-09-06
 
 ### Added

@@ -29,7 +29,7 @@ func TestPikPakAccountCheckValidatesLoginAndDriveAccess(t *testing.T) {
 			captchaCalls++
 			return pikPakJSONResponse(http.StatusOK, `{"captcha_token":"captcha"}`), nil
 		case req.URL.Host == "user.mypikpak.com" && req.URL.Path == "/v1/auth/signin":
-			return pikPakJSONResponse(http.StatusOK, `{"access_token":"account-token","sub":"account-id"}`), nil
+			return pikPakJSONResponse(http.StatusOK, `{"access_token":"account-token","refresh_token":"refresh-token","expires_in":3600,"sub":"account-id"}`), nil
 		case req.URL.Path == "/drive/v1/about":
 			if req.Header.Get("Authorization") != "Bearer account-token" {
 				t.Fatalf("drive validation omitted account authorization")
@@ -56,10 +56,46 @@ func TestPikPakAccountCheckValidatesLoginAndDriveAccess(t *testing.T) {
 	if settings["pikpak_check_last_status"] != "passed" || settings["pikpak_check_last_at"] == "" {
 		t.Fatalf("persisted status=%v", settings)
 	}
-	for _, value := range settings {
-		if strings.Contains(value, "secret") || strings.Contains(value, "account-token") {
+	if settings["pikpak_session_refresh_token"] != "refresh-token" || settings["pikpak_session_expires_at"] == "" {
+		t.Fatalf("renewable session was not persisted: %v", settings)
+	}
+	for _, key := range []string{"pikpak_check_last_status", "pikpak_check_last_message"} {
+		if strings.Contains(settings[key], "secret") || strings.Contains(settings[key], "account-token") {
 			t.Fatal("persisted health status contains a credential or access token")
 		}
+	}
+}
+
+func TestPikPakSessionRefreshesWithoutCredentialLogin(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "pikpak-refresh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{
+		"pikpak_session_username": "person@example.test", "pikpak_session_refresh_token": "old-refresh",
+		"pikpak_session_device_id": "saved-device", "pikpak_session_user_id": "account-id",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/v1/auth/token" {
+			t.Fatalf("unexpected request: %s", req.URL)
+		}
+		if req.Header.Get("X-Device-ID") != "saved-device" {
+			t.Fatalf("stored device ID was not reused")
+		}
+		return pikPakJSONResponse(http.StatusOK, `{"access_token":"new-access","refresh_token":"new-refresh","expires_in":7200,"sub":"account-id"}`), nil
+	})}
+	svc := New(st, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc.client = client
+	session, err := svc.authenticatePikPakSession(ctx, "person@example.test", "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.accessToken != "new-access" || session.refreshToken != "new-refresh" || session.tokenExpiresAt.IsZero() {
+		t.Fatalf("session=%+v", session)
 	}
 }
 

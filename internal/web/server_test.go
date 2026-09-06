@@ -472,7 +472,7 @@ func TestPikPakAccountSettingsAreRenderedAndSubmitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`setupPikPakAccountUI`, `name="pikpak_username"`, `name="pikpak_password"`, `name="pikpak_cleanup_restored"`, `name="pikpak_check_enabled"`, `name="pikpak_check_interval"`, `name="pushover_app_token"`, `name="pushover_user_key"`, `name="pikpak_notify_success"`, `name="pikpak_notify_failure"`, `Test & re-authenticate`, `/settings/pikpak-test`, `/settings/pikpak-status`, `renderPikPakAccountStatus`} {
+	for _, marker := range []string{`setupPikPakAccountUI`, `name="pikpak_username"`, `name="pikpak_password"`, `name="pikpak_cleanup_restored"`, `name="pikpak_check_enabled"`, `name="pikpak_check_interval"`, `name="pushover_app_token"`, `name="pushover_user_key"`, `name="pikpak_notify_success"`, `name="pikpak_notify_failure"`, `Test & re-authenticate`, `/settings/pikpak-test`, `/settings/pikpak-status`, `renderPikPakSessionStatus`, `Open PikPak human verification`} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("PikPak account settings are missing marker %q", marker)
 		}
@@ -490,11 +490,14 @@ func TestPikPakStatusEndpointReturnsOnlySafeHealthFields(t *testing.T) {
 	}
 	defer st.Close()
 	if err := st.SaveSettings(ctx, map[string]string{
-		"pikpak_username":           "person@example.test",
-		"pikpak_password":           "secret",
-		"pikpak_check_last_status":  "passed",
-		"pikpak_check_last_message": "drive access passed",
-		"pikpak_check_last_at":      "2026-09-06T12:00:00Z",
+		"pikpak_username":              "person@example.test",
+		"pikpak_password":              "secret",
+		"pikpak_check_last_status":     "passed",
+		"pikpak_check_last_message":    "drive access passed",
+		"pikpak_check_last_at":         "2026-09-06T12:00:00Z",
+		"pikpak_session_expires_at":    "2026-09-06T13:00:00Z",
+		"pikpak_session_access_token":  "private-access-token",
+		"pikpak_session_refresh_token": "private-refresh-token",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -504,8 +507,16 @@ func TestPikPakStatusEndpointReturnsOnlySafeHealthFields(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"passed"`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if strings.Contains(rec.Body.String(), "person@example.test") || strings.Contains(rec.Body.String(), "secret") {
+	if strings.Contains(rec.Body.String(), "person@example.test") || strings.Contains(rec.Body.String(), "secret") || strings.Contains(rec.Body.String(), "private-access-token") {
 		t.Fatalf("health endpoint leaked account credentials: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"session_expires_at":"2026-09-06T13:00:00Z"`) {
+		t.Fatalf("status omitted session expiry: %s", rec.Body.String())
+	}
+	settingsRec := httptest.NewRecorder()
+	s.settings(settingsRec, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	if strings.Contains(settingsRec.Body.String(), "private-access-token") || strings.Contains(settingsRec.Body.String(), "private-refresh-token") {
+		t.Fatalf("settings endpoint leaked the stored PikPak session: %s", settingsRec.Body.String())
 	}
 }
 
