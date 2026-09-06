@@ -1220,7 +1220,7 @@ func TestSearchResultsShowProviderProgressAndFileDetails(t *testing.T) {
 			`file.size_bytes`,
 			`return bSize-aSize`,
 			`kind=x.transport==='http'?'HTTP':'Torrent'`,
-			`transportLabel=isHTTP?'Web download':'Torrent'`,
+			`transportLabel=isHTTP?'Web':'Torrent'`,
 			`actionIcon(isHTTP?'webDownload':'torrent')`,
 			`ignore_local:ignoreLocal`,
 			`function forceLocalDownload`,

@@ -7,6 +7,24 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.96] - 2026-09-06
+
+### Changed
+
+- HTTP result cards in Search & Download now use the shorter `Web` transport
+  label while retaining `Web download` for the action itself.
+- Search-result cards now share consistent title typography, header spacing,
+  state placement, metadata blocks, and action alignment across Web and
+  Torrent results.
+
+### Fixed
+
+- The selected first-choice result no longer inserts a second independent
+  header badge that distorts the card, shifts its content downward, or makes
+  it visually inconsistent with adjacent results.
+- Transport badges remain on the left and the single compact result-state or
+  priority badge remains on the right at three- and four-column card widths.
+
 ## [1.0.95] - 2026-09-06
 
 ### Added
