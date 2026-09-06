@@ -951,7 +951,7 @@ func TestReleaseLabelAndDownloadStatus(t *testing.T) {
 		t.Fatalf("partial rescrape erased label: %+v", got)
 	}
 
-	dl, err := s.SaveDownload(ctx, domain.Download{ReleaseID: got.ID, Provider: "JavDB / Keepshare", SourceReference: "https://keepshare.org/example", ProviderFileID: "pikpak-file-3400", Query: "LBL-1", Transport: "http", Status: "downloading"})
+	dl, err := s.SaveDownload(ctx, domain.Download{ReleaseID: got.ID, Provider: "JavDB / Keepshare", SourceReference: "https://keepshare.org/example", ProviderFileID: "pikpak-file-3400", RestoredFileID: "restored-pikpak-file-3400", RestoredFileOwned: true, Query: "LBL-1", Transport: "http", Status: "downloading"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -959,8 +959,8 @@ func TestReleaseLabelAndDownloadStatus(t *testing.T) {
 		t.Fatalf("expected linked HTTP downloading status: %+v", got)
 	}
 	storedDownloads, err := s.Downloads(ctx, "downloading")
-	if err != nil || len(storedDownloads) != 1 || storedDownloads[0].ProviderFileID != "pikpak-file-3400" {
-		t.Fatalf("provider file ID was not persisted: downloads=%+v err=%v", storedDownloads, err)
+	if err != nil || len(storedDownloads) != 1 || storedDownloads[0].ProviderFileID != "pikpak-file-3400" || storedDownloads[0].RestoredFileID != "restored-pikpak-file-3400" || !storedDownloads[0].RestoredFileOwned {
+		t.Fatalf("provider/restored file identity was not persisted: downloads=%+v err=%v", storedDownloads, err)
 	}
 	dl.Status = "completed"
 	if _, err := s.SaveDownload(ctx, dl); err != nil {

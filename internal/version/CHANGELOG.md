@@ -5,6 +5,27 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.0.105] - 2026-09-06
+
+### Added
+
+- Download Monitoring now has a separate Queued tab for downloads waiting on
+  the configured parallel HTTP-download limit.
+
+### Changed
+
+- Waiting HTTP downloads now use an explicit first-in, first-out slot queue.
+  They remain durably queued until capacity is available, then move to
+  Downloading in queue order; restart recovery restores that ordering.
+- Replaced every native browser confirmation and text prompt with consistent
+  JAVBeacon modal dialogs, including active HTTP cancellation, bulk actions,
+  filter naming, site deletion, and maintenance jobs.
+- Removing a Web download now also deletes the exact temporary account-drive
+  copy JAVBeacon restored in PikPak. Ownership and file identity are persisted
+  so cleanup remains safe after failures, cancellation, or an app restart.
+
 ## [1.0.104] - 2026-09-06
 
 ### Changed

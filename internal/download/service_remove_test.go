@@ -70,6 +70,8 @@ func TestRemoveDownloadRemovesTorrentAndAllReleaseHistory(t *testing.T) {
 
 func TestRemoveActiveHTTPDownloadCancelsTransferWithoutQBittorrent(t *testing.T) {
 	var qbRequests atomic.Int64
+	var pikPakDeletes atomic.Int64
+	var deletedPikPakFile atomic.Value
 	qb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		qbRequests.Add(1)
 		http.Error(w, "qBittorrent unavailable", http.StatusBadGateway)
@@ -88,7 +90,7 @@ func TestRemoveActiveHTTPDownloadCancelsTransferWithoutQBittorrent(t *testing.T)
 	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
 	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "HTTP-200", Title: "Test", Source: "JavLibrary", Released: true})
 	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
-	active, _ := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "HTTP-200", Transport: "http", Status: "downloading"})
+	active, _ := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "HTTP-200", Transport: "http", Status: "downloading", RestoredFileID: "restored-http-200", RestoredFileOwned: true})
 	_, _ = st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "HTTP-200", Transport: "http", Status: "search_accepted"})
 	retained, _ := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "HTTP-200", Transport: "torrent", Status: "completed", TorrentHash: "keep-torrent-history"})
 
@@ -99,6 +101,11 @@ func TestRemoveActiveHTTPDownloadCancelsTransferWithoutQBittorrent(t *testing.T)
 		close(run.done)
 	}()
 	service := &Service{store: st, client: qb.Client(), log: slog.Default(), httpRuns: map[int64]*httpDownloadRun{active.ID: run}}
+	service.pikPakDeleteFile = func(_ context.Context, fileID string) error {
+		pikPakDeletes.Add(1)
+		deletedPikPakFile.Store(fileID)
+		return nil
+	}
 	deleted, err := service.RemoveDownload(ctx, active.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -109,9 +116,34 @@ func TestRemoveActiveHTTPDownloadCancelsTransferWithoutQBittorrent(t *testing.T)
 	if qbRequests.Load() != 0 {
 		t.Fatalf("HTTP removal contacted qBittorrent %d time(s)", qbRequests.Load())
 	}
+	if pikPakDeletes.Load() != 1 || deletedPikPakFile.Load() != "restored-http-200" {
+		t.Fatalf("restored PikPak cleanup calls=%d file=%v", pikPakDeletes.Load(), deletedPikPakFile.Load())
+	}
 	rows, err := st.Downloads(ctx, "")
 	if err != nil || len(rows) != 1 || rows[0].ID != retained.ID {
 		t.Fatalf("only Torrent history should remain: rows=%+v err=%v", rows, err)
+	}
+}
+
+func TestRemoveHTTPDownloadDoesNotDeletePreExistingPikPakFile(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "remove-preexisting-http.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "HTTP-201", Title: "Test", Source: "JavLibrary", Released: true})
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	download, _ := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "HTTP-201", Transport: "http", Status: "completed", RestoredFileID: "preexisting-http-201", RestoredFileOwned: false})
+	service := New(st, time.Second, slog.Default())
+	service.pikPakDeleteFile = func(context.Context, string) error {
+		t.Fatal("pre-existing PikPak file must not be deleted")
+		return nil
+	}
+	deleted, err := service.RemoveDownload(ctx, download.ID)
+	if err != nil || deleted != 1 {
+		t.Fatalf("deleted=%d err=%v", deleted, err)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -274,7 +275,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`history.go(-releaseDepth)`,
 		`title:'Scan the new monitoring site?'`,
 		`mode:'full',pages:0,all_pages:true,kind:'manual_full'`,
-		`function downloadSortTab(){return downloadStatus==='downloading'?'downloading':'other'}`,
+		`function downloadSortTab(){return downloadStatus==='downloading'?'downloading':downloadStatus==='queued'?'queued':'other'}`,
 		`['eta','ETA'],['progress','Percentage']`,
 		`function rememberDownloadSort()`,
 		`releaseToastNode.className='releaseToast'`,
@@ -460,6 +461,41 @@ func TestHTTPDownloadActivityUsesCompactLiveSpeedGraph(t *testing.T) {
 		if !strings.Contains(string(css), marker) {
 			t.Fatalf("compact HTTP speed graph styling is missing %q", marker)
 		}
+	}
+}
+
+func TestFrontendUsesAppModalsInsteadOfBrowserDialogs(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{`id="actionConfirmDialog"`, `function appConfirm(`, `id="actionPromptDialog"`, `function appPrompt(`, `title=http?'Cancel this HTTP download?'`} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("app-native dialog behavior is missing %q", marker)
+		}
+	}
+	nativeDialog := regexp.MustCompile(`(^|[^[:alnum:]_$])(confirm|alert|prompt)[[:space:]]*\(`)
+	if match := nativeDialog.Find(javascript); match != nil {
+		t.Fatalf("embedded frontend still contains native browser dialog call %q", match)
+	}
+}
+
+func TestDownloadActivitySeparatesQueuedFromDownloading(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{`data-download-status="queued">Queued`, `status=downloadStatus==='stalled'?'downloading':downloadStatus`, `downloadStatus==='queued'?'queued':'other'`, `defaultDirection=tab==='queued'?'asc':'desc'`, `headerDownloadQueueGroup('Queued for download',queued,'queued')`} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("Download Activity is missing queued-tab behavior %q", marker)
+		}
+	}
+	if !strings.Contains(string(css), `.downloadStatus.queued{`) {
+		t.Fatal("queued downloads have no distinct status styling")
 	}
 }
 

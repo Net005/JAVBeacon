@@ -81,6 +81,9 @@ func TestRetryHTTPDownloadReusesFailedRowAndBypassesLocalHistory(t *testing.T) {
 	if queued.ID != failed.ID || queued.Status != "queued" || queued.Error != "" || queued.SourceType != "Manual HTTP Retry" {
 		t.Fatalf("retry did not transition the failed row in place: %+v", queued)
 	}
+	if err := service.cancelHTTPDownload(ctx, queued.ID); err != nil {
+		t.Fatal(err)
+	}
 	service.httpMu.Lock()
 	service.httpActive = 0
 	service.httpMu.Unlock()
