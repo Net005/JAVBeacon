@@ -692,6 +692,46 @@ func TestStructuredReleaseSearchCanHideLocalMatches(t *testing.T) {
 	}
 }
 
+func TestStructuredReleaseSearchFiltersStashFilePath(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "structured-stash-path.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, release := range []domain.Release{
+		{SiteID: site.ID, VideoID: "PATH-1", Title: "First"},
+		{SiteID: site.ID, VideoID: "PATH-2", Title: "Second"},
+		{SiteID: site.ID, VideoID: "PATH-3", Title: "No local path"},
+	} {
+		if _, err := s.UpsertRelease(ctx, release); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET stash_file_path=CASE video_id WHEN 'PATH-1' THEN '/Media/JAV/Studio/PATH-1.MP4' WHEN 'PATH-2' THEN '/media/other/PATH-2.mp4' ELSE '' END`); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, expr := range map[string]string{
+		"partial case insensitive":  `{"logic":"and","conditions":[{"field":"stash_file_path","value":"jav/STUDIO"}]}`,
+		"wildcard case insensitive": `{"logic":"and","conditions":[{"field":"stash_file_path","value":"*/JAV/*/path-1.*","wildcard":true}]}`,
+		"exact case insensitive":    `{"logic":"and","conditions":[{"field":"stash_file_path","value":"/media/jav/studio/path-1.mp4","exact":true}]}`,
+	} {
+		rows, err := s.Releases(ctx, domain.ReleaseFilter{SearchExpression: expr, Limit: 1})
+		if err != nil || len(rows) != 1 || rows[0].VideoID != "PATH-1" {
+			t.Fatalf("%s: rows=%+v err=%v", name, rows, err)
+		}
+		count, err := s.ReleasesCount(ctx, domain.ReleaseFilter{SearchExpression: expr})
+		if err != nil || count != 1 {
+			t.Fatalf("%s count=%d err=%v", name, count, err)
+		}
+	}
+}
+
 func TestActressSearchAcceptsReversedTwoPartNames(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "actress-search.db"))
