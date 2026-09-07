@@ -1099,7 +1099,7 @@ func releaseConditionGroupClause(d Dialect, conditions []releaseFilterCondition,
 	}
 	parts := []string{}
 	var a []any
-	columns := map[string]string{"title": "r.title", "tag": "metadata", "actress": "metadata", "description": "r.story", "studio": "r.studio", "label": "r.label"}
+	columns := map[string]string{"title": "r.title", "tag": "metadata", "actress": "metadata", "description": "r.story", "studio": "r.studio", "label": "r.label", "stash_file_path": "r.stash_file_path"}
 	// timestampColumns are the two pre-existing DATETIME/TIMESTAMPTZ columns
 	// (never blank - both are NOT NULL and set on every insert), so their
 	// before/after comparison skips the "<>''" empty-string guard that the

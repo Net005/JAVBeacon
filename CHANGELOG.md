@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.114] - 2026-09-08
+
+### Added
+
+- Release Library structured search now includes a StashApp video file path
+  condition. It matches partial paths case-insensitively by default, supports
+  exact and wildcard matching, and filters the complete server-side result set
+  across pagination and saved condition presets.
+
 ## [1.0.113] - 2026-09-08
 
 ### Changed

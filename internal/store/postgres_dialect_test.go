@@ -107,6 +107,7 @@ func TestReleaseFilterWhereConditionsUseCaseInsensitiveLikeOnPostgres(t *testing
 	}{
 		{"title", "r.title ILIKE ?"},
 		{"description", "r.story ILIKE ?"},
+		{"stash_file_path", "r.stash_file_path ILIKE ?"},
 	} {
 		expr := `{"logic":"and","conditions":[{"field":"` + tc.field + `","value":"needle"}]}`
 		where, args := releaseFilterWhere(PostgresDialect{}, domain.ReleaseFilter{SearchExpression: expr})
