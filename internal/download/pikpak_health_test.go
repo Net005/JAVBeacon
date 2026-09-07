@@ -1,6 +1,7 @@
 package download
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -85,6 +86,15 @@ func TestPikPakSessionRefreshesWithoutCredentialLogin(t *testing.T) {
 		}
 		if req.Header.Get("X-Device-ID") != "saved-device" {
 			t.Fatalf("stored device ID was not reused")
+		}
+		body, _ := io.ReadAll(req.Body)
+		if bytes.Contains(body, []byte(`"client_secret"`)) {
+			t.Fatalf("public web-client refresh exposed a client secret: %s", body)
+		}
+		for _, field := range []string{`"client_id"`, `"grant_type":"refresh_token"`, `"refresh_token":"old-refresh"`} {
+			if !bytes.Contains(body, []byte(field)) {
+				t.Fatalf("refresh body omitted %s: %s", field, body)
+			}
 		}
 		return pikPakJSONResponse(http.StatusOK, `{"access_token":"new-access","refresh_token":"new-refresh","expires_in":7200,"sub":"account-id"}`), nil
 	})}

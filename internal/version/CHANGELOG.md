@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.111] - 2026-09-08
+
+### Fixed
+
+- PikPak saved-session refreshes no longer send the public web client's
+  embedded client secret, which PikPak now rejects with HTTP 403. Downloads
+  can refresh a valid saved account session without unnecessarily falling
+  back to a fresh credential sign-in.
+
 ## [1.0.110] - 2026-09-06
 
 ### Added
