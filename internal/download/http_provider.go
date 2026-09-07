@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"golang.org/x/net/html"
@@ -67,16 +68,17 @@ type HTTPSourceProvider interface {
 }
 
 type resolvedHTTPFile struct {
-	URL            string
-	Name           string
-	Size           int64
-	Headers        map[string]string
-	Checksum       string
-	ChecksumType   string
-	Authenticated  bool
-	RestoredFileID string
-	NewlyRestored  bool
-	Cleanup        func(context.Context) error
+	URL              string
+	Name             string
+	Size             int64
+	Headers          map[string]string
+	Checksum         string
+	ChecksumType     string
+	Authenticated    bool
+	RestoredFileID   string
+	RestoredParentID string
+	NewlyRestored    bool
+	Cleanup          func(context.Context) error
 }
 
 func httpSourceProviders(client *http.Client, settings map[string]string, logger *slog.Logger, authenticate func(context.Context, string, string) (*pikPakClient, error)) []HTTPSourceProvider {
@@ -766,10 +768,11 @@ type pikPakClient struct {
 	verificationURL                     string
 }
 type pikPakFile struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Kind string `json:"kind"`
-	Size string `json:"size"`
+	ID       string `json:"id"`
+	ParentID string `json:"parent_id"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Size     string `json:"size"`
 	// Hash is PikPak's resource/torrent identity. Despite being 40 hexadecimal
 	// characters, it is not the SHA-1 digest of the bytes returned by the
 	// download URL and must not be used for downloaded-file verification.
@@ -1049,11 +1052,58 @@ type pikPakRestoreResponse struct {
 	RestoreStatus string `json:"restore_status"`
 	RestoreTaskID string `json:"restore_task_id"`
 	Params        struct {
-		TraceFileIDs string `json:"trace_file_ids"`
-		ErrorDetail  string `json:"error_detail"`
+		TraceFileIDs json.RawMessage `json:"trace_file_ids"`
+		ErrorDetail  string          `json:"error_detail"`
 	} `json:"params"`
 	Phase   string `json:"phase"`
 	Message string `json:"message"`
+}
+
+func pikPakRestoreCandidateIDs(raw json.RawMessage) []string {
+	seen := map[string]bool{}
+	var ids []string
+	add := func(value string) {
+		for _, id := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
+			id = strings.Trim(strings.TrimSpace(id), `"`)
+			if id != "" && !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	var collect func(any)
+	collect = func(value any) {
+		switch typed := value.(type) {
+		case string:
+			add(typed)
+		case []any:
+			for _, item := range typed {
+				collect(item)
+			}
+		case map[string]any:
+			for _, item := range typed {
+				collect(item)
+			}
+		}
+	}
+	var value any
+	if len(raw) > 0 && json.Unmarshal(raw, &value) == nil {
+		collect(value)
+	}
+	return ids
+}
+
+func (p *pikPakClient) restoredFileFromTaskIDs(ctx context.Context, raw json.RawMessage, expectedName string, expectedSize int64) (pikPakFile, bool) {
+	for _, id := range pikPakRestoreCandidateIDs(raw) {
+		file, err := p.authenticatedFile(ctx, id)
+		if err != nil {
+			continue
+		}
+		if match, found := exactPikPakAccountFile([]pikPakFile{file}, expectedName, expectedSize, nil); found {
+			return match, true
+		}
+	}
+	return pikPakFile{}, false
 }
 
 func (p *pikPakClient) listDriveFiles(ctx context.Context) ([]pikPakFile, error) {
@@ -1190,16 +1240,17 @@ func (p *pikPakClient) restoreSharedFile(ctx context.Context, shareID, fileID, e
 		"file_ids":        []string{fileID},
 	}
 	var restoreErr error
+	var restoreResponse pikPakRestoreResponse
 	for attempt := 1; attempt <= 3; attempt++ {
-		var restored pikPakRestoreResponse
-		restoreErr = p.authenticatedJSON(ctx, http.MethodPost, "/drive/v1/share/restore", nil, body, &restored)
+		restoreResponse = pikPakRestoreResponse{}
+		restoreErr = p.authenticatedJSON(ctx, http.MethodPost, "/drive/v1/share/restore", nil, body, &restoreResponse)
 		if restoreErr == nil {
-			status := strings.ToUpper(restored.RestoreStatus)
+			status := strings.ToUpper(restoreResponse.RestoreStatus)
 			if status != "" && status != "RESTORE_UNKNOWN" && !strings.Contains(status, "ERROR") {
 				restoreErr = nil
 				break
 			}
-			restoreErr = fmt.Errorf("PikPak restore failed: %s", firstNonEmpty(restored.Params.ErrorDetail, restored.Message, restored.RestoreStatus))
+			restoreErr = fmt.Errorf("PikPak restore failed: %s", firstNonEmpty(restoreResponse.Params.ErrorDetail, restoreResponse.Message, restoreResponse.RestoreStatus))
 		}
 
 		// A timeout or gateway error can happen after PikPak accepted the
@@ -1225,6 +1276,9 @@ func (p *pikPakClient) restoreSharedFile(ctx context.Context, shareID, fileID, e
 	if restoreErr != nil {
 		return pikPakFile{}, false, fmt.Errorf("restore selected PikPak share file after 3 attempts: %w", restoreErr)
 	}
+	if file, found := p.restoredFileFromTaskIDs(ctx, restoreResponse.Params.TraceFileIDs, expectedName, expectedSize); found {
+		return file, !beforeIDs[file.ID], nil
+	}
 	restoreCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(time.Second)
@@ -1233,6 +1287,20 @@ func (p *pikPakClient) restoreSharedFile(ctx context.Context, shareID, fileID, e
 	var lastListErr error
 	for {
 		attempt++
+		if restoreResponse.RestoreTaskID != "" {
+			var task pikPakRestoreResponse
+			path := "/drive/v1/tasks/" + url.PathEscape(restoreResponse.RestoreTaskID)
+			if taskErr := p.authenticatedJSON(restoreCtx, http.MethodGet, path, nil, nil, &task); taskErr == nil {
+				if file, found := p.restoredFileFromTaskIDs(restoreCtx, task.Params.TraceFileIDs, expectedName, expectedSize); found {
+					return file, !beforeIDs[file.ID], nil
+				}
+				if strings.Contains(strings.ToUpper(task.Phase), "ERROR") || task.Params.ErrorDetail != "" {
+					return pikPakFile{}, false, fmt.Errorf("PikPak restore task failed: %s", firstNonEmpty(task.Params.ErrorDetail, task.Message, task.Phase))
+				}
+			} else {
+				lastListErr = fmt.Errorf("check PikPak restore task: %w", taskErr)
+			}
+		}
 		if file, newlyRestored, found, listErr := p.findRestoredFile(restoreCtx, expectedName, expectedSize, beforeIDs, attempt >= 3); listErr == nil {
 			lastListErr = nil
 			if found {
@@ -1594,13 +1662,14 @@ func resolveAuthenticatedPikPakShareWithFolderFallback(ctx context.Context, clie
 		return resolvedHTTPFile{}, errors.New("PikPak account restored the matching file but returned no authenticated download URL")
 	}
 	resolved := resolvedHTTPFile{
-		URL:            direct,
-		Name:           selected.Name,
-		Size:           selectedSize,
-		Headers:        map[string]string{"User-Agent": publicShareUserAgent, "Referer": "https://mypikpak.com/"},
-		Authenticated:  true,
-		RestoredFileID: restoredEntry.ID,
-		NewlyRestored:  newlyRestored,
+		URL:              direct,
+		Name:             selected.Name,
+		Size:             selectedSize,
+		Headers:          map[string]string{"User-Agent": publicShareUserAgent, "Referer": "https://mypikpak.com/"},
+		Authenticated:    true,
+		RestoredFileID:   restoredEntry.ID,
+		RestoredParentID: restored.ParentID,
+		NewlyRestored:    newlyRestored,
 	}
 	resolved.ChecksumType, resolved.Checksum = pikPakFileChecksum(restored, selected)
 	if cleanupRestored && newlyRestored {
