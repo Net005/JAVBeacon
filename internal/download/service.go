@@ -1341,6 +1341,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	if resolved.Authenticated {
 		if resolved.RestoredFileID != "" {
 			d.RestoredFileID = resolved.RestoredFileID
+			d.RestoredParentID = resolved.RestoredParentID
 			d.RestoredFileOwned = d.RestoredFileOwned || resolved.NewlyRestored
 		}
 		d.MatchReason = appendDownloadPreference("authenticated PikPak original", d.MatchReason)
@@ -1349,6 +1350,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 			"release_id", d.ReleaseID,
 			"video_id", d.Query,
 			"restored_file_id", resolved.RestoredFileID,
+			"restored_parent_id", resolved.RestoredParentID,
 			"newly_restored", resolved.NewlyRestored,
 			"filename", resolved.Name,
 			"bytes_total", resolved.Size,
@@ -1442,6 +1444,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 			resolved = refreshed
 			if refreshed.RestoredFileID != "" {
 				d.RestoredFileID = refreshed.RestoredFileID
+				d.RestoredParentID = refreshed.RestoredParentID
 				d.RestoredFileOwned = d.RestoredFileOwned || refreshed.NewlyRestored
 			}
 			if refreshed.Size > 0 {

@@ -7,6 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.113] - 2026-09-08
+
+### Changed
+
+- PikPak restores now follow the provider's restore task and validate any
+  returned destination file ID directly before scanning account folders.
+  Source/trace IDs are rejected unless their fetched filename and byte size
+  match the selected video, and the verified destination parent folder ID is
+  stored with Download Activity for reliable cleanup and diagnostics.
+
 ## [1.0.112] - 2026-09-08
 
 ### Fixed

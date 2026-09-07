@@ -589,6 +589,7 @@ type Download struct {
 	// an authenticated PikPak download. RestoredFileOwned is true only when
 	// JAVBeacon created that copy, so removal never deletes a pre-existing file.
 	RestoredFileID    string          `json:"restored_file_id,omitempty"`
+	RestoredParentID  string          `json:"restored_parent_id,omitempty"`
 	RestoredFileOwned bool            `json:"restored_file_owned,omitempty"`
 	Query             string          `json:"query"`
 	TorrentHash       string          `json:"torrent_hash"`

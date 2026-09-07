@@ -202,6 +202,39 @@ func TestPikPakRestoreReconcilesAmbiguousFailure(t *testing.T) {
 	}
 }
 
+func TestPikPakRestoreUsesValidatedTaskDestinationID(t *testing.T) {
+	listCalls := 0
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.URL.Path == "/v1/shield/captcha/init":
+			return pikPakJSONResponse(http.StatusOK, `{"captcha_token":"captcha"}`), nil
+		case req.URL.Path == "/drive/v1/files":
+			listCalls++
+			return pikPakJSONResponse(http.StatusOK, `{"files":[]}`), nil
+		case req.URL.Path == "/drive/v1/share/restore":
+			return pikPakJSONResponse(http.StatusOK, `{"restore_status":"RESTORE_START","restore_task_id":"task-1"}`), nil
+		case req.URL.Path == "/drive/v1/tasks/task-1":
+			return pikPakJSONResponse(http.StatusOK, `{"phase":"PHASE_TYPE_COMPLETE","params":{"trace_file_ids":["shared-source","account-destination"]}}`), nil
+		case req.URL.Path == "/drive/v1/files/shared-source":
+			return pikPakJSONResponse(http.StatusNotFound, `{"error":"file_not_found"}`), nil
+		case req.URL.Path == "/drive/v1/files/account-destination":
+			return pikPakJSONResponse(http.StatusOK, `{"id":"account-destination","parent_id":"shared-folder","name":"PRTD-006.mp4","kind":"drive#file","size":"3690441219"}`), nil
+		default:
+			t.Fatalf("unexpected PikPak request: %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})}
+	account := newPikPakClient(client)
+	account.accessToken = "access"
+	file, newlyRestored, err := account.restoreSharedFile(context.Background(), "share", "shared-source", "PRTD-006.mp4", 3690441219)
+	if err != nil || !newlyRestored || file.ID != "account-destination" || file.ParentID != "shared-folder" {
+		t.Fatalf("file=%+v newly=%t err=%v", file, newlyRestored, err)
+	}
+	if listCalls != 1 {
+		t.Fatalf("drive listing calls=%d, want only the pre-restore safety inventory", listCalls)
+	}
+}
+
 func TestExactPikPakAccountFilePinsNameAndSize(t *testing.T) {
 	files := []pikPakFile{
 		{ID: "wrong-size", Name: "TEST-001.mp4", Size: "1900000000"},
