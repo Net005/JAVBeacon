@@ -7,6 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.112] - 2026-09-08
+
+### Fixed
+
+- Authenticated PikPak downloads now locate restored files incrementally and
+  prioritize PikPak's `Pack From Shared` folder instead of repeatedly walking
+  the user's entire drive. Large accounts no longer time out after a restore
+  that visibly succeeded, and any drive-list failure is retained in the final
+  error details.
+
 ## [1.0.111] - 2026-09-08
 
 ### Fixed

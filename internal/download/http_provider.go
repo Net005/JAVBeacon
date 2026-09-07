@@ -1118,16 +1118,57 @@ func retryablePikPakRestoreError(err error) bool {
 }
 
 func (p *pikPakClient) findRestoredFile(ctx context.Context, expectedName string, expectedSize int64, beforeIDs map[string]bool, allowExisting bool) (pikPakFile, bool, bool, error) {
-	files, err := p.listDriveFiles(ctx)
-	if err != nil {
-		return pikPakFile{}, false, false, err
-	}
-	if file, found := exactPikPakAccountFile(files, expectedName, expectedSize, beforeIDs); found {
-		return file, true, true, nil
-	}
-	if allowExisting {
-		if file, found := exactPikPakAccountFile(files, expectedName, expectedSize, nil); found {
-			return file, false, true, nil
+	// Do not build a complete inventory for every restore poll. Large accounts
+	// can contain hundreds of folders, and authenticated listing requires an API
+	// round trip per folder. Search breadth-first, prioritize PikPak's restore
+	// folder, and stop as soon as the exact selected file is found.
+	queue := []string{""}
+	seen := map[string]bool{"": true}
+	var existing pikPakFile
+	for len(queue) > 0 {
+		parentID := queue[0]
+		queue = queue[1:]
+		page := ""
+		for {
+			var response pikPakResponse
+			q := url.Values{"parent_id": {parentID}, "thumbnail_size": {"SIZE_LARGE"}, "with_audit": {"true"}, "limit": {"100"}, "page_token": {page}, "filters": {`{"phase":{"eq":"PHASE_TYPE_COMPLETE"},"trashed":{"eq":false}}`}}
+			if err := p.authenticatedJSON(ctx, http.MethodGet, "/drive/v1/files", q, nil, &response); err != nil {
+				return pikPakFile{}, false, false, err
+			}
+			priorityFolders := make([]string, 0)
+			otherFolders := make([]string, 0)
+			for _, file := range response.Files {
+				if file.Kind == "drive#folder" {
+					if file.ID == "" || seen[file.ID] || len(seen) >= 250 {
+						continue
+					}
+					seen[file.ID] = true
+					if strings.Contains(strings.ToLower(file.Name), "pack from shared") {
+						priorityFolders = append(priorityFolders, file.ID)
+					} else {
+						otherFolders = append(otherFolders, file.ID)
+					}
+					continue
+				}
+				if match, found := exactPikPakAccountFile([]pikPakFile{file}, expectedName, expectedSize, nil); found {
+					if !beforeIDs[match.ID] {
+						return match, true, true, nil
+					}
+					if allowExisting && existing.ID == "" {
+						existing = match
+					}
+				}
+			}
+			// Restored files normally live below Pack From Shared. Put that
+			// virtual folder ahead of unrelated account folders already queued.
+			queue = append(priorityFolders, append(queue, otherFolders...)...)
+			page = response.NextPageToken
+			if page == "" {
+				break
+			}
+		}
+		if existing.ID != "" {
+			return existing, false, true, nil
 		}
 	}
 	return pikPakFile{}, false, false, nil
@@ -1189,13 +1230,22 @@ func (p *pikPakClient) restoreSharedFile(ctx context.Context, shareID, fileID, e
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	attempt := 0
+	var lastListErr error
 	for {
 		attempt++
-		if file, newlyRestored, found, listErr := p.findRestoredFile(restoreCtx, expectedName, expectedSize, beforeIDs, attempt >= 3); listErr == nil && found {
-			return file, newlyRestored, nil
+		if file, newlyRestored, found, listErr := p.findRestoredFile(restoreCtx, expectedName, expectedSize, beforeIDs, attempt >= 3); listErr == nil {
+			lastListErr = nil
+			if found {
+				return file, newlyRestored, nil
+			}
+		} else {
+			lastListErr = listErr
 		}
 		select {
 		case <-restoreCtx.Done():
+			if lastListErr != nil {
+				return pikPakFile{}, false, fmt.Errorf("wait for restored PikPak file %q (%d bytes): %w (last drive inventory error: %v)", expectedName, expectedSize, restoreCtx.Err(), lastListErr)
+			}
 			return pikPakFile{}, false, fmt.Errorf("wait for restored PikPak file %q (%d bytes): %w", expectedName, expectedSize, restoreCtx.Err())
 		case <-ticker.C:
 		}

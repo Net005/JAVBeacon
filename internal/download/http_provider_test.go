@@ -216,6 +216,36 @@ func TestExactPikPakAccountFilePinsNameAndSize(t *testing.T) {
 	}
 }
 
+func TestFindRestoredPikPakFilePrioritizesSharedFolderAndStopsEarly(t *testing.T) {
+	visitedUnrelated := false
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/v1/shield/captcha/init" {
+			return pikPakJSONResponse(http.StatusOK, `{"captcha_token":"captcha"}`), nil
+		}
+		switch req.URL.Query().Get("parent_id") {
+		case "":
+			return pikPakJSONResponse(http.StatusOK, `{"files":[{"id":"unrelated","name":"Archive","kind":"drive#folder"},{"id":"shared","name":"Pack From Shared","kind":"drive#folder"}]}`), nil
+		case "shared":
+			return pikPakJSONResponse(http.StatusOK, `{"files":[{"id":"restored","name":"PRTD-006.mp4","kind":"drive#file","size":"3690441219"}]}`), nil
+		case "unrelated":
+			visitedUnrelated = true
+			return pikPakJSONResponse(http.StatusInternalServerError, `{"error":"unrelated folder should not be visited"}`), nil
+		default:
+			t.Fatalf("unexpected parent_id %q", req.URL.Query().Get("parent_id"))
+			return nil, nil
+		}
+	})}
+	account := newPikPakClient(client)
+	account.accessToken = "access"
+	file, newlyRestored, found, err := account.findRestoredFile(context.Background(), "PRTD-006.mp4", 3690441219, map[string]bool{}, false)
+	if err != nil || !found || !newlyRestored || file.ID != "restored" {
+		t.Fatalf("file=%+v newly=%t found=%t err=%v", file, newlyRestored, found, err)
+	}
+	if visitedUnrelated {
+		t.Fatal("restore lookup scanned an unrelated folder after finding the exact restored file")
+	}
+}
+
 func TestPikPakSignInErrorRedactsCredentials(t *testing.T) {
 	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path == "/v1/shield/captcha/init" {
