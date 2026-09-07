@@ -955,7 +955,10 @@ func (p *pikPakClient) refreshLogin(ctx context.Context) error {
 		return errors.New("PikPak refresh token is unavailable")
 	}
 	body, _ := json.Marshal(map[string]string{
-		"client_id": pikPakClientID, "client_secret": pikPakClientSecret,
+		// PikPak's browser/web client is public. Its token endpoint now rejects
+		// refresh requests that include the embedded client secret as unsafe.
+		// The refresh token, client ID, and stable device headers are sufficient.
+		"client_id":  pikPakClientID,
 		"grant_type": "refresh_token", "refresh_token": p.refreshToken,
 	})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, pikPakUserHost+"/v1/auth/token?client_id="+url.QueryEscape(pikPakClientID), strings.NewReader(string(body)))
