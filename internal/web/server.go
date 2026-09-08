@@ -209,6 +209,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/ws", websocket.Handler(s.releaseStream))
 	s.mux.HandleFunc("GET /covers/{id}", s.cover)
 	s.mux.HandleFunc("GET /covers/{id}/original", s.coverOriginal)
+	s.mux.HandleFunc("GET /covers/{id}/jellyfin-primary", s.coverJellyfinPrimary)
 	s.mux.HandleFunc("GET /screenshots/{id}/{index}", s.screenshot)
 	s.mux.HandleFunc("GET /api/releases/{id}/screenshots", s.releaseScreenshots)
 	s.mux.HandleFunc("POST /api/v1/media/match", s.jellyfinMatch)
@@ -1187,42 +1188,84 @@ func (s *Server) clearNotifications(w http.ResponseWriter, r *http.Request) {
 	s.json(w, http.StatusOK, map[string]any{"deleted": deleted, "type": kind})
 }
 
-func (s *Server) cover(w http.ResponseWriter, r *http.Request) {
+// resolveCoverPath does the lookup shared by cover, coverOriginal, and
+// coverJellyfinPrimary: resolve the release, ensure its cover is cached
+// locally, and check it isn't the "NOW PRINTING" placeholder. On any
+// failure it writes the appropriate error/placeholder response itself and
+// returns ok=false, so callers only need to handle the success path.
+func (s *Server) resolveCoverPath(w http.ResponseWriter, r *http.Request) (release domain.Release, path string, ok bool) {
 	n, err := id(r)
 	if err != nil {
 		http.NotFound(w, r)
-		return
+		return domain.Release{}, "", false
 	}
-	release, err := s.store.Release(r.Context(), n)
+	release, err = s.store.Release(r.Context(), n)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.NotFound(w, r)
-		return
+		return domain.Release{}, "", false
 	}
 	if err != nil {
 		s.log.Warn("cover lookup failed", "release_id", n, "error", err)
 		http.Error(w, "cover unavailable", http.StatusInternalServerError)
-		return
+		return domain.Release{}, "", false
 	}
 	if strings.TrimSpace(release.ImageURL) == "" {
 		s.serveUnavailableCover(w, r)
-		return
+		return domain.Release{}, "", false
 	}
-	path, _, err := s.covers.Ensure(r.Context(), release.VideoID, release.ImageURL)
+	path, _, err = s.covers.Ensure(r.Context(), release.VideoID, release.ImageURL)
 	if err != nil {
 		s.log.Warn("local cover unavailable", "release_id", n, "video_id", release.VideoID, "image_url", release.ImageURL, "error", err)
 		s.serveUnavailableCover(w, r)
-		return
+		return domain.Release{}, "", false
 	}
 	if s.covers.Unavailable(path) {
 		s.serveUnavailableCover(w, r)
+		return domain.Release{}, "", false
+	}
+	return release, path, true
+}
+
+// cover serves a release's cover exactly as cached - never conformed. This
+// is what JAVBeacon's own web UI uses everywhere (Release Library grid,
+// release detail pages, etc.), so those thumbnails always show exactly the
+// cover as scraped. See coverJellyfinPrimary for the Jellyfin-specific,
+// conformed variant.
+func (s *Server) cover(w http.ResponseWriter, r *http.Request) {
+	release, path, ok := s.resolveCoverPath(w, r)
+	if !ok {
 		return
 	}
-	// Conform live, in memory, on every request that asks for the poster -
-	// the on-disk cache always stays exactly the raw, as-downloaded cover
-	// (see coverOriginal below), so there's nothing to keep in sync and
-	// nothing that can go stale relative to a newer conforming pipeline:
-	// the very next request just conforms again from the same original.
-	//
+	s.serveCoverFile(w, r, path, release.VideoID)
+}
+
+// coverOriginal serves the non-cropped, non-padded source cover for a
+// release - historically added so Jellyfin's Backdrop image could avoid a
+// conformed/cropped /covers/{id} response, since a cropped poster makes a
+// poor background. Now that /covers/{id} itself is never conformed, this is
+// equivalent to it, but kept as its own endpoint so the existing Jellyfin
+// plugin contract (Metadata.CoverBackdropPath) doesn't need to change.
+func (s *Server) coverOriginal(w http.ResponseWriter, r *http.Request) {
+	release, path, ok := s.resolveCoverPath(w, r)
+	if !ok {
+		return
+	}
+	s.serveCoverFile(w, r, path, release.VideoID)
+}
+
+// coverJellyfinPrimary serves the JavLibrary/GIGA-conformed Primary/Poster/
+// Cover image - a two-panel spread cover sliced or padded to Jellyfin's
+// 1000x1500 size - computed live, entirely in memory, on every request,
+// and never written back to the on-disk cache file (see
+// covers.ConformForServing). This is dedicated to Jellyfin's own Primary
+// image fetch (see internal/jellyfin/service.go's Metadata.CoverPath);
+// JAVBeacon's own web UI never requests this endpoint, only the plain,
+// always-unconformed /covers/{id} above.
+func (s *Server) coverJellyfinPrimary(w http.ResponseWriter, r *http.Request) {
+	release, path, ok := s.resolveCoverPath(w, r)
+	if !ok {
+		return
+	}
 	// ProductURL (the release's own javlibrary.com/akiba-web.com detail
 	// page), not ImageURL, is what actually says which site this release
 	// came from - JavLibrary often hotlinks a cover from DMM's CDN, and
@@ -1240,49 +1283,10 @@ func (s *Server) cover(w http.ResponseWriter, r *http.Request) {
 	s.serveCoverFile(w, r, path, release.VideoID)
 }
 
-// coverOriginal serves the non-cropped, non-padded source cover for a
-// release, for callers - Jellyfin's Backdrop image in particular - that
-// specifically want the version before any JavLibrary/GIGA poster
-// conforming is applied, since a cropped-to-poster image makes a poor
-// background. The on-disk cache file is never mutated by conforming (see
-// cover above, which conforms purely in memory at serve time), so it is
-// always already the untouched original - this just serves it directly.
-func (s *Server) coverOriginal(w http.ResponseWriter, r *http.Request) {
-	n, err := id(r)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	release, err := s.store.Release(r.Context(), n)
-	if errors.Is(err, sql.ErrNoRows) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		s.log.Warn("cover lookup failed", "release_id", n, "error", err)
-		http.Error(w, "cover unavailable", http.StatusInternalServerError)
-		return
-	}
-	if strings.TrimSpace(release.ImageURL) == "" {
-		s.serveUnavailableCover(w, r)
-		return
-	}
-	path, _, err := s.covers.Ensure(r.Context(), release.VideoID, release.ImageURL)
-	if err != nil {
-		s.log.Warn("local cover unavailable", "release_id", n, "video_id", release.VideoID, "image_url", release.ImageURL, "error", err)
-		s.serveUnavailableCover(w, r)
-		return
-	}
-	if s.covers.Unavailable(path) {
-		s.serveUnavailableCover(w, r)
-		return
-	}
-	s.serveCoverFile(w, r, path, release.VideoID)
-}
-
 // serveCoverFile opens path and streams it as the response, sniffing its
-// content type from the first 512 bytes. Shared by cover and coverOriginal
-// so both serve identically once the right file has been picked.
+// content type from the first 512 bytes. Shared by cover, coverOriginal,
+// and coverJellyfinPrimary's non-conforming fallback so all three serve
+// identically once the right file has been picked.
 func (s *Server) serveCoverFile(w http.ResponseWriter, r *http.Request, path, videoID string) {
 	f, err := os.Open(path)
 	if err != nil {
