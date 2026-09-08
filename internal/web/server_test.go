@@ -1568,6 +1568,67 @@ func TestStashHistoryEndpointPaginatesDetailsAndReturnsCompactDailyTotals(t *tes
 	}
 }
 
+func TestReleaseStashHistoryReturnsOnlySelectedReleaseEvents(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "release-stash-history.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	play := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	orgasm := time.Date(2026, 9, 3, 12, 20, 0, 0, time.UTC)
+	if err := st.UpsertStashHistory(ctx, domain.StashHistoryScene{StashSceneID: "wanted", ReleaseID: 42, VideoID: "WATCH-42", TotalPlaySeconds: 1200}, []time.Time{play}, []time.Time{orgasm}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertStashHistory(ctx, domain.StashHistoryScene{StashSceneID: "other", ReleaseID: 99, VideoID: "OTHER-99"}, []time.Time{play}, nil); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st}
+	req := httptest.NewRequest(http.MethodGet, "/api/releases/42/stash-history", nil)
+	req.SetPathValue("id", "42")
+	rec := httptest.NewRecorder()
+	s.releaseStashHistory(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Scenes      []domain.StashHistoryScene `json:"scenes"`
+		Events      []domain.StashHistoryEvent `json:"events"`
+		PlayCount   int                        `json:"play_count"`
+		OrgasmCount int                        `json:"orgasm_count"`
+		PlaySeconds float64                    `json:"play_seconds"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Scenes) != 1 || response.Scenes[0].StashSceneID != "wanted" || len(response.Events) != 2 || response.PlayCount != 1 || response.OrgasmCount != 1 || response.PlaySeconds != 1200 {
+		t.Fatalf("release history response=%+v", response)
+	}
+}
+
+func TestReleaseDetailsHasCompactStashHistoryModal(t *testing.T) {
+	markup, _ := assets.ReadFile("static/index.html")
+	javascript, _ := assets.ReadFile("static/app.js")
+	styles, _ := assets.ReadFile("static/app.css")
+	for _, marker := range []string{`id="releaseWatchHistoryDialog"`, `id="releaseWatchHistoryContent"`} {
+		if !bytes.Contains(markup, []byte(marker)) {
+			t.Fatalf("release history modal is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{`function releaseWatchHistoryButton`, `function openReleaseWatchHistory`, `/stash-history`, `releaseHistoryBars`, `releaseHistoryColumns`} {
+		if !bytes.Contains(javascript, []byte(marker)) {
+			t.Fatalf("release history behavior is missing %q", marker)
+		}
+	}
+	if !bytes.Contains(styles, []byte(`.releaseWatchHistoryDialog`)) || !bytes.Contains(styles, []byte(`.releaseHistoryChart`)) {
+		t.Fatal("release history modal styling is missing")
+	}
+	icon, err := assets.ReadFile("static/assets/orgasm-splash.svg")
+	if err != nil || !bytes.Contains(icon, []byte(`fill="#fff"`)) {
+		t.Fatalf("white orgasm splash icon is missing: %v", err)
+	}
+}
+
 func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testing.T) {
 	files := map[string][]string{
 		"static/index.html": {
