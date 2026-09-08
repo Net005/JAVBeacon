@@ -7,6 +7,14 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.121] - 2026-09-08
+
+### Fixed
+
+- Download Activity filter wording is now transport-aware: HTTP searches refer
+  to HTTP filenames, while qBittorrent searches continue to refer to torrent
+  names. The placeholder updates immediately when switching transport tabs.
+
 ## [1.0.120] - 2026-09-08
 
 ### Fixed
