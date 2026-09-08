@@ -31,7 +31,10 @@ def main():
 
     endpoint = "/api/hooks/stash/test" if mode == "test" else "/api/hooks/stash/scene"
     event = "Connection.Test" if mode == "test" else hook.get("type") or "Scene.Update.Post"
-    body = json.dumps({"scene_id": scene_id, "event": event, "request_id": request_id}).encode()
+    body_fields = {"event": event, "request_id": request_id}
+    if mode != "test":
+        body_fields["scene_id"] = scene_id
+    body = json.dumps(body_fields).encode()
     request = urllib.request.Request(
         base_url + endpoint,
         data=body,
