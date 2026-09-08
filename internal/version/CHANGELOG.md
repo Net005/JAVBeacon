@@ -7,6 +7,23 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.130] - 2026-09-08
+
+### Changed
+
+- The top-right status widget is now a larger, persistent activity center with
+  live searching, waiting, ready, and downloading counts; queue advancement;
+  and richer per-release source, transport, and status details. Its accidental
+  one-click dismiss control has been removed.
+
+### Fixed
+
+- Search-and-download work now reports the effective HTTP or torrent transport
+  from the global download method and per-release override consistently. Newly
+  queued, promoted, already queued, and restart-resumed work is corrected, so
+  HTTP-first jobs no longer appear under qBittorrent or leave stale In Progress
+  counts behind.
+
 ## [1.0.129] - 2026-09-08
 
 ### Fixed
