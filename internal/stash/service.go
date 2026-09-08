@@ -38,9 +38,9 @@ const DefaultQuery = `query JAVBeaconLocalScenes { findScenes(filter: { per_page
 // play duration are newer than the counter fields, hence the three graceful
 // tiers in fetchPlaybackStats: full history, modern counters/metadata, then
 // the original counter-only query for older StashApp installations.
-const playbackStatsQueryWithHistory = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id title code urls o_counter play_count last_played_at play_duration play_history o_history files { path } } } }`
-const playbackStatsQueryBasic = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id title code urls o_counter play_count last_played_at play_duration files { path } } } }`
-const playbackStatsQueryLegacy = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { scenes { id o_counter play_count last_played_at } } }`
+const playbackStatsQueryWithHistory = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { count scenes { id title code urls o_counter play_count last_played_at play_duration play_history o_history files { path } } } }`
+const playbackStatsQueryBasic = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { count scenes { id title code urls o_counter play_count last_played_at play_duration files { path } } } }`
+const playbackStatsQueryLegacy = `query JAVBeaconPlaybackStats { findScenes(filter: { per_page: -1 }) { count scenes { id o_counter play_count last_played_at } } }`
 const sceneDetailsQuery = `query JAVBeaconSceneCreatedAt { findScenes(filter: { per_page: -1 }) { scenes { id created_at files { path } } } }`
 
 type sceneDetails struct {
@@ -525,26 +525,11 @@ func (s *Service) fetchPlaybackStats(ctx context.Context, url, apiKey string) (m
 }
 
 func (s *Service) fetchPlaybackStatsQuery(ctx context.Context, url, apiKey, query string, withHistory bool) (map[string]playbackStats, error) {
-	body, _ := json.Marshal(map[string]string{"query": query})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		req.Header.Set("ApiKey", apiKey)
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("Stash returned HTTP %d", resp.StatusCode)
-	}
-	var payload struct {
+	const pageSize = 250
+	type payloadType struct {
 		Data struct {
 			FindScenes struct {
+				Count  int `json:"count"`
 				Scenes []struct {
 					ID           string   `json:"id"`
 					Title        string   `json:"title"`
@@ -566,28 +551,58 @@ func (s *Service) fetchPlaybackStatsQuery(ctx context.Context, url, apiKey, quer
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, err
-	}
-	if len(payload.Errors) > 0 {
-		return nil, errors.New(payload.Errors[0].Message)
-	}
 	out := map[string]playbackStats{}
-	for _, scene := range payload.Data.FindScenes.Scenes {
-		st := playbackStats{OCounter: scene.OCounter, PlayCount: scene.PlayCount, LastPlayedAt: scene.LastPlayedAt, Title: scene.Title, Code: scene.Code, URLs: scene.URLs, PlayDuration: scene.PlayDuration, PlayHistory: scene.PlayHistory, OHistory: scene.OHistory, HistoryAvailable: withHistory}
-		if len(scene.Files) > 0 {
-			st.FilePath = scene.Files[0].Path
+	for page := 1; page <= 10000; page++ {
+		pageQuery := strings.Replace(query, "per_page: -1", fmt.Sprintf("per_page: %d, page: %d", pageSize, page), 1)
+		body, _ := json.Marshal(map[string]string{"query": pageQuery})
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
 		}
-		if withHistory {
-			for _, t := range scene.OHistory {
-				if t > st.LastOCountAt {
-					st.LastOCountAt = t
+		req.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			req.Header.Set("ApiKey", apiKey)
+		}
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		var payload payloadType
+		decodeErr := json.NewDecoder(resp.Body).Decode(&payload)
+		resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode > 299 {
+			return nil, fmt.Errorf("Stash returned HTTP %d", resp.StatusCode)
+		}
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		if len(payload.Errors) > 0 {
+			return nil, errors.New(payload.Errors[0].Message)
+		}
+		before := len(out)
+		for _, scene := range payload.Data.FindScenes.Scenes {
+			st := playbackStats{OCounter: scene.OCounter, PlayCount: scene.PlayCount, LastPlayedAt: scene.LastPlayedAt, Title: scene.Title, Code: scene.Code, URLs: scene.URLs, PlayDuration: scene.PlayDuration, PlayHistory: scene.PlayHistory, OHistory: scene.OHistory, HistoryAvailable: withHistory}
+			if len(scene.Files) > 0 {
+				st.FilePath = scene.Files[0].Path
+			}
+			if withHistory {
+				for _, t := range scene.OHistory {
+					if t > st.LastOCountAt {
+						st.LastOCountAt = t
+					}
 				}
 			}
+			out[scene.ID] = st
 		}
-		out[scene.ID] = st
+		count, received := payload.Data.FindScenes.Count, len(payload.Data.FindScenes.Scenes)
+		if received == 0 || (count > 0 && len(out) >= count) || (count == 0 && received < pageSize) {
+			return out, nil
+		}
+		if len(out) == before {
+			return nil, fmt.Errorf("Stash playback pagination repeated page %d before all %d scenes were retrieved", page, count)
+		}
 	}
-	return out, nil
+	return nil, errors.New("Stash playback pagination exceeded its safety limit")
 }
 
 func (s *Service) SyncWatchlist(ctx context.Context) (WatchlistStatus, error) {

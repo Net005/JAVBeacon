@@ -7,6 +7,20 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.128] - 2026-09-08
+
+### Changed
+
+- Stash History’s write-back action is now named **Review & Sync**.
+
+### Fixed
+
+- History write-back reviews now retrieve the complete Stash scene library in
+  deterministic pages instead of relying on an unlimited single response.
+  Reported totals, server-side page caps, duplicate scene IDs, repeated pages,
+  and a pagination safety ceiling are handled so successive reviews remain
+  complete and stable on large libraries.
+
 ## [1.0.127] - 2026-09-08
 
 ### Changed
