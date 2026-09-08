@@ -36,6 +36,9 @@ func TestStashHistoryPersistsAndMergesSameDayEvents(t *testing.T) {
 	if items[1].Date != "2026-09-01" || items[1].PlayCount != 2 || items[1].OrgasmCount != 1 || items[1].PlaySeconds != 2400 || !items[1].DurationEstimated {
 		t.Fatalf("unexpected merged day: %+v", items[1])
 	}
+	if !items[1].LatestPlayAt.Equal(plays[1]) || !items[1].LatestOrgasmAt.Equal(orgasms[0]) || !items[1].LatestEventAt.Equal(orgasms[0]) {
+		t.Fatalf("unexpected latest event times: %+v", items[1])
+	}
 	exported, err := st.StashHistoryExport(ctx)
 	if err != nil {
 		t.Fatal(err)

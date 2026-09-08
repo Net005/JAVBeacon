@@ -153,15 +153,24 @@ func (s *SQLite) StashHistory(ctx context.Context, kind string, from, to time.Ti
 		k := key{date, sceneID}
 		item := items[k]
 		if item == nil {
-			item = &domain.StashHistoryItem{Date: date, StashSceneID: sceneID, ReleaseID: releaseID, VideoID: videoID, Title: title, JavLibraryURL: javURL, FilePath: path}
+			item = &domain.StashHistoryItem{Date: date, StashSceneID: sceneID, ReleaseID: releaseID, VideoID: videoID, Title: title, JavLibraryURL: javURL, FilePath: path, LatestEventAt: at}
 			items[k] = item
+		}
+		if at.After(item.LatestEventAt) {
+			item.LatestEventAt = at
 		}
 		if eventType == "play" {
 			item.PlayCount++
 			item.PlaySeconds += seconds
 			item.DurationEstimated = item.DurationEstimated || estimated != 0
+			if at.After(item.LatestPlayAt) {
+				item.LatestPlayAt = at
+			}
 		} else {
 			item.OrgasmCount++
+			if at.After(item.LatestOrgasmAt) {
+				item.LatestOrgasmAt = at
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -180,12 +189,7 @@ func (s *SQLite) StashHistory(ctx context.Context, kind string, from, to time.Ti
 		}
 		out = filtered
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Date == out[j].Date {
-			return out[i].Title < out[j].Title
-		}
-		return out[i].Date > out[j].Date
-	})
+	sort.SliceStable(out, func(i, j int) bool { return out[i].LatestEventAt.After(out[j].LatestEventAt) })
 	return out, nil
 }
 

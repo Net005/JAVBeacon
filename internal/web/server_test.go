@@ -1490,6 +1490,10 @@ func TestStashHistoryUsesNavigableCalendarScopes(t *testing.T) {
 		},
 		"static/app.js": {
 			`stashHistoryPeriod:'day'`,
+			`stashHistoryType:'all'`,
+			`Activity history`,
+			`function rememberStashHistoryType()`,
+			`historyBarPair`,
 			`function historyScope()`,
 			`for(let i=0;i<5;i++)`,
 			`for(let i=0;i<4;i++)`,
@@ -1510,6 +1514,9 @@ func TestStashHistoryUsesNavigableCalendarScopes(t *testing.T) {
 			`.historyPeriodNavigation`,
 			`.historyChart[data-history-type="play"]`,
 			`.historyChart[data-history-type="orgasm"]`,
+			`.historyBarCombined`,
+			`.historyBarPair .playBar`,
+			`.historyBarPair .orgasmBar`,
 			`.historyLinks .historySourceButton`,
 		},
 	}
@@ -1615,7 +1622,7 @@ func TestReleaseDetailsHasCompactStashHistoryModal(t *testing.T) {
 			t.Fatalf("release history modal is missing %q", marker)
 		}
 	}
-	for _, marker := range []string{`function releaseWatchHistoryButton`, `function openReleaseWatchHistory`, `/stash-history`, `releaseHistoryBars`, `releaseHistoryColumns`} {
+	for _, marker := range []string{`function releaseWatchHistoryButton`, `function openReleaseWatchHistory`, `function playHistoryIcon`, `/stash-history`, `releaseHistoryBars`, `releaseHistoryColumns`} {
 		if !bytes.Contains(javascript, []byte(marker)) {
 			t.Fatalf("release history behavior is missing %q", marker)
 		}
@@ -1623,7 +1630,7 @@ func TestReleaseDetailsHasCompactStashHistoryModal(t *testing.T) {
 	if !bytes.Contains(styles, []byte(`.releaseWatchHistoryDialog`)) || !bytes.Contains(styles, []byte(`.releaseHistoryChart`)) {
 		t.Fatal("release history modal styling is missing")
 	}
-	icon, err := assets.ReadFile("static/assets/orgasm-splash.svg")
+	icon, err := assets.ReadFile("static/orgasm-splash.svg")
 	if err != nil || !bytes.Contains(icon, []byte(`fill="#fff"`)) {
 		t.Fatalf("white orgasm splash icon is missing: %v", err)
 	}

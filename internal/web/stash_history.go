@@ -134,6 +134,13 @@ func (s *Server) stashHistory(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		items = filtered
+		sort.SliceStable(items, func(i, j int) bool {
+			left, right := items[i].LatestPlayAt, items[j].LatestPlayAt
+			if kind == "orgasm" {
+				left, right = items[i].LatestOrgasmAt, items[j].LatestOrgasmAt
+			}
+			return left.After(right)
+		})
 	}
 	limit := 25
 	if raw := r.URL.Query().Get("limit"); raw != "" {
