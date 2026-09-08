@@ -40,6 +40,10 @@ func (s *Server) stashRealtimeTest(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		RequestID string `json:"request_id"`
 		Event     string `json:"event"`
+		// SceneID is accepted but ignored: older and third-party plugin
+		// clients send it on connection-test calls even though the test
+		// endpoint has no scene to act on.
+		SceneID string `json:"scene_id"`
 	}
 	if !s.decode(w, r, &payload) {
 		return
