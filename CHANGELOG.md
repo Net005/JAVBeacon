@@ -7,6 +7,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.132] - 2026-09-08
+
+### Added
+
+- Release Details now shows a compact watched indicator when StashApp history
+  exists. It opens a focused modal with exact play and orgasm dates, per-play
+  duration, summary totals, and a small recent-activity graph without adding
+  vertical bulk to the main release view.
+- Orgasm activity uses a dedicated minimal white three-droplet glyph throughout
+  the new detail modal, paired with the existing pink orgasm graph styling.
+
 ## [1.0.131] - 2026-09-08
 
 ### Changed

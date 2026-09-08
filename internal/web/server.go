@@ -291,6 +291,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /api/releases/bulk", s.patchReleasesBulk)
 	s.mux.HandleFunc("POST /api/releases/bulk/monitor-download", s.bulkMonitorAndDownloadReleases)
 	s.mux.HandleFunc("GET /api/releases/{id}", s.release)
+	s.mux.HandleFunc("GET /api/releases/{id}/stash-history", s.releaseStashHistory)
 	s.mux.HandleFunc("PATCH /api/releases/{id}", s.patchRelease)
 	s.mux.HandleFunc("GET /api/releases/{id}/search", s.searchRelease)
 	s.mux.HandleFunc("POST /api/releases/{id}/search-download", s.backgroundSearchAndDownloadRelease)
