@@ -42,9 +42,12 @@ const (
 
 var jellyfinPosterRatio = float64(jellyfinPosterWidth) / float64(jellyfinPosterHeight)
 
-// isJavLibrarySpreadCover reports whether sourceURL is a JavLibrary cover
-// and img's aspect ratio is close enough to the known two-panel spread shape
-// to safely slice down to the front panel.
+// isJavLibrarySpreadCover reports whether sourceURL - the release's own
+// product/detail-page URL, not the cover image's hosting URL, since
+// JavLibrary frequently hotlinks a release's cover from DMM's CDN
+// (pics.dmm.co.jp) instead of hosting it itself - is a JavLibrary release
+// and img's aspect ratio is close enough to the known two-panel spread
+// shape to safely slice down to the front panel.
 func isJavLibrarySpreadCover(sourceURL string, img image.Image) bool {
 	if !strings.Contains(strings.ToLower(sourceURL), "javlibrary") {
 		return false

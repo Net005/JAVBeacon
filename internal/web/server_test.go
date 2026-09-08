@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"log/slog"
 	"net/http"
@@ -810,6 +813,84 @@ func TestCoverEndpointServesBrandedPlaceholderWhenArtworkIsUnavailable(t *testin
 	if !strings.Contains(rec.Body.String(), "Cover not yet available") || !strings.Contains(rec.Body.String(), "JAVBEACON") {
 		t.Fatal("response did not contain the branded unavailable-cover artwork")
 	}
+}
+
+// TestCoverConformsUsingReleaseProductURLNotImageURL guards against a real
+// production bug: JavLibrary and GIGA frequently host a release's cover on
+// a different domain than the site that actually scraped it - JavLibrary
+// often hotlinks a cover from DMM's CDN (pics.dmm.co.jp) instead of hosting
+// it itself, and GIGA's own covers live on giga-web.jp rather than
+// akiba-web.com - so gating conforming on where the image happens to be
+// hosted (ImageURL) misses real matches entirely. It must gate on the
+// release's own product/detail-page URL (ProductURL) instead, which is
+// what actually says which site scraped it.
+func TestCoverConformsUsingReleaseProductURLNotImageURL(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "covers.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	spread := syntheticJavLibrarySpreadJPEGForTest(t)
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(spread)
+	}))
+	defer imageServer.Close()
+
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	// ImageURL simulates a DMM-hotlinked cover: imageServer.URL has no
+	// "javlibrary" in it anywhere, exactly like pics.dmm.co.jp. ProductURL
+	// is a real javlibrary.com detail page, exactly the shape of a real
+	// production release (e.g. IPZZ-869 / release 386176).
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-1", Title: "Test", Source: "JavLibrary", ImageURL: imageServer.URL, ProductURL: "https://www.javlibrary.com/en/?v=javtest1"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "TEST-1"})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release lookup: items=%d err=%v", len(releases), err)
+	}
+
+	cache, err := covers.New(filepath.Join(t.TempDir(), "cache"), time.Second, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, covers: cache, log: slog.Default()}
+	req := httptest.NewRequest(http.MethodGet, "/covers/1", nil)
+	req.SetPathValue("id", strconv.FormatInt(releases[0].ID, 10))
+	rec := httptest.NewRecorder()
+	s.cover(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	img, _, err := image.Decode(bytes.NewReader(rec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if b := img.Bounds(); b.Dx() != 1000 || b.Dy() != 1500 {
+		t.Fatalf("got %dx%d, want 1000x1500 (conformed) - cover was served unconformed, meaning gating used ImageURL instead of ProductURL", b.Dx(), b.Dy())
+	}
+}
+
+func syntheticJavLibrarySpreadJPEGForTest(t *testing.T) []byte {
+	t.Helper()
+	const w, h = 800, 538
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if x < w/2 {
+				img.Set(x, y, color.RGBA{R: 10, G: 10, B: 10, A: 255})
+			} else {
+				img.Set(x, y, color.RGBA{R: 200, G: uint8(y % 256), B: 50, A: 255})
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 // TestDownloadListReturnsPaginatedItemsAndTotal covers Phase 4B: the
