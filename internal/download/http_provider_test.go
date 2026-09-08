@@ -818,17 +818,20 @@ func TestPikPakSearchFilesExposeSizesAndMatchedFile(t *testing.T) {
 	}
 }
 
-func TestNextHTTPDestinationUsesStableCollisionSuffixes(t *testing.T) {
+func TestHTTPDestinationPathIsDeterministicWithNoCollisionSuffix(t *testing.T) {
 	dir := t.TempDir()
-	if got := nextHTTPDestination(dir, "ADN-803"); got != filepath.Join(dir, "ADN-803.mp4") {
-		t.Fatalf("first path = %q", got)
+	want := filepath.Join(dir, "ADN-803.mp4")
+	if got := httpDestinationPath(dir, "ADN-803"); got != want {
+		t.Fatalf("path = %q, want %q", got, want)
 	}
-	for _, name := range []string{"ADN-803.mp4", "ADN-803-0.mp4"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	// Even once a file already exists at that path, httpDestinationPath
+	// itself never appends a "-0", "-1", ... suffix - runHTTPDownload is
+	// responsible for checking existence and skipping the download before
+	// this path is used, not this helper.
+	if err := os.WriteFile(want, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if got := nextHTTPDestination(dir, "ADN-803"); got != filepath.Join(dir, "ADN-803-1.mp4") {
-		t.Fatalf("collision path = %q", got)
+	if got := httpDestinationPath(dir, "ADN-803"); got != want {
+		t.Fatalf("path after collision = %q, want unchanged %q", got, want)
 	}
 }

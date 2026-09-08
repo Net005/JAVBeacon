@@ -1347,6 +1347,30 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		fail(fmt.Errorf("create HTTP download folder: %w", err))
 		return
 	}
+	// If the destination file is already on disk, treat it as an already
+	// completed download instead of fetching it again. HTTP downloads used
+	// to fall back to a "-0", "-1", ... filename suffix when the base name
+	// collided, which silently re-downloaded and duplicated the file on
+	// disk; a pre-existing file now short-circuits the whole resolve/fetch
+	// path (avoiding, among other things, an unnecessary PikPak restore).
+	existingPath := httpDestinationPath(dir, strings.ToUpper(strings.TrimSpace(d.Query)))
+	if info, statErr := os.Stat(existingPath); statErr == nil && info.Size() > 0 {
+		d.DestinationPath = existingPath
+		if d.BytesTotal <= 0 {
+			d.BytesTotal = info.Size()
+		}
+		d.BytesDownloaded = d.BytesTotal
+		d.Progress = 1
+		d.ETASeconds = 0
+		d.BytesPerSecond = 0
+		d.Status = "completed"
+		d.MatchReason = appendDownloadPreference("file already present locally; HTTP download skipped", d.MatchReason)
+		d, _ = s.store.SaveDownload(ctx, d)
+		s.logHTTPDownloadEvent("HTTP download skipped: file already exists", d)
+		_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_completed", "File already present locally; HTTP download skipped")
+		s.runHTTPCompletionPipelinesAsync(context.Background(), d, Torrent{Name: filepath.Base(existingPath), ContentPath: existingPath, Progress: 1})
+		return
+	}
 	var resolved resolvedHTTPFile
 	var resolver HTTPSourceProvider
 	for _, provider := range httpSourceProviders(s.client, settings, s.log, s.authenticatePikPakSession, s.configureHTTPProviderSolver(settings), &s.gluetunRotationMu) {
@@ -1395,7 +1419,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	// makes explicit Download Activity removal able to clean it up even after a
 	// cancellation, transfer failure, or application restart.
 	d, _ = s.store.SaveDownload(context.Background(), d)
-	finalPath := nextHTTPDestination(dir, strings.ToUpper(strings.TrimSpace(d.Query)))
+	finalPath := httpDestinationPath(dir, strings.ToUpper(strings.TrimSpace(d.Query)))
 	tempPath := finalPath + ".part"
 	out, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -2032,17 +2056,13 @@ func httpDownloadSizeMismatchError(resp *http.Response, expected int64, authenti
 	return fmt.Errorf("HTTP provider returned the wrong file size: selected %d bytes, response contains %d bytes", expected, resp.ContentLength)
 }
 
-func nextHTTPDestination(dir, releaseID string) string {
-	base := filepath.Join(dir, releaseID+".mp4")
-	if _, err := os.Stat(base); errors.Is(err, os.ErrNotExist) {
-		return base
-	}
-	for i := 0; ; i++ {
-		candidate := filepath.Join(dir, fmt.Sprintf("%s-%d.mp4", releaseID, i))
-		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
-			return candidate
-		}
-	}
+// httpDestinationPath returns the single, deterministic on-disk path an
+// HTTP download for releaseID always uses. There is no collision-suffix
+// fallback: runHTTPDownload checks this exact path before resolving or
+// fetching anything, so by the time it is used to open the destination file
+// the caller has already established the file does not exist.
+func httpDestinationPath(dir, releaseID string) string {
+	return filepath.Join(dir, releaseID+".mp4")
 }
 
 func (s *Service) RetryHTTPDownload(ctx context.Context, downloadID int64) (domain.Download, error) {
