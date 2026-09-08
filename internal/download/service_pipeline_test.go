@@ -698,6 +698,7 @@ func TestPollTorrentsRemovesByRatioDespiteFailedCompletionPipelineStep(t *testin
 	}
 
 	service := New(st, 2*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	service.videoProbe = func(context.Context, string) error { return nil }
 	// First tick: the download_completed pipeline has never run for this
 	// row, so pollTorrents kicks it off in the background
 	// (runEventPipelineAsync) and returns immediately rather than blocking
@@ -834,6 +835,7 @@ func TestPollTorrentsSkipsKickoffWhilePipelineAlreadyInFlight(t *testing.T) {
 	}
 
 	service := New(st, 2*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	service.videoProbe = func(context.Context, string) error { return nil }
 	// Force the "our own goroutine already has this in flight" condition
 	// directly, standing in for a poll tick that landed in the window
 	// before the real background goroutine's own runPipelineEvent call has
@@ -912,6 +914,7 @@ func TestPollTorrentsDoesNotBlockOnSlowCompletionPipeline(t *testing.T) {
 	}
 
 	service := New(st, 2*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	service.videoProbe = func(context.Context, string) error { return nil }
 	started := time.Now()
 	service.pollTorrents(ctx)
 	if elapsed := time.Since(started); elapsed > time.Second {

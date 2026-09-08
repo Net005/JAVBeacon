@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html><head><title>JAVBeacon</title></head><body>
+<div id="JAVBeaconConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
+  <div data-role="content"><div class="content-primary">
+    <form id="JAVBeaconConfigForm">
+      <h1>JAVBeacon</h1>
+      <div class="inputContainer"><label class="inputLabel inputLabelUnfocused" for="jbUrl">JAVBeacon URL</label><input id="jbUrl" is="emby-input" required /><div class="fieldDescription">Use the URL reachable from the Jellyfin server/container.</div></div>
+      <div class="inputContainer"><label class="inputLabel inputLabelUnfocused" for="jbKey">API key</label><input id="jbKey" type="password" is="emby-input" autocomplete="new-password" /></div>
+      <label class="emby-checkbox-label"><input id="jbMetadata" type="checkbox" is="emby-checkbox" /><span>Enable metadata, Identify search, and artwork</span></label>
+      <label class="emby-checkbox-label"><input id="jbPlayback" type="checkbox" is="emby-checkbox" /><span>Forward tracked playback to JAVBeacon</span></label>
+      <label class="emby-checkbox-label"><input id="jbWeb" type="checkbox" is="emby-checkbox" /><span>Enable optional Jellyfin Web activity endpoints</span></label>
+      <label class="emby-checkbox-label"><input id="jbWatchlist" type="checkbox" is="emby-checkbox" /><span>Synchronize the Stash Watchlist tag to a Jellyfin collection</span></label>
+      <div class="inputContainer"><label class="inputLabel inputLabelUnfocused" for="jbCollection">Watchlist collection name</label><input id="jbCollection" is="emby-input" /><div class="fieldDescription">An existing collection with this exact name is reused; otherwise it is created.</div></div>
+      <label class="emby-checkbox-label"><input id="jbScan" type="checkbox" is="emby-checkbox" /><span>Queue a Jellyfin library scan when Stash scenes change</span></label>
+      <div class="inputContainer"><label class="inputLabel inputLabelUnfocused" for="jbSyncInterval">Stash synchronization interval (seconds)</label><input id="jbSyncInterval" type="number" min="15" step="1" is="emby-input" /></div>
+      <div class="inputContainer"><label class="inputLabel inputLabelUnfocused" for="jbUsers">Tracked Jellyfin user IDs</label><input id="jbUsers" is="emby-input" /><div class="fieldDescription">Comma-separated IDs. Leave blank to track every user.</div></div>
+      <button is="emby-button" type="submit" class="raised button-submit block"><span>Save</span></button>
+    </form>
+  </div></div>
+  <script>
+  (()=>{const id='36dc106a-df2f-4d33-bb71-574aa09e6d5b',page=document.querySelector('#JAVBeaconConfigPage'),form=page.querySelector('form');
+  page.addEventListener('pageshow',()=>Dashboard.showLoadingMsg()||ApiClient.getPluginConfiguration(id).then(c=>{page.querySelector('#jbUrl').value=c.JAVBeaconUrl||'';page.querySelector('#jbKey').value=c.ApiKey||'';page.querySelector('#jbMetadata').checked=c.EnableMetadata;page.querySelector('#jbPlayback').checked=c.EnablePlayback;page.querySelector('#jbWeb').checked=c.EnableWebActivity;page.querySelector('#jbWatchlist').checked=c.EnableWatchlistCollection;page.querySelector('#jbCollection').value=c.WatchlistCollectionName||'Watchlist';page.querySelector('#jbScan').checked=c.ScanLibraryOnStashChanges;page.querySelector('#jbSyncInterval').value=c.LibrarySyncIntervalSeconds||60;page.querySelector('#jbUsers').value=(c.TrackedUserIds||[]).join(', ');Dashboard.hideLoadingMsg()}));
+  form.addEventListener('submit',e=>{e.preventDefault();Dashboard.showLoadingMsg();ApiClient.getPluginConfiguration(id).then(c=>{c.JAVBeaconUrl=page.querySelector('#jbUrl').value;c.ApiKey=page.querySelector('#jbKey').value;c.EnableMetadata=page.querySelector('#jbMetadata').checked;c.EnablePlayback=page.querySelector('#jbPlayback').checked;c.EnableWebActivity=page.querySelector('#jbWeb').checked;c.EnableWatchlistCollection=page.querySelector('#jbWatchlist').checked;c.WatchlistCollectionName=page.querySelector('#jbCollection').value.trim()||'Watchlist';c.ScanLibraryOnStashChanges=page.querySelector('#jbScan').checked;c.LibrarySyncIntervalSeconds=Math.max(15,Number(page.querySelector('#jbSyncInterval').value)||60);c.TrackedUserIds=page.querySelector('#jbUsers').value.split(',').map(x=>x.trim()).filter(Boolean);return ApiClient.updatePluginConfiguration(id,c)}).then(Dashboard.processPluginConfigurationUpdateResult);return false})})();
+  </script>
+</div></body></html>

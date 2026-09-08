@@ -230,6 +230,7 @@ CREATE TABLE IF NOT EXISTS downloads (
 	provider TEXT NOT NULL DEFAULT '',
 	source_type TEXT NOT NULL DEFAULT '',
 	source_reference TEXT NOT NULL DEFAULT '',
+	transfer_reference TEXT NOT NULL DEFAULT '',
 	source_page_url TEXT NOT NULL DEFAULT '',
 	provider_file_id TEXT NOT NULL DEFAULT '',
 	restored_file_id TEXT NOT NULL DEFAULT '',
@@ -433,6 +434,26 @@ CREATE TABLE IF NOT EXISTS stash_history_events (
 );
 CREATE INDEX IF NOT EXISTS idx_stash_history_events_time ON stash_history_events(occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stash_history_events_type_time ON stash_history_events(event_type,occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS jellyfin_playback_sessions (
+	session_id TEXT PRIMARY KEY,
+	release_id BIGINT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+	stash_scene_id TEXT NOT NULL,
+	jellyfin_item_id TEXT NOT NULL DEFAULT '',
+	jellyfin_user_id TEXT NOT NULL DEFAULT '',
+	started_at TIMESTAMPTZ NOT NULL,
+	last_event_at TIMESTAMPTZ NOT NULL,
+	last_position_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+	runtime_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+	accumulated_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+	forwarded_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+	was_paused INTEGER NOT NULL DEFAULT 0,
+	play_counted INTEGER NOT NULL DEFAULT 0,
+	status TEXT NOT NULL DEFAULT 'active',
+	updated_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_release ON jellyfin_playback_sessions(release_id,updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_active ON jellyfin_playback_sessions(status,updated_at);
 `
 
 // migratePostgres applies postgresSchemaDDL and then runs the same
@@ -525,6 +546,7 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS download_method_override TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE releases ADD COLUMN IF NOT EXISTS http_download_primary INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE downloads ADD COLUMN IF NOT EXISTS transport TEXT NOT NULL DEFAULT 'torrent'`,
+		`ALTER TABLE downloads ADD COLUMN IF NOT EXISTS transfer_reference TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE downloads ADD COLUMN IF NOT EXISTS source_page_url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE downloads ADD COLUMN IF NOT EXISTS provider_file_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE downloads ADD COLUMN IF NOT EXISTS restored_file_id TEXT NOT NULL DEFAULT ''`,

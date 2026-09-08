@@ -55,6 +55,27 @@ type StashHistoryExport struct {
 	Events     []StashHistoryEvent `json:"events"`
 }
 
+// JellyfinPlaybackSession is JAVBeacon's durable view of one Jellyfin play.
+// It intentionally stores only Jellyfin identifiers and the already-resolved
+// Stash scene id; Stash credentials and GraphQL details never leave JAVBeacon.
+type JellyfinPlaybackSession struct {
+	SessionID      string    `json:"session_id"`
+	ReleaseID      int64     `json:"release_id"`
+	StashSceneID   string    `json:"stash_scene_id"`
+	JellyfinItemID string    `json:"jellyfin_item_id"`
+	JellyfinUserID string    `json:"jellyfin_user_id"`
+	StartedAt      time.Time `json:"started_at"`
+	LastEventAt    time.Time `json:"last_event_at"`
+	LastPosition   float64   `json:"last_position_seconds"`
+	RuntimeSeconds float64   `json:"runtime_seconds"`
+	Accumulated    float64   `json:"accumulated_seconds"`
+	Forwarded      float64   `json:"forwarded_seconds"`
+	WasPaused      bool      `json:"was_paused"`
+	PlayCounted    bool      `json:"play_counted"`
+	Status         string    `json:"status"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 type Site struct {
 	ID                int64  `json:"id"`
 	Title             string `json:"title"`
@@ -580,7 +601,11 @@ type Download struct {
 	Provider        string `json:"provider"`
 	SourceType      string `json:"source_type"`
 	SourceReference string `json:"source_reference"`
-	SourcePageURL   string `json:"source_page_url,omitempty"`
+	// TransferReference is the direct magnet/torrent URL used to submit a
+	// download. It is retained privately so a failed media check can replace
+	// the corrupt payload once without exposing the signed/direct URI via API.
+	TransferReference string `json:"-"`
+	SourcePageURL     string `json:"source_page_url,omitempty"`
 	// ProviderFileID pins an HTTP download to the exact file selected while
 	// inspecting a multi-file provider share. It prevents download-time share
 	// resolution from silently choosing a different release-ID-matching file.

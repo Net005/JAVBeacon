@@ -213,7 +213,7 @@ func (s *Service) run(ctx context.Context) {
 	s.log.Info("Stash local release sync started", "url", url)
 	result.Phase = "Fetching StashApp scenes"
 	s.publishStatus(result)
-	ids, dates, scenes, err := s.fetch(ctx, url, query, apiKey)
+	ids, dates, sceneTags, scenes, err := s.fetch(ctx, url, query, apiKey)
 	result.Scenes = scenes
 	if err != nil {
 		result.Error = err.Error()
@@ -285,6 +285,24 @@ func (s *Service) run(ctx context.Context) {
 					result.Error = e.Error()
 				} else {
 					releaseUpdated = true
+				}
+			}
+			if tagID := strings.TrimSpace(settings["stash_watchlist_tag_id"]); local && tagID != "" {
+				if tags, available := sceneTags[sceneID]; available {
+					watchlist := false
+					for _, id := range tags {
+						if id == tagID {
+							watchlist = true
+							break
+						}
+					}
+					if watchlist != release.Watchlist {
+						if e := s.store.PatchRelease(ctx, release.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil, nil); e != nil {
+							result.Error = e.Error()
+						} else {
+							releaseUpdated = true
+						}
+					}
 				}
 			}
 			// TODO-2.0's "Missing released status display": best-effort, so a
@@ -386,6 +404,10 @@ func (s *Service) run(ctx context.Context) {
 			}
 		}
 	}
+	// A successful full Stash snapshot may contain a new, not-yet-matched
+	// scene, so publish a revision even when no existing JAVBeacon row changed.
+	// Jellyfin will debounce this through its configured polling interval.
+	s.markJellyfinLibraryChanged(ctx)
 }
 
 func parseHistoryTimes(values []string) ([]time.Time, error) {
@@ -463,11 +485,11 @@ func (s *Service) fetchSceneDetails(ctx context.Context, url, apiKey string) (ma
 	return out, nil
 }
 
-func (s *Service) fetch(ctx context.Context, url, query, apiKey string) (map[string]string, map[string]string, int, error) {
+func (s *Service) fetch(ctx context.Context, url, query, apiKey string) (map[string]string, map[string]string, map[string][]string, int, error) {
 	body, _ := json.Marshal(map[string]string{"query": query})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, nil, 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
@@ -475,16 +497,21 @@ func (s *Service) fetch(ctx context.Context, url, query, apiKey string) (map[str
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, nil, 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, nil, 0, fmt.Errorf("Stash returned HTTP %d", resp.StatusCode)
+		return nil, nil, nil, 0, fmt.Errorf("Stash returned HTTP %d", resp.StatusCode)
 	}
 	var payload struct {
 		Data struct {
 			FindScenes struct {
-				Scenes []struct{ ID, Title, Code, Date string } `json:"scenes"`
+				Scenes []struct {
+					ID, Title, Code, Date string
+					Tags                  []struct {
+						ID string `json:"id"`
+					} `json:"tags"`
+				} `json:"scenes"`
 			} `json:"findScenes"`
 		} `json:"data"`
 		Errors []struct {
@@ -492,13 +519,21 @@ func (s *Service) fetch(ctx context.Context, url, query, apiKey string) (map[str
 		} `json:"errors"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, nil, 0, err
+		return nil, nil, nil, 0, err
 	}
 	if len(payload.Errors) > 0 {
-		return nil, nil, 0, errors.New(payload.Errors[0].Message)
+		return nil, nil, nil, 0, errors.New(payload.Errors[0].Message)
 	}
-	ids, dates := map[string]string{}, map[string]string{}
+	ids, dates, sceneTags := map[string]string{}, map[string]string{}, map[string][]string{}
 	for _, scene := range payload.Data.FindScenes.Scenes {
+		if scene.Tags != nil {
+			for _, tag := range scene.Tags {
+				sceneTags[scene.ID] = append(sceneTags[scene.ID], tag.ID)
+			}
+			if _, ok := sceneTags[scene.ID]; !ok {
+				sceneTags[scene.ID] = []string{}
+			}
+		}
 		for _, raw := range append([]string{scene.Code}, idInText.FindAllString(scene.Title, -1)...) {
 			if id := canonical(raw); id != "" {
 				ids[id] = scene.ID
@@ -512,7 +547,7 @@ func (s *Service) fetch(ctx context.Context, url, query, apiKey string) (map[str
 			}
 		}
 	}
-	return ids, dates, len(payload.Data.FindScenes.Scenes), nil
+	return ids, dates, sceneTags, len(payload.Data.FindScenes.Scenes), nil
 }
 
 // fetchPlaybackStats progressively removes modern history fields when schema

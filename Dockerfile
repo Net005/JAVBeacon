@@ -32,6 +32,7 @@ RUN apk add --no-cache \
     bash \
     curl \
     ca-certificates \
+    ffmpeg \
     su-exec \
     tzdata \
     && addgroup -S javbeacon \

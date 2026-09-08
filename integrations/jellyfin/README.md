@@ -1,0 +1,110 @@
+# JAVBeacon ↔ Jellyfin
+
+This integration keeps Jellyfin and StashApp decoupled:
+
+```text
+Jellyfin plugin → JAVBeacon REST API → StashApp GraphQL
+```
+
+Jellyfin knows only the JAVBeacon URL/API key. JAVBeacon owns path and release matching, Stash credentials and scene IDs, elapsed-play calculation, resume/play-duration checkpoints, completion thresholds, play-count deduplication, and O-count mutations.
+
+## Compatibility
+
+The default build targets Jellyfin **12.0.0 / .NET 10**, matching Atlantis.
+The plugin has been compiled against the final Jellyfin 12 reference assemblies;
+its metadata, playback, collection, and library-scan adapters require no
+12-specific source changes.
+
+```bash
+curl -sS https://your-jellyfin.example/System/Info/Public
+./integrations/jellyfin/build.sh
+```
+
+The REST client, DTOs, and JAVBeacon-owned playback engine remain isolated from
+the Jellyfin event adapter. A legacy Jellyfin 10.11 build can still be produced
+explicitly when needed:
+
+```bash
+TARGET_FRAMEWORK=net9.0 JELLYFIN_VERSION=10.11.11 ./integrations/jellyfin/build.sh
+```
+
+## Build and install
+
+Requirements: .NET 10 SDK, or Docker.
+
+```bash
+./integrations/jellyfin/build.sh
+# or
+docker build --output type=local,dest=integrations/jellyfin/dist integrations/jellyfin
+```
+
+Stop Jellyfin, create `/config/plugins/JAVBeacon`, copy the contents of `integrations/jellyfin/dist` into it, and start Jellyfin. In Dashboard → Plugins → JAVBeacon configure:
+
+- JAVBeacon URL reachable from the Jellyfin container (the public HTTPS URL is fine).
+- JAVBeacon API key.
+- Metadata and playback switches.
+- Comma-separated Jellyfin user IDs to track; blank tracks all users.
+- Optional Stash Watchlist collection synchronization and its collection name.
+- Whether Stash scene changes should queue a Jellyfin library scan, plus the
+  polling interval (minimum 15 seconds).
+
+In the target movie library, enable JAVBeacon as a movie metadata/image provider and refresh metadata. Automatic lookup sends the full Jellyfin path first, then falls back to the parsed release code. Jellyfin Identify uses JAVBeacon search. Successful matches persist both `JAVBeacon` release ID and `Stash` scene ID in Provider IDs.
+
+## JAVBeacon settings
+
+Defaults are stored in JAVBeacon settings and can be changed through `PUT /api/settings`:
+
+| Setting | Default | Meaning |
+|---|---:|---|
+| `jellyfin_checkpoint_seconds` | 30 | Unforwarded watched time before a Stash checkpoint |
+| `jellyfin_max_checkpoint_gap_seconds` | 120 | Maximum wall-time credited across a missing progress event |
+| `jellyfin_completion_percent` | 80 | Watched percentage that adds one Stash play |
+| `jellyfin_completion_remaining_seconds` | 600 | Remaining-time completion rule for media longer than this value |
+| `jellyfin_path_remaps` | `[]` | JSON `from`/`to` mount-prefix mappings from Jellyfin paths to Stash paths |
+
+For example, if Jellyfin reports `/videos/jav/ABC-123.mp4` while Stash reports
+`/media/jav/ABC-123.mp4`, save `[{"from":"/videos","to":"/media"}]` in
+`jellyfin_path_remaps`. Exact direct and remapped paths are tried before the
+release-code fallback.
+
+Playback session state is durable in both SQLite and PostgreSQL. Stash failures leave unforwarded seconds pending so a repeated/later event can retry without double-counting.
+
+## Watchlist collection and Stash-triggered scans
+
+Enable **Synchronize the Stash Watchlist tag to a Jellyfin collection** in the
+plugin and choose a collection name (default `Watchlist`). JAVBeacon reads the
+configured `stash_watchlist_tag_id` from Stash, exposes only matching release
+IDs to Jellyfin, and the plugin adds or removes JAVBeacon-backed movies until
+the native Jellyfin collection matches. Unrelated manually-added collection
+members are preserved.
+
+Realtime Stash scene-create/update/delete hooks advance JAVBeacon's library
+revision. The plugin detects that revision and queues Jellyfin's native library
+scan. A successful scheduled Stash local-library sync also advances it, which
+catches changes made while realtime hooks were unavailable. The plugin queues
+one initial scan after startup, then checks at the configured interval.
+
+## API smoke tests
+
+Use placeholders; do not commit keys:
+
+```bash
+curl -H 'Authorization: Bearer JAVBEACON_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"/media/ABC-123.mp4"}' \
+  https://javbeacon.example/api/v1/media/match
+
+curl -H 'Authorization: Bearer JAVBEACON_KEY' \
+  'https://javbeacon.example/api/v1/integrations/jellyfin/search?q=ABC-123'
+```
+
+Run backend verification with:
+
+```bash
+GOCACHE=/tmp/javbeacon-go-cache GOFLAGS=-mod=mod go test ./internal/jellyfin
+GOCACHE=/tmp/javbeacon-go-cache GOFLAGS=-mod=mod go test ./...
+```
+
+## Optional Jellyfin Web panel
+
+`web/javbeacon-activity.js` adds O count, play count, played duration, and a **+1 O** button to JAVBeacon-backed item pages. Jellyfin Web has no stable first-party arbitrary UI-extension API, so load this file with a compatible JavaScript Injector plugin. The script calls the plugin's authenticated `/JAVBeacon/items/{itemId}/activity` and `/o` endpoints; it never receives the JAVBeacon key or any Stash credential.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -579,6 +580,18 @@ func TestHTTPDownloadDoesNotRequireQBittorrent(t *testing.T) {
 	}, "Manual Search", media.URL)
 	if err != nil || queued.Status != "queued" || queued.Transport != "http" {
 		t.Fatalf("HTTP download incorrectly depended on qBittorrent: %+v err=%v", queued, err)
+	}
+}
+
+func TestHTTPVideoCheckRedownloadsOnceThenFailsClearly(t *testing.T) {
+	row := domain.Download{Status: "downloading", Progress: 1, BytesDownloaded: 100, BytesPerSecond: 5, ETASeconds: 2}
+	retry, shouldRetry := markHTTPVideoCheckFailure(row, errors.New("invalid media packet"))
+	if !shouldRetry || retry.Status != "downloading" || retry.PostStatus != postStatusVideoRetry || !strings.Contains(retry.Error, "failed video check") || retry.Progress != 0 || retry.BytesDownloaded != 0 {
+		t.Fatalf("first failure = %+v, retry=%v", retry, shouldRetry)
+	}
+	failed, shouldRetry := markHTTPVideoCheckFailure(retry, errors.New("moov atom not found"))
+	if shouldRetry || failed.Status != "failed" || failed.PostStatus != postStatusVideoFailed || !strings.Contains(failed.Error, "failed again after automatic re-download") {
+		t.Fatalf("second failure = %+v, retry=%v", failed, shouldRetry)
 	}
 }
 

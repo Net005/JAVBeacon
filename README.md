@@ -31,6 +31,11 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete version history.
 - Use per-site RSS monitoring, duplicate prevention, Torrent seed/peer status,
   HTTP progress and ETA, automatic provider fallback, and download history.
 - Reconcile releases with StashApp, synchronize Watchlist tags, and scan the Stash library for missing files.
+- Integrate with Jellyfin for authoritative file matching, metadata, artwork,
+  manual Identify search, a Stash-synchronized Watchlist collection,
+  Stash-triggered library scans, and resilient playback/O-count forwarding
+  without giving Jellyfin any Stash credentials. See
+  [integrations/jellyfin/README.md](integrations/jellyfin/README.md).
 - Run ordered post-download and post-removal pipelines, including path mapping, shell commands, moves, and StashApp scans.
 - Cache cover artwork and JavLibrary screenshots locally, preview screenshots
   as card slideshows, and browse them from Release Details.
@@ -286,6 +291,14 @@ Under **Settings → Downloads → HTTP Downloads**, configure:
 - Completed files are verified against PikPak's SHA-1 hash (or MD5 checksum)
   when the provider supplies one. The final on-disk byte size is always checked
   before the temporary download is renamed to its final `.mp4` filename.
+- Every completed HTTP or qBittorrent video is checked with `ffprobe` before
+  post-processing begins. A failed media check is logged and automatically
+  re-downloaded once. If the replacement also fails, Download Activity shows
+  `failed video check` together with ffprobe's reason. The official container
+  includes ffprobe; native installs must provide `ffprobe` on `PATH`. For
+  qBittorrent downloads, its completed-content directory must be mounted into
+  the JAVBeacon container and translated with the existing path mapping when
+  the two containers use different path prefixes.
 - **PikPak account** — optional email/phone and password used to restore only
   the selected share file and retrieve its authenticated original. Public
   shares may expose the original filename and size while authorizing only a
@@ -468,8 +481,10 @@ rejects a stale embedded copy.
 - `internal/scraper` — GIGA/Akiba and JavLibrary providers
 - `internal/download` — search, RSS, qBittorrent, notifications, and pipelines
 - `internal/stash` — StashApp synchronization and missing-file recovery
+- `internal/jellyfin` — Jellyfin-facing metadata, matching, and durable playback accounting
 - `internal/store` — SQLite/PostgreSQL persistence and migrations
 - `internal/auth` — single-user authentication and sessions
+- `integrations/jellyfin` — buildable Jellyfin 10.11 plugin and optional Web activity panel
 
 ## Security and responsible use
 
