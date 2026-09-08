@@ -103,6 +103,40 @@ func TestSQLiteRemovesAndRejectsJavLibraryGIGAReleases(t *testing.T) {
 	}
 }
 
+func TestSQLiteNormalizesLegacyGIGARecordsAndFiltersByMonitoringSite(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "giga-normalization.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	gigaSite, err := s.SaveSite(ctx, domain.Site{Title: "GIGA Monitoring", Type: "Site", Name: "GIGA", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `INSERT INTO releases(site_id,video_id,title,source,studio,product_url,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, gigaSite.ID, "LEGACY-1", "Legacy", "GIGA", "", "https://www.akiba-web.com/product/product.php?product_id=6631", now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseID, _ := result.LastInsertId()
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO release_sites(release_id,site_id) VALUES(?,?)`, releaseID, gigaSite.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.normalizeGIGAReleases(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Release(ctx, releaseID)
+	if err != nil || got.Studio != "GIGA" || got.ProductURL != "https://www.akiba-web.com/product/index.php?product_id=6631" {
+		t.Fatalf("normalized release=%+v err=%v", got, err)
+	}
+	expression := `{"logic":"and","conditions":[{"field":"monitoring_site","value":"giga mon"}]}`
+	matches, err := s.Releases(ctx, domain.ReleaseFilter{SearchExpression: expression, Limit: 10})
+	if err != nil || len(matches) != 1 || matches[0].ID != releaseID {
+		t.Fatalf("monitoring-site matches=%+v err=%v", matches, err)
+	}
+}
+
 func TestSQLiteMigratesWatchlistNamingWithoutLosingState(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "watchlist-naming.db")

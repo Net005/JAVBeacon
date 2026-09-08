@@ -34,6 +34,17 @@ var datePattern = regexp.MustCompile(`(?i)(?:realease|release)\s*(?:day|date)?[^
 var productPattern = regexp.MustCompile(`(?i)[?&]product_id=([^&#]+)`)
 var pagePattern = regexp.MustCompile(`([?&]count=)\d+`)
 
+func normalizeAkibaProductURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return strings.TrimSpace(raw)
+	}
+	if strings.EqualFold(u.Path, "/product/product.php") {
+		u.Path = "/product/index.php"
+	}
+	return u.String()
+}
+
 func NewAkiba(base, path string, timeout time.Duration, log *slog.Logger) *Akiba {
 	jar, _ := cookiejar.New(nil)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -266,7 +277,7 @@ func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(stri
 func (a *Akiba) card(card *html.Node) (domain.Release, bool) {
 	text := nodeText(card)
 	m := idPattern.FindStringSubmatch(text)
-	r := domain.Release{Source: "GIGA"}
+	r := domain.Release{Source: "GIGA", Studio: "GIGA"}
 	if len(m) > 0 {
 		r.VideoID = strings.ToUpper(m[1]) + "-" + strings.TrimLeft(m[2], "0")
 		if strings.HasSuffix(r.VideoID, "-") {
@@ -277,7 +288,7 @@ func (a *Akiba) card(card *html.Node) (domain.Release, bool) {
 		if n.Data == "a" {
 			href := attr(n, "href")
 			if strings.Contains(href, "product_id") {
-				r.ProductURL = resolve(a.base, href)
+				r.ProductURL = normalizeAkibaProductURL(resolve(a.base, href))
 				r.Title = strings.TrimSpace(nodeText(n))
 				if pm := productPattern.FindStringSubmatch(href); len(pm) > 1 {
 					r.ScraperID = pm[1]
@@ -398,12 +409,51 @@ func (a *Akiba) Refresh(ctx context.Context, release domain.Release, stage ...De
 	if err := a.prime(ctx); err != nil {
 		return release, statusErrorf(ScrapeError, "prime session: %s", err.Error())
 	}
+	release.ProductURL = normalizeAkibaProductURL(release.ProductURL)
 	detail, err := a.detail(ctx, release.ProductURL, stage...)
 	if err != nil {
-		return release, err
+		matched, lookupErr := a.findByReleaseID(ctx, release.VideoID, stage...)
+		if lookupErr != nil {
+			return release, fmt.Errorf("refresh stored product URL: %w; release-ID fallback: %v", err, lookupErr)
+		}
+		release.ProductURL = matched.ProductURL
+		if matched.ScraperID != "" {
+			release.ScraperID = matched.ScraperID
+		}
+		detail, err = a.detail(ctx, matched.ProductURL, stage...)
+		if err != nil {
+			return release, err
+		}
 	}
 	merge(&release, detail)
+	release.Source = "GIGA"
+	release.Studio = "GIGA"
 	return release, nil
+}
+
+// findByReleaseID rediscovers a product after Akiba moves or replaces a
+// stored detail URL. Only an exact normalized release-ID match is accepted.
+func (a *Akiba) findByReleaseID(ctx context.Context, videoID string, stage ...DetailStage) (domain.Release, error) {
+	u, err := url.Parse(a.base + a.path)
+	if err != nil {
+		return domain.Release{}, err
+	}
+	q := u.Query()
+	q.Set("count", "1")
+	q.Set("keyword", strings.TrimSpace(videoID))
+	u.RawQuery = q.Encode()
+	doc, err := a.fetch(ctx, u.String(), "listing", stage...)
+	if err != nil {
+		return domain.Release{}, err
+	}
+	wanted := normalizeVideoID(videoID)
+	for _, node := range findAll(doc, func(n *html.Node) bool { return hasClass(n, "search_sam_box") || hasClass(n, "sam_box") }) {
+		candidate, ok := a.card(node)
+		if ok && normalizeVideoID(candidate.VideoID) == wanted {
+			return candidate, nil
+		}
+	}
+	return domain.Release{}, fmt.Errorf("GIGA release %s was not found by release ID", videoID)
 }
 func merge(dst *domain.Release, src domain.Release) {
 	if src.Title != "" {
