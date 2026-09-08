@@ -7,6 +7,14 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.120] - 2026-09-08
+
+### Fixed
+
+- Updated the embedded-frontend release assertion for the new persistent
+  **In Progress** download state, allowing the release pipeline to validate
+  and package the frontend changes introduced in v1.0.119.
+
 ## [1.0.119] - 2026-09-08
 
 ### Added

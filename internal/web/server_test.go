@@ -275,7 +275,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`history.go(-releaseDepth)`,
 		`title:'Scan the new monitoring site?'`,
 		`mode:'full',pages:0,all_pages:true,kind:'manual_full'`,
-		`function downloadSortTab(){return downloadStatus==='downloading'?'downloading':downloadStatus==='queued'?'queued':'other'}`,
+		`function downloadSortTab(){if(downloadStatus==='in_progress')return'queued';return downloadStatus==='downloading'?'downloading':downloadStatus==='queued'?'queued':'other'}`,
 		`['eta','ETA'],['progress','Percentage']`,
 		`function rememberDownloadSort()`,
 		`releaseToastNode.className='releaseToast'`,
