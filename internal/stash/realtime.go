@@ -76,10 +76,12 @@ func (s *Service) EnqueueRealtimeScene(ctx context.Context, sceneID, event strin
 		return errors.New("scene_id is required")
 	}
 	s.realtimeMu.Lock()
+	_, coalesced := s.realtimePending[sceneID]
 	s.realtimePending[sceneID] = time.Now().UTC()
 	s.realtimeStatus.LastEvent = strings.TrimSpace(event)
 	s.realtimeStatus.Queued = len(s.realtimePending)
 	s.realtimeMu.Unlock()
+	s.log.Debug("realtime Stash scene queued", "scene_id", sceneID, "event", strings.TrimSpace(event), "coalesced", coalesced)
 	select {
 	case s.realtimeWake <- struct{}{}:
 	default:
@@ -100,6 +102,7 @@ func (s *Service) realtimeWorker() {
 		for {
 			settings, err := s.store.Settings(context.Background())
 			if err != nil {
+				s.log.Warn("realtime Stash worker could not load settings", "error", err)
 				break
 			}
 			debounce := time.Duration(settingInt(settings, "stash_realtime_debounce_seconds", 3, 0)) * time.Second
@@ -127,10 +130,12 @@ func (s *Service) realtimeWorker() {
 			delay := time.Duration(settingInt(settings, "stash_realtime_retry_delay_seconds", 2, 1)) * time.Second
 			var matched string
 			for attempt := 1; attempt <= attempts; attempt++ {
+				s.log.Debug("realtime Stash scene sync attempt", "scene_id", sceneID, "attempt", attempt, "max_attempts", attempts)
 				matched, err = s.syncRealtimeScene(context.Background(), settings, sceneID)
 				if err == nil {
 					break
 				}
+				s.log.Debug("realtime Stash scene sync attempt failed", "scene_id", sceneID, "attempt", attempt, "error", err)
 				if attempt < attempts {
 					time.Sleep(delay * time.Duration(attempt))
 				}
@@ -157,6 +162,8 @@ func (s *Service) realtimeWorker() {
 }
 
 func (s *Service) fetchRealtimeScene(ctx context.Context, url, apiKey, sceneID string) (*realtimeScene, error) {
+	started := time.Now()
+	s.log.Debug("requesting changed scene from Stash", "scene_id", sceneID, "url", url, "api_key_configured", apiKey != "")
 	body, _ := json.Marshal(map[string]any{"query": realtimeSceneQuery, "variables": map[string]string{"id": sceneID}})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -168,10 +175,12 @@ func (s *Service) fetchRealtimeScene(ctx context.Context, url, apiKey, sceneID s
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
+		s.log.Debug("changed-scene Stash request failed", "scene_id", sceneID, "elapsed", time.Since(started), "error", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		s.log.Debug("changed-scene Stash request returned error", "scene_id", sceneID, "status", resp.StatusCode, "elapsed", time.Since(started))
 		return nil, fmt.Errorf("Stash returned HTTP %d", resp.StatusCode)
 	}
 	var payload struct {
@@ -186,12 +195,15 @@ func (s *Service) fetchRealtimeScene(ctx context.Context, url, apiKey, sceneID s
 		return nil, err
 	}
 	if len(payload.Errors) > 0 {
+		s.log.Debug("changed-scene Stash GraphQL error", "scene_id", sceneID, "elapsed", time.Since(started), "error", payload.Errors[0].Message)
 		return nil, errors.New(payload.Errors[0].Message)
 	}
+	s.log.Debug("changed scene received from Stash", "scene_id", sceneID, "found", payload.Data.FindScene != nil, "elapsed", time.Since(started))
 	return payload.Data.FindScene, nil
 }
 
 func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]string, sceneID string) (string, error) {
+	started := time.Now()
 	base := strings.TrimRight(strings.TrimSpace(settings["stash_base_url"]), "/")
 	if base == "" {
 		return "", errors.New("StashApp Base URL is not configured")
@@ -230,6 +242,7 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 	}
 	if scene == nil {
 		if match == nil {
+			s.log.Debug("deleted Stash scene has no JAVBeacon match", "scene_id", sceneID, "elapsed", time.Since(started))
 			return "", nil
 		}
 		if err := s.store.SetStashState(ctx, match.ID, false, ""); err != nil {
@@ -245,12 +258,14 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 			}
 		}
 		s.markJellyfinLibraryChanged(ctx)
+		s.log.Debug("deleted Stash scene cleared from JAVBeacon release", "scene_id", sceneID, "release", match.VideoID, "elapsed", time.Since(started))
 		return match.VideoID, nil
 	}
 	if match == nil {
 		// A later full sync may match custom title-based queries. Realtime sync
 		// deliberately avoids guessing when Stash has no canonical scene code.
 		s.markJellyfinLibraryChanged(ctx)
+		s.log.Debug("changed Stash scene has no JAVBeacon release match", "scene_id", sceneID, "code", scene.Code, "candidate_keys", len(sceneKeys), "elapsed", time.Since(started))
 		return "", nil
 	}
 	if err := s.store.SetStashState(ctx, match.ID, true, scene.ID); err != nil {
@@ -323,6 +338,7 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 		}
 	}
 	s.markJellyfinLibraryChanged(ctx)
+	s.log.Debug("changed Stash scene applied to JAVBeacon", "scene_id", sceneID, "release", match.VideoID, "file_path", path, "plays", scene.PlayCount, "orgasms", scene.OCounter, "elapsed", time.Since(started))
 	return match.VideoID, nil
 }
 

@@ -436,6 +436,7 @@ func (s *Server) routes() {
 		s.json(w, http.StatusOK, s.stash.RealtimeStatus(r.Context()))
 	})
 	s.mux.HandleFunc("POST /api/hooks/stash/scene", s.stashRealtimeEvent)
+	s.mux.HandleFunc("POST /api/hooks/stash/test", s.stashRealtimeTest)
 	s.mux.HandleFunc("POST /api/jobs/stash/watchlist", func(w http.ResponseWriter, r *http.Request) {
 		x, e := s.stash.SyncWatchlist(r.Context())
 		if e != nil {
@@ -1297,7 +1298,7 @@ func (s *Server) security(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "same-origin")
-		public := r.URL.Path == "/login" || r.URL.Path == "/opensearch.xml" || r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/hooks/stash/scene" || strings.HasPrefix(r.URL.Path, "/assets/")
+		public := r.URL.Path == "/login" || r.URL.Path == "/opensearch.xml" || r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/hooks/stash/scene" || r.URL.Path == "/api/hooks/stash/test" || strings.HasPrefix(r.URL.Path, "/assets/")
 		if !public {
 			cookie, _ := r.Cookie("javbeacon_session")
 			token := ""

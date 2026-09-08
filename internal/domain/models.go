@@ -34,17 +34,20 @@ type StashHistoryEvent struct {
 // StashHistoryItem is the user-facing, same-day aggregation. Exact event
 // timestamps remain in StashHistoryEvent for export and write-back.
 type StashHistoryItem struct {
-	Date              string  `json:"date"`
-	StashSceneID      string  `json:"stash_scene_id"`
-	ReleaseID         int64   `json:"release_id,omitempty"`
-	VideoID           string  `json:"video_id,omitempty"`
-	Title             string  `json:"title"`
-	JavLibraryURL     string  `json:"javlibrary_url,omitempty"`
-	FilePath          string  `json:"file_path,omitempty"`
-	PlayCount         int     `json:"play_count"`
-	OrgasmCount       int     `json:"orgasm_count"`
-	PlaySeconds       float64 `json:"play_seconds"`
-	DurationEstimated bool    `json:"duration_estimated"`
+	Date              string    `json:"date"`
+	StashSceneID      string    `json:"stash_scene_id"`
+	ReleaseID         int64     `json:"release_id,omitempty"`
+	VideoID           string    `json:"video_id,omitempty"`
+	Title             string    `json:"title"`
+	JavLibraryURL     string    `json:"javlibrary_url,omitempty"`
+	FilePath          string    `json:"file_path,omitempty"`
+	PlayCount         int       `json:"play_count"`
+	OrgasmCount       int       `json:"orgasm_count"`
+	PlaySeconds       float64   `json:"play_seconds"`
+	DurationEstimated bool      `json:"duration_estimated"`
+	LatestEventAt     time.Time `json:"latest_event_at"`
+	LatestPlayAt      time.Time `json:"latest_play_at,omitempty"`
+	LatestOrgasmAt    time.Time `json:"latest_orgasm_at,omitempty"`
 }
 
 type StashHistoryExport struct {
