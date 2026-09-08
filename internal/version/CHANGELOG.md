@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.125] - 2026-09-08
+
+### Fixed
+
+- GIGA scraping now derives its primary online page estimate from Akiba’s
+  displayed title count at 20 releases per page. For example, `4385 Titles`
+  produces a 220-page estimate while empty and repeated pages remain early-stop
+  safeguards.
+
 ## [1.0.124] - 2026-09-08
 
 ### Fixed
