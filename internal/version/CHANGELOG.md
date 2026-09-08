@@ -7,6 +7,32 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.135] - 2026-09-08
+
+### Added
+
+- The Jellyfin metadata provider now supplies JAVBeacon cover art as the
+  Primary image and locally cached release screenshots as preferred Backdrops,
+  with the cover also available as a fallback Backdrop.
+- Jellyfin movie pages now expose a JAVBeacon Release external ID and a direct
+  link to the corresponding full JAVBeacon release page without including
+  credentials in the URL.
+
+### Changed
+
+- Jellyfin titles and original titles now use the public JAV release ID, while
+  the release title with its leading ID removed is used as the description.
+- The synchronized Jellyfin Watchlist collection now preserves JAVBeacon's
+  Watchlist-added order with the newest items first while retaining unrelated
+  manual collection members afterward.
+
+### Fixed
+
+- Fixed the optional Jellyfin Web activity panel showing undefined O/play
+  counts and `NaN` duration on Jellyfin 12 by accepting its snake-case response
+  fields. Concurrent page mutations and repeated injection no longer create
+  duplicate JAVBeacon panels.
+
 ## [1.0.134] - 2026-09-08
 
 ### Added

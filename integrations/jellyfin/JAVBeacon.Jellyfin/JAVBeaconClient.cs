@@ -83,7 +83,8 @@ public sealed class JAVBeaconClient(IHttpClientFactory clients)
 
     public string Absolute(string path)
     {
+        if (Uri.TryCreate(path, UriKind.Absolute, out var absolute)) return absolute.ToString();
         var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
-        return config.JAVBeaconUrl.TrimEnd('/') + path;
+        return new Uri(new Uri(config.JAVBeaconUrl.TrimEnd('/') + "/"), path.TrimStart('/')).ToString();
     }
 }

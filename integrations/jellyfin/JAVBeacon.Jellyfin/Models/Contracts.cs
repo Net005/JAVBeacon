@@ -31,6 +31,7 @@ public sealed record LibrarySyncItemDto
     [JsonPropertyName("release_id")] public long ReleaseId { get; init; }
     [JsonPropertyName("stash_scene_id")] public string StashSceneId { get; init; } = string.Empty;
     [JsonPropertyName("path")] public string? Path { get; init; }
+    [JsonPropertyName("watchlisted_at")] public DateTimeOffset? WatchlistedAt { get; init; }
 }
 
 public sealed record LibrarySyncDto

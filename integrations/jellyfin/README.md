@@ -48,7 +48,24 @@ Stop Jellyfin, create `/config/plugins/JAVBeacon`, copy the contents of `integra
 - Whether Stash scene changes should queue a Jellyfin library scan, plus the
   polling interval (minimum 15 seconds).
 
-In the target movie library, enable JAVBeacon as a movie metadata/image provider and refresh metadata. Automatic lookup sends the full Jellyfin path first, then falls back to the parsed release code. Jellyfin Identify uses JAVBeacon search. Successful matches persist both `JAVBeacon` release ID and `Stash` scene ID in Provider IDs.
+In the target movie library, enable JAVBeacon as both a movie metadata provider
+and image provider, put it ahead of generic internet providers, and refresh
+metadata with **Replace existing images** enabled. Automatic lookup sends the
+full Jellyfin path first, then falls back to the parsed release code. Jellyfin
+Identify uses JAVBeacon search. Successful matches persist both `JAVBeacon`
+release ID and `Stash` scene ID in Provider IDs.
+
+The movie detail page also exposes **JAVBeacon Release** as a custom external
+ID and includes a direct external link to the full JAVBeacon `/release/{id}`
+page, built from the URL configured in the plugin. No API key is placed in the
+link.
+
+Jellyfin's title and original title are set to the public JAV release ID (for
+example `ABC-123`). The JAVBeacon release title, with that leading ID and its
+separator removed, becomes the Jellyfin description. The JAVBeacon cover is
+the Primary image. Locally cached JAVBeacon screenshots are offered first as
+Backdrops, with the cover also offered last as a secondary/fallback Backdrop.
+Source-site image URLs and credentials are never exposed to Jellyfin.
 
 ## JAVBeacon settings
 
@@ -76,7 +93,9 @@ plugin and choose a collection name (default `Watchlist`). JAVBeacon reads the
 configured `stash_watchlist_tag_id` from Stash, exposes only matching release
 IDs to Jellyfin, and the plugin adds or removes JAVBeacon-backed movies until
 the native Jellyfin collection matches. Unrelated manually-added collection
-members are preserved.
+members are preserved. Managed Watchlist movies are stored newest-first using
+the time each release was most recently added to Watchlist; manual members stay
+after the managed entries in their existing relative order.
 
 Realtime Stash scene-create/update/delete hooks advance JAVBeacon's library
 revision. The plugin detects that revision and queues Jellyfin's native library
@@ -107,4 +126,12 @@ GOCACHE=/tmp/javbeacon-go-cache GOFLAGS=-mod=mod go test ./...
 
 ## Optional Jellyfin Web panel
 
-`web/javbeacon-activity.js` adds O count, play count, played duration, and a **+1 O** button to JAVBeacon-backed item pages. Jellyfin Web has no stable first-party arbitrary UI-extension API, so load this file with a compatible JavaScript Injector plugin. The script calls the plugin's authenticated `/JAVBeacon/items/{itemId}/activity` and `/o` endpoints; it never receives the JAVBeacon key or any Stash credential.
+`web/javbeacon-activity.js` adds O count, play count, played duration, and a
+**+1 O** button to JAVBeacon-backed item pages. Jellyfin Web has no stable
+first-party arbitrary UI-extension API, so add this file as one enabled script
+in [Jellyfin JavaScript Injector](https://github.com/n00bcodr/Jellyfin-JavaScript-Injector),
+then hard-refresh Jellyfin Web. The script accepts Jellyfin 12's snake_case API
+fields as well as camel/Pascal case and prevents concurrent MutationObserver
+renders from duplicating the panel. It calls only the plugin's authenticated
+`/JAVBeacon/items/{itemId}/activity` and `/o` endpoints; it never receives the
+JAVBeacon key or any Stash credential.

@@ -3,6 +3,7 @@ using MediaBrowser.Controller.Collections;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Providers;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -59,14 +60,25 @@ public sealed class LibrarySyncService(
     private async Task ReconcileCollection(IEnumerable<Models.LibrarySyncItemDto> watchlist, string configuredName)
     {
         var name = string.IsNullOrWhiteSpace(configuredName) ? "Watchlist" : configuredName.Trim();
-        var desiredReleaseIds = watchlist.Select(x => x.ReleaseId.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var orderedWatchlist = watchlist
+            .OrderByDescending(x => x.WatchlistedAt ?? DateTimeOffset.MinValue)
+            .ThenByDescending(x => x.ReleaseId)
+            .ToArray();
+        var desiredReleaseIds = orderedWatchlist.Select(x => x.ReleaseId.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var javItems = library.GetItemList(new InternalItemsQuery
         {
             Recursive = true,
             IncludeItemTypes = [BaseItemKind.Movie],
             IsVirtualItem = false
         }).Where(x => x.ProviderIds.ContainsKey("JAVBeacon")).ToArray();
-        var desiredItems = javItems.Where(x => x.ProviderIds.TryGetValue("JAVBeacon", out var id) && desiredReleaseIds.Contains(id)).ToArray();
+        var javItemsByReleaseId = javItems
+            .Where(x => x.ProviderIds.TryGetValue("JAVBeacon", out var id) && desiredReleaseIds.Contains(id))
+            .ToDictionary(x => x.ProviderIds["JAVBeacon"], StringComparer.OrdinalIgnoreCase);
+        var desiredItems = orderedWatchlist
+            .Select(x => x.ReleaseId.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            .Where(javItemsByReleaseId.ContainsKey)
+            .Select(id => javItemsByReleaseId[id])
+            .ToArray();
         var collection = library.GetItemList(new InternalItemsQuery
         {
             Recursive = true,
@@ -81,6 +93,7 @@ public sealed class LibrarySyncService(
                 Name = name,
                 ItemIdList = desiredItems.Select(x => x.Id.ToString("N")).ToArray()
             }).ConfigureAwait(false);
+            await ApplyWatchlistOrder(collection, desiredItems, javItems).ConfigureAwait(false);
             logger.LogInformation("Created Jellyfin collection {CollectionName} with {Count} JAVBeacon items", name, desiredItems.Length);
             return;
         }
@@ -93,9 +106,29 @@ public sealed class LibrarySyncService(
         var remove = javItems.Where(x => currentIds.Contains(x.Id) && !desiredIds.Contains(x.Id)).Select(x => x.Id).ToArray();
         if (add.Length > 0) await collections.AddToCollectionAsync(collection.Id, add).ConfigureAwait(false);
         if (remove.Length > 0) await collections.RemoveFromCollectionAsync(collection.Id, remove).ConfigureAwait(false);
-        if (add.Length > 0 || remove.Length > 0)
+        var reordered = await ApplyWatchlistOrder(collection, desiredItems, javItems).ConfigureAwait(false);
+        if (add.Length > 0 || remove.Length > 0 || reordered)
         {
-            logger.LogInformation("Synchronized Jellyfin collection {CollectionName}: added {Added}, removed {Removed}", name, add.Length, remove.Length);
+            logger.LogInformation("Synchronized Jellyfin collection {CollectionName}: added {Added}, removed {Removed}, newest Watchlist items first", name, add.Length, remove.Length);
         }
+    }
+
+    private static async Task<bool> ApplyWatchlistOrder(BoxSet collection, IReadOnlyList<BaseItem> desiredItems, IReadOnlyList<BaseItem> allJavItems)
+    {
+        var javItemIds = allJavItems.Select(x => x.Id).ToHashSet();
+        var manualLinks = collection.LinkedChildren
+            .Where(link => !link.ItemId.HasValue || !javItemIds.Contains(link.ItemId.Value))
+            .ToArray();
+        var orderedLinks = desiredItems.Select(LinkedChild.Create).Concat(manualLinks).ToArray();
+        var changed = !string.Equals(collection.DisplayOrder, ItemSortBy.Default.ToString(), StringComparison.Ordinal)
+            || !collection.LinkedChildren.Select(x => x.ItemId).SequenceEqual(orderedLinks.Select(x => x.ItemId));
+        if (!changed) return false;
+
+        // BoxSet is pre-sorted. DisplayOrder=Default makes Jellyfin honor the
+        // LinkedChildren order instead of re-sorting by premiere date.
+        collection.DisplayOrder = ItemSortBy.Default.ToString();
+        collection.LinkedChildren = orderedLinks;
+        await collection.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None).ConfigureAwait(false);
+        return true;
     }
 }

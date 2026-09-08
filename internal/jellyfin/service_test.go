@@ -3,11 +3,14 @@ package jellyfin
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
+	"github.com/Net005/JAVBeacon/internal/screenshots"
 	"github.com/Net005/JAVBeacon/internal/stash"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
@@ -49,7 +52,7 @@ func testService(t *testing.T) (*Service, *store.SQLite, *fakeStash, domain.Rele
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = st.UpsertRelease(context.Background(), domain.Release{SiteID: site.ID, VideoID: "ABC-123", Title: "A title", Source: "Test", Duration: "100 min", Story: "Overview", Actresses: []string{"One"}, Genres: []string{"Tag"}})
+	_, err = st.UpsertRelease(context.Background(), domain.Release{SiteID: site.ID, VideoID: "ABC-123", Title: "ABC-123 — A title", Source: "Test", Duration: "100 min", Story: "Old story field", Actresses: []string{"One"}, Genres: []string{"Tag"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,6 +85,51 @@ func TestMatchPrefersExactPathAndReturnsPersistentIDs(t *testing.T) {
 	if result.Release.RuntimeSeconds != 6000 {
 		t.Fatalf("runtime=%d", result.Release.RuntimeSeconds)
 	}
+	if result.Release.Title != "ABC-123" || result.Release.OriginalTitle != "ABC-123" || result.Release.Overview != "A title" {
+		t.Fatalf("Jellyfin title mapping=%+v", result.Release)
+	}
+}
+
+func TestMetadataReturnsOnlyCachedJAVBeaconScreenshots(t *testing.T) {
+	svc, st, _, r := testService(t)
+	defer st.Close()
+	r.Screenshots = []string{"https://source.invalid/one.jpg", "https://source.invalid/two.jpg"}
+	if _, err := st.UpsertRelease(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	cache, err := screenshots.New(t.TempDir(), time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cache.Path(r.VideoID, 1)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache.Path(r.VideoID, 1), []byte("cached image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc.shots = cache
+	value, err := svc.Metadata(context.Background(), r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("/screenshots/%d/1", r.ID)
+	if len(value.BackdropURLs) != 1 || value.BackdropURLs[0] != want {
+		t.Fatalf("backdrops=%v", value.BackdropURLs)
+	}
+}
+
+func TestReleaseTitleTrimsOnlyACompleteLeadingReleaseID(t *testing.T) {
+	for _, test := range []struct{ title, want string }{
+		{"ABC-123 A title", "A title"},
+		{"abc-123: A title", "A title"},
+		{"ABC-123", ""},
+		{"ABC-1234 different release", "ABC-1234 different release"},
+		{"Already trimmed", "Already trimmed"},
+	} {
+		if got := releaseTitle("ABC-123", test.title); got != test.want {
+			t.Errorf("releaseTitle(%q)=%q, want %q", test.title, got, test.want)
+		}
+	}
 }
 
 func TestMatchSupportsJellyfinToStashPathRemaps(t *testing.T) {
@@ -110,7 +158,7 @@ func TestLibrarySyncReturnsOnlyLocalWatchlistItems(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Revision != "revision-1" || len(snapshot.Watchlist) != 1 || snapshot.Watchlist[0].ReleaseID != r.ID || snapshot.Watchlist[0].StashSceneID != "stash-1" {
+	if snapshot.Revision != "revision-1" || len(snapshot.Watchlist) != 1 || snapshot.Watchlist[0].ReleaseID != r.ID || snapshot.Watchlist[0].StashSceneID != "stash-1" || snapshot.Watchlist[0].WatchlistedAt.IsZero() {
 		t.Fatalf("snapshot=%+v", snapshot)
 	}
 }

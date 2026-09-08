@@ -146,7 +146,7 @@ type screenshotBackfillStatus struct {
 // database" source option (setupMigrationSource) needs to know it even
 // when the app is presently running on PostgreSQL.
 func New(st store.Store, authService *auth.Service, m *monitor.Service, historical *backfill.Service, stashSync *stash.Service, downloadService *download.Service, covers *covers.Cache, key string, dbEngine string, sqlitePath string, l *slog.Logger, logs *logging.RingHandler, screenshotCaches ...*screenshots.Cache) http.Handler {
-	s := &Server{store: st, auth: authService, monitor: m, historical: historical, stash: stashSync, downloads: downloadService, jellyfin: jellyfinintegration.New(st, stashSync), covers: covers, key: key, dbEngine: dbEngine, sqlitePath: sqlitePath, log: l, logs: logs, mux: http.NewServeMux(), clients: map[*websocket.Conn]bool{}, releaseCountCache: map[string]cachedReleaseCount{}, filterOptionCache: map[string]cachedFilterOptions{}}
+	s := &Server{store: st, auth: authService, monitor: m, historical: historical, stash: stashSync, downloads: downloadService, jellyfin: jellyfinintegration.New(st, stashSync, screenshotCaches...), covers: covers, key: key, dbEngine: dbEngine, sqlitePath: sqlitePath, log: l, logs: logs, mux: http.NewServeMux(), clients: map[*websocket.Conn]bool{}, releaseCountCache: map[string]cachedReleaseCount{}, filterOptionCache: map[string]cachedFilterOptions{}}
 	if len(screenshotCaches) > 0 {
 		s.screenshots = screenshotCaches[0]
 	}

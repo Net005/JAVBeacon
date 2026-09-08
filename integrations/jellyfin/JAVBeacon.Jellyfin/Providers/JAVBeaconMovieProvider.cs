@@ -34,7 +34,7 @@ public sealed class JAVBeaconMovieProvider(JAVBeaconClient client) : IRemoteMeta
         var rows = await client.Search(info.Name ?? string.Empty, ct).ConfigureAwait(false);
         return rows.Select(x => new RemoteSearchResult
         {
-            Name = $"{x.Code} — {x.Title}",
+            Name = string.IsNullOrWhiteSpace(x.Overview) ? x.Code : $"{x.Code} — {x.Overview}",
             ProductionYear = x.ProductionYear,
             PremiereDate = ParseDate(x.PremiereDate),
             ImageUrl = string.IsNullOrWhiteSpace(x.CoverPath) ? null : client.Absolute(x.CoverPath),
