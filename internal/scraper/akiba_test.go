@@ -66,6 +66,26 @@ func TestNormalizeAkibaProductURLRepairsLegacyPath(t *testing.T) {
 	}
 }
 
+func TestAkibaPageEstimateUsesTitleCount(t *testing.T) {
+	for _, test := range []struct {
+		html string
+		want int
+	}{
+		{`<main><b>4385 Titles</b></main>`, 220},
+		{`<main><b>4,400 Titles</b></main>`, 220},
+		{`<main><b>4401 Titles</b></main>`, 221},
+		{`<main><b>Titles unavailable</b></main>`, 0},
+	} {
+		doc, err := xhtml.Parse(strings.NewReader(test.html))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := akibaPageEstimate(doc); got != test.want {
+			t.Fatalf("akibaPageEstimate(%q)=%d, want %d", test.html, got, test.want)
+		}
+	}
+}
+
 func TestAkibaStoryPrefersExpandedTextAndDropsToggleControls(t *testing.T) {
 	doc, err := xhtml.Parse(strings.NewReader(`<div id="works_txt">
 		<div id="story_list1" style="display:block"><li class="story_window">

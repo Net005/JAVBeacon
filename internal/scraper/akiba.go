@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,21 @@ var compactImageIDPattern = regexp.MustCompile(`(?i)(?:^|/)([a-z]{2,8})0*(\d{1,5
 var datePattern = regexp.MustCompile(`(?i)(?:realease|release)\s*(?:day|date)?[^0-9]*(\d{4})[-/](\d{1,2})[-/](\d{1,2})`)
 var productPattern = regexp.MustCompile(`(?i)[?&]product_id=([^&#]+)`)
 var pagePattern = regexp.MustCompile(`([?&]count=)\d+`)
+var akibaTitleCountPattern = regexp.MustCompile(`(?i)\b([0-9][0-9,]*)\s+Titles\b`)
+
+const akibaTitlesPerPage = 20
+
+func akibaPageEstimate(doc *html.Node) int {
+	match := akibaTitleCountPattern.FindStringSubmatch(nodeText(doc))
+	if len(match) < 2 {
+		return 0
+	}
+	total, err := strconv.Atoi(strings.ReplaceAll(match[1], ",", ""))
+	if err != nil || total <= 0 {
+		return 0
+	}
+	return (total + akibaTitlesPerPage - 1) / akibaTitlesPerPage
+}
 
 func normalizeAkibaProductURL(raw string) string {
 	u, err := url.Parse(strings.TrimSpace(raw))
@@ -174,6 +190,7 @@ func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(stri
 	a.log.Info("scrape session ready", "provider", "GIGA", "pages", pages, "gate", a.gateState)
 	seen := map[string]bool{}
 	var out []domain.Release
+	onlinePageEstimate := 0
 	for page := 1; unlimited || page <= pages; page++ {
 		rawURL := pagePattern.ReplaceAllString(a.base+a.path, "${1}"+fmt.Sprint(page))
 		a.log.Info("scraping listing page", "provider", "GIGA", "page", page, "page_limit", pages, "url", rawURL)
@@ -182,13 +199,17 @@ func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(stri
 			return nil, e
 		}
 		cards := findAll(doc, func(n *html.Node) bool { return hasClass(n, "search_sam_box") || hasClass(n, "sam_box") })
-		// Akiba's pager is a sliding window: on the first page it exposes only
-		// 1..8 plus separate forward-jump controls, not a link to the actual
-		// final page. The generic maximum-visible-link detector would therefore
-		// mistake page 8 for the online end and stop a full scrape early. Keep
-		// reporting the configured ceiling; an all-pages scrape reports an
-		// unknown ceiling and discovers the real end from an empty/repeated page.
-		reportedPageLimit := pages
+		// Akiba's numbered pager is only a sliding window. Its "N Titles" label
+		// is a much better primary estimate: the site serves 20 titles per page.
+		// Empty/repeated-page detection below remains authoritative if the count
+		// is stale or the final page contains fewer items.
+		if estimate := akibaPageEstimate(doc); estimate > 0 {
+			onlinePageEstimate = estimate
+		}
+		reportedPageLimit := onlinePageEstimate
+		if reportedPageLimit == 0 || (!unlimited && pages < reportedPageLimit) {
+			reportedPageLimit = pages
+		}
 		a.log.Info("listing page parsed", "provider", "GIGA", "page", page, "cards", len(cards), "final_url", a.lastURL)
 		if len(cards) == 0 {
 			if page > 1 {
@@ -271,6 +292,10 @@ func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(stri
 			break
 		}
 		a.log.Info("listing page completed", "provider", "GIGA", "page", page, "releases", added, "total", len(out))
+		if onlinePageEstimate > 0 && page >= onlinePageEstimate {
+			a.log.Info("online listing end reached", "provider", "GIGA", "last_page", page, "reason", "title-count estimate", "estimated_pages", onlinePageEstimate)
+			break
+		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].ReleaseDate > out[j].ReleaseDate })
 	a.log.Info("provider scrape completed", "provider", "GIGA", "releases", len(out), "duration", time.Since(started).Round(time.Millisecond))
