@@ -7,6 +7,21 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.144] - 2026-09-08
+
+### Fixed
+
+- Clicking Watchlist, Notification, or Monitoring on a release in the
+  Release Library grid no longer rebuilds the entire grid (destroying and
+  recreating every card, then re-measuring every tag chip on every card to
+  fit them) up to three times per click - once optimistically, again once
+  the save confirms, and again ~500ms later when the change echoes back
+  over the websocket. That toggle now only updates the one button that
+  changed, in place, so it responds instantly regardless of how many
+  releases are loaded. Actions that genuinely change more about a release
+  (Search & Download, Update details, etc.) still refresh normally once
+  their job completes.
+
 ## [1.0.143] - 2026-09-08
 
 ### Changed
