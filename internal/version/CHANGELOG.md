@@ -7,6 +7,23 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.123] - 2026-09-08
+
+### Added
+
+- Release Library structured search can now filter releases by their associated
+  Monitoring Site. Condition fields are alphabetized and the filter workspace
+  provides more room for long field names and values.
+
+### Fixed
+
+- GIGA releases now migrate legacy Akiba product URLs to the current path,
+  retry broken detail links through an exact release-ID lookup, and consistently
+  use `GIGA` as the studio for both new and existing GIGA monitoring records.
+- Download Activity background refreshes no longer flash a temporary
+  “Refreshing” label or disabled refresh-button state, and overlapping automatic
+  refresh requests are suppressed.
+
 ## [1.0.122] - 2026-09-08
 
 ### Added

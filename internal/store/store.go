@@ -426,6 +426,9 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 		err = s.removeJavLibraryGIGAReleases(context.Background())
 	}
 	if err == nil {
+		err = s.normalizeGIGAReleases(context.Background())
+	}
+	if err == nil {
 		_, err = s.db.Exec(`UPDATE sites SET download_mode='future' WHERE download=1 AND download_mode=''`)
 	}
 	if err == nil {
@@ -472,6 +475,22 @@ func (s *SQLite) removeJavLibraryGIGAReleases(ctx context.Context) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// normalizeGIGAReleases repairs legacy Akiba paths and makes the dedicated
+// scraper's studio assignment authoritative. It runs idempotently at startup
+// so existing and imported databases are corrected automatically.
+func (s *SQLite) normalizeGIGAReleases(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE releases SET
+		product_url=REPLACE(product_url,'/product/product.php','/product/index.php'),
+		studio=CASE WHEN LOWER(TRIM(source))='giga' OR EXISTS (
+			SELECT 1 FROM release_sites grs JOIN sites gs ON gs.id=grs.site_id
+			WHERE grs.release_id=releases.id AND (LOWER(TRIM(gs.title))='giga' OR LOWER(TRIM(gs.name))='giga')
+		) THEN 'GIGA' ELSE studio END
+		WHERE product_url LIKE '%akiba-web.com/product/product.php%'
+			OR LOWER(TRIM(source))='giga'
+			OR EXISTS (SELECT 1 FROM release_sites grs JOIN sites gs ON gs.id=grs.site_id WHERE grs.release_id=releases.id AND (LOWER(TRIM(gs.title))='giga' OR LOWER(TRIM(gs.name))='giga'))`)
+	return err
 }
 
 // migrateSiteMonitoringRedesign converts the retired site-level automatic
@@ -1100,7 +1119,7 @@ func releaseConditionGroupClause(d Dialect, conditions []releaseFilterCondition,
 	}
 	parts := []string{}
 	var a []any
-	columns := map[string]string{"title": "r.title", "tag": "metadata", "actress": "metadata", "description": "r.story", "studio": "r.studio", "label": "r.label", "stash_file_path": "r.stash_file_path"}
+	columns := map[string]string{"title": "r.title", "tag": "metadata", "actress": "metadata", "description": "r.story", "studio": "r.studio", "label": "r.label", "stash_file_path": "r.stash_file_path", "monitoring_site": "site_metadata"}
 	// timestampColumns are the two pre-existing DATETIME/TIMESTAMPTZ columns
 	// (never blank - both are NOT NULL and set on every insert), so their
 	// before/after comparison skips the "<>''" empty-string guard that the
@@ -1209,7 +1228,11 @@ func releaseConditionGroupClause(d Dialect, conditions []releaseFilterCondition,
 			continue
 		}
 		if condition.Exact {
-			if strings.EqualFold(condition.Field, "tag") {
+			if field == "monitoring_site" {
+				parts = append(parts, `EXISTS (SELECT 1 FROM release_sites rms JOIN sites ms ON ms.id=rms.site_id WHERE rms.release_id=r.id AND (LOWER(ms.title)=LOWER(?) OR LOWER(ms.name)=LOWER(?)))`)
+				a = append(a, value, value)
+				continue
+			} else if strings.EqualFold(condition.Field, "tag") {
 				parts = append(parts, `EXISTS (SELECT 1 FROM release_tags t WHERE t.release_id=r.id AND t.name_normalized=LOWER(?))`)
 			} else if strings.EqualFold(condition.Field, "actress") {
 				if reversed := reverseTwoWordName(value); reversed != "" {
@@ -1237,7 +1260,11 @@ func releaseConditionGroupClause(d Dialect, conditions []releaseFilterCondition,
 					reversed = "%" + reversed + "%"
 				}
 			}
-			if strings.EqualFold(condition.Field, "tag") {
+			if field == "monitoring_site" {
+				parts = append(parts, `EXISTS (SELECT 1 FROM release_sites rms JOIN sites ms ON ms.id=rms.site_id WHERE rms.release_id=r.id AND (`+d.CaseInsensitiveLike("ms.title")+` OR `+d.CaseInsensitiveLike("ms.name")+`))`)
+				a = append(a, value, value)
+				continue
+			} else if strings.EqualFold(condition.Field, "tag") {
 				parts = append(parts, `EXISTS (SELECT 1 FROM release_tags t WHERE t.release_id=r.id AND `+d.CaseInsensitiveLike("t.name")+`)`)
 			} else if strings.EqualFold(condition.Field, "actress") {
 				if reversed != "" {
@@ -1899,9 +1926,15 @@ func (s *SQLite) upsertRelease(ctx context.Context, x domain.Release, preserveUp
 	x.Source = cleanText(x.Source)
 	x.ImageURL = cleanText(x.ImageURL)
 	x.ProductURL = domain.NormalizeJavLibraryURL(cleanText(x.ProductURL))
+	if strings.Contains(strings.ToLower(x.ProductURL), "akiba-web.com/product/product.php") {
+		x.ProductURL = strings.Replace(x.ProductURL, "/product/product.php", "/product/index.php", 1)
+	}
 	x.Actress = strings.Join(actresses, ", ")
 	x.Director = cleanText(x.Director)
 	x.Studio = cleanText(x.Studio)
+	if strings.EqualFold(x.Source, "GIGA") {
+		x.Studio = "GIGA"
+	}
 	x.Label = cleanText(x.Label)
 	x.Duration = cleanText(x.Duration)
 	x.Story = cleanText(x.Story)

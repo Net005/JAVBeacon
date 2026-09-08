@@ -53,8 +53,16 @@ func TestAkibaCardCurrentSamBoxLayout(t *testing.T) {
 	if !ok {
 		t.Fatal("current live card was not parsed")
 	}
-	if r.VideoID != "SPSF-57" || r.ScraperID != "7759" || r.Title != "Wonder Lady vs. Glamour Mask" || r.ReleaseDate != "2026-08-19" {
+	if r.VideoID != "SPSF-57" || r.ScraperID != "7759" || r.Title != "Wonder Lady vs. Glamour Mask" || r.ReleaseDate != "2026-08-19" || r.Studio != "GIGA" {
 		t.Fatalf("unexpected release: %+v", r)
+	}
+}
+
+func TestNormalizeAkibaProductURLRepairsLegacyPath(t *testing.T) {
+	got := normalizeAkibaProductURL("https://www.akiba-web.com/product/product.php?product_id=6631")
+	want := "https://www.akiba-web.com/product/index.php?product_id=6631"
+	if got != want {
+		t.Fatalf("normalizeAkibaProductURL() = %q, want %q", got, want)
 	}
 }
 
