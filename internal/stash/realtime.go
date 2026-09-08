@@ -14,7 +14,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/domain"
 )
 
-const realtimeSceneQuery = `query JAVBeaconRealtimeScene($id: ID!) { findScene(id: $id) { id title code date created_at urls o_counter play_count last_played_at play_duration play_history o_history files { path } } }`
+const realtimeSceneQuery = `query JAVBeaconRealtimeScene($id: ID!) { findScene(id: $id) { id title code date created_at urls o_counter play_count last_played_at play_duration play_history o_history tags { id } files { path } } }`
 
 type RealtimeStatus struct {
 	Enabled       bool      `json:"enabled"`
@@ -42,7 +42,10 @@ type realtimeScene struct {
 	PlayDuration float64  `json:"play_duration"`
 	PlayHistory  []string `json:"play_history"`
 	OHistory     []string `json:"o_history"`
-	Files        []struct {
+	Tags         []struct {
+		ID string `json:"id"`
+	} `json:"tags"`
+	Files []struct {
 		Path string `json:"path"`
 	} `json:"files"`
 }
@@ -235,11 +238,19 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 		if err := s.store.SetStashFilePath(ctx, match.ID, ""); err != nil {
 			return "", err
 		}
+		if strings.TrimSpace(settings["stash_watchlist_tag_id"]) != "" && match.Watchlist {
+			watchlist := false
+			if err := s.store.PatchRelease(ctx, match.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil, nil); err != nil {
+				return "", err
+			}
+		}
+		s.markJellyfinLibraryChanged(ctx)
 		return match.VideoID, nil
 	}
 	if match == nil {
 		// A later full sync may match custom title-based queries. Realtime sync
 		// deliberately avoids guessing when Stash has no canonical scene code.
+		s.markJellyfinLibraryChanged(ctx)
 		return "", nil
 	}
 	if err := s.store.SetStashState(ctx, match.ID, true, scene.ID); err != nil {
@@ -254,6 +265,20 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 	}
 	if err := s.store.SetStashFilePath(ctx, match.ID, path); err != nil {
 		return "", err
+	}
+	if tagID := strings.TrimSpace(settings["stash_watchlist_tag_id"]); tagID != "" {
+		watchlist := false
+		for _, tag := range scene.Tags {
+			if tag.ID == tagID {
+				watchlist = true
+				break
+			}
+		}
+		if watchlist != match.Watchlist {
+			if err := s.store.PatchRelease(ctx, match.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil, nil); err != nil {
+				return "", err
+			}
+		}
 	}
 	if scene.Date != "" {
 		if err := s.store.SetStashReleaseDate(ctx, match.ID, scene.Date); err != nil {
@@ -297,5 +322,12 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 			return "", err
 		}
 	}
+	s.markJellyfinLibraryChanged(ctx)
 	return match.VideoID, nil
+}
+
+func (s *Service) markJellyfinLibraryChanged(ctx context.Context) {
+	if err := s.store.SaveSettings(ctx, map[string]string{"jellyfin_library_revision": time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		s.log.Warn("unable to mark Jellyfin library sync pending", "error", err)
+	}
 }

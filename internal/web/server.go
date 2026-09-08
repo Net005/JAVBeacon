@@ -24,6 +24,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/covers"
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"github.com/Net005/JAVBeacon/internal/download"
+	jellyfinintegration "github.com/Net005/JAVBeacon/internal/jellyfin"
 	"github.com/Net005/JAVBeacon/internal/logging"
 	"github.com/Net005/JAVBeacon/internal/monitor"
 	"github.com/Net005/JAVBeacon/internal/screenshots"
@@ -43,6 +44,7 @@ type Server struct {
 	historical    *backfill.Service
 	stash         *stash.Service
 	downloads     *download.Service
+	jellyfin      *jellyfinintegration.Service
 	covers        *covers.Cache
 	screenshots   *screenshots.Cache
 	key           string
@@ -144,7 +146,7 @@ type screenshotBackfillStatus struct {
 // database" source option (setupMigrationSource) needs to know it even
 // when the app is presently running on PostgreSQL.
 func New(st store.Store, authService *auth.Service, m *monitor.Service, historical *backfill.Service, stashSync *stash.Service, downloadService *download.Service, covers *covers.Cache, key string, dbEngine string, sqlitePath string, l *slog.Logger, logs *logging.RingHandler, screenshotCaches ...*screenshots.Cache) http.Handler {
-	s := &Server{store: st, auth: authService, monitor: m, historical: historical, stash: stashSync, downloads: downloadService, covers: covers, key: key, dbEngine: dbEngine, sqlitePath: sqlitePath, log: l, logs: logs, mux: http.NewServeMux(), clients: map[*websocket.Conn]bool{}, releaseCountCache: map[string]cachedReleaseCount{}, filterOptionCache: map[string]cachedFilterOptions{}}
+	s := &Server{store: st, auth: authService, monitor: m, historical: historical, stash: stashSync, downloads: downloadService, jellyfin: jellyfinintegration.New(st, stashSync), covers: covers, key: key, dbEngine: dbEngine, sqlitePath: sqlitePath, log: l, logs: logs, mux: http.NewServeMux(), clients: map[*websocket.Conn]bool{}, releaseCountCache: map[string]cachedReleaseCount{}, filterOptionCache: map[string]cachedFilterOptions{}}
 	if len(screenshotCaches) > 0 {
 		s.screenshots = screenshotCaches[0]
 	}
@@ -207,6 +209,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /covers/{id}", s.cover)
 	s.mux.HandleFunc("GET /screenshots/{id}/{index}", s.screenshot)
 	s.mux.HandleFunc("GET /api/releases/{id}/screenshots", s.releaseScreenshots)
+	s.mux.HandleFunc("POST /api/v1/media/match", s.jellyfinMatch)
+	s.mux.HandleFunc("GET /api/v1/integrations/jellyfin/search", s.jellyfinSearch)
+	s.mux.HandleFunc("GET /api/v1/integrations/jellyfin/releases/{id}", s.jellyfinMetadata)
+	s.mux.HandleFunc("GET /api/v1/integrations/jellyfin/library-sync", s.jellyfinLibrarySync)
+	s.mux.HandleFunc("POST /api/v1/integrations/jellyfin/playback", s.jellyfinPlayback)
+	s.mux.HandleFunc("GET /api/v1/integrations/jellyfin/releases/{id}/activity", s.jellyfinActivity)
+	s.mux.HandleFunc("POST /api/v1/integrations/jellyfin/releases/{id}/o", s.jellyfinAddO)
 	s.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -1462,6 +1471,9 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	}
 	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "api_key": true, "stash_watchlist_tag_id": true, "stash_watchlist_sync_enabled": true, "stash_watchlist_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "blacklisted_filename_patterns": true, "search_auto_close_seconds": true, "search_download_background": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
 	for _, key := range []string{"stash_realtime_enabled", "stash_realtime_secret", "stash_realtime_debounce_seconds", "stash_realtime_retry_attempts", "stash_realtime_retry_delay_seconds"} {
+		allowed[key] = true
+	}
+	for _, key := range []string{"jellyfin_checkpoint_seconds", "jellyfin_max_checkpoint_gap_seconds", "jellyfin_completion_percent", "jellyfin_completion_remaining_seconds", "jellyfin_path_remaps"} {
 		allowed[key] = true
 	}
 	if raw, present := x["stash_realtime_enabled"]; present && raw != "true" && raw != "false" {

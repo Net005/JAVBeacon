@@ -34,7 +34,7 @@ func TestFetchSendsStashAPIKeyHeader(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":{"findScenes":{"scenes":[{"title":"PRED-888","code":"","date":"2024-05-01"}]}}}`)), Header: make(http.Header)}, nil
 	})
-	ids, dates, scenes, err := s.fetch(context.Background(), "https://stash.example/graphql", DefaultQuery, "secret-key")
+	ids, dates, _, scenes, err := s.fetch(context.Background(), "https://stash.example/graphql", DefaultQuery, "secret-key")
 	if err != nil || scenes != 1 {
 		t.Fatalf("fetch: scenes=%d err=%v", scenes, err)
 	}
@@ -58,7 +58,7 @@ func TestFetchLeavesDatesEmptyWhenSceneOmitsDate(t *testing.T) {
 	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":{"findScenes":{"scenes":[{"title":"PRED-888","code":""}]}}}`)), Header: make(http.Header)}, nil
 	})
-	ids, dates, _, err := s.fetch(context.Background(), "https://stash.example/graphql", `query { findScenes { scenes { id title code } } }`, "")
+	ids, dates, _, _, err := s.fetch(context.Background(), "https://stash.example/graphql", `query { findScenes { scenes { id title code } } }`, "")
 	if err != nil {
 		t.Fatal(err)
 	}

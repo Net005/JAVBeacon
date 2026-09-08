@@ -52,6 +52,20 @@ jobs:
       - name: Test
         run: go test -mod=mod ./...
 
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build Jellyfin 12 plugin
+        shell: bash
+        run: |
+          ./integrations/jellyfin/build.sh
+          version="$(tr -d '[:space:]' < internal/version/VERSION)"
+          mkdir -p dist/jellyfin-plugin
+          cp integrations/jellyfin/dist/* dist/jellyfin-plugin/
+          (cd dist/jellyfin-plugin && zip -9 "../Jellyfin.Plugin.JAVBeacon_v${version}_Jellyfin-12.zip" ./*)
+          rm -rf dist/jellyfin-plugin
+
       - name: Validate Docker Compose stack
         run: docker compose --env-file .env.example config --quiet
 

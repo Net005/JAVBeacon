@@ -7,6 +7,30 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.134] - 2026-09-08
+
+### Added
+
+- Calmed the top-right activity area by removing its continuous pulse/scale animations and making its active, paused, and download colors follow the configured JAVBeacon theme.
+- Added full-packet ffprobe validation before HTTP and qBittorrent downloads are marked complete or sent through post-processing. Corrupt videos are visibly marked as re-downloading after a failed video check, replaced automatically once, logged at each decision, and left failed with the complete ffprobe reason if the replacement also fails.
+- Added a Jellyfin server plugin and JAVBeacon integration API for automatic
+  path/code matching with container path remaps, manual Identify search,
+  metadata and artwork, persistent JAVBeacon/Stash provider IDs, and
+  configurable per-user playback tracking.
+- JAVBeacon now owns durable playback checkpoints, resume/play-duration and
+  completion handling, Stash play/O mutations, activity lookup, and the
+  optional Jellyfin Web activity and **+1 O** panel, keeping Jellyfin isolated
+  from Stash credentials and scene-mapping logic.
+- The Jellyfin plugin can now maintain a configurable native Watchlist
+  collection from StashApp's configured Watchlist tag, including removals,
+  and queue library scans after realtime or scheduled Stash scene changes.
+
+### Changed
+
+- Retargeted the Jellyfin plugin and packaged release build to Jellyfin 12.0.0
+  and .NET 10. The release workflow now publishes a ready-to-install Jellyfin
+  12 plugin archive alongside the JAVBeacon binaries.
+
 ## [1.0.133] - 2026-09-08
 
 ### Added

@@ -85,7 +85,9 @@ type Service struct {
 	// pikPakDeleteFile is an optional test seam. Production removals use the
 	// authenticated session and PikPak API directly when it is nil.
 	pikPakDeleteFile func(context.Context, string) error
-	logs             *logging.RingHandler
+	// videoProbe is a test seam; production uses ffprobeVideo.
+	videoProbe func(context.Context, string) error
+	logs       *logging.RingHandler
 }
 
 // AttachLogs supplies the structured in-memory log stream used by the
@@ -896,7 +898,7 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 	} else if sourceRef == "" {
 		sourceRef = result.Link
 	}
-	x := domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: sourceRef, Query: r.VideoID, Name: result.Title, Status: "queued", MatchReason: matchReason, Seeds: result.Seeds, Peers: result.Peers, FilenamePatternExcluded: forced || excluded}
+	x := domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: sourceRef, TransferReference: result.Link, Query: r.VideoID, Name: result.Title, Status: "queued", MatchReason: matchReason, Seeds: result.Seeds, Peers: result.Peers, FilenamePatternExcluded: forced || excluded}
 	if result.BlacklistedFilenameMatch {
 		x.Status = "failed"
 		x.Error = "result rejected by filename blacklist"
@@ -1520,6 +1522,33 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		fail(verifyErr)
 		return
 	}
+	if probeErr := s.verifyDownloadedVideo(ctx, tempPath); probeErr != nil {
+		_ = os.Remove(tempPath)
+		if ctx.Err() != nil {
+			fail(ctx.Err())
+			return
+		}
+		var retry bool
+		d, retry = markHTTPVideoCheckFailure(d, probeErr)
+		if retry {
+			d, _ = s.store.SaveDownload(context.Background(), d)
+			s.log.Warn("HTTP video check failed; automatically re-downloading once", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "error", probeErr)
+			_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_started", "Video check failed; automatically re-downloading once")
+			go func(retry domain.Download) {
+				timer := time.NewTimer(100 * time.Millisecond)
+				defer timer.Stop()
+				<-timer.C
+				s.startHTTPDownload(retry)
+			}(d)
+			return
+		}
+		d, _ = s.store.SaveDownload(context.Background(), d)
+		s.log.Error("HTTP video check failed again after automatic re-download", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "error", probeErr)
+		_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_failed", d.Error)
+		return
+	}
+	s.log.Info("HTTP video check passed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "path", tempPath)
+	d.MatchReason = appendDownloadPreference("ffprobe video check passed", d.MatchReason)
 	d.MatchReason = appendDownloadPreference(verification, d.MatchReason)
 	s.log.Info("HTTP download integrity verified",
 		"download_id", d.ID,
@@ -3394,6 +3423,9 @@ func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Downl
 			}
 		}
 		if isCompleteState {
+			if !wasCompleted && s.handleTorrentVideoCheck(ctx, qb, &d, t) {
+				return
+			}
 			d.Status = "completed"
 			_, _ = s.store.CreateNotification(ctx, d.ReleaseID, "downloaded", "Download completed")
 			if !wasCompleted {
