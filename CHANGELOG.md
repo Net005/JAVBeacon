@@ -7,6 +7,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.115] - 2026-09-08
+
+### Fixed
+
+- JavDB HTTP-provider searches now retry search, release-detail, and download
+  action pages through the configured priority-aware multi-instance Byparr /
+  FlareSolverr pool only when the direct JavDB request returns HTTP 403.
+  Failed solver instances fall through to the next available instance while
+  retaining the shared cooldown and concurrency controls; Keepshare and PikPak
+  traffic remains on its existing API and redirect paths.
+
 ## [1.0.114] - 2026-09-08
 
 ### Added
