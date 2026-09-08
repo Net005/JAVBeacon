@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
+	"github.com/Net005/JAVBeacon/internal/screenshots"
 	"github.com/Net005/JAVBeacon/internal/stash"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
@@ -41,16 +42,21 @@ type Service struct {
 	store store.Store
 	repo  repository
 	stash stashBridge
+	shots *screenshots.Cache
 	mu    sync.Mutex
 }
 
-func New(st store.Store, stashService *stash.Service) *Service {
-	return newService(st, stashService)
+func New(st store.Store, stashService *stash.Service, screenshotCaches ...*screenshots.Cache) *Service {
+	return newService(st, stashService, screenshotCaches...)
 }
 
-func newService(st store.Store, stashService stashBridge) *Service {
+func newService(st store.Store, stashService stashBridge, screenshotCaches ...*screenshots.Cache) *Service {
 	repo, _ := st.(repository)
-	return &Service{store: st, repo: repo, stash: stashService}
+	service := &Service{store: st, repo: repo, stash: stashService}
+	if len(screenshotCaches) > 0 {
+		service.shots = screenshotCaches[0]
+	}
+	return service
 }
 
 type Metadata struct {
@@ -82,9 +88,10 @@ type MatchResult struct {
 }
 
 type LibrarySyncItem struct {
-	ReleaseID    int64  `json:"release_id"`
-	StashSceneID string `json:"stash_scene_id"`
-	Path         string `json:"path,omitempty"`
+	ReleaseID     int64     `json:"release_id"`
+	StashSceneID  string    `json:"stash_scene_id"`
+	Path          string    `json:"path,omitempty"`
+	WatchlistedAt time.Time `json:"watchlisted_at,omitempty"`
 }
 
 type LibrarySyncSnapshot struct {
@@ -116,7 +123,7 @@ func (s *Service) Match(ctx context.Context, path, query string) (MatchResult, e
 		for _, candidate := range s.matchPaths(ctx, path) {
 			r, err := s.repo.JellyfinReleaseByPath(ctx, candidate)
 			if err == nil {
-				m := metadata(r)
+				m := s.metadata(r)
 				method := "path"
 				if candidate != path {
 					method = "remapped_path"
@@ -145,7 +152,7 @@ func (s *Service) Match(ctx context.Context, path, query string) (MatchResult, e
 	}
 	for _, r := range rows {
 		if canonical(r.VideoID) == want {
-			m := metadata(r)
+			m := s.metadata(r)
 			return MatchResult{Matched: true, MatchMethod: "release_code", Release: &m}, nil
 		}
 	}
@@ -201,7 +208,7 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metada
 	}
 	out := make([]Metadata, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, metadata(r))
+		out = append(out, s.metadata(r))
 	}
 	return out, nil
 }
@@ -211,7 +218,7 @@ func (s *Service) Metadata(ctx context.Context, releaseID int64) (Metadata, erro
 	if err != nil {
 		return Metadata{}, err
 	}
-	return metadata(r), nil
+	return s.metadata(r), nil
 }
 
 func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) {
@@ -227,7 +234,7 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 		}
 		for _, r := range rows {
 			if r.Local && r.StashSceneID != "" {
-				out.Watchlist = append(out.Watchlist, LibrarySyncItem{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Path: r.StashFilePath})
+				out.Watchlist = append(out.Watchlist, LibrarySyncItem{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Path: r.StashFilePath, WatchlistedAt: r.WatchlistAt})
 			}
 		}
 		if len(rows) < 500 {
@@ -237,7 +244,7 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 	return out, nil
 }
 
-func metadata(r domain.Release) Metadata {
+func (s *Service) metadata(r domain.Release) Metadata {
 	year := 0
 	if len(r.ReleaseDate) >= 4 {
 		year, _ = strconv.Atoi(r.ReleaseDate[:4])
@@ -254,8 +261,30 @@ func metadata(r domain.Release) Metadata {
 	if r.StashSceneID != "" {
 		ids[ProviderIDStash] = r.StashSceneID
 	}
-	backdrops := append([]string(nil), r.Screenshots...)
-	return Metadata{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Code: r.VideoID, Title: r.Title, OriginalTitle: r.VideoID, Overview: r.Story, PremiereDate: r.ReleaseDate, ProductionYear: year, Studio: r.Studio, Label: r.Label, Performers: append([]string(nil), r.Actresses...), Directors: directors, Genres: append([]string(nil), r.Genres...), Tags: tags, RuntimeSeconds: parseRuntime(r.Duration), CoverPath: fmt.Sprintf("/covers/%d", r.ID), BackdropURLs: backdrops, SourceURL: r.ProductURL, ProviderIDs: ids}
+	backdrops := make([]string, 0, len(r.Screenshots))
+	if s.shots != nil {
+		for _, index := range s.shots.Available(r.VideoID, r.Screenshots) {
+			backdrops = append(backdrops, fmt.Sprintf("/screenshots/%d/%d", r.ID, index))
+		}
+	}
+	return Metadata{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Code: r.VideoID, Title: r.VideoID, OriginalTitle: r.VideoID, Overview: releaseTitle(r.VideoID, r.Title), PremiereDate: r.ReleaseDate, ProductionYear: year, Studio: r.Studio, Label: r.Label, Performers: append([]string(nil), r.Actresses...), Directors: directors, Genres: append([]string(nil), r.Genres...), Tags: tags, RuntimeSeconds: parseRuntime(r.Duration), CoverPath: fmt.Sprintf("/covers/%d", r.ID), BackdropURLs: backdrops, SourceURL: r.ProductURL, ProviderIDs: ids}
+}
+
+func releaseTitle(releaseID, title string) string {
+	title = strings.TrimSpace(title)
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" || len(title) < len(releaseID) || !strings.EqualFold(title[:len(releaseID)], releaseID) {
+		return title
+	}
+	// Only remove a complete leading release ID, never an ID-like prefix of a
+	// different word or number (for example ABC-12 from ABC-123 title).
+	if len(title) > len(releaseID) {
+		next := rune(title[len(releaseID)])
+		if (next >= 'A' && next <= 'Z') || (next >= 'a' && next <= 'z') || (next >= '0' && next <= '9') {
+			return title
+		}
+	}
+	return strings.TrimSpace(strings.TrimLeft(title[len(releaseID):], "-_:|–— \t"))
 }
 
 func parseRuntime(raw string) int64 {
