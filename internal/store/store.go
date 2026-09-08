@@ -1060,6 +1060,7 @@ type releaseFilterCondition struct {
 	Op       string `json:"op"`
 	Exact    bool   `json:"exact"`
 	Wildcard bool   `json:"wildcard"`
+	Invert   bool   `json:"invert"`
 }
 
 // releaseFilterConditionGroup is one AND/OR group of conditions (TODO-2.0
@@ -1132,6 +1133,18 @@ func releaseConditionGroupClause(d Dialect, conditions []releaseFilterCondition,
 		"monitored":        "r.monitor_download=1",
 	}
 	for _, condition := range conditions {
+		// Negate the complete normal predicate so inversion behaves the same
+		// for text, metadata, numeric/date comparisons and boolean fields.
+		if condition.Invert {
+			normal := condition
+			normal.Invert = false
+			clause, args := releaseConditionGroupClause(d, []releaseFilterCondition{normal}, "and")
+			if clause != "" {
+				parts = append(parts, "NOT "+clause)
+				a = append(a, args...)
+			}
+			continue
+		}
 		field := strings.ToLower(condition.Field)
 		value := strings.TrimSpace(condition.Value)
 		if expr, ok := boolExprs[field]; ok {
