@@ -201,6 +201,9 @@ func (c *Cache) download(ctx context.Context, videoID, sourceURL, path string, c
 	if n == 0 || n > maxCoverSize {
 		return "", false, fmt.Errorf("invalid cover size: %d bytes", n)
 	}
+	if conformed, ok := conformJavLibraryCoverFile(tmpName, sourceURL); ok {
+		n = int64(len(conformed))
+	}
 	if compareExisting {
 		candidate, readErr := os.ReadFile(tmpName)
 		if readErr != nil {
