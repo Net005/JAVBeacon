@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -57,6 +58,7 @@ type javDBProvider struct {
 	log                 *slog.Logger
 	inspectCandidate    func(context.Context, string, string) (pikPakFile, []pikPakFile, error)
 	solverPool          *scraper.SolverPool
+	gluetun             *gluetunRotator
 }
 
 // HTTPSourceProvider is the extension point for direct-download sources.
@@ -83,7 +85,7 @@ type resolvedHTTPFile struct {
 	Cleanup          func(context.Context) error
 }
 
-func httpSourceProviders(client *http.Client, settings map[string]string, logger *slog.Logger, authenticate func(context.Context, string, string) (*pikPakClient, error), solverPool *scraper.SolverPool) []HTTPSourceProvider {
+func httpSourceProviders(client *http.Client, settings map[string]string, logger *slog.Logger, authenticate func(context.Context, string, string) (*pikPakClient, error), solverPool *scraper.SolverPool, rotationMu *sync.Mutex) []HTTPSourceProvider {
 	patterns := ParsePreferredFilenamePatterns(settings["accepted_patterns"])
 	blacklist := ParseBlacklistedFilenamePatterns(settings["blacklisted_filename_patterns"])
 	return []HTTPSourceProvider{&javDBProvider{
@@ -98,6 +100,7 @@ func httpSourceProviders(client *http.Client, settings map[string]string, logger
 		authenticate:        authenticate,
 		log:                 logger,
 		solverPool:          solverPool,
+		gluetun:             newGluetunRotator(client, settings, logger, rotationMu),
 	}}
 }
 
@@ -398,19 +401,29 @@ func matchesAcceptedHTTPPattern(name string, patterns []PreferredFilenamePattern
 }
 
 func (p *javDBProvider) getHTML(ctx context.Context, raw string) (*html.Node, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
-	if err != nil {
-		return nil, 0, err
+	doc, status, err := p.getHTMLDirect(ctx, raw)
+	if status == http.StatusForbidden && p.gluetun != nil {
+		oldIP, newIP, attempts, rotateErr := p.gluetun.rotateUntilIPChanges(ctx)
+		if p.log != nil {
+			if rotateErr != nil {
+				p.log.Warn("JavDB HTTP 403 VPN rotation did not produce a verified new IP", "url", raw, "attempts", attempts, "old_ip", oldIP, "current_ip", newIP, "error", rotateErr)
+			} else {
+				p.log.Info("JavDB HTTP 403 rotated Gluetun VPN IP", "url", raw, "attempts", attempts, "old_ip", oldIP, "new_ip", newIP)
+			}
+		}
+		// Retry direct exactly once after the rotation sequence. Even when all
+		// configured rotations returned the same observable IP, the renewed
+		// tunnel may have cleared a transient block; only another 403 proceeds
+		// to the existing priority-aware solver pool.
+		doc, status, err = p.getHTMLDirect(ctx, raw)
+		if status != http.StatusForbidden {
+			if err == nil && p.log != nil {
+				p.log.Info("JavDB HTTP 403 recovered after Gluetun rotation", "url", raw, "rotation_attempts", attempts, "public_ip", newIP)
+			}
+			return doc, status, err
+		}
 	}
-	req.Header.Set("User-Agent", publicShareUserAgent)
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, 0, err
-	}
-	status := resp.StatusCode
 	if status == http.StatusForbidden && p.solverPool != nil && p.solverPool.EnabledCount() > 0 {
-		_ = resp.Body.Close()
 		doc, solverErr := p.getHTMLThroughSolver(ctx, raw)
 		if solverErr == nil {
 			if p.log != nil {
@@ -422,6 +435,20 @@ func (p *javDBProvider) getHTML(ctx context.Context, raw string) (*html.Node, in
 			p.log.Warn("JavDB HTTP 403 solver fallback failed", "url", raw, "direct_status", status, "error", solverErr)
 		}
 		return nil, status, fmt.Errorf("HTTP 403; Byparr/FlareSolverr fallback failed: %w", solverErr)
+	}
+	return doc, status, err
+}
+
+func (p *javDBProvider) getHTMLDirect(ctx context.Context, raw string) (*html.Node, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("User-Agent", publicShareUserAgent)
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

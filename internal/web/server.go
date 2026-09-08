@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"io/fs"
 	"log/slog"
@@ -225,6 +226,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/settings", s.settings)
 	s.mux.HandleFunc("PUT /api/settings", s.settings)
 	s.mux.HandleFunc("POST /api/settings/qb-test", s.testQBittorrent)
+	s.mux.HandleFunc("POST /api/settings/gluetun-test", s.testGluetun)
 	s.mux.HandleFunc("GET /api/settings/pikpak-status", s.pikPakStatus)
 	s.mux.HandleFunc("POST /api/settings/pikpak-test", s.testPikPak)
 	s.mux.HandleFunc("GET /api/setup/db/status", s.setupDBStatus)
@@ -1379,6 +1381,24 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	for _, key := range []string{"javdb_url", "http_download_directory", "http_download_concurrency", "http_download_connections", "http_fallback_delay", "default_download_method", "prefer_http_equivalent", "pikpak_username", "pikpak_password", "pikpak_cleanup_restored", "pikpak_release_id_folder_fallback", "pikpak_check_enabled", "pikpak_check_interval", "pikpak_notify_success", "pikpak_notify_failure", "pushover_app_token", "pushover_user_key"} {
 		allowed[key] = true
 	}
+	for _, key := range []string{"javdb_gluetun_rotation_enabled", "gluetun_control_url", "gluetun_control_api_key", "gluetun_rotation_attempts", "gluetun_rotation_wait_seconds", "gluetun_rotation_poll_milliseconds", "gluetun_rotation_settle_seconds", "gluetun_require_ip_change"} {
+		allowed[key] = true
+	}
+	for _, key := range []string{"javdb_gluetun_rotation_enabled", "gluetun_require_ip_change"} {
+		if raw, present := x[key]; present && raw != "true" && raw != "false" {
+			s.problem(w, http.StatusUnprocessableEntity, key+" must be true or false")
+			return
+		}
+	}
+	for key, minimum := range map[string]int{"gluetun_rotation_attempts": 3, "gluetun_rotation_wait_seconds": 5, "gluetun_rotation_poll_milliseconds": 250, "gluetun_rotation_settle_seconds": 0} {
+		if raw, present := x[key]; present {
+			value, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil || value < minimum {
+				s.problem(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s must be at least %d", key, minimum))
+				return
+			}
+		}
+	}
 	allowed["stash_history_writeback_enabled"] = true
 	allowed["stash_history_writeback_interval"] = true
 	if username, password := strings.TrimSpace(x["pikpak_username"]), x["pikpak_password"]; (username == "") != (password == "") {
@@ -1750,6 +1770,22 @@ func (s *Server) testQBittorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, http.StatusOK, map[string]any{"status": "connected", "version": version, "categories": categories})
+}
+
+func (s *Server) testGluetun(w http.ResponseWriter, r *http.Request) {
+	var config struct {
+		URL    string `json:"url"`
+		APIKey string `json:"api_key"`
+	}
+	if !s.decode(w, r, &config) {
+		return
+	}
+	ip, err := s.downloads.TestGluetunControl(r.Context(), strings.TrimSpace(config.URL), strings.TrimSpace(config.APIKey))
+	if err != nil {
+		s.problem(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, map[string]any{"status": "connected", "public_ip": ip})
 }
 
 func (s *Server) testPikPak(w http.ResponseWriter, r *http.Request) {
