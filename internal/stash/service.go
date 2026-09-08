@@ -126,6 +126,10 @@ type Service struct {
 	scheduleNextAttempt map[string]time.Time
 	historyReviewMu     sync.Mutex
 	historyReviews      map[string]HistoryReview
+	realtimeMu          sync.RWMutex
+	realtimeStatus      RealtimeStatus
+	realtimePending     map[string]time.Time
+	realtimeWake        chan struct{}
 }
 
 // scheduleMaxSleepChunk bounds how long Schedule/WatchlistSchedule ever sleep
@@ -138,9 +142,10 @@ type Service struct {
 var scheduleMaxSleepChunk = 30 * time.Second
 
 func New(st store.Store, timeout time.Duration, log *slog.Logger, jav *scraper.JavLibrary, downloads *download.Service) *Service {
-	svc := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, jav: jav, downloads: downloads, scheduleNextAttempt: map[string]time.Time{}, historyReviews: map[string]HistoryReview{}}
+	svc := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, jav: jav, downloads: downloads, scheduleNextAttempt: map[string]time.Time{}, historyReviews: map[string]HistoryReview{}, realtimePending: map[string]time.Time{}, realtimeWake: make(chan struct{}, 1)}
 	if st != nil {
 		svc.restoreMissingScanStatus(context.Background())
+		go svc.realtimeWorker()
 	}
 	return svc
 }

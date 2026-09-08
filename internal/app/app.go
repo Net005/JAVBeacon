@@ -245,6 +245,11 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 			missing[k] = v
 		}
 	}
+	for k, v := range map[string]string{"stash_realtime_enabled": "false", "stash_realtime_debounce_seconds": "3", "stash_realtime_retry_attempts": "3", "stash_realtime_retry_delay_seconds": "2"} {
+		if settings[k] == "" {
+			missing[k] = v
+		}
+	}
 	for k, v := range map[string]string{"operational_health_interval": "5m", "byparr_health_enabled": "false", "byparr_health_failure_threshold": "2", "byparr_health_timeout_seconds": "15", "byparr_notify_failure": "false", "byparr_notify_recovery": "false", "error_burst_enabled": "false", "error_burst_notify": "false", "error_burst_threshold": "10", "error_burst_window": "10m", "error_burst_cooldown": "6h", "error_burst_weight_scraping": "1", "error_burst_weight_http_search": "2", "error_burst_weight_http_download": "3", "error_burst_include_scraping": "true", "error_burst_include_http_search": "true", "error_burst_include_http_download": "true"} {
 		if settings[k] == "" {
 			missing[k] = v
