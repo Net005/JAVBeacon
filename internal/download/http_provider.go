@@ -20,6 +20,7 @@ import (
 	"unicode"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
+	"github.com/Net005/JAVBeacon/internal/scraper"
 	"golang.org/x/net/html"
 )
 
@@ -55,6 +56,7 @@ type javDBProvider struct {
 	authenticate        func(context.Context, string, string) (*pikPakClient, error)
 	log                 *slog.Logger
 	inspectCandidate    func(context.Context, string, string) (pikPakFile, []pikPakFile, error)
+	solverPool          *scraper.SolverPool
 }
 
 // HTTPSourceProvider is the extension point for direct-download sources.
@@ -81,7 +83,7 @@ type resolvedHTTPFile struct {
 	Cleanup          func(context.Context) error
 }
 
-func httpSourceProviders(client *http.Client, settings map[string]string, logger *slog.Logger, authenticate func(context.Context, string, string) (*pikPakClient, error)) []HTTPSourceProvider {
+func httpSourceProviders(client *http.Client, settings map[string]string, logger *slog.Logger, authenticate func(context.Context, string, string) (*pikPakClient, error), solverPool *scraper.SolverPool) []HTTPSourceProvider {
 	patterns := ParsePreferredFilenamePatterns(settings["accepted_patterns"])
 	blacklist := ParseBlacklistedFilenamePatterns(settings["blacklisted_filename_patterns"])
 	return []HTTPSourceProvider{&javDBProvider{
@@ -95,6 +97,7 @@ func httpSourceProviders(client *http.Client, settings map[string]string, logger
 		allowFolderMatch:    settings["pikpak_release_id_folder_fallback"] == "true",
 		authenticate:        authenticate,
 		log:                 logger,
+		solverPool:          solverPool,
 	}}
 }
 
@@ -405,6 +408,21 @@ func (p *javDBProvider) getHTML(ctx context.Context, raw string) (*html.Node, in
 	if err != nil {
 		return nil, 0, err
 	}
+	status := resp.StatusCode
+	if status == http.StatusForbidden && p.solverPool != nil && p.solverPool.EnabledCount() > 0 {
+		_ = resp.Body.Close()
+		doc, solverErr := p.getHTMLThroughSolver(ctx, raw)
+		if solverErr == nil {
+			if p.log != nil {
+				p.log.Info("JavDB HTTP 403 recovered through anti-bot solver", "url", raw, "direct_status", status)
+			}
+			return doc, http.StatusOK, nil
+		}
+		if p.log != nil {
+			p.log.Warn("JavDB HTTP 403 solver fallback failed", "url", raw, "direct_status", status, "error", solverErr)
+		}
+		return nil, status, fmt.Errorf("HTTP 403; Byparr/FlareSolverr fallback failed: %w", solverErr)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
@@ -418,6 +436,73 @@ func (p *javDBProvider) getHTML(ctx context.Context, raw string) (*html.Node, in
 	}
 	doc, err := html.Parse(strings.NewReader(string(body)))
 	return doc, resp.StatusCode, err
+}
+
+func (p *javDBProvider) getHTMLThroughSolver(ctx context.Context, raw string) (*html.Node, error) {
+	attempts := p.solverPool.EnabledCount()
+	var failures []string
+	for attempt := 0; attempt < attempts; attempt++ {
+		lease, err := p.solverPool.Acquire(ctx, 100)
+		if err != nil {
+			return nil, err
+		}
+		solverURL := lease.URL()
+		body, err := p.solveHTML(ctx, solverURL, raw)
+		lease.Release()
+		if err != nil {
+			failures = append(failures, solverURL+": "+err.Error())
+			continue
+		}
+		if looksLikeAccessChallenge(body) {
+			failures = append(failures, solverURL+": returned a challenge page")
+			continue
+		}
+		doc, err := html.Parse(strings.NewReader(string(body)))
+		if err == nil {
+			return doc, nil
+		}
+		failures = append(failures, solverURL+": parse response: "+err.Error())
+	}
+	if len(failures) == 0 {
+		return nil, errors.New("no enabled Byparr/FlareSolverr instance is available")
+	}
+	return nil, errors.New(strings.Join(failures, "; "))
+}
+
+func (p *javDBProvider) solveHTML(ctx context.Context, solverURL, raw string) ([]byte, error) {
+	payload, _ := json.Marshal(map[string]any{"cmd": "request.get", "url": raw, "maxTimeout": 75000, "max_timeout": 75})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, solverURL, strings.NewReader(string(payload)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(message)))
+	}
+	var result struct {
+		Status   string `json:"status"`
+		Message  string `json:"message"`
+		Solution struct {
+			Response string `json:"response"`
+			Status   int    `json:"status"`
+		} `json:"solution"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(&result); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	if result.Status != "ok" || result.Solution.Response == "" {
+		return nil, fmt.Errorf("solver response: %s", firstNonEmpty(result.Message, result.Status))
+	}
+	if result.Solution.Status != 0 && (result.Solution.Status < 200 || result.Solution.Status >= 300) {
+		return nil, fmt.Errorf("target returned HTTP %d through solver", result.Solution.Status)
+	}
+	return []byte(result.Solution.Response), nil
 }
 
 func parseJavDBDownloadCandidates(doc *html.Node, sourceURL, releaseID string) []domain.SearchResult {

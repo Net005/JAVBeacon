@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
+	"github.com/Net005/JAVBeacon/internal/scraper"
 	"golang.org/x/net/html"
 )
 
@@ -39,6 +40,58 @@ func TestPreferredPikPakDownloadURLChoosesExplicitOriginal(t *testing.T) {
 	file.Medias[1].IsOrigin = true
 	if got := preferredPikPakDownloadURL(file); got != "https://cdn.test/original" {
 		t.Fatalf("URL=%q, want explicit original", got)
+	}
+}
+
+func TestJavDBHTMLUsesMultiInstanceSolverPoolOnlyAfter403(t *testing.T) {
+	var directCalls, firstSolverCalls, secondSolverCalls int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/javdb", func(w http.ResponseWriter, _ *http.Request) {
+		directCalls++
+		w.WriteHeader(http.StatusForbidden)
+	})
+	mux.HandleFunc("/solver-first", func(w http.ResponseWriter, _ *http.Request) {
+		firstSolverCalls++
+		http.Error(w, "busy", http.StatusBadGateway)
+	})
+	mux.HandleFunc("/solver-second", func(w http.ResponseWriter, _ *http.Request) {
+		secondSolverCalls++
+		_, _ = io.WriteString(w, `{"status":"ok","solution":{"response":"<html><div id=\"video-search\">USBA-090</div></html>"}}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	pool := scraper.NewSolverPool()
+	pool.Configure([]scraper.Instance{
+		{URL: server.URL + "/solver-first", Priority: 1, Enabled: true},
+		{URL: server.URL + "/solver-second", Priority: 2, Enabled: true},
+	}, time.Hour)
+	provider := &javDBProvider{client: server.Client(), solverPool: pool}
+	doc, status, err := provider.getHTML(context.Background(), server.URL+"/javdb")
+	if err != nil || status != http.StatusOK || !strings.Contains(nodeText(doc), "USBA-090") {
+		t.Fatalf("doc=%v status=%d err=%v", doc, status, err)
+	}
+	if directCalls != 1 || firstSolverCalls != 1 || secondSolverCalls != 1 {
+		t.Fatalf("calls direct=%d first=%d second=%d", directCalls, firstSolverCalls, secondSolverCalls)
+	}
+}
+
+func TestJavDBHTMLDoesNotUseSolverForNon403Failure(t *testing.T) {
+	solverCalls := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/javdb", func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "upstream", http.StatusBadGateway) })
+	mux.HandleFunc("/solver", func(w http.ResponseWriter, _ *http.Request) {
+		solverCalls++
+		_, _ = io.WriteString(w, `{"status":"ok","solution":{"response":"<html></html>"}}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	pool := scraper.NewSolverPool()
+	pool.Configure([]scraper.Instance{{URL: server.URL + "/solver", Priority: 1, Enabled: true}}, 0)
+	provider := &javDBProvider{client: server.Client(), solverPool: pool}
+	_, status, err := provider.getHTML(context.Background(), server.URL+"/javdb")
+	if err == nil || status != http.StatusBadGateway || solverCalls != 0 {
+		t.Fatalf("status=%d solver_calls=%d err=%v", status, solverCalls, err)
 	}
 }
 

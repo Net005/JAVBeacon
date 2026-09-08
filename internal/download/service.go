@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
+	"github.com/Net005/JAVBeacon/internal/scraper"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
 
@@ -76,6 +77,9 @@ type Service struct {
 	pikPakCheckMu      sync.Mutex
 	pikPakCheckRunning bool
 	pikPakSessionMu    sync.Mutex
+	httpSolverMu       sync.Mutex
+	httpSolverConfig   string
+	httpSolverPool     *scraper.SolverPool
 	// pikPakDeleteFile is an optional test seam. Production removals use the
 	// authenticated session and PikPak API directly when it is nil.
 	pikPakDeleteFile func(context.Context, string) error
@@ -284,7 +288,7 @@ func (s *Service) httpFallbackDue(downloadID int64) bool {
 }
 
 func New(st store.Store, timeout time.Duration, log *slog.Logger) *Service {
-	s := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, pipelineJobs: make(chan pipelineJob, 64), scheduleNextAttempt: map[string]time.Time{}, httpRuns: map[int64]*httpDownloadRun{}}
+	s := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, pipelineJobs: make(chan pipelineJob, 64), scheduleNextAttempt: map[string]time.Time{}, httpRuns: map[int64]*httpDownloadRun{}, httpSolverPool: scraper.NewSolverPool()}
 	if rows, err := st.DownloadSearchRuns(context.Background(), "recent", 1); err == nil && len(rows) > 0 {
 		s.job = searchJobFromRun(rows[0])
 	}
@@ -294,6 +298,25 @@ func New(st store.Store, timeout time.Duration, log *slog.Logger) *Service {
 	go s.runPipelineWorker()
 	go s.resumeHTTPDownloads()
 	return s
+}
+
+func (s *Service) configureHTTPProviderSolver(settings map[string]string) *scraper.SolverPool {
+	raw := strings.TrimSpace(settings["byparr_instances"])
+	cooldownRaw := strings.TrimSpace(settings["flaresolverr_cooldown"])
+	config := raw + "\x00" + cooldownRaw + "\x00" + strings.TrimSpace(settings["flaresolverr_url"])
+	s.httpSolverMu.Lock()
+	defer s.httpSolverMu.Unlock()
+	if config == s.httpSolverConfig {
+		return s.httpSolverPool
+	}
+	instances := scraper.ParseInstances(raw)
+	if (raw == "" || raw == "[]") && strings.TrimSpace(settings["flaresolverr_url"]) != "" {
+		instances = []scraper.Instance{{URL: strings.TrimRight(strings.TrimSpace(settings["flaresolverr_url"]), "/"), Priority: 1, Enabled: true}}
+	}
+	cooldownSeconds, _ := strconv.ParseFloat(cooldownRaw, 64)
+	s.httpSolverPool.Configure(instances, time.Duration(cooldownSeconds*float64(time.Second)))
+	s.httpSolverConfig = config
+	return s.httpSolverPool
 }
 
 func searchJobFromRun(run domain.DownloadSearchRun) domain.DownloadSearchJob {
@@ -471,7 +494,7 @@ func (s *Service) searchHTTP(ctx context.Context, release domain.Release, source
 	}
 	rows := make([]domain.SearchResult, 0)
 	var providerErrors []string
-	for _, provider := range httpSourceProviders(s.client, settings, s.log, s.authenticatePikPakSession) {
+	for _, provider := range httpSourceProviders(s.client, settings, s.log, s.authenticatePikPakSession, s.configureHTTPProviderSolver(settings)) {
 		found, searchErr := provider.Search(ctx, release)
 		history := domain.Download{ReleaseID: release.ID, Provider: provider.Name(), SourceType: sourceType, Query: release.VideoID, Status: "searched", Transport: "http"}
 		if searchErr != nil {
@@ -1316,7 +1339,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	}
 	var resolved resolvedHTTPFile
 	var resolver HTTPSourceProvider
-	for _, provider := range httpSourceProviders(s.client, settings, s.log, s.authenticatePikPakSession) {
+	for _, provider := range httpSourceProviders(s.client, settings, s.log, s.authenticatePikPakSession, s.configureHTTPProviderSolver(settings)) {
 		if provider.CanResolve(d) {
 			resolver = provider
 			break
