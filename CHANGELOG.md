@@ -7,6 +7,25 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.146] - 2026-09-08
+
+### Fixed
+
+- Cover conforming (the live resize/slice of a JavLibrary/GIGA spread cover
+  to Jellyfin's 1000x1500 Primary/Poster/Cover shape) was accidentally
+  applied to `/covers/{id}`, the same endpoint JAVBeacon's own web UI uses
+  everywhere - meaning the Release Library grid and release detail pages
+  could show a cropped/padded cover instead of the cover exactly as
+  scraped. `/covers/{id}` is now restored to always serve the cover exactly
+  as cached, with no conforming, regardless of shape. A brand-new endpoint,
+  `/covers/{id}/jellyfin-primary`, now carries the conforming feature
+  exclusively - it's what Jellyfin's Primary/Poster/Cover image fetch uses.
+  This is a server-side URL change only: the already-installed Jellyfin
+  plugin needs no update or reinstall, since it already treats the cover
+  URL it's given as opaque. Jellyfin's Backdrop image
+  (`/covers/{id}/original`) was never affected by this bug and continues to
+  serve the uncropped original.
+
 ## [1.0.145] - 2026-09-08
 
 ### Fixed

@@ -815,35 +815,30 @@ func TestCoverEndpointServesBrandedPlaceholderWhenArtworkIsUnavailable(t *testin
 	}
 }
 
-// TestCoverConformsUsingReleaseProductURLNotImageURL guards against a real
-// production bug: JavLibrary and GIGA frequently host a release's cover on
-// a different domain than the site that actually scraped it - JavLibrary
-// often hotlinks a cover from DMM's CDN (pics.dmm.co.jp) instead of hosting
-// it itself, and GIGA's own covers live on giga-web.jp rather than
-// akiba-web.com - so gating conforming on where the image happens to be
-// hosted (ImageURL) misses real matches entirely. It must gate on the
-// release's own product/detail-page URL (ProductURL) instead, which is
-// what actually says which site scraped it.
-func TestCoverConformsUsingReleaseProductURLNotImageURL(t *testing.T) {
+// newSpreadCoverTestServer sets up a release whose cover is a real
+// JavLibrary-spread-shaped image (800x538), served from imageServer (whose
+// URL deliberately contains no "javlibrary" - it simulates a DMM-hotlinked
+// cover, e.g. pics.dmm.co.jp) while ProductURL is a real javlibrary.com
+// detail page, matching a real production release (e.g. IPZZ-869 / release
+// 386176). Shared by the coverJellyfinPrimary and cover tests below, which
+// check opposite requirements against the exact same release.
+func newSpreadCoverTestServer(t *testing.T) (*Server, *http.Request) {
+	t.Helper()
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "covers.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	t.Cleanup(func() { st.Close() })
 
 	spread := syntheticJavLibrarySpreadJPEGForTest(t)
 	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/jpeg")
 		_, _ = w.Write(spread)
 	}))
-	defer imageServer.Close()
+	t.Cleanup(imageServer.Close)
 
 	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
-	// ImageURL simulates a DMM-hotlinked cover: imageServer.URL has no
-	// "javlibrary" in it anywhere, exactly like pics.dmm.co.jp. ProductURL
-	// is a real javlibrary.com detail page, exactly the shape of a real
-	// production release (e.g. IPZZ-869 / release 386176).
 	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-1", Title: "Test", Source: "JavLibrary", ImageURL: imageServer.URL, ProductURL: "https://www.javlibrary.com/en/?v=javtest1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -859,8 +854,22 @@ func TestCoverConformsUsingReleaseProductURLNotImageURL(t *testing.T) {
 	s := &Server{store: st, covers: cache, log: slog.Default()}
 	req := httptest.NewRequest(http.MethodGet, "/covers/1", nil)
 	req.SetPathValue("id", strconv.FormatInt(releases[0].ID, 10))
+	return s, req
+}
+
+// TestCoverJellyfinPrimaryConformsUsingReleaseProductURLNotImageURL guards
+// against a real production bug: JavLibrary and GIGA frequently host a
+// release's cover on a different domain than the site that actually
+// scraped it - JavLibrary often hotlinks a cover from DMM's CDN
+// (pics.dmm.co.jp) instead of hosting it itself, and GIGA's own covers
+// live on giga-web.jp rather than akiba-web.com - so gating conforming on
+// where the image happens to be hosted (ImageURL) misses real matches
+// entirely. It must gate on the release's own product/detail-page URL
+// (ProductURL) instead, which is what actually says which site scraped it.
+func TestCoverJellyfinPrimaryConformsUsingReleaseProductURLNotImageURL(t *testing.T) {
+	s, req := newSpreadCoverTestServer(t)
 	rec := httptest.NewRecorder()
-	s.cover(rec, req)
+	s.coverJellyfinPrimary(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -870,6 +879,28 @@ func TestCoverConformsUsingReleaseProductURLNotImageURL(t *testing.T) {
 	}
 	if b := img.Bounds(); b.Dx() != 1000 || b.Dy() != 1500 {
 		t.Fatalf("got %dx%d, want 1000x1500 (conformed) - cover was served unconformed, meaning gating used ImageURL instead of ProductURL", b.Dx(), b.Dy())
+	}
+}
+
+// TestCoverNeverConformsEvenForAMatchingSpreadShape guards the other half
+// of the same contract: /covers/{id} - the endpoint JAVBeacon's own web UI
+// uses everywhere - must always serve the cover exactly as cached, even
+// when it perfectly matches a known JavLibrary/GIGA spread shape that
+// would get sliced/padded on the Jellyfin-specific endpoint. Conforming is
+// reserved entirely for coverJellyfinPrimary.
+func TestCoverNeverConformsEvenForAMatchingSpreadShape(t *testing.T) {
+	s, req := newSpreadCoverTestServer(t)
+	rec := httptest.NewRecorder()
+	s.cover(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	img, _, err := image.Decode(bytes.NewReader(rec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if b := img.Bounds(); b.Dx() != 800 || b.Dy() != 538 {
+		t.Fatalf("got %dx%d, want 800x538 (untouched) - /covers/{id} must never conform, even for a matching shape", b.Dx(), b.Dy())
 	}
 }
 
