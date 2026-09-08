@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.138] - 2026-09-08
+
+### Fixed
+
+- Fixed a nil-pointer panic in the realtime Stash webhook auth test
+  (`TestStashRealtimeHookRequiresDedicatedSecret`) that was failing the
+  release workflow's test gate and blocking the GHCR image build/push on
+  every run since v1.0.133.
+
 ## [1.0.137] - 2026-09-08
 
 ### Fixed
