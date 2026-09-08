@@ -60,6 +60,44 @@ func historyEventKey(value time.Time) string {
 	return value.UTC().Truncate(time.Second).Format(time.RFC3339)
 }
 
+func historyEventSet(values []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(values))
+	for _, raw := range values {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Stash history timestamp %q: %w", raw, err)
+		}
+		out[historyEventKey(parsed)] = true
+	}
+	return out, nil
+}
+
+func selectHistoryTarget(ids []string, source domain.StashHistoryScene, remote map[string]playbackStats) string {
+	if len(ids) == 1 {
+		return ids[0]
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	wantFile := historyFileKey(source.FilePath)
+	if wantFile != "" {
+		match := ""
+		for _, id := range ids {
+			if historyFileKey(remote[id].FilePath) != wantFile {
+				continue
+			}
+			if match != "" {
+				return ""
+			}
+			match = id
+		}
+		if match != "" {
+			return match
+		}
+	}
+	return ""
+}
+
 func (s *Service) ReviewHistoryWriteback(ctx context.Context) (HistoryReview, error) {
 	archive, ok := s.store.(stashHistoryStore)
 	if !ok {
@@ -87,18 +125,18 @@ func (s *Service) ReviewHistoryWriteback(ctx context.Context) (HistoryReview, er
 	if err != nil {
 		return HistoryReview{}, err
 	}
-	byURL, byID, byFile := map[string]string{}, map[string]string{}, map[string]string{}
+	byURL, byID, byFile := map[string][]string{}, map[string][]string{}, map[string][]string{}
 	for id, scene := range remote {
 		for _, u := range scene.URLs {
 			if k := normalizeHistoryURL(u); k != "" && strings.Contains(k, "javlibrary") {
-				byURL[k] = id
+				byURL[k] = append(byURL[k], id)
 			}
 		}
 		if k := canonical(scene.Code); k != "" {
-			byID[k] = id
+			byID[k] = append(byID[k], id)
 		}
 		if k := historyFileKey(scene.FilePath); k != "" {
-			byFile[k] = id
+			byFile[k] = append(byFile[k], id)
 		}
 	}
 	var review HistoryReview
@@ -111,22 +149,25 @@ func (s *Service) ReviewHistoryWriteback(ctx context.Context) (HistoryReview, er
 	for _, scene := range scenes {
 		item := HistoryReviewItem{SourceSceneID: scene.StashSceneID, ReleaseID: scene.ReleaseID, VideoID: scene.VideoID, Title: scene.Title, FilePath: scene.FilePath, SourcePlayDuration: scene.TotalPlaySeconds, Status: "unmatched"}
 		if k := normalizeHistoryURL(scene.JavLibraryURL); k != "" {
-			item.TargetSceneID = byURL[k]
+			item.TargetSceneID = selectHistoryTarget(byURL[k], scene, remote)
 			if item.TargetSceneID != "" {
 				item.MatchMethod = "JavLibrary URL"
 			}
 		}
 		if item.TargetSceneID == "" {
 			if k := canonical(scene.VideoID); k != "" {
-				item.TargetSceneID = byID[k]
+				item.TargetSceneID = selectHistoryTarget(byID[k], scene, remote)
 				if item.TargetSceneID != "" {
 					item.MatchMethod = "Release ID"
+					if len(byID[k]) > 1 {
+						item.MatchMethod += " + filename"
+					}
 				}
 			}
 		}
 		if item.TargetSceneID == "" {
 			if k := historyFileKey(scene.FilePath); k != "" {
-				item.TargetSceneID = byFile[k]
+				item.TargetSceneID = selectHistoryTarget(byFile[k], scene, remote)
 				if item.TargetSceneID != "" {
 					item.MatchMethod = "Filename (case-insensitive)"
 				}
@@ -143,16 +184,13 @@ func (s *Service) ReviewHistoryWriteback(ctx context.Context) (HistoryReview, er
 			return review, e
 		}
 		target := remote[item.TargetSceneID]
-		playSet, oSet := map[string]bool{}, map[string]bool{}
-		for _, v := range target.PlayHistory {
-			if parsed, e := time.Parse(time.RFC3339, v); e == nil {
-				playSet[historyEventKey(parsed)] = true
-			}
+		playSet, e := historyEventSet(target.PlayHistory)
+		if e != nil {
+			return review, fmt.Errorf("compare play history for Stash scene %s: %w", item.TargetSceneID, e)
 		}
-		for _, v := range target.OHistory {
-			if parsed, e := time.Parse(time.RFC3339, v); e == nil {
-				oSet[historyEventKey(parsed)] = true
-			}
+		oSet, e := historyEventSet(target.OHistory)
+		if e != nil {
+			return review, fmt.Errorf("compare orgasm history for Stash scene %s: %w", item.TargetSceneID, e)
 		}
 		for _, event := range events {
 			raw := historyEventKey(event.OccurredAt)
@@ -250,16 +288,13 @@ func (s *Service) ApplyHistoryWriteback(ctx context.Context, token string, selec
 	playSets, orgasmSets := map[string]map[string]bool{}, map[string]map[string]bool{}
 	playDurations := map[string]float64{}
 	for id, scene := range remote {
-		playSets[id], orgasmSets[id] = map[string]bool{}, map[string]bool{}
-		for _, raw := range scene.PlayHistory {
-			if parsed, parseErr := time.Parse(time.RFC3339, raw); parseErr == nil {
-				playSets[id][historyEventKey(parsed)] = true
-			}
+		playSets[id], err = historyEventSet(scene.PlayHistory)
+		if err != nil {
+			return HistoryApplyResult{}, fmt.Errorf("validate play history for Stash scene %s: %w", id, err)
 		}
-		for _, raw := range scene.OHistory {
-			if parsed, parseErr := time.Parse(time.RFC3339, raw); parseErr == nil {
-				orgasmSets[id][historyEventKey(parsed)] = true
-			}
+		orgasmSets[id], err = historyEventSet(scene.OHistory)
+		if err != nil {
+			return HistoryApplyResult{}, fmt.Errorf("validate orgasm history for Stash scene %s: %w", id, err)
 		}
 		playDurations[id] = scene.PlayDuration
 	}
