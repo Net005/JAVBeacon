@@ -7,6 +7,25 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.140] - 2026-09-08
+
+### Added
+
+- JavLibrary release covers that are a two-panel scan (back cover/text,
+  spine, front cover) are now sliced down to just the front-cover panel and
+  conformed to Jellyfin's Primary/Poster/Cover size (1000x1500, 2:3) when
+  cached, padding rather than cropping further to hit the exact ratio.
+  Already-single-panel covers and every other source are left untouched.
+
+### Fixed
+
+- HTTP downloads no longer fall back to a "-0", "-1", ... filename suffix
+  and silently re-download a duplicate file when the destination already
+  exists on disk. The existing file is now recognized immediately -
+  skipping the fetch (and, for PikPak, an unnecessary account restore)
+  entirely - and shown in Download Activity as "completed" with a distinct
+  "file already existed" state, instead of looking like a normal transfer.
+
 ## [1.0.139] - 2026-09-08
 
 ### Fixed
