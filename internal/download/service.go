@@ -446,7 +446,7 @@ func (s *Service) runEventPipelineAsync(ctx context.Context, d domain.Download, 
 // both configured events are dispatched here, consecutively on the shared
 // serialized worker. This lets existing "Download successfully removed"
 // steps (commonly file moves followed by a StashApp scan) work for HTTP too.
-func (s *Service) runHTTPCompletionPipelinesAsync(ctx context.Context, d domain.Download, t Torrent) {
+func (s *Service) runHTTPCompletionPipelinesAsync(ctx context.Context, d domain.Download, t Torrent, fileAlreadyExisted bool) {
 	s.markPipelineInFlight(d.ID, pipelineDownloadCompleted)
 	s.markPipelineInFlight(d.ID, pipelineDownloadRemoved)
 	go func() {
@@ -476,7 +476,16 @@ func (s *Service) runHTTPCompletionPipelinesAsync(ctx context.Context, d domain.
 			current.PostStatus = "pipeline_failed"
 			current.Error = d.Error
 		default:
-			current.PostStatus = "pipeline_completed"
+			// fileAlreadyExisted is a parameter, not d.PostStatus, because
+			// runPipelineEvent above unconditionally sets d.PostStatus =
+			// "processing" as its very first step - relying on the field
+			// surviving the pipeline run would silently lose this on every
+			// call.
+			if fileAlreadyExisted {
+				current.PostStatus = postStatusFileAlreadyExisted
+			} else {
+				current.PostStatus = "pipeline_completed"
+			}
 			current.Error = ""
 		}
 		_, _ = s.store.SaveDownload(ctx, current)
@@ -687,6 +696,16 @@ const postStatusRemovedUnknown = "removed_unknown_reason"
 // the two "the torrent is gone" outcomes stay easy to tell apart in code,
 // even though it was already used as a bare string literal below.
 const postStatusCompletedRemoved = "completed_removed"
+
+// postStatusFileAlreadyExisted marks an HTTP download that reached Status
+// "completed" without fetching anything, because its destination file was
+// already present on disk when runHTTPDownload started (see
+// httpDestinationPath). The Download Activity UI renders it as the
+// "completed" badge with this PostStatus underneath as "file already
+// existed", the same way it already renders postStatusCompletedRemoved and
+// postStatusRemovedUnknown, so it reads as a distinct state from a download
+// that genuinely transferred bytes.
+const postStatusFileAlreadyExisted = "file_already_existed"
 
 // downloadGoneFromQBHandled reports whether postStatus already reflects a
 // torrent this app knows is gone from qBittorrent for a good reason (it
@@ -1364,11 +1383,12 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		d.ETASeconds = 0
 		d.BytesPerSecond = 0
 		d.Status = "completed"
+		d.PostStatus = postStatusFileAlreadyExisted
 		d.MatchReason = appendDownloadPreference("file already present locally; HTTP download skipped", d.MatchReason)
 		d, _ = s.store.SaveDownload(ctx, d)
 		s.logHTTPDownloadEvent("HTTP download skipped: file already exists", d)
 		_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_completed", "File already present locally; HTTP download skipped")
-		s.runHTTPCompletionPipelinesAsync(context.Background(), d, Torrent{Name: filepath.Base(existingPath), ContentPath: existingPath, Progress: 1})
+		s.runHTTPCompletionPipelinesAsync(context.Background(), d, Torrent{Name: filepath.Base(existingPath), ContentPath: existingPath, Progress: 1}, true)
 		return
 	}
 	var resolved resolvedHTTPFile
@@ -1612,7 +1632,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	d, _ = s.store.SaveDownload(context.Background(), d)
 	s.logHTTPDownloadEvent("HTTP download completed", d)
 	_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_completed", "HTTP download completed")
-	s.runHTTPCompletionPipelinesAsync(context.Background(), d, Torrent{Name: filepath.Base(finalPath), ContentPath: finalPath, Progress: 1})
+	s.runHTTPCompletionPipelinesAsync(context.Background(), d, Torrent{Name: filepath.Base(finalPath), ContentPath: finalPath, Progress: 1}, false)
 }
 
 func verifyHTTPDownloadFile(path string, resolved resolvedHTTPFile, expectedSize int64) (string, error) {
