@@ -222,6 +222,62 @@ func TestJavLibrarySolverBoundaryAlwaysReceivesHTTPS(t *testing.T) {
 	}
 }
 
+// TestConfigureTimeoutsChangesSolveBudgetHintSentToSolver verifies that
+// ConfigureTimeouts actually reaches the wire: the maxTimeout/max_timeout
+// values in the payload sent to Byparr/FlareSolverr must reflect whatever
+// was last configured, not the package's original hardcoded 75s.
+func TestConfigureTimeoutsChangesSolveBudgetHintSentToSolver(t *testing.T) {
+	var payload struct {
+		MaxTimeout    int `json:"maxTimeout"`
+		MaxTimeoutAlt int `json:"max_timeout"`
+	}
+	solver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "solution": map[string]any{"response": "<html></html>"}})
+	}))
+	defer solver.Close()
+
+	j := NewJavLibrary(2*time.Second, solver.URL, 0, nil)
+	j.ConfigureTimeouts(5*time.Second, 20)
+	if _, err := j.flare(context.Background(), "https://www.javlibrary.com/en/javme3rf2u.html", solver.URL); err != nil {
+		t.Fatal(err)
+	}
+	if payload.MaxTimeout != 20000 || payload.MaxTimeoutAlt != 20 {
+		t.Fatalf("solver payload maxTimeout=%d max_timeout=%d, want 20000/20", payload.MaxTimeout, payload.MaxTimeoutAlt)
+	}
+}
+
+// TestConfigureTimeoutsNonPositiveValuesFallBackToDefaults verifies that
+// zero/negative inputs restore this package's original hardcoded behavior
+// (30s request timeout, 75s solve budget) rather than disabling timeouts.
+func TestConfigureTimeoutsNonPositiveValuesFallBackToDefaults(t *testing.T) {
+	var payload struct {
+		MaxTimeout int `json:"maxTimeout"`
+	}
+	solver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "solution": map[string]any{"response": "<html></html>"}})
+	}))
+	defer solver.Close()
+
+	j := NewJavLibrary(2*time.Second, solver.URL, 0, nil)
+	j.ConfigureTimeouts(5*time.Second, 20) // move away from the default first
+	j.ConfigureTimeouts(0, 0)              // then reset with non-positive values
+	if _, err := j.flare(context.Background(), "https://www.javlibrary.com/en/javme3rf2u.html", solver.URL); err != nil {
+		t.Fatal(err)
+	}
+	if payload.MaxTimeout != 75000 {
+		t.Fatalf("solver payload maxTimeout=%d after resetting with 0, want 75000 (default)", payload.MaxTimeout)
+	}
+	if timeout := j.client.Load().Timeout; timeout != 30*time.Second {
+		t.Fatalf("client timeout=%v after resetting with 0, want 30s (default)", timeout)
+	}
+}
+
 // TestJavLibrarySkipsDirectFetchWhenFlareSolverrConfigured guards against the
 // exact bug reported in production: with a FlareSolverr solver configured,
 // every scrape was still attempting a direct fetch first (logging a 403 "via

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"embed"
@@ -1216,17 +1217,30 @@ func (s *Server) cover(w http.ResponseWriter, r *http.Request) {
 		s.serveUnavailableCover(w, r)
 		return
 	}
+	// Conform live, in memory, on every request that asks for the poster -
+	// the on-disk cache always stays exactly the raw, as-downloaded cover
+	// (see coverOriginal below), so there's nothing to keep in sync and
+	// nothing that can go stale relative to a newer conforming pipeline:
+	// the very next request just conforms again from the same original.
+	if conformed, ok := covers.ConformForServing(path, release.ImageURL); ok {
+		info, statErr := os.Stat(path)
+		modTime := time.Now()
+		if statErr == nil {
+			modTime = info.ModTime()
+		}
+		s.serveCoverBytes(w, r, conformed, modTime, release.VideoID)
+		return
+	}
 	s.serveCoverFile(w, r, path, release.VideoID)
 }
 
 // coverOriginal serves the non-cropped, non-padded source cover for a
 // release, for callers - Jellyfin's Backdrop image in particular - that
 // specifically want the version before any JavLibrary/GIGA poster
-// conforming was applied, since a cropped-to-poster image makes a poor
-// background. When conforming never applied to this release's cover (it
-// didn't match a known spread/pad shape, or hasn't been cached yet), the
-// standard cover file already IS the untouched original, so this falls
-// back to it rather than 404ing.
+// conforming is applied, since a cropped-to-poster image makes a poor
+// background. The on-disk cache file is never mutated by conforming (see
+// cover above, which conforms purely in memory at serve time), so it is
+// always already the untouched original - this just serves it directly.
 func (s *Server) coverOriginal(w http.ResponseWriter, r *http.Request) {
 	n, err := id(r)
 	if err != nil {
@@ -1257,10 +1271,6 @@ func (s *Server) coverOriginal(w http.ResponseWriter, r *http.Request) {
 		s.serveUnavailableCover(w, r)
 		return
 	}
-	original := s.covers.OriginalPath(release.VideoID)
-	if info, statErr := os.Stat(original); statErr == nil && info.Size() > 0 {
-		path = original
-	}
 	s.serveCoverFile(w, r, path, release.VideoID)
 }
 
@@ -1285,6 +1295,16 @@ func (s *Server) serveCoverFile(w http.ResponseWriter, r *http.Request, path, vi
 	w.Header().Set("Content-Type", http.DetectContentType(buf[:nRead]))
 	w.Header().Set("Cache-Control", "public, max-age=300, must-revalidate")
 	http.ServeContent(w, r, videoID, info.ModTime(), f)
+}
+
+// serveCoverBytes streams an already-in-memory cover image (produced by
+// live conforming, never written to disk) as the response. modTime should
+// be the modification time of the on-disk source it was derived from, so
+// conditional requests behave the same as they would for serveCoverFile.
+func (s *Server) serveCoverBytes(w http.ResponseWriter, r *http.Request, data []byte, modTime time.Time, videoID string) {
+	w.Header().Set("Content-Type", http.DetectContentType(data))
+	w.Header().Set("Cache-Control", "public, max-age=300, must-revalidate")
+	http.ServeContent(w, r, videoID, modTime, bytes.NewReader(data))
 }
 
 func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
@@ -1523,7 +1543,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &x) {
 		return
 	}
-	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "api_key": true, "stash_watchlist_tag_id": true, "stash_watchlist_sync_enabled": true, "stash_watchlist_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "blacklisted_filename_patterns": true, "search_auto_close_seconds": true, "search_download_background": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
+	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "byparr_request_timeout_seconds": true, "byparr_solve_timeout_seconds": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "api_key": true, "stash_watchlist_tag_id": true, "stash_watchlist_sync_enabled": true, "stash_watchlist_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "blacklisted_filename_patterns": true, "search_auto_close_seconds": true, "search_download_background": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
 	for _, key := range []string{"stash_realtime_enabled", "stash_realtime_secret", "stash_realtime_debounce_seconds", "stash_realtime_retry_attempts", "stash_realtime_retry_delay_seconds"} {
 		allowed[key] = true
 	}
@@ -1857,6 +1877,22 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		if raw, ok := x[key]; ok && strings.TrimSpace(raw) != "" {
 			if n, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil || n < 0 {
 				s.problem(w, http.StatusUnprocessableEntity, key+" must be zero or greater")
+				return
+			}
+		}
+	}
+	// byparr_request_timeout_seconds bounds the HTTP client used for both a
+	// direct JavLibrary fetch and the request to Byparr/FlareSolverr asking
+	// it to solve one - since it wraps the solver call itself, it's the
+	// timeout that actually fires first, ahead of the solve-budget hint
+	// below. byparr_solve_timeout_seconds is only that hint (maxTimeout/
+	// max_timeout in the solver payload); raising it without also raising
+	// the request timeout above it has no effect. Blank leaves this
+	// package's built-in defaults (30s / 75s) in place.
+	for key, minimum := range map[string]int{"byparr_request_timeout_seconds": 5, "byparr_solve_timeout_seconds": 5} {
+		if raw, ok := x[key]; ok && strings.TrimSpace(raw) != "" {
+			if n, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil || n < minimum {
+				s.problem(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s must be at least %d seconds", key, minimum))
 				return
 			}
 		}

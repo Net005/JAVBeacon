@@ -345,6 +345,7 @@ func (s *Service) SolverPoolEnabledCount() int {
 func (s *Service) ApplySettings(ctx context.Context) {
 	if settings, e := s.store.Settings(ctx); e == nil {
 		s.javlibrary.Configure(byparrInstancesFromSettings(settings))
+		s.javlibrary.ConfigureTimeouts(byparrTimeoutsFromSettings(settings))
 	}
 }
 
@@ -354,6 +355,19 @@ func (s *Service) ApplySettings(ctx context.Context) {
 func byparrInstancesFromSettings(settings map[string]string) ([]scraper.Instance, time.Duration) {
 	cooldown, _ := strconv.ParseFloat(settings["flaresolverr_cooldown"], 64)
 	return scraper.ParseInstances(settings["byparr_instances"]), time.Duration(cooldown * float64(time.Second))
+}
+
+// byparrTimeoutsFromSettings parses the byparr_request_timeout_seconds/
+// byparr_solve_timeout_seconds settings pair into the form
+// JavLibrary.ConfigureTimeouts wants, shared by ApplySettings and the
+// per-job re-Configure in run(). A missing or invalid value comes back as
+// 0, which ConfigureTimeouts falls back to its own hardcoded default for -
+// so a fresh install with neither setting saved yet behaves exactly as it
+// did before either became configurable.
+func byparrTimeoutsFromSettings(settings map[string]string) (time.Duration, int) {
+	requestSeconds, _ := strconv.Atoi(strings.TrimSpace(settings["byparr_request_timeout_seconds"]))
+	solveSeconds, _ := strconv.Atoi(strings.TrimSpace(settings["byparr_solve_timeout_seconds"]))
+	return time.Duration(requestSeconds) * time.Second, solveSeconds
 }
 
 // capForSchedule returns the configured byparr_max_instances_<mode> setting
@@ -664,6 +678,7 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 			pages = n
 		}
 		s.javlibrary.Configure(byparrInstancesFromSettings(settings))
+		s.javlibrary.ConfigureTimeouts(byparrTimeoutsFromSettings(settings))
 		cap := capForSchedule(settings, options.Mode)
 		if enabled := s.javlibrary.Pool().EnabledCount(); enabled > 0 {
 			javConcurrency = enabled

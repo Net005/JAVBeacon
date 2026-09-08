@@ -6,33 +6,32 @@ import (
 	"os"
 )
 
-// conformCoverFileForServing reads the just-downloaded image at path and, if
-// it matches a known JavLibrary or GIGA cover shape, conforms it to
-// Jellyfin's 1000x1500 Primary/Poster/Cover size:
+// ConformForServing reads the raw, as-downloaded cover at path and, if it
+// matches a known JavLibrary or GIGA cover shape, returns it sliced/padded
+// to Jellyfin's 1000x1500 Primary/Poster/Cover size, re-encoded as JPEG.
 //
-//   - The untouched original bytes are preserved at originalPath first, so
-//     a caller that specifically wants the non-cropped/non-padded cover
-//     (Jellyfin's Backdrop image, in particular - a cropped poster makes a
-//     poor background) always has it available, even though the standard
-//     cover file is about to become the conformed version.
-//   - path is then overwritten with the conformed, re-encoded JPEG.
+// This is computed entirely in memory on every call and never writes
+// anything back to path or anywhere else on disk - the cache on disk always
+// stays exactly what was downloaded, and conforming only happens live, at
+// the moment a caller (Jellyfin) actually asks for the Primary image. That
+// keeps a single cached file serving both purposes: unconformed for the
+// Backdrop image, conformed for Primary, with nothing to keep in sync and
+// nothing that can go stale relative to a newer conforming pipeline.
 //
-// It reports ok=false (leaving path, and any existing originalPath, alone)
-// for any non-matching or undecodable image, so every other source - GIGA
-// covers that are neither known shape, PikPak restores, manually set
-// covers, an already-single-panel JavLibrary image, etc. - passes through
-// exactly as downloaded and never gets an originalPath file at all.
-func conformCoverFileForServing(path, originalPath, sourceURL string) (ok bool) {
-	original, err := os.ReadFile(path)
+// It reports ok=false for any non-matching or undecodable image, so every
+// other source - GIGA covers that are neither known shape, PikPak restores,
+// manually set covers, an already-single-panel JavLibrary image, etc. -
+// should just be served as downloaded.
+func ConformForServing(path, sourceURL string) (conformed []byte, ok bool) {
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return nil, false
 	}
-	img, _, decodeErr := image.Decode(bytes.NewReader(original))
+	img, _, decodeErr := image.Decode(bytes.NewReader(raw))
 	if decodeErr != nil {
-		return false
+		return nil, false
 	}
 
-	var conformed []byte
 	switch {
 	case isJavLibrarySpreadCover(sourceURL, img):
 		conformed = conformJavLibraryCover(img)
@@ -42,16 +41,7 @@ func conformCoverFileForServing(path, originalPath, sourceURL string) (ok bool) 
 		}
 	}
 	if len(conformed) == 0 {
-		return false
+		return nil, false
 	}
-
-	// Preserve the original before overwriting the standard path, so a
-	// backdrop request still has something non-cropped to fall back to.
-	if err := os.WriteFile(originalPath, original, 0o644); err != nil {
-		return false
-	}
-	if err := os.WriteFile(path, conformed, 0o644); err != nil {
-		return false
-	}
-	return true
+	return conformed, true
 }

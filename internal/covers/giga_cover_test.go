@@ -78,10 +78,9 @@ func TestConformGIGASpreadKeepsFrontPanelOnly(t *testing.T) {
 	}
 }
 
-func TestConformCoverFileForServingPreservesOriginalForMatchingGIGACover(t *testing.T) {
+func TestConformForServingReturnsConformedBytesWithoutTouchingDisk(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cover.img")
-	originalPath := filepath.Join(dir, "cover.orig.img")
 
 	spread := syntheticSpread(800, 536)
 	f, err := os.Create(path)
@@ -96,17 +95,19 @@ func TestConformCoverFileForServingPreservesOriginalForMatchingGIGACover(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	if !conformCoverFileForServing(path, originalPath, "https://www.akiba-web.com/cover.jpg") {
-		t.Fatal("expected ok=true for a GIGA type 1 spread cover")
-	}
-
-	// path must now hold the conformed poster, at the exact Jellyfin size.
-	after, err := os.ReadFile(path)
+	beforeInfo, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	img, _, err := image.Decode(bytes.NewReader(after))
+
+	conformed, ok := ConformForServing(path, "https://www.akiba-web.com/cover.jpg")
+	if !ok {
+		t.Fatal("expected ok=true for a GIGA type 1 spread cover")
+	}
+
+	// The returned bytes must be the conformed poster, at the exact
+	// Jellyfin size - computed purely in memory.
+	img, _, err := image.Decode(bytes.NewReader(conformed))
 	if err != nil {
 		t.Fatalf("decode conformed image: %v", err)
 	}
@@ -115,13 +116,21 @@ func TestConformCoverFileForServingPreservesOriginalForMatchingGIGACover(t *test
 		t.Fatalf("got %dx%d, want %dx%d", b.Dx(), b.Dy(), jellyfinPosterWidth, jellyfinPosterHeight)
 	}
 
-	// originalPath must hold the exact untouched bytes that were downloaded,
-	// so a Backdrop request always has a non-cropped version available.
-	original, err := os.ReadFile(originalPath)
+	// path on disk must be completely untouched - conforming never writes
+	// back, so it always stays exactly the raw, as-downloaded original,
+	// available in full for a Backdrop request.
+	after, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read originalPath: %v", err)
+		t.Fatal(err)
 	}
-	if string(original) != string(before) {
-		t.Fatal("originalPath does not match the untouched pre-conform bytes")
+	if string(before) != string(after) {
+		t.Fatal("ConformForServing modified the on-disk cache file")
+	}
+	afterInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !afterInfo.ModTime().Equal(beforeInfo.ModTime()) {
+		t.Fatal("ConformForServing changed the on-disk file's modification time")
 	}
 }
