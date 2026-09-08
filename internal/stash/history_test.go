@@ -114,13 +114,13 @@ func TestHistoryWritebackReviewExcludesEventsAlreadyInStash(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	play := time.Date(2026, 8, 1, 10, 0, 0, 789000000, time.UTC)
-	orgasm := time.Date(2026, 8, 1, 10, 30, 0, 456000000, time.UTC)
+	play := time.Date(2026, 8, 1, 10, 0, 17, 789000000, time.UTC)
+	orgasm := time.Date(2026, 8, 1, 10, 30, 42, 456000000, time.UTC)
 	if err := st.UpsertStashHistory(ctx, domain.StashHistoryScene{StashSceneID: "same", VideoID: "ATID-803", Title: "Already synced", FilePath: "/old/ATID-803.mp4", TotalPlaySeconds: 600}, []time.Time{play, play}, []time.Time{orgasm, orgasm}); err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[{"id":"same","title":"Already synced","code":"ATID-803","urls":[],"play_duration":600,"play_history":["2026-08-01T10:00:00Z"],"o_history":["2026-08-01T10:30:00Z"],"files":[{"path":"/new/ATID-803.mp4"}]}]}}}`))
+		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[{"id":"same","title":"Already synced","code":"ATID-803","urls":[],"play_duration":600,"play_history":["2026-08-01T10:00:17Z"],"o_history":["2026-08-01T10:30:42Z"],"files":[{"path":"/new/ATID-803.mp4"}]}]}}}`))
 	}))
 	defer server.Close()
 	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": server.URL}); err != nil {
@@ -132,5 +132,55 @@ func TestHistoryWritebackReviewExcludesEventsAlreadyInStash(t *testing.T) {
 	}
 	if review.Changes != 0 || len(review.Items) != 1 || review.Items[0].Status != "matched" || len(review.Items[0].PlayTimes) != 0 || len(review.Items[0].OrgasmTimes) != 0 {
 		t.Fatalf("already-synced events must not be listed as changes: %+v", review)
+	}
+}
+
+func TestHistoryWritebackDisambiguatesDuplicateReleaseCodesByFilename(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "history-duplicate-code.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	play := time.Date(2019, 3, 24, 0, 35, 17, 0, time.UTC)
+	if err := st.UpsertStashHistory(ctx, domain.StashHistoryScene{StashSceneID: "archived", VideoID: "GHOR-40", Title: "GHOR-40", FilePath: "/collections/giga/ghor-40.wmv"}, []time.Time{play}, nil); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[{"id":"3393","title":"GHOR-04","code":"GHOR-40","play_history":["2019-01-17T00:54:08Z"],"o_history":[],"files":[{"path":"/collections/giga/ghor-04.wmv"}]},{"id":"3429","title":"GHOR-40","code":"GHOR-40","play_history":["2019-03-24T00:35:17Z"],"o_history":[],"files":[{"path":"/collections/giga/ghor-40.wmv"}]}]}}}`))
+	}))
+	defer server.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	review, err := New(st, 2*time.Second, slog.Default(), nil, nil).ReviewHistoryWriteback(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Changes != 0 || len(review.Items) != 1 || review.Items[0].TargetSceneID != "3429" || review.Items[0].MatchMethod != "Release ID + filename" {
+		t.Fatalf("duplicate release code must select the matching file without adding history: %+v", review)
+	}
+}
+
+func TestHistoryWritebackReviewRejectsUncomparableRemoteTimestamp(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "history-invalid-remote-time.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	play := time.Date(2026, 8, 1, 10, 0, 17, 0, time.UTC)
+	if err := st.UpsertStashHistory(ctx, domain.StashHistoryScene{StashSceneID: "same", VideoID: "ATID-803", Title: "Cannot compare safely"}, []time.Time{play}, nil); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[{"id":"same","code":"ATID-803","play_history":["not-a-timestamp"],"o_history":[]}]}}}`))
+	}))
+	defer server.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(st, 2*time.Second, slog.Default(), nil, nil).ReviewHistoryWriteback(ctx); err == nil || !strings.Contains(err.Error(), "invalid Stash history timestamp") {
+		t.Fatalf("review must fail closed when duplicate comparison is unsafe, got %v", err)
 	}
 }

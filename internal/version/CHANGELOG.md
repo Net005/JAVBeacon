@@ -7,6 +7,18 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.129] - 2026-09-08
+
+### Fixed
+
+- Stash history write-back now handles duplicate release codes deterministically
+  by disambiguating matching scenes with their case-insensitive filenames. This
+  prevents an existing event from being offered again when another Stash scene
+  incorrectly shares the same release code.
+- Review and final write-back validation now stop safely if a Stash history
+  timestamp cannot be parsed, instead of silently treating that existing event
+  as absent and potentially creating a duplicate.
+
 ## [1.0.128] - 2026-09-08
 
 ### Changed
