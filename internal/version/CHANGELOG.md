@@ -7,6 +7,13 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.122] - 2026-09-08
+
+### Added
+
+- Failed HTTP and qBittorrent rows now show the date and time the failure was
+  recorded. Other activity states continue to show their original added time.
+
 ## [1.0.121] - 2026-09-08
 
 ### Fixed
