@@ -1542,6 +1542,27 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 @media(max-width:650px){.historyPeriodNavigation{grid-template-columns:34px 1fr 34px}.historyPeriodNavigation #historyCurrent{grid-column:1/-1;grid-row:2}.historyPeriodNavigation strong{min-width:0}}
 .historyListSentinel{height:1px}.historyListLoading{margin:14px 0 2px;text-align:center}
 
+/* Keep the history graph and its matching records together in the remaining
+   viewport. Only the details rail scrolls, so browsing records does not move
+   the whole History page away from its controls and chart. */
+.historyWorkspace{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(420px,.88fr);gap:14px;height:clamp(500px,calc(var(--dvh100,100vh) - 285px),760px);min-height:0}
+.historyWorkspace>.panel{min-width:0;height:100%;margin:0}
+.historyChartPanel{display:flex;min-height:0;flex-direction:column;overflow:hidden}
+.historyChartPanel .historyChart{min-height:0;overflow:auto}
+.historyDetailsPanel{display:flex;min-height:0;flex-direction:column;overflow:hidden}
+.historyDetailsHead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex:0 0 auto;margin-bottom:12px}
+.historyDetailsHead h2{margin:.1rem 0 0}.historyDetailsHead .muted{display:block;font-size:10px}
+.historyCoverControl{flex:0 0 auto;margin:0!important;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:#0d1016;white-space:nowrap}
+.historyCoverControl input{width:78px!important}
+.historyListViewport{min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-right:5px;scrollbar-gutter:stable}
+.historyItem{grid-template-columns:52px var(--history-cover,84px) minmax(120px,1fr) 72px;gap:9px;min-height:calc(var(--history-cover,84px) * .676 + 20px)}
+.historyCover{width:var(--history-cover,84px);height:auto;aspect-ratio:800/541}
+.historyLinks{grid-column:3/-1;justify-content:flex-start;gap:5px}
+.historyLinks .historySourceButton{min-height:26px;padding:4px 7px;gap:5px;border-radius:6px;font-size:8px}
+.historySourceButton img{width:13px;height:13px;flex-basis:13px}
+@media(max-width:1150px){.historyWorkspace{grid-template-columns:1fr;height:auto}.historyWorkspace>.panel{height:auto}.historyDetailsPanel{height:min(560px,65vh)}.historyChartPanel .historyChart{overflow:visible}}
+@media(max-width:650px){.historyDetailsHead{align-items:stretch;flex-direction:column}.historyCoverControl{width:100%}.historyCoverControl input{flex:1;width:auto!important}.historyDetailsPanel{height:min(620px,72vh)}.historyItem{grid-template-columns:46px min(var(--history-cover,84px),90px) minmax(0,1fr)}.historyCover{width:min(var(--history-cover,84px),90px)}.historyPlaytime{grid-column:3}.historyLinks{grid-column:1/-1}.historyLinks .historySourceButton{flex:0 1 auto}}
+
 /* Branded links from Stash History to each item's source and local details. */
 .historyItem{grid-template-columns:66px 84px minmax(180px,1fr) 130px minmax(220px,auto)}
 .historyLinks{gap:8px}
@@ -1553,6 +1574,14 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 .historySourceButton:hover{filter:brightness(1.16)}
 @media(max-width:900px){.historyItem{grid-template-columns:60px 72px minmax(0,1fr) minmax(220px,auto)}}
 @media(max-width:650px){.historyItem{grid-template-columns:54px 64px minmax(0,1fr)}.historyLinks{width:100%}.historyLinks .historySourceButton{flex:1 1 auto}}
+
+/* Compact two-column history-detail rows override the older full-width row. */
+.historyDetailsPanel .historyItem{grid-template-columns:52px var(--history-cover,84px) minmax(120px,1fr) 72px;gap:9px;min-height:calc(var(--history-cover,84px) * .676 + 20px)}
+.historyDetailsPanel .historyCover{width:var(--history-cover,84px);height:auto;aspect-ratio:800/541}
+.historyDetailsPanel .historyLinks{grid-column:3/-1;justify-content:flex-start;gap:5px}
+.historyDetailsPanel .historySourceButton{min-height:26px;padding:4px 7px;gap:5px;border-radius:6px;font-size:8px}
+.historyDetailsPanel .historySourceButton img{width:13px;height:13px;flex-basis:13px}
+@media(max-width:650px){.historyDetailsPanel .historyItem{grid-template-columns:46px min(var(--history-cover,84px),90px) minmax(0,1fr)}.historyDetailsPanel .historyCover{width:min(var(--history-cover,84px),90px)}.historyDetailsPanel .historyPlaytime{grid-column:3}.historyDetailsPanel .historyLinks{grid-column:1/-1}.historyDetailsPanel .historySourceButton{flex:0 1 auto}}
 
 /* Hard filename exclusions mirror the preferred-pattern row editor. */
 .blacklistedPatternSetting{display:block;margin:18px 0 10px;padding-top:14px;border-top:1px solid var(--line)}

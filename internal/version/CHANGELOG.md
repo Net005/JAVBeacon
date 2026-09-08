@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.127] - 2026-09-08
+
+### Changed
+
+- Stash History now places its filtered history details beside the activity
+  graph in a viewport-sized workspace. The details rail scrolls independently,
+  includes a persistent cover-size control, and uses smaller favicon-led source
+  buttons so the complete view fits without scrolling the entire page.
+
 ## [1.0.126] - 2026-09-08
 
 ### Fixed
