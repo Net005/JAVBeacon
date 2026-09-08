@@ -72,11 +72,41 @@ public sealed class JAVBeaconClient(IHttpClientFactory clients)
         return path.TrimStart('/');
     }
 
+    private static string NormalizeImageUrl(string raw)
+    {
+        var value = raw.Trim();
+        if (value.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+        {
+            value = value["file://".Length..];
+        }
+
+        return RelativePath(value);
+    }
+
+    private static string ToAbsoluteImageUrl(string? path, string fallbackBase)
+    {
+        var normalized = NormalizeImageUrl(path ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return normalized;
+        }
+
+        if (Uri.TryCreate(normalized, UriKind.Absolute, out var absolute) && absolute.Scheme != Uri.UriSchemeFile)
+        {
+            return absolute.ToString();
+        }
+
+        return new Uri(new Uri(fallbackBase), RelativePath(normalized)).ToString();
+    }
+
     public async Task<HttpResponseMessage> GetImage(string url, CancellationToken ct)
     {
         var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
         var configuredBase = new Uri(config.JAVBeaconUrl.TrimEnd('/') + "/");
-        var target = Uri.TryCreate(url, UriKind.Absolute, out var absolute) ? absolute : new Uri(configuredBase, RelativePath(url));
+        var normalized = NormalizeImageUrl(url);
+        var target = Uri.TryCreate(normalized, UriKind.Absolute, out var absolute) && absolute.Scheme != Uri.UriSchemeFile
+            ? absolute
+            : new Uri(configuredBase, RelativePath(normalized));
         // Never forward the JAVBeacon bearer token to a third-party backdrop
         // host. Only same-origin image requests use the authenticated client.
         var sameOrigin = Uri.Compare(target, configuredBase, UriComponents.SchemeAndServer, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) == 0;
@@ -88,8 +118,7 @@ public sealed class JAVBeaconClient(IHttpClientFactory clients)
 
     public string Absolute(string path)
     {
-        if (Uri.TryCreate(path, UriKind.Absolute, out var absolute)) return absolute.ToString();
         var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
-        return new Uri(new Uri(config.JAVBeaconUrl.TrimEnd('/') + "/"), RelativePath(path)).ToString();
+        return ToAbsoluteImageUrl(path, config.JAVBeaconUrl.TrimEnd('/') + "/");
     }
 }

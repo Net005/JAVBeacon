@@ -11,6 +11,9 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Fixed the Jellyfin movie image provider listing so images can be fetched for
   movie items even when a JAVBeacon provider ID is not yet attached.
+- Hardened Jellyfin image URL normalization so `file:///...` image paths from
+  Jellyfin identify/search are re-based through the configured JAVBeacon URL
+  instead of being treated as local filesystem paths.
 
 ## [1.0.136] - 2026-09-08
 
