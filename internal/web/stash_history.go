@@ -153,7 +153,8 @@ func (s *Server) reviewStashHistoryWriteback(w http.ResponseWriter, r *http.Requ
 }
 func (s *Server) applyStashHistoryWriteback(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Token string `json:"token"`
+		Token          string   `json:"token"`
+		SourceSceneIDs []string `json:"source_scene_ids"`
 	}
 	if !s.decode(w, r, &body) {
 		return
@@ -162,7 +163,7 @@ func (s *Server) applyStashHistoryWriteback(w http.ResponseWriter, r *http.Reque
 		s.problem(w, 400, "review token is required")
 		return
 	}
-	result, err := s.stash.ApplyHistoryWriteback(r.Context(), body.Token)
+	result, err := s.stash.ApplyHistoryWriteback(r.Context(), body.Token, body.SourceSceneIDs)
 	if err != nil {
 		s.problem(w, http.StatusConflict, err.Error())
 		return

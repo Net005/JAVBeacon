@@ -72,16 +72,34 @@ type Server struct {
 }
 
 type searchDownloadQueueItem struct {
-	ReleaseID int64  `json:"release_id"`
-	VideoID   string `json:"video_id"`
-	Transport string `json:"transport,omitempty"`
-	Status    string `json:"status"`
+	ID         int64     `json:"id,omitempty"`
+	ReleaseID  int64     `json:"release_id"`
+	VideoID    string    `json:"video_id"`
+	Transport  string    `json:"transport,omitempty"`
+	Status     string    `json:"status"`
+	SourceType string    `json:"source_type,omitempty"`
+	Detail     string    `json:"detail,omitempty"`
+	Position   int       `json:"position,omitempty"`
+	AddedAt    time.Time `json:"added_at,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at,omitempty"`
 }
 
 type bulkReleaseJob struct {
 	Releases          []domain.Release
+	TaskIDs           []int64
+	Force             []bool
 	AllowNonPreferred bool
 	SourceType        string
+}
+
+type persistedSearchOptions struct {
+	AllowNonPreferred bool `json:"allow_non_preferred"`
+	Force             bool `json:"force"`
+}
+
+func mustDownloads(st store.Store) []domain.Download {
+	rows, _ := st.Downloads(context.Background(), "")
+	return rows
 }
 
 type cachedReleaseCount struct {
@@ -132,6 +150,7 @@ func New(st store.Store, authService *auth.Service, m *monitor.Service, historic
 	}
 	m.OnRelease(s.broadcastRelease)
 	s.routes()
+	go s.resumeSearchDownloadTasks()
 	return s.security(s.mux)
 }
 
@@ -781,51 +800,72 @@ func (s *Server) backgroundSearchAndDownloadRelease(w http.ResponseWriter, r *ht
 	if release.DownloadMethodOverride == "http" || (release.DownloadMethodOverride == "" && strings.HasPrefix(method, "http")) {
 		transport = "http"
 	}
-	s.backgroundSearchMu.Lock()
-	if s.backgroundSearchQueue == nil {
-		s.backgroundSearchQueue = make(map[int64]searchDownloadQueueItem)
-	}
-	if _, exists := s.backgroundSearchQueue[release.ID]; exists {
-		s.backgroundSearchMu.Unlock()
-		s.json(w, http.StatusAccepted, map[string]any{"queued": true, "release_id": release.ID, "already_queued": true})
+	const sourceType = "Manual Background Search + Download"
+	taskID, alreadyQueued, err := s.createSearchDownloadTask(r.Context(), release, sourceType, release.AllowNonPreferredFilenames, false, transport)
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.backgroundSearchQueue[release.ID] = searchDownloadQueueItem{ReleaseID: release.ID, VideoID: release.VideoID, Transport: transport, Status: "searching"}
-	s.backgroundSearchMu.Unlock()
+	if !alreadyQueued {
+		s.enqueueBulkReleaseJob(bulkReleaseJob{Releases: []domain.Release{release}, TaskIDs: []int64{taskID}, SourceType: sourceType, AllowNonPreferred: release.AllowNonPreferredFilenames})
+	}
+	s.json(w, http.StatusAccepted, map[string]any{"queued": true, "release_id": release.ID, "already_queued": alreadyQueued})
+}
 
-	const sourceType = "Manual Background Search + Download"
-	go func(release domain.Release) {
-		defer func() {
-			s.backgroundSearchMu.Lock()
-			delete(s.backgroundSearchQueue, release.ID)
-			s.backgroundSearchMu.Unlock()
-		}()
-		outcome, searchErr := s.downloads.SearchAndDownloadDetailed(context.Background(), release, sourceType, release.AllowNonPreferredFilenames)
-		switch {
-		case searchErr != nil:
-			if s.log != nil {
-				s.log.Error(sourceType+" failed", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "error", searchErr, "reason", outcome.Reason)
-			}
-		case !outcome.Found:
-			if s.log != nil {
-				s.log.Warn(sourceType+" found no downloadable candidate", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "reason", outcome.Reason)
-			}
-		case outcome.Download.Status == "skipped":
-			if s.log != nil {
-				s.log.Warn(sourceType+" skipped", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "download_status", outcome.Download.Status, "reason", outcome.Reason)
-			}
-		case outcome.Download.Status == "failed":
-			if s.log != nil {
-				s.log.Error(sourceType+" download failed", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "reason", outcome.Reason)
-			}
-		default:
-			if s.log != nil {
-				s.log.Info(sourceType+" queued", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "download_id", outcome.Download.ID, "transport", outcome.Download.Transport)
+func (s *Server) createSearchDownloadTask(ctx context.Context, release domain.Release, sourceType string, allowNonPreferred, force bool, transport string) (int64, bool, error) {
+	rows, err := s.store.Downloads(ctx, "")
+	if err != nil {
+		return 0, false, err
+	}
+	for _, row := range rows {
+		if row.ReleaseID == release.ID && (row.Status == "search_queued" || row.Status == "searching") {
+			return row.ID, true, nil
+		}
+	}
+	options, _ := json.Marshal(persistedSearchOptions{AllowNonPreferred: allowNonPreferred, Force: force})
+	task, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Provider: "Search + Download", SourceType: sourceType, Query: release.VideoID, Name: "Waiting for provider search", Transport: transport, Status: "search_queued", MatchReason: "Waiting in Search + Download queue", QBResponse: string(options)})
+	return task.ID, false, err
+}
+
+func (s *Server) resumeSearchDownloadTasks() {
+	time.Sleep(750 * time.Millisecond)
+	rows, err := s.store.Downloads(context.Background(), "")
+	if err != nil {
+		return
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].AddedAt.Before(rows[j].AddedAt) })
+	job := bulkReleaseJob{SourceType: "Resumed Search + Download"}
+	for _, task := range rows {
+		if task.Status != "search_queued" && task.Status != "searching" {
+			continue
+		}
+		alreadyMaterialized := false
+		for _, other := range rows {
+			if other.ID != task.ID && other.ReleaseID == task.ReleaseID && (other.Status == "queued" || other.Status == "downloading" || other.Status == "completed") {
+				alreadyMaterialized = true
+				break
 			}
 		}
-	}(release)
-
-	s.json(w, http.StatusAccepted, map[string]any{"queued": true, "release_id": release.ID})
+		if alreadyMaterialized {
+			_, _ = s.store.DeleteDownload(context.Background(), task.ID)
+			continue
+		}
+		release, releaseErr := s.store.Release(context.Background(), task.ReleaseID)
+		if releaseErr != nil {
+			task.Status, task.Error = "failed", "resume Search + Download: release no longer exists"
+			_, _ = s.store.SaveDownload(context.Background(), task)
+			continue
+		}
+		var options persistedSearchOptions
+		_ = json.Unmarshal([]byte(task.QBResponse), &options)
+		job.Releases = append(job.Releases, release)
+		job.TaskIDs = append(job.TaskIDs, task.ID)
+		job.Force = append(job.Force, options.Force)
+		job.AllowNonPreferred = job.AllowNonPreferred || options.AllowNonPreferred
+	}
+	if len(job.Releases) > 0 {
+		s.enqueueBulkReleaseJob(job)
+	}
 }
 
 func (s *Server) searchDownloadQueue(w http.ResponseWriter, r *http.Request) {
@@ -836,7 +876,7 @@ func (s *Server) searchDownloadQueue(w http.ResponseWriter, r *http.Request) {
 	}
 	s.backgroundSearchMu.Unlock()
 
-	downloads, _, err := s.store.DownloadActivity(r.Context(), domain.DownloadFilter{Status: "active", Limit: 500})
+	downloads, err := s.store.Downloads(r.Context(), "")
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
@@ -845,17 +885,35 @@ func (s *Server) searchDownloadQueue(w http.ResponseWriter, r *http.Request) {
 		if item.ReleaseID == 0 {
 			continue
 		}
+		if item.Status != "search_queued" && item.Status != "searching" && item.Status != "queued" && item.Status != "downloading" {
+			continue
+		}
 		videoID := item.VideoID
 		if videoID == "" {
 			videoID = item.Query
 		}
-		items[item.ReleaseID] = searchDownloadQueueItem{ReleaseID: item.ReleaseID, VideoID: videoID, Transport: item.Transport, Status: item.Status}
+		detail := item.MatchReason
+		if detail == "" {
+			detail = item.Name
+		}
+		items[item.ReleaseID] = searchDownloadQueueItem{ID: item.ID, ReleaseID: item.ReleaseID, VideoID: videoID, Transport: item.Transport, Status: item.Status, SourceType: item.SourceType, Detail: detail, AddedAt: item.AddedAt, UpdatedAt: item.UpdatedAt}
 	}
 	queue := make([]searchDownloadQueueItem, 0, len(items))
 	for _, item := range items {
 		queue = append(queue, item)
 	}
-	sort.Slice(queue, func(i, j int) bool { return strings.ToLower(queue[i].VideoID) < strings.ToLower(queue[j].VideoID) })
+	sort.SliceStable(queue, func(i, j int) bool {
+		if (queue[i].Status == "searching") != (queue[j].Status == "searching") {
+			return queue[i].Status == "searching"
+		}
+		if !queue[i].AddedAt.Equal(queue[j].AddedAt) {
+			return queue[i].AddedAt.Before(queue[j].AddedAt)
+		}
+		return queue[i].ID < queue[j].ID
+	})
+	for i := range queue {
+		queue[i].Position = i + 1
+	}
 	s.json(w, http.StatusOK, map[string]any{"items": queue, "total": len(queue)})
 }
 
@@ -2284,6 +2342,16 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 		s.problem(w, http.StatusServiceUnavailable, "download service is unavailable")
 		return
 	}
+	wasMonitored := make(map[int64]bool, len(ids))
+	for _, releaseID := range ids {
+		if existing, lookupErr := s.store.Release(r.Context(), releaseID); lookupErr == nil {
+			wasMonitored[releaseID] = existing.MonitorDownload
+		}
+	}
+	sourceType := "Release Library Bulk"
+	if payload.DownloadMethodOverride != nil {
+		sourceType = "Monitored Releases Bulk"
+	}
 
 	monitor := true
 	updated, err := s.store.BulkSetReleaseFlags(r.Context(), ids, &monitor, &payload.AllowNonPreferredFilenames, &payload.IgnoreLocalForceDownload)
@@ -2295,6 +2363,8 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 		return
 	}
 	selected := make([]domain.Release, 0, len(ids))
+	taskIDs := make([]int64, 0, len(ids))
+	forceTasks := make([]bool, 0, len(ids))
 	for _, releaseID := range ids {
 		release, releaseErr := s.store.Release(r.Context(), releaseID)
 		if errors.Is(releaseErr, sql.ErrNoRows) {
@@ -2313,19 +2383,34 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 			release.IgnoreLocalForceDownload = payload.IgnoreLocalForceDownload
 			release.IgnoreDownloadHistory = payload.IgnoreDownloadHistory
 		}
+		force := wasMonitored[release.ID]
+		if force {
+			release.IgnoreLocalForceDownload = true
+			release.IgnoreDownloadHistory = true
+		}
+		transport := "torrent"
+		if release.DownloadMethodOverride == "http" {
+			transport = "http"
+		}
+		taskID, alreadyQueued, taskErr := s.createSearchDownloadTask(r.Context(), release, sourceType, payload.AllowNonPreferredFilenames, force, transport)
+		if taskErr != nil {
+			s.problem(w, http.StatusInternalServerError, taskErr.Error())
+			return
+		}
+		if alreadyQueued {
+			continue
+		}
 		selected = append(selected, release)
+		taskIDs = append(taskIDs, taskID)
+		forceTasks = append(forceTasks, force)
 		s.broadcastRelease(release)
 	}
 	if len(selected) == 0 {
-		s.problem(w, http.StatusNotFound, "none of the selected releases exist")
+		s.json(w, http.StatusAccepted, map[string]any{"queued": 0, "updated": updated, "already_queued": true})
 		return
 	}
 
-	sourceType := "Release Library Bulk"
-	if payload.DownloadMethodOverride != nil {
-		sourceType = "Monitored Releases Bulk"
-	}
-	queuePosition := s.enqueueBulkReleaseJob(bulkReleaseJob{Releases: selected, AllowNonPreferred: payload.AllowNonPreferredFilenames, SourceType: sourceType})
+	queuePosition := s.enqueueBulkReleaseJob(bulkReleaseJob{Releases: selected, TaskIDs: taskIDs, Force: forceTasks, AllowNonPreferred: payload.AllowNonPreferredFilenames, SourceType: sourceType})
 	s.json(w, http.StatusAccepted, map[string]any{"queued": len(selected), "updated": updated, "queue_position": queuePosition})
 }
 
@@ -2362,30 +2447,75 @@ func (s *Server) runBulkReleaseJobs() {
 		s.bulkReleaseMu.Unlock()
 
 		queued, skipped, notFound, failed := 0, 0, 0, 0
-		for _, release := range job.Releases {
-			outcome, searchErr := s.downloads.SearchAndDownloadDetailed(context.Background(), release, job.SourceType, job.AllowNonPreferred)
+		for i, release := range job.Releases {
+			var task domain.Download
+			if i < len(job.TaskIDs) && job.TaskIDs[i] > 0 {
+				for _, row := range mustDownloads(s.store) {
+					if row.ID == job.TaskIDs[i] {
+						task = row
+						break
+					}
+				}
+				if task.ID > 0 {
+					task.Status = "searching"
+					task.Name = "Searching download providers"
+					task.MatchReason = "Searching configured providers and ranking candidates"
+					task.Error = ""
+					task, _ = s.store.SaveDownload(context.Background(), task)
+				}
+			}
+			force := i < len(job.Force) && job.Force[i]
+			allowNonPreferred := job.AllowNonPreferred
+			if task.QBResponse != "" {
+				var options persistedSearchOptions
+				if json.Unmarshal([]byte(task.QBResponse), &options) == nil {
+					allowNonPreferred = options.AllowNonPreferred
+					force = force || options.Force
+				}
+			}
+			if force {
+				release.IgnoreLocalForceDownload = true
+				release.IgnoreDownloadHistory = true
+			}
+			outcome, searchErr := s.downloads.SearchAndDownloadDetailed(context.Background(), release, job.SourceType, allowNonPreferred)
+			finishTask := func(status, detail string) {
+				if task.ID == 0 {
+					return
+				}
+				if status == "completed" || outcome.Download.ID > 0 {
+					_, _ = s.store.DeleteDownload(context.Background(), task.ID)
+					return
+				}
+				task.Status, task.Error, task.MatchReason = "failed", detail, "Search + Download did not queue a file"
+				_, _ = s.store.SaveDownload(context.Background(), task)
+			}
 			switch {
 			case searchErr != nil:
+				finishTask("failed", searchErr.Error())
 				failed++
 				if s.log != nil {
 					s.log.Error(job.SourceType+" search and download failed", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "error", searchErr, "reason", outcome.Reason)
 				}
 			case !outcome.Found:
+				finishTask("failed", outcome.Reason)
 				notFound++
 				if s.log != nil {
 					s.log.Warn(job.SourceType+" search found no downloadable candidate", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "reason", outcome.Reason)
 				}
 			case outcome.Download.Status == "skipped":
+				finishTask("failed", outcome.Reason)
 				skipped++
 				if s.log != nil {
 					s.log.Warn(job.SourceType+" search and download skipped", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "download_status", outcome.Download.Status, "reason", outcome.Reason)
 				}
 			case outcome.Download.Status == "failed":
+				finishTask("failed", outcome.Reason)
 				failed++
 				if s.log != nil {
 					s.log.Error(job.SourceType+" download failed", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "reason", outcome.Reason)
 				}
 			default:
+				finishTask("completed", "")
 				queued++
 			}
 		}
