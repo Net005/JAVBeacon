@@ -80,6 +80,7 @@ type Service struct {
 	httpSolverMu       sync.Mutex
 	httpSolverConfig   string
 	httpSolverPool     *scraper.SolverPool
+	gluetunRotationMu  sync.Mutex
 	// pikPakDeleteFile is an optional test seam. Production removals use the
 	// authenticated session and PikPak API directly when it is nil.
 	pikPakDeleteFile func(context.Context, string) error
@@ -494,7 +495,7 @@ func (s *Service) searchHTTP(ctx context.Context, release domain.Release, source
 	}
 	rows := make([]domain.SearchResult, 0)
 	var providerErrors []string
-	for _, provider := range httpSourceProviders(s.client, settings, s.log, s.authenticatePikPakSession, s.configureHTTPProviderSolver(settings)) {
+	for _, provider := range httpSourceProviders(s.client, settings, s.log, s.authenticatePikPakSession, s.configureHTTPProviderSolver(settings), &s.gluetunRotationMu) {
 		found, searchErr := provider.Search(ctx, release)
 		history := domain.Download{ReleaseID: release.ID, Provider: provider.Name(), SourceType: sourceType, Query: release.VideoID, Status: "searched", Transport: "http"}
 		if searchErr != nil {
@@ -1339,7 +1340,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	}
 	var resolved resolvedHTTPFile
 	var resolver HTTPSourceProvider
-	for _, provider := range httpSourceProviders(s.client, settings, s.log, s.authenticatePikPakSession, s.configureHTTPProviderSolver(settings)) {
+	for _, provider := range httpSourceProviders(s.client, settings, s.log, s.authenticatePikPakSession, s.configureHTTPProviderSolver(settings), &s.gluetunRotationMu) {
 		if provider.CanResolve(d) {
 			resolver = provider
 			break

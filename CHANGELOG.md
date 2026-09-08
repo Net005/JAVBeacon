@@ -7,6 +7,20 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.116] - 2026-09-08
+
+### Added
+
+- Settings → Scraping now groups anti-bot measures and provides optional,
+  fully configurable Gluetun recovery for direct JavDB HTTP 403 responses,
+  including the control-server URL, optional API key, rotation count,
+  reconnect timeout, polling cadence, settle delay, IP-change requirement,
+  connection test, and Docker Compose/authentication examples.
+- JavDB can now rotate its Gluetun VPN connection until a different public IP
+  is verified, retry the direct request once, and then fall back to the
+  existing priority-aware multi-instance Byparr pool. Same-IP reconnects try
+  at least three rotations, and concurrent 403s share one rotation lock.
+
 ## [1.0.115] - 2026-09-08
 
 ### Fixed

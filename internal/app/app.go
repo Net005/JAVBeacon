@@ -181,7 +181,7 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		return nil, fmt.Errorf("initialize version tracking: %w", err)
 	}
 	if len(settings) == 0 {
-		_ = st.SaveSettings(context.Background(), map[string]string{"page_limit": fmt.Sprint(defaultPageLimit), "refresh_interval": cfg.RefreshText, "recent_limit": "200", "hide_local": "false", "sort": "release", "view": "grid", "notification_sort": "added", "flaresolverr_url": cfg.FlareSolverrURL, "flaresolverr_cooldown": fmt.Sprint(cfg.FlareSolverrCooldown), "cover_directory": cfg.CoverDirectory, "session_lifetime": "720h", "notification_interval": "15m", "rss_interval": "5m", "search_url_template": "https://sukebei.nyaa.si/?page=rss&f=0&c=2_0&q=<release_id>", "accepted_patterns": download.DefaultPreferredFilenamePatterns(), "search_download_background": "false", "minimum_seed_ratio": "1.0", "qb_poll_interval_seconds": "15", "qb_completed_action": "remove_at_ratio", "javdb_url": "https://javdb.com", "http_download_concurrency": "1", "http_download_connections": "4", "http_fallback_delay": "8h", "default_download_method": "torrent_http", "prefer_http_equivalent": "true", "pikpak_release_id_folder_fallback": "false"})
+		_ = st.SaveSettings(context.Background(), map[string]string{"page_limit": fmt.Sprint(defaultPageLimit), "refresh_interval": cfg.RefreshText, "recent_limit": "200", "hide_local": "false", "sort": "release", "view": "grid", "notification_sort": "added", "flaresolverr_url": cfg.FlareSolverrURL, "flaresolverr_cooldown": fmt.Sprint(cfg.FlareSolverrCooldown), "cover_directory": cfg.CoverDirectory, "session_lifetime": "720h", "notification_interval": "15m", "rss_interval": "5m", "search_url_template": "https://sukebei.nyaa.si/?page=rss&f=0&c=2_0&q=<release_id>", "accepted_patterns": download.DefaultPreferredFilenamePatterns(), "search_download_background": "false", "minimum_seed_ratio": "1.0", "qb_poll_interval_seconds": "15", "qb_completed_action": "remove_at_ratio", "javdb_url": "https://javdb.com", "http_download_concurrency": "1", "http_download_connections": "4", "http_fallback_delay": "8h", "default_download_method": "torrent_http", "prefer_http_equivalent": "true", "pikpak_release_id_folder_fallback": "false", "javdb_gluetun_rotation_enabled": "false", "gluetun_control_url": "http://127.0.0.1:8000", "gluetun_rotation_attempts": "3", "gluetun_rotation_wait_seconds": "45", "gluetun_rotation_poll_milliseconds": "1000", "gluetun_rotation_settle_seconds": "2", "gluetun_require_ip_change": "true"})
 	}
 	missing := map[string]string{}
 	if raw := settings["accepted_patterns"]; raw != "" {
@@ -191,6 +191,11 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 	}
 	if settings["javdb_url"] == "" {
 		missing["javdb_url"] = "https://javdb.com"
+	}
+	for key, value := range map[string]string{"gluetun_control_url": "http://127.0.0.1:8000", "gluetun_rotation_attempts": "3", "gluetun_rotation_wait_seconds": "45", "gluetun_rotation_poll_milliseconds": "1000", "gluetun_rotation_settle_seconds": "2", "gluetun_require_ip_change": "true", "javdb_gluetun_rotation_enabled": "false"} {
+		if settings[key] == "" {
+			missing[key] = value
+		}
 	}
 	if settings["http_download_concurrency"] == "" {
 		missing["http_download_concurrency"] = "1"
