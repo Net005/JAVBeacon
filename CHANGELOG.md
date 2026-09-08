@@ -7,6 +7,22 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.131] - 2026-09-08
+
+### Changed
+
+- Download Monitoring now places **HTTP** before **Torrent**, uses the clearer
+  Torrent label instead of qBittorrent, and offers page sizes of 250 and 500.
+- The header activity center’s release rows now use a compact, readable layout
+  with cleanly separated identity, queue state, source, and transport details.
+
+### Fixed
+
+- Stale download-history rows whose external torrent was already removed can
+  now be deleted locally without contacting qBittorrent again. Bulk deletion is
+  also idempotent when a selected terminal row disappears during auto-refresh,
+  instead of failing with “no matching downloads selected”.
+
 ## [1.0.130] - 2026-09-08
 
 ### Changed
