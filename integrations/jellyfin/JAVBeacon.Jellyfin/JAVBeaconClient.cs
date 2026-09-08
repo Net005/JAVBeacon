@@ -67,11 +67,16 @@ public sealed class JAVBeaconClient(IHttpClientFactory clients)
         return await response.Content.ReadFromJsonAsync<ActivityDto>(Json, ct).ConfigureAwait(false);
     }
 
+    private static string RelativePath(string path)
+    {
+        return path.TrimStart('/');
+    }
+
     public async Task<HttpResponseMessage> GetImage(string url, CancellationToken ct)
     {
         var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
         var configuredBase = new Uri(config.JAVBeaconUrl.TrimEnd('/') + "/");
-        var target = Uri.TryCreate(url, UriKind.Absolute, out var absolute) ? absolute : new Uri(configuredBase, url);
+        var target = Uri.TryCreate(url, UriKind.Absolute, out var absolute) ? absolute : new Uri(configuredBase, RelativePath(url));
         // Never forward the JAVBeacon bearer token to a third-party backdrop
         // host. Only same-origin image requests use the authenticated client.
         var sameOrigin = Uri.Compare(target, configuredBase, UriComponents.SchemeAndServer, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) == 0;
@@ -85,6 +90,6 @@ public sealed class JAVBeaconClient(IHttpClientFactory clients)
     {
         if (Uri.TryCreate(path, UriKind.Absolute, out var absolute)) return absolute.ToString();
         var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
-        return new Uri(new Uri(config.JAVBeaconUrl.TrimEnd('/') + "/"), path.TrimStart('/')).ToString();
+        return new Uri(new Uri(config.JAVBeaconUrl.TrimEnd('/') + "/"), RelativePath(path)).ToString();
     }
 }
