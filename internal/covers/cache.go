@@ -138,6 +138,18 @@ func (c *Cache) Path(videoID string) string {
 	return filepath.Join(c.Directory(), hex.EncodeToString(sum[:16])+".img")
 }
 
+// OriginalPath returns the cache path for the untouched, non-cropped
+// original cover for videoID - the source image before any JavLibrary or
+// GIGA spread/pad conforming is applied. Jellyfin's Backdrop image wants
+// this version (a cropped poster makes a poor background), while the
+// standard Path() file is the conformed Primary/Poster/Cover version. This
+// file only exists when conformCoverFileForServing actually conformed the
+// cover; sources that pass through untouched never get one.
+func (c *Cache) OriginalPath(videoID string) string {
+	sum := sha256.Sum256([]byte(strings.ToUpper(strings.TrimSpace(videoID))))
+	return filepath.Join(c.Directory(), hex.EncodeToString(sum[:16])+".orig.img")
+}
+
 func (c *Cache) Ensure(ctx context.Context, videoID, sourceURL string) (string, bool, error) {
 	dir := c.Directory()
 	sum := sha256.Sum256([]byte(strings.ToUpper(strings.TrimSpace(videoID))))
@@ -201,8 +213,10 @@ func (c *Cache) download(ctx context.Context, videoID, sourceURL, path string, c
 	if n == 0 || n > maxCoverSize {
 		return "", false, fmt.Errorf("invalid cover size: %d bytes", n)
 	}
-	if conformed, ok := conformJavLibraryCoverFile(tmpName, sourceURL); ok {
-		n = int64(len(conformed))
+	if conformCoverFileForServing(tmpName, c.OriginalPath(videoID), sourceURL) {
+		if info, statErr := os.Stat(tmpName); statErr == nil {
+			n = info.Size()
+		}
 	}
 	if compareExisting {
 		candidate, readErr := os.ReadFile(tmpName)

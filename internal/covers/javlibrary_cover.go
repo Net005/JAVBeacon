@@ -7,7 +7,6 @@ import (
 	"image/draw"
 	"image/jpeg"
 	"math"
-	"os"
 	"strings"
 )
 
@@ -63,8 +62,16 @@ func isJavLibrarySpreadCover(sourceURL string, img image.Image) bool {
 // two-panel release spread and pads (never further crops) it to Jellyfin's
 // required Primary/Poster/Cover size of 1000x1500 (2:3), encoded as JPEG.
 func conformJavLibraryCover(img image.Image) []byte {
-	front := sliceJavLibraryFrontPanel(img)
-	padded := padToRatio(front, jellyfinPosterRatio)
+	front := sliceFrontPanel(img, javLibraryFrontFraction)
+	return encodeConformedPoster(front)
+}
+
+// encodeConformedPoster pads (never crops) img to Jellyfin's required
+// Primary/Poster/Cover ratio, resizes it to the exact 1000x1500 size, and
+// encodes it as JPEG. Shared by every source's conform path (JavLibrary and
+// both GIGA cover shapes).
+func encodeConformedPoster(img image.Image) []byte {
+	padded := padToRatio(img, jellyfinPosterRatio)
 	resized := resizeBilinear(padded, jellyfinPosterWidth, jellyfinPosterHeight)
 	var buf bytes.Buffer
 	// Quality 92 keeps poster art visually lossless-ish while staying well
@@ -75,12 +82,14 @@ func conformJavLibraryCover(img image.Image) []byte {
 	return buf.Bytes()
 }
 
-// sliceJavLibraryFrontPanel returns the rightmost javLibraryFrontFraction of
-// img's width, at full height.
-func sliceJavLibraryFrontPanel(img image.Image) image.Image {
+// sliceFrontPanel returns the rightmost fraction of img's width, at full
+// height - the shape shared by JavLibrary's two-panel scan and GIGA's older
+// "Type 1" spread covers (back cover/text, spine, front cover on the
+// right).
+func sliceFrontPanel(img image.Image, fraction float64) image.Image {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
-	frontWidth := int(math.Round(float64(w) * javLibraryFrontFraction))
+	frontWidth := int(math.Round(float64(w) * fraction))
 	if frontWidth < 1 {
 		frontWidth = 1
 	}
@@ -326,30 +335,4 @@ func bilerp(c00, c10, c01, c11 color.Color, fx, fy float64) color.RGBA {
 	bl := lerp(uint32(bTop), uint32(bBot), fy)
 	a := lerp(uint32(aTop), uint32(aBot), fy)
 	return color.RGBA{R: uint8(uint32(r) >> 8), G: uint8(uint32(g) >> 8), B: uint8(uint32(bl) >> 8), A: uint8(uint32(a) >> 8)}
-}
-
-// conformJavLibraryCoverFile reads the just-downloaded image at path, and if
-// it is a JavLibrary two-panel spread cover, slices it to the front panel,
-// pads it to Jellyfin's 1000x1500 poster ratio, and overwrites path with the
-// re-encoded JPEG. It reports ok=false (leaving path untouched) for any
-// non-matching or undecodable image, so every other source passes through
-// exactly as downloaded.
-func conformJavLibraryCoverFile(path, sourceURL string) (conformed []byte, ok bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, false
-	}
-	img, _, decodeErr := image.Decode(f)
-	_ = f.Close()
-	if decodeErr != nil || !isJavLibrarySpreadCover(sourceURL, img) {
-		return nil, false
-	}
-	out := conformJavLibraryCover(img)
-	if len(out) == 0 {
-		return nil, false
-	}
-	if err := os.WriteFile(path, out, 0o644); err != nil {
-		return nil, false
-	}
-	return out, true
 }

@@ -207,6 +207,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/changelog/acknowledge", s.acknowledgeChangelog)
 	s.mux.Handle("GET /api/ws", websocket.Handler(s.releaseStream))
 	s.mux.HandleFunc("GET /covers/{id}", s.cover)
+	s.mux.HandleFunc("GET /covers/{id}/original", s.coverOriginal)
 	s.mux.HandleFunc("GET /screenshots/{id}/{index}", s.screenshot)
 	s.mux.HandleFunc("GET /api/releases/{id}/screenshots", s.releaseScreenshots)
 	s.mux.HandleFunc("POST /api/v1/media/match", s.jellyfinMatch)
@@ -1215,6 +1216,58 @@ func (s *Server) cover(w http.ResponseWriter, r *http.Request) {
 		s.serveUnavailableCover(w, r)
 		return
 	}
+	s.serveCoverFile(w, r, path, release.VideoID)
+}
+
+// coverOriginal serves the non-cropped, non-padded source cover for a
+// release, for callers - Jellyfin's Backdrop image in particular - that
+// specifically want the version before any JavLibrary/GIGA poster
+// conforming was applied, since a cropped-to-poster image makes a poor
+// background. When conforming never applied to this release's cover (it
+// didn't match a known spread/pad shape, or hasn't been cached yet), the
+// standard cover file already IS the untouched original, so this falls
+// back to it rather than 404ing.
+func (s *Server) coverOriginal(w http.ResponseWriter, r *http.Request) {
+	n, err := id(r)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	release, err := s.store.Release(r.Context(), n)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.log.Warn("cover lookup failed", "release_id", n, "error", err)
+		http.Error(w, "cover unavailable", http.StatusInternalServerError)
+		return
+	}
+	if strings.TrimSpace(release.ImageURL) == "" {
+		s.serveUnavailableCover(w, r)
+		return
+	}
+	path, _, err := s.covers.Ensure(r.Context(), release.VideoID, release.ImageURL)
+	if err != nil {
+		s.log.Warn("local cover unavailable", "release_id", n, "video_id", release.VideoID, "image_url", release.ImageURL, "error", err)
+		s.serveUnavailableCover(w, r)
+		return
+	}
+	if s.covers.Unavailable(path) {
+		s.serveUnavailableCover(w, r)
+		return
+	}
+	original := s.covers.OriginalPath(release.VideoID)
+	if info, statErr := os.Stat(original); statErr == nil && info.Size() > 0 {
+		path = original
+	}
+	s.serveCoverFile(w, r, path, release.VideoID)
+}
+
+// serveCoverFile opens path and streams it as the response, sniffing its
+// content type from the first 512 bytes. Shared by cover and coverOriginal
+// so both serve identically once the right file has been picked.
+func (s *Server) serveCoverFile(w http.ResponseWriter, r *http.Request, path, videoID string) {
 	f, err := os.Open(path)
 	if err != nil {
 		http.NotFound(w, r)
@@ -1231,7 +1284,7 @@ func (s *Server) cover(w http.ResponseWriter, r *http.Request) {
 	_, _ = f.Seek(0, 0)
 	w.Header().Set("Content-Type", http.DetectContentType(buf[:nRead]))
 	w.Header().Set("Cache-Control", "public, max-age=300, must-revalidate")
-	http.ServeContent(w, r, release.VideoID, info.ModTime(), f)
+	http.ServeContent(w, r, videoID, info.ModTime(), f)
 }
 
 func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
