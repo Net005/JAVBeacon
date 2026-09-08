@@ -7,6 +7,19 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.133] - 2026-09-08
+
+### Added
+
+- Realtime StashApp synchronization can now receive authenticated scene-create,
+  scene-update, and scene-delete hooks, coalesce rapid duplicate events, retry
+  transient failures, and update only the affected JAVBeacon release and its
+  playback history. A ready-to-install Stash plugin is included under
+  `contrib/stash-javbeacon-realtime`.
+- Settings → StashApp now includes controls for the dedicated webhook secret,
+  debounce period, retry count, and retry delay. The scheduled full sync remains
+  available as a reconciliation fallback.
+
 ## [1.0.132] - 2026-09-08
 
 ### Added

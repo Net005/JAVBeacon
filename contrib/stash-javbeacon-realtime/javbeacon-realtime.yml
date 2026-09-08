@@ -1,0 +1,22 @@
+name: JAVBeacon Realtime Sync
+description: Sends changed Stash scenes to JAVBeacon for an immediate targeted sync.
+version: 1.0.0
+exec:
+  - python3
+  - "{pluginDir}/javbeacon_realtime.py"
+interface: raw
+errLog: warning
+hooks:
+  - name: Sync created or changed scene to JAVBeacon
+    description: Queues only the affected scene; repeated updates are coalesced by JAVBeacon.
+    triggeredBy:
+      - Scene.Create.Post
+      - Scene.Update.Post
+      - Scene.Destroy.Post
+    defaultArgs:
+      # Use the URL Stash can reach. In Docker this is normally the JAVBeacon
+      # service/container name, not localhost.
+      javbeacon_url: "http://javbeacon:8080"
+      # Must exactly match Settings > StashApp > Changed-scene sync.
+      webhook_secret: "CHANGE_ME_TO_THE_SAME_LONG_RANDOM_SECRET"
+      timeout_seconds: 10
