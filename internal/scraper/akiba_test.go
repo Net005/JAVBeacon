@@ -86,6 +86,33 @@ func TestAkibaPageEstimateUsesTitleCount(t *testing.T) {
 	}
 }
 
+func TestAkibaFetchRebuildsSessionAfterInvalidHTTP200Page(t *testing.T) {
+	var detailCalls, primeCalls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cookie_set.php", func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&primeCalls, 1)
+	})
+	mux.HandleFunc("/top.php", func(w http.ResponseWriter, _ *http.Request) {})
+	mux.HandleFunc("/product/index.php", func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&detailCalls, 1) == 1 {
+			_, _ = w.Write([]byte(`<html><body>Temporary Akiba landing page</body></html>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<html><div id="works_pic"><h5>GHMT-36</h5></div><div id="works_txt">Product detail</div></html>`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	a := NewAkiba(server.URL, "/search/", 2*time.Second, nil)
+	doc, err := a.fetch(context.Background(), server.URL+"/product/index.php?product_id=6541", "detail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeText(doc) == "" || atomic.LoadInt32(&detailCalls) != 2 || atomic.LoadInt32(&primeCalls) != 1 {
+		t.Fatalf("detail calls=%d prime calls=%d text=%q", detailCalls, primeCalls, nodeText(doc))
+	}
+}
+
 func TestAkibaStoryPrefersExpandedTextAndDropsToggleControls(t *testing.T) {
 	doc, err := xhtml.Parse(strings.NewReader(`<div id="works_txt">
 		<div id="story_list1" style="display:block"><li class="story_window">

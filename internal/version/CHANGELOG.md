@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.126] - 2026-09-08
+
+### Fixed
+
+- GIGA scraping now rebuilds its Akiba session and retries the requested page
+  once when Akiba returns an unrelated HTTP-200 page. This prevents active
+  releases such as `GHMT-36` from being misreported as invalid after a stale or
+  transiently confused site session.
+
 ## [1.0.125] - 2026-09-08
 
 ### Fixed
