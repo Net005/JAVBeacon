@@ -7,6 +7,23 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.141] - 2026-09-08
+
+### Added
+
+- Cover conforming now also covers GIGA release covers, in both shapes GIGA
+  serves: older two-panel spread covers (like JavLibrary's) are sliced down
+  to the front-cover panel, and newer already-single-panel covers are
+  padded straight to Jellyfin's Primary/Poster/Cover size (1000x1500, 2:3)
+  with no slicing. Every other GIGA cover shape, and every non-GIGA,
+  non-JavLibrary source, is left untouched exactly as before.
+- Jellyfin's Backdrop image now always uses the non-cropped, non-padded
+  original cover instead of the conformed Primary/Poster/Cover version, for
+  any release whose cover was sliced or padded (JavLibrary or GIGA). A
+  cropped poster made a poor background; the original is now cached
+  alongside the conformed poster and served from a new `/covers/{id}/original`
+  endpoint that the Jellyfin plugin's backdrop image uses.
+
 ## [1.0.140] - 2026-09-08
 
 ### Added

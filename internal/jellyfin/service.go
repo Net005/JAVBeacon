@@ -60,25 +60,31 @@ func newService(st store.Store, stashService stashBridge, screenshotCaches ...*s
 }
 
 type Metadata struct {
-	ReleaseID      int64             `json:"release_id"`
-	StashSceneID   string            `json:"stash_scene_id,omitempty"`
-	Code           string            `json:"code"`
-	Title          string            `json:"title"`
-	OriginalTitle  string            `json:"original_title,omitempty"`
-	Overview       string            `json:"overview,omitempty"`
-	PremiereDate   string            `json:"premiere_date,omitempty"`
-	ProductionYear int               `json:"production_year,omitempty"`
-	Studio         string            `json:"studio,omitempty"`
-	Label          string            `json:"label,omitempty"`
-	Performers     []string          `json:"performers,omitempty"`
-	Directors      []string          `json:"directors,omitempty"`
-	Genres         []string          `json:"genres,omitempty"`
-	Tags           []string          `json:"tags,omitempty"`
-	RuntimeSeconds int64             `json:"runtime_seconds,omitempty"`
-	CoverPath      string            `json:"cover_path,omitempty"`
-	BackdropURLs   []string          `json:"backdrop_urls,omitempty"`
-	SourceURL      string            `json:"source_url,omitempty"`
-	ProviderIDs    map[string]string `json:"provider_ids"`
+	ReleaseID      int64    `json:"release_id"`
+	StashSceneID   string   `json:"stash_scene_id,omitempty"`
+	Code           string   `json:"code"`
+	Title          string   `json:"title"`
+	OriginalTitle  string   `json:"original_title,omitempty"`
+	Overview       string   `json:"overview,omitempty"`
+	PremiereDate   string   `json:"premiere_date,omitempty"`
+	ProductionYear int      `json:"production_year,omitempty"`
+	Studio         string   `json:"studio,omitempty"`
+	Label          string   `json:"label,omitempty"`
+	Performers     []string `json:"performers,omitempty"`
+	Directors      []string `json:"directors,omitempty"`
+	Genres         []string `json:"genres,omitempty"`
+	Tags           []string `json:"tags,omitempty"`
+	RuntimeSeconds int64    `json:"runtime_seconds,omitempty"`
+	CoverPath      string   `json:"cover_path,omitempty"`
+	// CoverBackdropPath points at the non-cropped, non-padded original
+	// cover, even when CoverPath has been sliced/padded to Jellyfin's
+	// Primary/Poster/Cover shape for a JavLibrary or GIGA spread cover. A
+	// cropped poster makes a poor background, so Jellyfin's Backdrop image
+	// should use this path instead of CoverPath.
+	CoverBackdropPath string            `json:"cover_backdrop_path,omitempty"`
+	BackdropURLs      []string          `json:"backdrop_urls,omitempty"`
+	SourceURL         string            `json:"source_url,omitempty"`
+	ProviderIDs       map[string]string `json:"provider_ids"`
 }
 
 type MatchResult struct {
@@ -267,7 +273,7 @@ func (s *Service) metadata(r domain.Release) Metadata {
 			backdrops = append(backdrops, fmt.Sprintf("/screenshots/%d/%d", r.ID, index))
 		}
 	}
-	return Metadata{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Code: r.VideoID, Title: r.VideoID, OriginalTitle: r.VideoID, Overview: releaseTitle(r.VideoID, r.Title), PremiereDate: r.ReleaseDate, ProductionYear: year, Studio: r.Studio, Label: r.Label, Performers: append([]string(nil), r.Actresses...), Directors: directors, Genres: append([]string(nil), r.Genres...), Tags: tags, RuntimeSeconds: parseRuntime(r.Duration), CoverPath: fmt.Sprintf("/covers/%d", r.ID), BackdropURLs: backdrops, SourceURL: r.ProductURL, ProviderIDs: ids}
+	return Metadata{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Code: r.VideoID, Title: r.VideoID, OriginalTitle: r.VideoID, Overview: releaseTitle(r.VideoID, r.Title), PremiereDate: r.ReleaseDate, ProductionYear: year, Studio: r.Studio, Label: r.Label, Performers: append([]string(nil), r.Actresses...), Directors: directors, Genres: append([]string(nil), r.Genres...), Tags: tags, RuntimeSeconds: parseRuntime(r.Duration), CoverPath: fmt.Sprintf("/covers/%d", r.ID), CoverBackdropPath: fmt.Sprintf("/covers/%d/original", r.ID), BackdropURLs: backdrops, SourceURL: r.ProductURL, ProviderIDs: ids}
 }
 
 func releaseTitle(releaseID, title string) string {

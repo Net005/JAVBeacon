@@ -38,9 +38,15 @@ public sealed class JAVBeaconImageProvider(JAVBeaconClient client) : IRemoteImag
         if (!string.IsNullOrWhiteSpace(dto.CoverPath)) images.Add(new() { ProviderName = Name, Type = ImageType.Primary, Url = client.Absolute(dto.CoverPath) });
         // Cached JAVBeacon screenshots are the preferred backdrops. The cover
         // is deliberately last so Jellyfin can also offer it as a fallback
-        // background without overriding the landscape screenshots.
+        // background without overriding the landscape screenshots. It uses
+        // CoverBackdropPath - the non-cropped, non-padded original - rather
+        // than CoverPath, since CoverPath may have been sliced/padded down
+        // to a JavLibrary or GIGA poster shape, which makes a poor
+        // background. CoverBackdropPath falls back to the same image as
+        // CoverPath server-side whenever no such conforming applied.
         images.AddRange(dto.BackdropUrls.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => new RemoteImageInfo { ProviderName = Name, Type = ImageType.Backdrop, Url = client.Absolute(x) }));
-        if (!string.IsNullOrWhiteSpace(dto.CoverPath)) images.Add(new() { ProviderName = Name, Type = ImageType.Backdrop, Url = client.Absolute(dto.CoverPath) });
+        var backdropCover = !string.IsNullOrWhiteSpace(dto.CoverBackdropPath) ? dto.CoverBackdropPath : dto.CoverPath;
+        if (!string.IsNullOrWhiteSpace(backdropCover)) images.Add(new() { ProviderName = Name, Type = ImageType.Backdrop, Url = client.Absolute(backdropCover) });
         return images;
     }
 

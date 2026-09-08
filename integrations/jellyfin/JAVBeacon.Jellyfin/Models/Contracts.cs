@@ -19,6 +19,7 @@ public sealed record MetadataDto
     [JsonPropertyName("tags")] public string[] Tags { get; init; } = [];
     [JsonPropertyName("runtime_seconds")] public long RuntimeSeconds { get; init; }
     [JsonPropertyName("cover_path")] public string? CoverPath { get; init; }
+    [JsonPropertyName("cover_backdrop_path")] public string? CoverBackdropPath { get; init; }
     [JsonPropertyName("backdrop_urls")] public string[] BackdropUrls { get; init; } = [];
     [JsonPropertyName("provider_ids")] public Dictionary<string, string> ProviderIds { get; init; } = [];
 }

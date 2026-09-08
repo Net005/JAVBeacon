@@ -68,7 +68,7 @@ func TestConformJavLibraryCoverProducesExactPosterSize(t *testing.T) {
 
 func TestSliceJavLibraryFrontPanelKeepsRightPortion(t *testing.T) {
 	spread := syntheticSpread(800, 538)
-	front := sliceJavLibraryFrontPanel(spread)
+	front := sliceFrontPanel(spread, javLibraryFrontFraction)
 	b := front.Bounds()
 	wantWidth := int(math.Round(800 * javLibraryFrontFraction))
 	if b.Dx() != wantWidth {
@@ -88,9 +88,11 @@ func TestSliceJavLibraryFrontPanelKeepsRightPortion(t *testing.T) {
 func TestConformJavLibraryCoverFileLeavesNonMatchingImageUntouched(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cover.img")
-	// A single-panel cover (square-ish) from a non-javlibrary source must
-	// never be touched.
-	square := syntheticSpread(500, 700)
+	// A perfectly square cover from a GIGA source matches neither JavLibrary's
+	// shape (wrong source) nor either known GIGA shape (spread ratio is way
+	// off, and 1.0 falls outside the single-panel band), so it must never be
+	// touched.
+	square := syntheticSpread(500, 500)
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
@@ -101,11 +103,15 @@ func TestConformJavLibraryCoverFileLeavesNonMatchingImageUntouched(t *testing.T)
 	f.Close()
 	before, _ := os.ReadFile(path)
 
-	if _, ok := conformJavLibraryCoverFile(path, "https://www.akiba-web.com/cover.jpg"); ok {
-		t.Fatal("expected ok=false for non-javlibrary source")
+	originalPath := filepath.Join(dir, "cover.orig.img")
+	if conformCoverFileForServing(path, originalPath, "https://www.akiba-web.com/cover.jpg") {
+		t.Fatal("expected ok=false for a GIGA source that doesn't match either known shape")
 	}
 	after, _ := os.ReadFile(path)
 	if string(before) != string(after) {
 		t.Fatal("file was modified even though source did not match")
+	}
+	if _, err := os.Stat(originalPath); !os.IsNotExist(err) {
+		t.Fatal("originalPath should not be created when no conforming applied")
 	}
 }
