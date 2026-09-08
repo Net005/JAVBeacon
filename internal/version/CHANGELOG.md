@@ -7,6 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.139] - 2026-09-08
+
+### Fixed
+
+- Fixed the realtime Stash connection test always sending `scene_id` in its
+  request body, which the strict `/api/hooks/stash/test` decoder rejected
+  with `json: unknown field "scene_id"`. The plugin script now omits it on
+  test-mode requests, and the server accepts (and ignores) an optional
+  `scene_id` there as well.
+
 ## [1.0.138] - 2026-09-08
 
 ### Fixed
