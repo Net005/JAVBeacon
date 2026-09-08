@@ -3,6 +3,7 @@ package stash
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,35 @@ import (
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
+
+func TestFetchPlaybackStatsRetrievesEveryStashPage(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var request struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		start, amount := 0, 250
+		if strings.Contains(request.Query, ", page: 2") {
+			start, amount = 250, 1
+		}
+		scenes := make([]map[string]any, 0, amount)
+		for i := 0; i < amount; i++ {
+			scenes = append(scenes, map[string]any{"id": fmt.Sprintf("scene-%03d", start+i), "play_history": []string{}, "o_history": []string{}, "files": []any{}})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"findScenes": map[string]any{"count": 251, "scenes": scenes}}})
+	}))
+	defer server.Close()
+
+	stats, err := New(nil, 2*time.Second, slog.Default(), nil, nil).fetchPlaybackStats(context.Background(), server.URL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 || len(stats) != 251 {
+		t.Fatalf("requests=%d scenes=%d, want two pages containing 251 scenes", requests, len(stats))
+	}
+}
 
 func TestHistoryWritebackRequiresReviewAndUsesMatchOrder(t *testing.T) {
 	ctx := context.Background()
