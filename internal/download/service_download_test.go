@@ -583,6 +583,97 @@ func TestHTTPDownloadDoesNotRequireQBittorrent(t *testing.T) {
 	}
 }
 
+func TestHTTPDownloadSkipsFetchWhenDestinationFileAlreadyExists(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "http-skip-existing.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	var requests atomic.Int64
+	media := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte("video"))
+	}))
+	defer media.Close()
+
+	downloadDir := t.TempDir()
+	existingPath := filepath.Join(downloadDir, "HTTPSKIP-1.mp4")
+	if err := os.WriteFile(existingPath, []byte("already downloaded"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveSettings(ctx, map[string]string{"http_download_directory": downloadDir}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "HTTPSKIP-1", Title: "Test", Source: "JavLibrary", Released: true})
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Search: "HTTPSKIP-1", Limit: 1})
+	if len(releases) != 1 {
+		t.Fatalf("release setup failed: %+v", releases)
+	}
+	service := New(st, time.Second, slog.Default())
+	queued, err := service.Download(ctx, releases[0], domain.SearchResult{
+		Provider:  "JavDB / Keepshare",
+		Title:     "HTTPSKIP-1.mp4",
+		Link:      media.URL,
+		Transport: "http",
+		Accepted:  true,
+	}, "Manual Search", media.URL)
+	if err != nil {
+		t.Fatalf("queue HTTP download: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var final domain.Download
+	for time.Now().Before(deadline) {
+		downloads, listErr := st.Downloads(ctx, "")
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		for _, d := range downloads {
+			if d.ID == queued.ID && d.Status != "queued" && d.Status != "downloading" {
+				final = d
+			}
+		}
+		if final.ID != 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if final.ID == 0 {
+		t.Fatal("HTTP download never reached a terminal status")
+	}
+	if final.Status != "completed" {
+		t.Fatalf("status = %q, want completed: %+v", final.Status, final)
+	}
+	if final.DestinationPath != existingPath {
+		t.Fatalf("destination path = %q, want existing file %q", final.DestinationPath, existingPath)
+	}
+	if !strings.Contains(final.MatchReason, "already present locally") {
+		t.Fatalf("match reason did not explain the skip: %q", final.MatchReason)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("expected the HTTP source to never be fetched, got %d request(s)", got)
+	}
+	// The pre-existing file's content must be left untouched - no
+	// "-0"/"-1" duplicate created beside it either.
+	entries, err := os.ReadDir(downloadDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one file in the download directory, got %+v", entries)
+	}
+	data, err := os.ReadFile(existingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "already downloaded" {
+		t.Fatalf("existing file content was overwritten: %q", data)
+	}
+}
+
 func TestHTTPVideoCheckRedownloadsOnceThenFailsClearly(t *testing.T) {
 	row := domain.Download{Status: "downloading", Progress: 1, BytesDownloaded: 100, BytesPerSecond: 5, ETASeconds: 2}
 	retry, shouldRetry := markHTTPVideoCheckFailure(row, errors.New("invalid media packet"))
