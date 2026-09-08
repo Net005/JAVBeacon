@@ -15,18 +15,33 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"golang.org/x/net/html"
 )
 
+// defaultByparrSolveTimeoutSeconds is the solve-budget hint sent to
+// Byparr/FlareSolverr when no byparr_solve_timeout_seconds setting has been
+// configured yet, matching the value this package always sent before it
+// became configurable.
+const defaultByparrSolveTimeoutSeconds = 75
+
 // JavLibrary is the general-purpose monitoring provider. It accepts the
 // actress/director/genre/maker/label/series/listing URLs managed by the client.
+//
+// client and solveTimeout are both hot-swappable at runtime (via
+// ConfigureTimeouts) so a Byparr timeout setting saved in the UI takes
+// effect immediately, without a restart - client is stored behind an
+// atomic.Pointer rather than mutated in place because it's read
+// concurrently by in-flight requests in direct/flare while a settings save
+// on another goroutine may be swapping it out.
 type JavLibrary struct {
-	client *http.Client
-	pool   *SolverPool
-	log    *slog.Logger
+	client       atomic.Pointer[http.Client]
+	solveTimeout atomic.Int64 // seconds; the Byparr/FlareSolverr solve-budget hint
+	pool         *SolverPool
+	log          *slog.Logger
 }
 
 var parenthesizedActress = regexp.MustCompile(`\(([^()]+)\)`)
@@ -41,7 +56,9 @@ func NewJavLibrary(timeout time.Duration, flareSolverr string, cooldown float64,
 	if log == nil {
 		log = slog.Default()
 	}
-	j := &JavLibrary{client: &http.Client{Timeout: timeout, Jar: jar}, pool: NewSolverPool(), log: log}
+	j := &JavLibrary{pool: NewSolverPool(), log: log}
+	j.client.Store(&http.Client{Timeout: timeout, Jar: jar})
+	j.solveTimeout.Store(defaultByparrSolveTimeoutSeconds)
 	if raw := strings.TrimRight(flareSolverr, "/"); raw != "" {
 		j.pool.Configure([]Instance{{URL: raw, Priority: 1, Enabled: true}}, time.Duration(cooldown*float64(time.Second)))
 	}
@@ -53,6 +70,42 @@ func NewJavLibrary(timeout time.Duration, flareSolverr string, cooldown float64,
 // solver configured" - documentOnce then fetches directly.
 func (j *JavLibrary) Configure(instances []Instance, cooldown time.Duration) {
 	j.pool.Configure(instances, cooldown)
+}
+
+// ConfigureTimeouts hot-swaps the two independent timeout values Byparr
+// scraping depends on:
+//
+//   - requestTimeout is the HTTP client timeout enforced on every request
+//     this package sends - both a direct fetch of a javlibrary.com page and
+//     the POST to Byparr/FlareSolverr asking it to solve one. Because it
+//     wraps the call to the solver itself, it's the timeout that actually
+//     fires first in practice: a solve budget hint below is moot if this
+//     elapses first.
+//   - solveTimeoutSeconds is the solve-budget *hint* sent to the solver in
+//     each request's payload (maxTimeout in milliseconds for FlareSolverr,
+//     max_timeout in seconds for Byparr) - it tells the solver how long it's
+//     allowed to spend internally, but doesn't by itself extend how long
+//     this package will wait for a response.
+//
+// Non-positive values fall back to this package's original hardcoded
+// defaults (30s request timeout, 75s solve budget) rather than disabling
+// the timeout outright.
+func (j *JavLibrary) ConfigureTimeouts(requestTimeout time.Duration, solveTimeoutSeconds int) {
+	if requestTimeout <= 0 {
+		requestTimeout = 30 * time.Second
+	}
+	if solveTimeoutSeconds <= 0 {
+		solveTimeoutSeconds = defaultByparrSolveTimeoutSeconds
+	}
+	jar := http.CookieJar(nil)
+	if old := j.client.Load(); old != nil {
+		jar = old.Jar
+	}
+	if jar == nil {
+		jar, _ = cookiejar.New(nil)
+	}
+	j.client.Store(&http.Client{Timeout: requestTimeout, Jar: jar})
+	j.solveTimeout.Store(int64(solveTimeoutSeconds))
 }
 
 // Pool exposes the scraper's solver pool so callers (e.g. the monitor
@@ -272,7 +325,7 @@ func (j *JavLibrary) direct(ctx context.Context, raw string) ([]byte, error) {
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/132 Safari/537.36")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	resp, e := j.client.Do(req)
+	resp, e := j.client.Load().Do(req)
 	if e != nil {
 		return nil, e
 	}
@@ -294,14 +347,21 @@ func (j *JavLibrary) flare(ctx context.Context, raw, solver string) ([]byte, err
 	// instances still proceed concurrently - only reuse of the same instance
 	// is throttled.
 	// FlareSolverr uses maxTimeout in milliseconds; Byparr uses max_timeout in
-	// seconds. Sending both keeps the provider endpoint interchangeable.
-	payload, _ := json.Marshal(map[string]any{"cmd": "request.get", "url": raw, "maxTimeout": 75000, "max_timeout": 75})
+	// seconds. Sending both keeps the provider endpoint interchangeable. The
+	// value itself is only a hint to the solver's own internal budget - see
+	// ConfigureTimeouts for how it relates to the HTTP client timeout below,
+	// which is what actually bounds how long this call waits.
+	solveSeconds := j.solveTimeout.Load()
+	if solveSeconds <= 0 {
+		solveSeconds = defaultByparrSolveTimeoutSeconds
+	}
+	payload, _ := json.Marshal(map[string]any{"cmd": "request.get", "url": raw, "maxTimeout": solveSeconds * 1000, "max_timeout": solveSeconds})
 	req, e := http.NewRequestWithContext(ctx, http.MethodPost, solver, bytes.NewReader(payload))
 	if e != nil {
 		return nil, e
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, e := j.client.Do(req)
+	resp, e := j.client.Load().Do(req)
 	if e != nil {
 		return nil, fmt.Errorf("Byparr/FlareSolverr solver: %w", e)
 	}

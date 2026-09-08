@@ -85,7 +85,7 @@ func TestSliceJavLibraryFrontPanelKeepsRightPortion(t *testing.T) {
 	}
 }
 
-func TestConformJavLibraryCoverFileLeavesNonMatchingImageUntouched(t *testing.T) {
+func TestConformForServingLeavesNonMatchingImageUntouchedOnDisk(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cover.img")
 	// A perfectly square cover from a GIGA source matches neither JavLibrary's
@@ -103,15 +103,11 @@ func TestConformJavLibraryCoverFileLeavesNonMatchingImageUntouched(t *testing.T)
 	f.Close()
 	before, _ := os.ReadFile(path)
 
-	originalPath := filepath.Join(dir, "cover.orig.img")
-	if conformCoverFileForServing(path, originalPath, "https://www.akiba-web.com/cover.jpg") {
+	if _, ok := ConformForServing(path, "https://www.akiba-web.com/cover.jpg"); ok {
 		t.Fatal("expected ok=false for a GIGA source that doesn't match either known shape")
 	}
 	after, _ := os.ReadFile(path)
 	if string(before) != string(after) {
-		t.Fatal("file was modified even though source did not match")
-	}
-	if _, err := os.Stat(originalPath); !os.IsNotExist(err) {
-		t.Fatal("originalPath should not be created when no conforming applied")
+		t.Fatal("file was modified even though source did not match - ConformForServing must never write to disk")
 	}
 }

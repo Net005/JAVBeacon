@@ -7,6 +7,32 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.143] - 2026-09-08
+
+### Changed
+
+- JavLibrary/GIGA cover conforming (slicing a two-panel spread down to the
+  front cover, or padding an already-single-panel cover to Jellyfin's
+  1000x1500 Primary/Poster/Cover size) now happens live, in memory, only at
+  the moment a Primary image is actually requested - it's never written
+  back to the on-disk cache file. The cached cover always stays exactly
+  what was downloaded, so `/covers/{id}/original` (used for Jellyfin's
+  Backdrop image) no longer needs a separately-cached original: it's simply
+  the same file, always unconformed. This also means a cover cached before
+  this feature existed, or by an older build, now conforms correctly the
+  very next time it's requested - no re-download or "Update Details" needed.
+
+### Added
+
+- Both timeouts involved in JavLibrary/Byparr scraping are now configurable
+  in Settings under Scraping → Byparr / FlareSolverr, and apply immediately
+  without a restart: **Request timeout** (`byparr_request_timeout_seconds`,
+  default 30s) bounds every request this scraper makes - a direct
+  JavLibrary fetch and the call asking Byparr/FlareSolverr to solve one -
+  and **Solve budget hint** (`byparr_solve_timeout_seconds`, default 75s) is
+  the internal time allowance passed to the solver in that request. Raising
+  the hint only helps if the request timeout above it is raised too.
+
 ## [1.0.142] - 2026-09-08
 
 ### Added
