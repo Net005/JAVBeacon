@@ -76,3 +76,31 @@ func TestHistoryWritebackRequiresReviewAndUsesMatchOrder(t *testing.T) {
 		t.Fatal("review token was reusable")
 	}
 }
+
+func TestHistoryWritebackReviewExcludesEventsAlreadyInStash(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "history-deduplicate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	play := time.Date(2026, 8, 1, 10, 0, 0, 789000000, time.UTC)
+	orgasm := time.Date(2026, 8, 1, 10, 30, 0, 456000000, time.UTC)
+	if err := st.UpsertStashHistory(ctx, domain.StashHistoryScene{StashSceneID: "same", VideoID: "ATID-803", Title: "Already synced", FilePath: "/old/ATID-803.mp4", TotalPlaySeconds: 600}, []time.Time{play, play}, []time.Time{orgasm, orgasm}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[{"id":"same","title":"Already synced","code":"ATID-803","urls":[],"play_duration":600,"play_history":["2026-08-01T10:00:00Z"],"o_history":["2026-08-01T10:30:00Z"],"files":[{"path":"/new/ATID-803.mp4"}]}]}}}`))
+	}))
+	defer server.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	review, err := New(st, 2*time.Second, slog.Default(), nil, nil).ReviewHistoryWriteback(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Changes != 0 || len(review.Items) != 1 || review.Items[0].Status != "matched" || len(review.Items[0].PlayTimes) != 0 || len(review.Items[0].OrgasmTimes) != 0 {
+		t.Fatalf("already-synced events must not be listed as changes: %+v", review)
+	}
+}

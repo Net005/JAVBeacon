@@ -763,6 +763,43 @@ func TestStructuredReleaseSearchSupportsInvertedConditions(t *testing.T) {
 	}
 }
 
+func TestDownloadActivityInProgressOrdersCurrentSearchBeforeQueue(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "download-in-progress.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "Queue test", Type: "Site", Name: "Queue test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "QUEUE-TEST", Title: "Queue test"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := s.Releases(ctx, domain.ReleaseFilter{Search: "QUEUE-TEST", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("load queue test release: rows=%+v err=%v", releases, err)
+	}
+	for _, item := range []domain.Download{
+		{Query: "QUEUE-1", Transport: "http", Status: "search_queued", Name: "Waiting"},
+		{Query: "CURRENT-1", Transport: "http", Status: "searching", Name: "Searching"},
+		{Query: "DONE-1", Transport: "http", Status: "completed", Name: "Done"},
+	} {
+		item.ReleaseID = releases[0].ID
+		if _, err := s.SaveDownload(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, total, err := s.DownloadActivity(ctx, domain.DownloadFilter{Status: "in_progress", Transport: "http", Limit: 10})
+	if err != nil || total != 2 || len(rows) != 2 {
+		t.Fatalf("in-progress rows=%+v total=%d err=%v", rows, total, err)
+	}
+	if rows[0].Status != "searching" || rows[0].Query != "CURRENT-1" || rows[1].Status != "search_queued" {
+		t.Fatalf("in-progress ordering=%+v", rows)
+	}
+}
+
 func TestActressSearchAcceptsReversedTwoPartNames(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "actress-search.db"))

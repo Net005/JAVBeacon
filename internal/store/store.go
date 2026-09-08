@@ -3128,6 +3128,8 @@ func (s *SQLite) DownloadActivity(ctx context.Context, f domain.DownloadFilter) 
 	var a []any
 	if f.Status == "active" {
 		where += ` AND d.status IN ('queued','downloading')`
+	} else if f.Status == "in_progress" {
+		where += ` AND d.status IN ('search_queued','searching')`
 	} else if f.Status != "" {
 		where += ` AND d.status=?`
 		a = append(a, f.Status)
@@ -3177,10 +3179,21 @@ func (s *SQLite) DownloadActivity(ctx context.Context, f domain.DownloadFilter) 
 	if sortColumn == "" {
 		sortColumn = "d.updated_at"
 	}
-	q := downloadSelect + where + ` ORDER BY ` + sortColumn + ` ` + direction + `,d.id DESC`
 	if f.Limit <= 0 || f.Limit > 500 {
 		f.Limit = 50
 	}
+	if f.Status == "in_progress" {
+		q := downloadSelect + where + ` ORDER BY CASE d.status WHEN 'searching' THEN 0 ELSE 1 END,d.added_at ASC,d.id ASC LIMIT ? OFFSET ?`
+		a = append(a, f.Limit, f.Offset)
+		rows, err := s.db.QueryContext(ctx, q, a...)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer rows.Close()
+		items, err := scanDownloads(rows)
+		return items, total, err
+	}
+	q := downloadSelect + where + ` ORDER BY ` + sortColumn + ` ` + direction + `,d.id DESC`
 	q += ` LIMIT ? OFFSET ?`
 	a = append(a, f.Limit, f.Offset)
 	rows, err := s.db.QueryContext(ctx, q, a...)

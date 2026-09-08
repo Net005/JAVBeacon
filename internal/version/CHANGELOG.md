@@ -7,6 +7,38 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.119] - 2026-09-08
+
+### Added
+
+- Download Monitoring now has a persistent **In Progress** tab for provider
+  searches, ordered with the active search first and waiting searches in queue
+  order. Every activity tab now includes a live item counter.
+- Search + Download work is stored durably. Queued searches and active HTTP
+  downloads recover after a JAVBeacon restart; interrupted partial HTTP files
+  are discarded and restarted cleanly from zero.
+- The Stash history write-back review is now a wide, tabbed workspace for
+  Changes, Matched, and Unmatched records, with covers, release and Stash scene
+  links, partial/wildcard filters for release ID, path, and filename, individual
+  and bulk selection, sync reasons, and expandable exact proposed changes.
+
+### Changed
+
+- Selecting **Monitor + download** for an already monitored release now treats
+  the immediate run as a forced download while preserving its monitoring state.
+- Download activity auto-refresh now updates existing rows in place instead of
+  rebuilding their covers and controls every two seconds, eliminating flicker.
+- HTTP transfer size, current speed, and the recent-speed graph now have a
+  clearer non-overlapping layout.
+
+### Fixed
+
+- Stash history write-back now re-fetches current Stash activity immediately
+  before applying changes and deduplicates play and orgasm timestamps at the
+  precision Stash accepts. Already-synchronized events are excluded from the
+  Changes tab, multiple archived records targeting one scene cannot increment
+  the same event twice, and playtime deltas are recalculated before writing.
+
 ## [1.0.118] - 2026-09-08
 
 ### Added
