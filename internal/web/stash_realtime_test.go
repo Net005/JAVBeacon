@@ -18,7 +18,11 @@ func TestStashRealtimeHookRequiresDedicatedSecret(t *testing.T) {
 	st, _ := store.OpenSQLite(filepath.Join(t.TempDir(), "hook.db"))
 	defer st.Close()
 	_ = st.SaveSettings(context.Background(), map[string]string{"stash_realtime_enabled": "true", "stash_realtime_secret": "hook-secret"})
-	s := &Server{store: st, stash: stash.New(st, time.Second, slog.Default(), nil, nil)}
+	s := &Server{
+		store: st,
+		stash: stash.New(st, time.Second, slog.Default(), nil, nil),
+		log:   slog.Default(),
+	}
 	for _, tc := range []struct {
 		secret string
 		want   int
