@@ -443,6 +443,28 @@ func TestDownloadActivityShowsFullFailureReason(t *testing.T) {
 	}
 }
 
+func TestNotificationSettingsIncludePerCategoryTestsAndWeightedFailures(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		"setupPushoverTestButtons",
+		"/settings/pushover-test",
+		"pushover_pikpak_app_token",
+		"pushover_byparr_app_token",
+		"pushover_download_search_app_token",
+		"error_burst_weight_scraping",
+		"error_burst_weight_http_search",
+		"error_burst_weight_http_download",
+		"Repeated Cloudflare/Byparr retries for the same release or URL count once",
+	} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("embedded app.js is missing notification control %q", marker)
+		}
+	}
+}
+
 func TestHTTPDownloadActivityUsesCompactLiveSpeedGraph(t *testing.T) {
 	javascript, err := assets.ReadFile("static/app.js")
 	if err != nil {

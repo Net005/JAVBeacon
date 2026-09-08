@@ -252,7 +252,11 @@ func (s *Service) PikPakAccountSchedule(ctx context.Context) {
 }
 
 func (s *Service) sendPushoverPikPakStatus(ctx context.Context, settings map[string]string, status PikPakAccountCheck) error {
-	token, user := strings.TrimSpace(settings["pushover_app_token"]), strings.TrimSpace(settings["pushover_user_key"])
+	token := strings.TrimSpace(settings["pushover_pikpak_app_token"])
+	if token == "" {
+		token = strings.TrimSpace(settings["pushover_app_token"])
+	}
+	user := strings.TrimSpace(settings["pushover_user_key"])
 	if token == "" || user == "" {
 		return errors.New("Pushover app token and user/group key are required")
 	}

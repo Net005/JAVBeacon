@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
+	"github.com/Net005/JAVBeacon/internal/logging"
 	"github.com/Net005/JAVBeacon/internal/scraper"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
@@ -84,7 +85,13 @@ type Service struct {
 	// pikPakDeleteFile is an optional test seam. Production removals use the
 	// authenticated session and PikPak API directly when it is nil.
 	pikPakDeleteFile func(context.Context, string) error
+	logs             *logging.RingHandler
 }
+
+// AttachLogs supplies the structured in-memory log stream used by the
+// configurable error-burst monitor. Kept separate from New so existing
+// embedders and tests do not need to manufacture a logging handler.
+func (s *Service) AttachLogs(logs *logging.RingHandler) { s.logs = logs }
 
 type httpDownloadRun struct {
 	cancel context.CancelFunc

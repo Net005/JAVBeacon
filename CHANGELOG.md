@@ -7,6 +7,22 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.117] - 2026-09-08
+
+### Added
+
+- Settings now has a dedicated Notifications tab for PikPak account health,
+  every configured Byparr instance, and Download + Search failure monitoring.
+  One shared Pushover user/group key is combined with a separate application
+  token and test-notification action for each category.
+- Byparr health checks track each enabled instance independently, alert once
+  after a configurable number of consecutive failures, optionally report
+  recovery, and re-arm only after the affected instance is healthy again.
+- Download, HTTP search, and scraping failures now use configurable category
+  weights, score threshold, rolling window, and cooldown. JavLibrary failures
+  are included, while repeated Cloudflare/Byparr attempts for the same release
+  or URL are collapsed into one incident to prevent notification floods.
+
 ## [1.0.116] - 2026-09-08
 
 ### Added

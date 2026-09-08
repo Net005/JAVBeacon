@@ -227,6 +227,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/settings", s.settings)
 	s.mux.HandleFunc("POST /api/settings/qb-test", s.testQBittorrent)
 	s.mux.HandleFunc("POST /api/settings/gluetun-test", s.testGluetun)
+	s.mux.HandleFunc("POST /api/settings/pushover-test", s.testPushoverCategory)
 	s.mux.HandleFunc("GET /api/settings/pikpak-status", s.pikPakStatus)
 	s.mux.HandleFunc("POST /api/settings/pikpak-test", s.testPikPak)
 	s.mux.HandleFunc("GET /api/setup/db/status", s.setupDBStatus)
@@ -1384,9 +1385,44 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	for _, key := range []string{"javdb_gluetun_rotation_enabled", "gluetun_control_url", "gluetun_control_api_key", "gluetun_rotation_attempts", "gluetun_rotation_wait_seconds", "gluetun_rotation_poll_milliseconds", "gluetun_rotation_settle_seconds", "gluetun_require_ip_change"} {
 		allowed[key] = true
 	}
+	for _, key := range []string{"operational_health_interval", "byparr_health_enabled", "byparr_health_failure_threshold", "byparr_health_timeout_seconds", "byparr_notify_failure", "byparr_notify_recovery", "error_burst_enabled", "error_burst_notify", "error_burst_threshold", "error_burst_window", "error_burst_cooldown", "error_burst_weight_scraping", "error_burst_weight_http_search", "error_burst_weight_http_download", "error_burst_include_scraping", "error_burst_include_http_search", "error_burst_include_http_download"} {
+		allowed[key] = true
+	}
+	for _, key := range []string{"pushover_pikpak_app_token", "pushover_byparr_app_token", "pushover_download_search_app_token"} {
+		allowed[key] = true
+	}
 	for _, key := range []string{"javdb_gluetun_rotation_enabled", "gluetun_require_ip_change"} {
 		if raw, present := x[key]; present && raw != "true" && raw != "false" {
 			s.problem(w, http.StatusUnprocessableEntity, key+" must be true or false")
+			return
+		}
+	}
+	for _, key := range []string{"byparr_health_enabled", "byparr_notify_failure", "byparr_notify_recovery", "error_burst_enabled", "error_burst_notify", "error_burst_include_scraping", "error_burst_include_http_search", "error_burst_include_http_download"} {
+		if raw, present := x[key]; present && raw != "true" && raw != "false" {
+			s.problem(w, http.StatusUnprocessableEntity, key+" must be true or false")
+			return
+		}
+	}
+	for key, minimum := range map[string]int{"byparr_health_failure_threshold": 1, "byparr_health_timeout_seconds": 2, "error_burst_threshold": 3, "error_burst_weight_scraping": 1, "error_burst_weight_http_search": 1, "error_burst_weight_http_download": 1} {
+		if raw, present := x[key]; present {
+			value, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil || value < minimum {
+				s.problem(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s must be at least %d", key, minimum))
+				return
+			}
+		}
+	}
+	for _, key := range []string{"operational_health_interval", "error_burst_window"} {
+		if raw, present := x[key]; present {
+			if duration, err := time.ParseDuration(strings.TrimSpace(raw)); err != nil || duration < time.Minute {
+				s.problem(w, http.StatusUnprocessableEntity, key+" must be a valid duration of at least 1 minute")
+				return
+			}
+		}
+	}
+	if raw, present := x["error_burst_cooldown"]; present {
+		if duration, err := time.ParseDuration(strings.TrimSpace(raw)); err != nil || duration < 5*time.Minute {
+			s.problem(w, http.StatusUnprocessableEntity, "error_burst_cooldown must be a valid duration of at least 5 minutes")
 			return
 		}
 	}
@@ -1425,12 +1461,24 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusUnprocessableEntity, "PikPak scheduled checks require a username and password")
 		return
 	}
-	if token, user := strings.TrimSpace(x["pushover_app_token"]), strings.TrimSpace(x["pushover_user_key"]); (token == "") != (user == "") {
-		s.problem(w, http.StatusUnprocessableEntity, "Pushover app token and user/group key must either both be configured or both be blank")
+	if token, user := strings.TrimSpace(x["pushover_app_token"]), strings.TrimSpace(x["pushover_user_key"]); token != "" && user == "" {
+		s.problem(w, http.StatusUnprocessableEntity, "The legacy PikPak Pushover app token requires the shared user/group key")
 		return
 	}
-	if (x["pikpak_notify_success"] == "true" || x["pikpak_notify_failure"] == "true") && (strings.TrimSpace(x["pushover_app_token"]) == "" || strings.TrimSpace(x["pushover_user_key"]) == "") {
+	pikPakPushToken := strings.TrimSpace(x["pushover_pikpak_app_token"])
+	if pikPakPushToken == "" {
+		pikPakPushToken = strings.TrimSpace(x["pushover_app_token"])
+	}
+	if (x["pikpak_notify_success"] == "true" || x["pikpak_notify_failure"] == "true") && (pikPakPushToken == "" || strings.TrimSpace(x["pushover_user_key"]) == "") {
 		s.problem(w, http.StatusUnprocessableEntity, "PikPak Pushover notifications require an app token and user/group key")
+		return
+	}
+	if (x["byparr_notify_failure"] == "true" || x["byparr_notify_recovery"] == "true") && (strings.TrimSpace(x["pushover_byparr_app_token"]) == "" || strings.TrimSpace(x["pushover_user_key"]) == "") {
+		s.problem(w, http.StatusUnprocessableEntity, "Byparr notifications require their app token and the shared Pushover user/group key")
+		return
+	}
+	if x["error_burst_notify"] == "true" && (strings.TrimSpace(x["pushover_download_search_app_token"]) == "" || strings.TrimSpace(x["pushover_user_key"]) == "") {
+		s.problem(w, http.StatusUnprocessableEntity, "Download + Search notifications require their app token and the shared Pushover user/group key")
 		return
 	}
 	if raw, present := x["default_download_method"]; present {
@@ -1786,6 +1834,22 @@ func (s *Server) testGluetun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, http.StatusOK, map[string]any{"status": "connected", "public_ip": ip})
+}
+
+func (s *Server) testPushoverCategory(w http.ResponseWriter, r *http.Request) {
+	var config struct {
+		UserKey  string `json:"user_key"`
+		AppToken string `json:"app_token"`
+		Category string `json:"category"`
+	}
+	if !s.decode(w, r, &config) {
+		return
+	}
+	if err := s.downloads.TestPushoverCategory(r.Context(), strings.TrimSpace(config.UserKey), strings.TrimSpace(config.AppToken), config.Category); err != nil {
+		s.problem(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, map[string]string{"status": "sent"})
 }
 
 func (s *Server) testPikPak(w http.ResponseWriter, r *http.Request) {

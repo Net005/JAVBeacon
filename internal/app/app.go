@@ -245,6 +245,11 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 			missing[k] = v
 		}
 	}
+	for k, v := range map[string]string{"operational_health_interval": "5m", "byparr_health_enabled": "false", "byparr_health_failure_threshold": "2", "byparr_health_timeout_seconds": "15", "byparr_notify_failure": "false", "byparr_notify_recovery": "false", "error_burst_enabled": "false", "error_burst_notify": "false", "error_burst_threshold": "10", "error_burst_window": "10m", "error_burst_cooldown": "6h", "error_burst_weight_scraping": "1", "error_burst_weight_http_search": "2", "error_burst_weight_http_download": "3", "error_burst_include_scraping": "true", "error_burst_include_http_search": "true", "error_burst_include_http_download": "true"} {
+		if settings[k] == "" {
+			missing[k] = v
+		}
+	}
 	if len(missing) > 0 {
 		_ = st.SaveSettings(context.Background(), missing)
 	}
@@ -342,6 +347,7 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 	// starts (run() re-Configures too) or a settings save happens.
 	mon.ApplySettings(context.Background())
 	downloadService := download.New(st, cfg.RequestTimeout, log)
+	downloadService.AttachLogs(logs)
 	stashSync := stash.New(st, cfg.RequestTimeout, log, javlibrary, downloadService)
 	authService := auth.New(st)
 	username, password := os.Getenv("JAVBEACON_INITIAL_USERNAME"), os.Getenv("JAVBEACON_INITIAL_PASSWORD")
@@ -467,6 +473,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.downloads.OlderSearchSchedule(ctx)
 	go a.downloads.NotificationSchedule(ctx)
 	go a.downloads.PikPakAccountSchedule(ctx)
+	go a.downloads.OperationalHealthSchedule(ctx)
 	errs := make(chan error, 1)
 	go func() {
 		a.log.Info("JAVBeacon web server started", "address", a.cfg.ListenAddress, "database", databaseDescription(a.cfg))
