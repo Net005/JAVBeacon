@@ -521,6 +521,20 @@ func TestDownloadActivitySeparatesQueuedFromDownloading(t *testing.T) {
 	}
 }
 
+func TestDownloadActivityShowsHTTPBeforeTorrent(t *testing.T) {
+	markup, err := assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `<div class="subtabs downloadTransportTabs"><button data-download-transport="http">HTTP</button><button class="active" data-download-transport="torrent">Torrent</button></div>`
+	if !strings.Contains(string(markup), want) {
+		t.Fatal("Download Activity must show HTTP before the plainly named Torrent tab")
+	}
+	if !strings.Contains(string(markup), `<option value="250">250</option><option value="500">500</option>`) {
+		t.Fatal("Download Activity page size does not offer 250 and 500 rows")
+	}
+}
+
 func TestHTTPConnectionSettingDistinguishesFilesFromSegments(t *testing.T) {
 	javascript, err := assets.ReadFile("static/app.js")
 	if err != nil {

@@ -2157,10 +2157,25 @@ func (s *Service) RemoveDownload(ctx context.Context, downloadID int64) (int64, 
 	if selected == nil {
 		return 0, errors.New("download not found")
 	}
+	if isLocallyRemovableDownloadHistory(*selected) {
+		return s.store.DeleteDownload(ctx, selected.ID)
+	}
 	if strings.EqualFold(selected.Transport, "http") {
 		return s.removeHTTPReleaseDownloads(ctx, selected.ID, selected.ReleaseID, selected.Query)
 	}
 	return s.removeReleaseDownloads(ctx, selected.ReleaseID, selected.Query, false)
+}
+
+// isLocallyRemovableDownloadHistory identifies terminal audit rows whose
+// external transfer has already gone away. Removing these rows is purely a
+// JAVBeacon history operation and must not fail because qBittorrent can no
+// longer find the old torrent.
+func isLocallyRemovableDownloadHistory(d domain.Download) bool {
+	postStatus := strings.ToLower(strings.TrimSpace(d.PostStatus))
+	return strings.EqualFold(d.Status, statusRemoved) ||
+		postStatus == postStatusCompletedRemoved ||
+		postStatus == postStatusRemovedUnknown ||
+		postStatus == "removed_pipeline_failed"
 }
 
 func (s *Service) removeOwnedRestoredPikPakFile(ctx context.Context, d domain.Download, settings map[string]string) error {
@@ -2354,20 +2369,28 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 		transport  string
 	}
 	selected := map[int64]selectedRelease{}
-	failedHTTPHistory := make([]domain.Download, 0)
+	localHistory := make([]domain.Download, 0)
 	for _, row := range rows {
-		if wanted[row.ID] && row.ReleaseID != 0 {
-			if !replace && strings.EqualFold(row.Transport, "http") && strings.EqualFold(row.Status, "failed") {
-				failedHTTPHistory = append(failedHTTPHistory, row)
+		if wanted[row.ID] {
+			if !replace && (isLocallyRemovableDownloadHistory(row) || row.ReleaseID == 0 || (strings.EqualFold(row.Transport, "http") && strings.EqualFold(row.Status, "failed"))) {
+				localHistory = append(localHistory, row)
+				continue
+			}
+			if row.ReleaseID == 0 {
 				continue
 			}
 			selected[row.ReleaseID] = selectedRelease{id: row.ReleaseID, downloadID: row.ID, query: row.Query, transport: normalizedDownloadTransport(row.Transport)}
 		}
 	}
-	if len(selected) == 0 && len(failedHTTPHistory) == 0 {
-		return domain.DownloadReplacementJob{}, errors.New("no matching downloads selected")
+	if len(selected) == 0 && len(localHistory) == 0 {
+		// Deletion is idempotent: a live refresh can remove a terminal row after
+		// the user selected it but before this request arrives. Accept the stale
+		// selection and let the client refresh instead of presenting an error.
+		job := domain.DownloadReplacementJob{Replace: replace, NonPreferred: allowNonPreferred, StartedAt: time.Now().UTC(), FinishedAt: time.Now().UTC(), Total: len(wanted)}
+		s.setReplacementJob(job)
+		return job, nil
 	}
-	job := domain.DownloadReplacementJob{Running: true, Replace: replace, NonPreferred: allowNonPreferred, StartedAt: time.Now().UTC(), Total: len(selected) + len(failedHTTPHistory)}
+	job := domain.DownloadReplacementJob{Running: true, Replace: replace, NonPreferred: allowNonPreferred, StartedAt: time.Now().UTC(), Total: len(selected) + len(localHistory)}
 	s.mu.Lock()
 	if s.replacementJob.Running {
 		existing := s.replacementJob
@@ -2437,22 +2460,22 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 			s.setReplacementJob(job)
 			deleted, err := s.store.DeleteDownload(background, row.ID)
 			if err != nil {
-				s.log.Error("failed HTTP download history removal failed", "download_id", row.ID, "release_id", row.ReleaseID, "video_id", row.Query, "error", err)
+				s.log.Error("download history removal failed", "download_id", row.ID, "release_id", row.ReleaseID, "video_id", row.Query, "error", err)
 				job.Failed++
 				job.LastError = err.Error()
 			} else if deleted == 0 {
 				err := errors.New("download not found")
-				s.log.Warn("failed HTTP download history was already absent", "download_id", row.ID, "release_id", row.ReleaseID, "video_id", row.Query)
+				s.log.Info("download history was already absent", "download_id", row.ID, "release_id", row.ReleaseID, "video_id", row.Query)
 				job.Failed++
 				job.LastError = err.Error()
 			} else {
-				s.log.Info("failed HTTP download history removed", "download_id", row.ID, "release_id", row.ReleaseID, "video_id", row.Query)
+				s.log.Info("download history removed", "download_id", row.ID, "release_id", row.ReleaseID, "video_id", row.Query)
 				job.Removed++
 			}
 			job.Processed++
 			s.setReplacementJob(job)
 		}
-	}(selected, failedHTTPHistory)
+	}(selected, localHistory)
 	return job, nil
 }
 

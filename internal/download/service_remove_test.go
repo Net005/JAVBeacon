@@ -184,6 +184,47 @@ func TestBulkRemoveFailedHTTPDeletesOnlySelectedHistoryWithoutQBittorrent(t *tes
 	}
 }
 
+func TestBulkRemoveCompletedRemovedTorrentDeletesLocalHistoryOnly(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "remove-completed-removed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"qb_url": "http://127.0.0.1:1"}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "REAL-971", Title: "Test", Source: "JavLibrary", Released: true})
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	stale, _ := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "REAL-971", Transport: "torrent", Status: "completed", PostStatus: postStatusCompletedRemoved, TorrentHash: "already-gone"})
+	service := New(st, 50*time.Millisecond, slog.Default())
+	if _, err := service.StartBulkRemoveAndReplace(ctx, []int64{stale.ID}, false, false); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for service.ReplacementStatus().Running && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	rows, err := st.Downloads(ctx, "")
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("stale completed-removed history remains: rows=%+v err=%v", rows, err)
+	}
+}
+
+func TestBulkRemoveAlreadyAbsentSelectionIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "remove-absent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	job, err := New(st, time.Second, slog.Default()).StartBulkRemoveAndReplace(ctx, []int64{987654}, false, false)
+	if err != nil || job.Running || job.Total != 1 {
+		t.Fatalf("stale selection should be accepted: job=%+v err=%v", job, err)
+	}
+}
+
 func TestManualReplacementDeletesFilesClearsHistoryAndStartsFreshDownload(t *testing.T) {
 	var deletedFiles, added atomic.Bool
 	mux := http.NewServeMux()
