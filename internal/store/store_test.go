@@ -732,6 +732,37 @@ func TestStructuredReleaseSearchFiltersStashFilePath(t *testing.T) {
 	}
 }
 
+func TestStructuredReleaseSearchSupportsInvertedConditions(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "structured-inverted.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, release := range []domain.Release{
+		{SiteID: site.ID, VideoID: "KEEP-1", Title: "Keep this", Genres: []string{"Drama"}},
+		{SiteID: site.ID, VideoID: "SKIP-1", Title: "Skip this", Genres: []string{"Drug"}},
+	} {
+		if _, err := s.UpsertRelease(ctx, release); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	expr := `{"logic":"and","conditions":[{"field":"tag","value":"Drug","exact":true,"invert":true}]}`
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{SearchExpression: expr, Limit: 10})
+	if err != nil || len(rows) != 1 || rows[0].VideoID != "KEEP-1" {
+		t.Fatalf("inverted tag condition: rows=%+v err=%v", rows, err)
+	}
+	count, err := s.ReleasesCount(ctx, domain.ReleaseFilter{SearchExpression: expr})
+	if err != nil || count != 1 {
+		t.Fatalf("inverted tag condition count=%d err=%v", count, err)
+	}
+}
+
 func TestActressSearchAcceptsReversedTwoPartNames(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "actress-search.db"))

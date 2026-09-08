@@ -7,6 +7,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.118] - 2026-09-08
+
+### Added
+
+- Release Library structured-search conditions can now be inverted with an
+  **Exclude** option. Inversion works across text, exact/wildcard metadata,
+  numeric/date comparisons, boolean fields, AND/OR groups, and saved presets.
+- Added a Gluetun container update helper with dry-run and remote-host support.
+  It pulls fresh images, preserves live dependent-container configuration, and
+  reattaches containers that share each updated Gluetun network namespace.
+
 ## [1.0.117] - 2026-09-08
 
 ### Added
