@@ -182,7 +182,13 @@ func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(stri
 			return nil, e
 		}
 		cards := findAll(doc, func(n *html.Node) bool { return hasClass(n, "search_sam_box") || hasClass(n, "sam_box") })
-		reportedPageLimit := listingPageLimit(doc, "count", pages, page)
+		// Akiba's pager is a sliding window: on the first page it exposes only
+		// 1..8 plus separate forward-jump controls, not a link to the actual
+		// final page. The generic maximum-visible-link detector would therefore
+		// mistake page 8 for the online end and stop a full scrape early. Keep
+		// reporting the configured ceiling; an all-pages scrape reports an
+		// unknown ceiling and discovers the real end from an empty/repeated page.
+		reportedPageLimit := pages
 		a.log.Info("listing page parsed", "provider", "GIGA", "page", page, "cards", len(cards), "final_url", a.lastURL)
 		if len(cards) == 0 {
 			if page > 1 {
@@ -265,10 +271,6 @@ func (a *Akiba) scrapeFiltered(ctx context.Context, pages int, include func(stri
 			break
 		}
 		a.log.Info("listing page completed", "provider", "GIGA", "page", page, "releases", added, "total", len(out))
-		if reportedPageLimit > 0 && (unlimited || reportedPageLimit < pages) && page >= reportedPageLimit {
-			a.log.Info("online listing end reached", "provider", "GIGA", "last_page", page, "reason", "reported pagination maximum")
-			break
-		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].ReleaseDate > out[j].ReleaseDate })
 	a.log.Info("provider scrape completed", "provider", "GIGA", "releases", len(out), "duration", time.Since(started).Round(time.Millisecond))

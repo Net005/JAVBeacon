@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.124] - 2026-09-08
+
+### Fixed
+
+- GIGA scraping no longer mistakes Akiba’s sliding window of visible page
+  numbers for the site’s final page. Limited runs now honor their configured
+  page count, while all-page runs continue until an empty or repeated page
+  identifies the real end.
+
 ## [1.0.123] - 2026-09-08
 
 ### Added
