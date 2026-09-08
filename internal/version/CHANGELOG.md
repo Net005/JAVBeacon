@@ -7,6 +7,12 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.142] - 2026-09-08
+
+### Added
+
+- Exposed Jellyfin playback thresholds in Settings under StashApp: `jellyfin_checkpoint_seconds`, `jellyfin_max_checkpoint_gap_seconds`, `jellyfin_completion_percent`, and `jellyfin_completion_remaining_seconds`, so you can tune replay/jump handling without editing config files.
+
 ## [1.0.141] - 2026-09-08
 
 ### Added
