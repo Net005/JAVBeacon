@@ -794,12 +794,7 @@ func (s *Server) backgroundSearchAndDownloadRelease(w http.ResponseWriter, r *ht
 		s.problem(w, http.StatusServiceUnavailable, "download service unavailable")
 		return
 	}
-	transport := "torrent"
-	settings, _ := s.store.Settings(r.Context())
-	method := strings.ToLower(strings.TrimSpace(settings["default_download_method"]))
-	if release.DownloadMethodOverride == "http" || (release.DownloadMethodOverride == "" && strings.HasPrefix(method, "http")) {
-		transport = "http"
-	}
+	transport := s.searchDownloadTransport(r.Context(), release)
 	const sourceType = "Manual Background Search + Download"
 	taskID, alreadyQueued, err := s.createSearchDownloadTask(r.Context(), release, sourceType, release.AllowNonPreferredFilenames, false, transport)
 	if err != nil {
@@ -812,6 +807,21 @@ func (s *Server) backgroundSearchAndDownloadRelease(w http.ResponseWriter, r *ht
 	s.json(w, http.StatusAccepted, map[string]any{"queued": true, "release_id": release.ID, "already_queued": alreadyQueued})
 }
 
+func (s *Server) searchDownloadTransport(ctx context.Context, release domain.Release) string {
+	override := strings.ToLower(strings.TrimSpace(release.DownloadMethodOverride))
+	if override == "http" {
+		return "http"
+	}
+	if override == "torrent" {
+		return "torrent"
+	}
+	settings, _ := s.store.Settings(ctx)
+	if release.HTTPDownloadPrimary || strings.HasPrefix(strings.ToLower(strings.TrimSpace(settings["default_download_method"])), "http") {
+		return "http"
+	}
+	return "torrent"
+}
+
 func (s *Server) createSearchDownloadTask(ctx context.Context, release domain.Release, sourceType string, allowNonPreferred, force bool, transport string) (int64, bool, error) {
 	rows, err := s.store.Downloads(ctx, "")
 	if err != nil {
@@ -819,6 +829,10 @@ func (s *Server) createSearchDownloadTask(ctx context.Context, release domain.Re
 	}
 	for _, row := range rows {
 		if row.ReleaseID == release.ID && (row.Status == "search_queued" || row.Status == "searching") {
+			if row.Transport != transport {
+				row.Transport = transport
+				_, _ = s.store.SaveDownload(ctx, row)
+			}
 			return row.ID, true, nil
 		}
 	}
@@ -858,6 +872,11 @@ func (s *Server) resumeSearchDownloadTasks() {
 		}
 		var options persistedSearchOptions
 		_ = json.Unmarshal([]byte(task.QBResponse), &options)
+		expectedTransport := s.searchDownloadTransport(context.Background(), release)
+		if task.Transport != expectedTransport {
+			task.Transport = expectedTransport
+			_, _ = s.store.SaveDownload(context.Background(), task)
+		}
 		job.Releases = append(job.Releases, release)
 		job.TaskIDs = append(job.TaskIDs, task.ID)
 		job.Force = append(job.Force, options.Force)
@@ -2388,10 +2407,7 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 			release.IgnoreLocalForceDownload = true
 			release.IgnoreDownloadHistory = true
 		}
-		transport := "torrent"
-		if release.DownloadMethodOverride == "http" {
-			transport = "http"
-		}
+		transport := s.searchDownloadTransport(r.Context(), release)
 		taskID, alreadyQueued, taskErr := s.createSearchDownloadTask(r.Context(), release, sourceType, payload.AllowNonPreferredFilenames, force, transport)
 		if taskErr != nil {
 			s.problem(w, http.StatusInternalServerError, taskErr.Error())
@@ -2458,6 +2474,7 @@ func (s *Server) runBulkReleaseJobs() {
 				}
 				if task.ID > 0 {
 					task.Status = "searching"
+					task.Transport = s.searchDownloadTransport(context.Background(), release)
 					task.Name = "Searching download providers"
 					task.MatchReason = "Searching configured providers and ranking candidates"
 					task.Error = ""

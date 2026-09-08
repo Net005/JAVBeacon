@@ -511,7 +511,7 @@ func TestDownloadActivitySeparatesQueuedFromDownloading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`data-download-status="queued">Queued`, `status=downloadStatus==='stalled'?'downloading':downloadStatus`, `downloadStatus==='queued'?'queued':'other'`, `defaultDirection=tab==='queued'?'asc':'desc'`, `headerDownloadQueueGroup('Queued for download',queued,'queued')`} {
+	for _, marker := range []string{`data-download-status="queued">Queued`, `status=downloadStatus==='stalled'?'downloading':downloadStatus`, `downloadStatus==='queued'?'queued':'other'`, `defaultDirection=tab==='queued'?'asc':'desc'`, `headerDownloadQueueGroup('Ready for download',queued,'queued')`} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("Download Activity is missing queued-tab behavior %q", marker)
 		}
@@ -1408,6 +1408,28 @@ func TestSearchDownloadQueueMergesSearchingAndActiveDownloads(t *testing.T) {
 	}
 }
 
+func TestSearchDownloadTransportUsesConfiguredPrimaryAndReleaseOverride(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "search-transport.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"default_download_method": "http_torrent"}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st}
+	if got := s.searchDownloadTransport(ctx, domain.Release{}); got != "http" {
+		t.Fatalf("HTTP-first default reported %q, want http", got)
+	}
+	if got := s.searchDownloadTransport(ctx, domain.Release{DownloadMethodOverride: "torrent"}); got != "torrent" {
+		t.Fatalf("Torrent override reported %q, want torrent", got)
+	}
+	if got := s.searchDownloadTransport(ctx, domain.Release{HTTPDownloadPrimary: true}); got != "http" {
+		t.Fatalf("Legacy HTTP-primary release reported %q, want http", got)
+	}
+}
+
 func TestHeaderSearchDownloadQueueFrontend(t *testing.T) {
 	markup, err := assets.ReadFile("static/index.html")
 	if err != nil {
@@ -1421,18 +1443,21 @@ func TestHeaderSearchDownloadQueueFrontend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`id="headerDownloadQueue"`, `id="headerDownloadQueueCount"`, `id="headerDownloadQueueList"`} {
+	for _, marker := range []string{`id="headerDownloadQueue"`, `id="headerDownloadQueueCount"`, `id="headerDownloadQueueList"`, `Download activity`} {
 		if !bytes.Contains(markup, []byte(marker)) {
 			t.Fatalf("embedded index.html is missing header queue marker %q", marker)
 		}
 	}
-	for _, marker := range []string{"api('/jobs/search-download-queue')", `function openHeaderQueuedDownload`, `downloadStatus='downloading'`, `Searching for download`, `Downloading`, `highlightHeaderQueuedDownload`, `clearDownloadFilters`, `downloadFiltersActive`} {
+	for _, marker := range []string{"api('/jobs/search-download-queue')", `function openHeaderQueuedDownload`, `downloadStatus='downloading'`, `Searching now`, `Downloading now`, `headerQueueProgress`, `headerQueueMetrics`, `highlightHeaderQueuedDownload`, `clearDownloadFilters`, `downloadFiltersActive`} {
 		if !bytes.Contains(javascript, []byte(marker)) {
 			t.Fatalf("embedded app.js is missing header queue behavior %q", marker)
 		}
 	}
 	if bytes.Contains(javascript, []byte(`downloadSearch.value=videoID`)) {
 		t.Fatal("header queue navigation still applies a release-ID Download Activity filter")
+	}
+	if bytes.Contains(markup, []byte(`id="hideHeaderJob"`)) || bytes.Contains(javascript, []byte(`hideHeaderJob.onclick`)) {
+		t.Fatal("header activity widget still exposes a dismiss control")
 	}
 	if !bytes.Contains(styles, []byte(`.headerQueueItem`)) || !bytes.Contains(styles, []byte(`.headerQueueHighlight`)) {
 		t.Fatal("embedded app.css is missing header queue styling")
