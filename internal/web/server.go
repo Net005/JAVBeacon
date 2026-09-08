@@ -1222,7 +1222,13 @@ func (s *Server) cover(w http.ResponseWriter, r *http.Request) {
 	// (see coverOriginal below), so there's nothing to keep in sync and
 	// nothing that can go stale relative to a newer conforming pipeline:
 	// the very next request just conforms again from the same original.
-	if conformed, ok := covers.ConformForServing(path, release.ImageURL); ok {
+	//
+	// ProductURL (the release's own javlibrary.com/akiba-web.com detail
+	// page), not ImageURL, is what actually says which site this release
+	// came from - JavLibrary often hotlinks a cover from DMM's CDN, and
+	// GIGA's own covers are hosted on giga-web.jp, so gating on where the
+	// image itself happens to be hosted misses real matches.
+	if conformed, ok := covers.ConformForServing(path, release.ProductURL); ok {
 		info, statErr := os.Stat(path)
 		modTime := time.Now()
 		if statErr == nil {

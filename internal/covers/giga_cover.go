@@ -47,6 +47,10 @@ const (
 	gigaSinglePanelRatioMax = 0.95
 )
 
+// isGIGASource reports whether sourceURL - the release's own product/
+// detail-page URL, not the cover image's hosting URL, since GIGA's actual
+// cover images are hosted on giga-web.jp rather than akiba-web.com - is a
+// GIGA/Akiba-Web release.
 func isGIGASource(sourceURL string) bool {
 	return strings.Contains(strings.ToLower(sourceURL), "akiba-web")
 }

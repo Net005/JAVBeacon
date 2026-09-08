@@ -7,6 +7,21 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.145] - 2026-09-08
+
+### Fixed
+
+- JavLibrary and GIGA cover conforming now correctly recognizes a release's
+  cover regardless of which domain actually hosts the image file.
+  JavLibrary frequently hotlinks a release's cover from DMM's own CDN
+  (`pics.dmm.co.jp`) instead of hosting it on javlibrary.com, and GIGA's own
+  covers are hosted on `giga-web.jp` rather than `akiba-web.com` - since
+  conforming was gated on the cover image's own URL, both of these were
+  silently skipped and served uncropped, even though their dimensions
+  matched perfectly. It's now gated on the release's own product/detail-page
+  URL instead, which correctly identifies which site the release actually
+  came from.
+
 ## [1.0.144] - 2026-09-08
 
 ### Fixed

@@ -10,6 +10,15 @@ import (
 // matches a known JavLibrary or GIGA cover shape, returns it sliced/padded
 // to Jellyfin's 1000x1500 Primary/Poster/Cover size, re-encoded as JPEG.
 //
+// sourceURL identifies which scraper/site the release came from, and must
+// be the release's own product/detail-page URL (domain.Release.ProductURL:
+// javlibrary.com for JavLibrary, akiba-web.com for GIGA) - never the cover
+// image's own hosting URL. JavLibrary often hotlinks a release's cover from
+// DMM's CDN (pics.dmm.co.jp) instead of hosting it itself, and GIGA's own
+// covers are hosted on giga-web.jp rather than akiba-web.com, so gating on
+// where the image happens to be hosted misses real matches; the release's
+// product URL is what actually says which site scraped it.
+//
 // This is computed entirely in memory on every call and never writes
 // anything back to path or anywhere else on disk - the cache on disk always
 // stays exactly what was downloaded, and conforming only happens live, at
