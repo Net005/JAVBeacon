@@ -647,6 +647,9 @@ func TestHTTPDownloadSkipsFetchWhenDestinationFileAlreadyExists(t *testing.T) {
 	if final.Status != "completed" {
 		t.Fatalf("status = %q, want completed: %+v", final.Status, final)
 	}
+	if final.PostStatus != postStatusFileAlreadyExisted {
+		t.Fatalf("post_status = %q, want %q (a distinct state from a real transfer)", final.PostStatus, postStatusFileAlreadyExisted)
+	}
 	if final.DestinationPath != existingPath {
 		t.Fatalf("destination path = %q, want existing file %q", final.DestinationPath, existingPath)
 	}

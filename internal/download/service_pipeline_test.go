@@ -173,7 +173,7 @@ func TestHTTPCompletionRunsBothPipelineEventsInOrder(t *testing.T) {
 
 	contentPath := filepath.Join(t.TempDir(), "HTTP-PIPE-1.mp4")
 	service := New(st, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	service.runHTTPCompletionPipelinesAsync(ctx, download, Torrent{Name: filepath.Base(contentPath), ContentPath: contentPath, Progress: 1})
+	service.runHTTPCompletionPipelinesAsync(ctx, download, Torrent{Name: filepath.Base(contentPath), ContentPath: contentPath, Progress: 1}, false)
 
 	if run := waitForPipelineRun(t, st, download.ID, pipelineDownloadCompleted); run.State != "completed" {
 		t.Fatalf("completion run=%+v", run)
