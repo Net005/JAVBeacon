@@ -123,13 +123,24 @@ func (a *Akiba) prime(ctx context.Context) error {
 // fetch itself is a thin retry wrapper around fetchOnce: a Cloudflare block
 // or a transport/parse error gets scrapeRetryAttempts more tries (with a
 // short backoff between them) before giving up, since both are commonly
-// transient; a structurally-wrong page (ScrapeInvalid) is not retried.
+// transient. Akiba occasionally answers a valid product/listing URL with an
+// unrelated HTTP-200 page when its session has gone stale. A structurally
+// invalid response therefore gets one fresh session and one immediate retry.
 func (a *Akiba) fetch(ctx context.Context, raw, kind string, stage ...DetailStage) (*html.Node, error) {
-	return withScrapeRetry(ctx, func() (*html.Node, error) {
+	doc, err := withScrapeRetry(ctx, func() (*html.Node, error) {
 		return a.fetchOnce(ctx, raw, kind, stage...)
 	}, func(attempt int, wait time.Duration, err error) {
 		a.log.Info("scrape retry", "provider", "GIGA", "kind", kind, "url", raw, "attempt", attempt, "wait", wait.String(), "reason", err.Error())
 	})
+	var statusErr *StatusError
+	if err == nil || !errors.As(err, &statusErr) || statusErr.Status != ScrapeInvalid {
+		return doc, err
+	}
+	a.log.Info("invalid GIGA page; rebuilding Akiba session before retry", "kind", kind, "url", raw, "reason", err.Error())
+	if primeErr := a.prime(ctx); primeErr != nil {
+		return nil, fmt.Errorf("%w; rebuild Akiba session: %v", err, primeErr)
+	}
+	return a.fetchOnce(ctx, raw, kind, stage...)
 }
 
 func (a *Akiba) fetchOnce(ctx context.Context, raw, kind string, stage ...DetailStage) (*html.Node, error) {
