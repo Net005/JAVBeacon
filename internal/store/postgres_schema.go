@@ -257,6 +257,7 @@ CREATE TABLE IF NOT EXISTS downloads (
 	eta_seconds INTEGER NOT NULL DEFAULT 0,
 	seen_complete BIGINT NOT NULL DEFAULT 0,
 	filename_pattern_excluded INTEGER NOT NULL DEFAULT 0,
+	priority INTEGER NOT NULL DEFAULT 50,
 	added_at TIMESTAMPTZ NOT NULL,
 	updated_at TIMESTAMPTZ NOT NULL
 );
@@ -556,6 +557,7 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		`ALTER TABLE downloads ADD COLUMN IF NOT EXISTS bytes_total BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE downloads ADD COLUMN IF NOT EXISTS bytes_downloaded BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE downloads ADD COLUMN IF NOT EXISTS bytes_per_second BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE downloads ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 50`,
 		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS scheduled INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS site_count INTEGER NOT NULL DEFAULT 0`,

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -17,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 	"unicode"
 
@@ -118,13 +121,15 @@ func (p *javDBProvider) Resolve(ctx context.Context, download domain.Download) (
 	if (p.pikPakUsername == "") != (p.pikPakPassword == "") {
 		return resolvedHTTPFile{}, errors.New("PikPak account configuration is incomplete: configure both username and password, or clear both")
 	}
+	// Restoring a share mutates the user's drive, so this used to cap the
+	// authenticated path at a single attempt to avoid repeating that
+	// mutation blindly on every transient failure (a timed-out API call,
+	// not necessarily a failed restore). restoreSharedFile now checks the
+	// account's existing files for an exact name+size match before ever
+	// calling PikPak's restore endpoint again, so a retry here reuses an
+	// already-restored file instead of duplicating it - the same 3 attempts
+	// as the unauthenticated path is safe.
 	attempts := 3
-	if p.pikPakUsername != "" && p.pikPakPassword != "" {
-		// Restoring a share mutates the user's drive. Do not repeat that mutation
-		// blindly; the authenticated helper retries only its read-only task/file
-		// polling after a single restore request.
-		attempts = 1
-	}
 	var resolved resolvedHTTPFile
 	var err error
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -258,6 +263,7 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 					PublishedAt: formatOptionalDate(pageDate),
 					Accepted:    false,
 					Reason:      reason,
+					Unavailable: true,
 				})
 				if p.log != nil {
 					p.log.Warn("JavDB exact release has no downloadable HTTP share", "requested_id", release.VideoID, "normalized_id", normalizeReleaseID(release.VideoID), "matched_id", h.id, "stored_date", release.ReleaseDate, "javdb_date", formatOptionalDate(pageDate), "detail_url", h.href, "detail_status", detailStatus, "download_section_found", true, "keepshare_links", discovery.shareLinkCount, "pikpak_links", discovery.pikPakLinkCount, "reason", reason)
@@ -400,8 +406,142 @@ func matchesAcceptedHTTPPattern(name string, patterns []PreferredFilenamePattern
 	return false, "", 0
 }
 
+// javDBRequestThrottle enforces a randomized 3-7s cooldown between
+// consecutive requests to JavDB, across every release/search goroutine that
+// shares this process. A single release's exact-match search alone can hit
+// the search page, a detail page per exact hit, and a download-action page
+// per detail page - back to back with no throttle, that reads to JavDB as a
+// scripted hammering pattern. The cooldown is process-global (not per
+// release) so a Release Library bulk run, which searches one release after
+// another, keeps the same minimum spacing between every JavDB request it
+// makes, not just within a single release's search. It backs off further,
+// automatically, when JavDB itself starts timing out or blocking requests.
+var javDBRequestThrottle = newRequestThrottle(3*time.Second, 7*time.Second, 45*time.Second)
+
+// pikPakRequestThrottle applies the same idea to PikPak's own API. Its base
+// window is deliberately much lighter than JavDB's: a single restore poll
+// (findRestoredFile) can legitimately walk dozens of account folders one API
+// call at a time, and a flat 3-7s per call there would turn a few-second
+// poll into many minutes. The adaptive backoff is where this actually earns
+// its keep - it grows sharply once PikPak's API starts timing out under load
+// (the "context deadline exceeded" failures this was added to reduce),
+// spacing out a Release Library bulk run's back-to-back resolutions without
+// slowing normal single-download traffic, then relaxes back toward the
+// light base window once requests are succeeding again.
+var pikPakRequestThrottle = newRequestThrottle(400*time.Millisecond, 1200*time.Millisecond, 30*time.Second)
+
+func newRequestThrottle(min, max, backoffCeiling time.Duration) *requestThrottle {
+	return &requestThrottle{min: min, max: max, backoffCeiling: backoffCeiling}
+}
+
+// requestThrottle enforces a randomized cooldown between consecutive calls
+// to a rate-sensitive upstream, and adapts that cooldown upward when recent
+// calls are timing out or being throttled - the clearest available signal
+// that the current pace is too aggressive - then relaxes it back down once
+// calls succeed again. All fields are guarded by mu; safe for concurrent use.
+type requestThrottle struct {
+	mu             sync.Mutex
+	next           time.Time
+	min, max       time.Duration
+	backoffCeiling time.Duration
+	backoff        time.Duration
+}
+
+// wait blocks until this call is allowed to proceed, honoring an existing
+// cooldown left by the previous caller, then reserves a fresh randomized
+// window (min-max, plus any active backoff) for the caller after it.
+func (t *requestThrottle) wait(ctx context.Context) error {
+	// The unit/integration test suite exercises these same code paths with
+	// mocked HTTP round trippers, often hundreds of calls in one test run;
+	// actually sleeping out the cooldown there would turn a fast test suite
+	// into one that takes minutes without testing anything the throttle's
+	// own tests (which construct a *requestThrottle directly) don't already
+	// cover. testing.Testing() is only true inside a test binary, never in
+	// the shipped program, so production behavior is unaffected.
+	if testing.Testing() {
+		return nil
+	}
+	t.mu.Lock()
+	now := time.Now()
+	var delay time.Duration
+	if t.next.After(now) {
+		delay = t.next.Sub(now)
+	}
+	spanMillis := (t.max - t.min).Milliseconds()
+	if spanMillis < 0 {
+		spanMillis = 0
+	}
+	cooldown := t.min + time.Duration(rand.Int63n(spanMillis+1))*time.Millisecond + t.backoff
+	t.next = now.Add(delay + cooldown)
+	t.mu.Unlock()
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// reportResult grows the backoff after a request fails in a way that looks
+// like throttling (a timeout or an HTTP 403/429), and decays it back toward
+// zero after a clean request, so sustained trouble slows this throttle down
+// while a healthy run gradually returns to the plain min-max cooldown.
+func (t *requestThrottle) reportResult(err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err != nil && looksThrottled(err) {
+		switch {
+		case t.backoff <= 0:
+			t.backoff = t.min
+		default:
+			t.backoff *= 2
+		}
+		if t.backoff > t.backoffCeiling {
+			t.backoff = t.backoffCeiling
+		}
+		return
+	}
+	if err == nil && t.backoff > 0 {
+		t.backoff -= t.backoff / 2
+		if t.backoff < 200*time.Millisecond {
+			t.backoff = 0
+		}
+	}
+}
+
+// looksThrottled reports whether err has the shape of an upstream telling us
+// to slow down: a context deadline/timeout (the dominant symptom observed
+// against both JavDB and PikPak under load), or an explicit 403/429 status.
+func looksThrottled(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "429") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "http 403")
+}
+
 func (p *javDBProvider) getHTML(ctx context.Context, raw string) (*html.Node, int, error) {
+	if err := javDBRequestThrottle.wait(ctx); err != nil {
+		return nil, 0, err
+	}
 	doc, status, err := p.getHTMLDirect(ctx, raw)
+	javDBRequestThrottle.reportResult(err)
 	if status == http.StatusForbidden && p.gluetun != nil {
 		oldIP, newIP, attempts, rotateErr := p.gluetun.rotateUntilIPChanges(ctx)
 		if p.log != nil {
@@ -978,12 +1118,19 @@ func (p *pikPakClient) setHeaders(req *http.Request) {
 	}
 }
 func (p *pikPakClient) doJSON(req *http.Request, out any) error {
+	if err := pikPakRequestThrottle.wait(req.Context()); err != nil {
+		return err
+	}
 	resp, err := p.http.Do(req)
+	pikPakRequestThrottle.reportResult(err)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {
+			pikPakRequestThrottle.reportResult(fmt.Errorf("HTTP %d", resp.StatusCode))
+		}
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if out != nil && len(data) > 0 {
 			_ = json.Unmarshal(data, out)
@@ -1340,6 +1487,17 @@ func (p *pikPakClient) restoreSharedFile(ctx context.Context, shareID, fileID, e
 	before, err := p.listDriveFiles(ctx)
 	if err != nil {
 		return pikPakFile{}, false, fmt.Errorf("inventory PikPak account before restore: %w", err)
+	}
+	// A file already sitting in the account under this exact name and size is
+	// almost certainly a restore from an earlier attempt at this same release
+	// (an earlier download, a retry, a resume after restart, ...). Restoring
+	// the share again would place a second copy alongside it - PikPak's
+	// restore endpoint does not itself deduplicate - so reuse it instead of
+	// submitting another restore. newlyRestored is false here on purpose: the
+	// caller uses that flag to decide whether it's safe to delete the file
+	// again once the transfer finishes, and this file predates this attempt.
+	if existing, found := exactPikPakAccountFile(before, expectedName, expectedSize, nil); found {
+		return existing, false, nil
 	}
 	beforeIDs := make(map[string]bool, len(before))
 	for _, file := range before {

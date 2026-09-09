@@ -180,6 +180,53 @@ func TestAuthenticatedPikPakRestoreAndOriginalResolution(t *testing.T) {
 	}
 }
 
+// TestPikPakRestoreReusesExistingAccountFile guards against a real duplicate-
+// file bug: restoreSharedFile used to call PikPak's restore endpoint on every
+// download attempt for a release - the initial download, a retry, a resume
+// after a JAVBeacon restart, an automatic re-download after a failed video
+// check - even when a file with the exact same name and size from an earlier
+// attempt was already sitting in the account. PikPak's restore endpoint does
+// not deduplicate, so this placed a second copy of the same file every time.
+// restoreSharedFile must now find that existing file (via the account
+// inventory it already fetches) and reuse it instead of restoring again.
+func TestPikPakRestoreReusesExistingAccountFile(t *testing.T) {
+	restoreCalled := false
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.URL.Host == "user.mypikpak.com" && req.URL.Path == "/v1/shield/captcha/init":
+			return pikPakJSONResponse(http.StatusOK, `{"captcha_token":"captcha"}`), nil
+		case req.URL.Host == "user.mypikpak.com" && req.URL.Path == "/v1/auth/signin":
+			return pikPakJSONResponse(http.StatusOK, `{"access_token":"access","refresh_token":"refresh","sub":"user-id"}`), nil
+		case req.URL.Path == "/drive/v1/share/restore":
+			restoreCalled = true
+			return pikPakJSONResponse(http.StatusOK, `{"restore_status":"RESTORE_COMPLETE"}`), nil
+		case req.URL.Path == "/drive/v1/files":
+			// Already restored by an earlier attempt at this same release.
+			return pikPakJSONResponse(http.StatusOK, `{"files":[{"id":"already-restored","name":"TEST-001.mp4","kind":"drive#file","size":"4331682987"}]}`), nil
+		default:
+			t.Fatalf("unexpected PikPak request: %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})}
+	account := newPikPakClient(client)
+	if err := account.login(context.Background(), "person@example.test", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	restored, newlyRestored, err := account.restoreSharedFile(context.Background(), "share", "shared-file", "TEST-001.mp4", 4331682987)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.ID != "already-restored" {
+		t.Fatalf("restored file=%+v, want the pre-existing account file to be reused", restored)
+	}
+	if newlyRestored {
+		t.Fatal("newlyRestored=true for a file that already existed before this attempt - cleanup would incorrectly delete a file another download attempt still depends on")
+	}
+	if restoreCalled {
+		t.Fatal("restoreSharedFile called PikPak's restore endpoint even though the exact file already existed in the account - this duplicates the file")
+	}
+}
+
 func TestPikPakRestoreRetriesTransientGatewayFailure(t *testing.T) {
 	originalDelay := pikPakRestoreRetryDelay
 	pikPakRestoreRetryDelay = time.Millisecond

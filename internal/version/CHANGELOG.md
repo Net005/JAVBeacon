@@ -7,6 +7,57 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.147] - 2026-09-09
+
+### Added
+
+- Download priority system: each download now gets a queue priority
+  computed from its release's release date (newest/upcoming releases
+  first, tapering off across four tiers down to a default priority for
+  old or undated releases), shown on every Download Monitoring card. The
+  Release Library's "Monitor + download" bulk dialog can override it with
+  a fixed priority for the whole batch instead. The HTTP download
+  concurrency queue now actually serves the lowest-priority-value
+  download next instead of strict first-in-first-out, so a high-priority
+  batch genuinely jumps the line for the next free download slot.
+- A new "Not available" download state distinguishes "JavDB exact-matched
+  the release but has no Keepshare/PikPak download link published yet"
+  from a genuine failure - it gets its own Download Monitoring tab, its
+  own styling, and is no longer counted as a failure. The known
+  JavDB/Keepshare links are preserved and shown the same way they are for
+  an active download.
+- Download Monitoring tabs now each remember their own sort field and
+  direction across restarts and page reloads: Failed defaults to
+  newest-failed-first, Completed to newest-completed-first, Queued and In
+  Progress to newest-added-first, and Downloading to soonest-ETA-first.
+  Priority is also now available as a sort field on every tab.
+
+### Changed
+
+- JavDB and Keepshare searches now wait a randomized 3-7 seconds between
+  requests, with adaptive backoff if a request looks throttled, and
+  PikPak's API calls get a lighter equivalent cooldown - both to stop
+  hammering either site during a large batch search.
+- Authenticated PikPak share resolution now retries up to 3 times instead
+  of giving up after 1 attempt, now that a retry reuses an
+  already-restored file on the account instead of duplicating it.
+- The loading message shown while download search results are still
+  ranking candidates is now labeled "Waiting for enabled providers…"
+  instead of a longer, easily-confused label.
+
+### Fixed
+
+- ffprobe's video integrity check used a `-xerror` flag that isn't a
+  valid option in the deployed ffmpeg build, so every HTTP-downloaded
+  video was silently rejected and automatically re-downloaded regardless
+  of whether the file was actually valid. Replaced with the correct
+  `-err_detect explode` flag.
+- That automatic re-download was also marking the download "downloading"
+  in the database before it had actually re-acquired an HTTP concurrency
+  slot, which could make the Downloading count briefly exceed the
+  configured `http_download_concurrency` limit. It's now marked "queued"
+  until a slot is genuinely held.
+
 ## [1.0.146] - 2026-09-08
 
 ### Fixed

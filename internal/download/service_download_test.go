@@ -94,6 +94,87 @@ func TestHTTPParallelDownloadQueuePromotesFIFO(t *testing.T) {
 	}
 }
 
+func TestHTTPParallelDownloadQueuePromotesLowestPriorityFirst(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "http-priority.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"http_download_concurrency": "1"}); err != nil {
+		t.Fatal(err)
+	}
+	// olderLowPriority arrives first but at the least-urgent (highest number)
+	// tier; newerHighPriority arrives second but at the most-urgent tier. The
+	// freed slot should go to newerHighPriority despite arriving later -
+	// that is the entire point of making the queue priority-aware rather
+	// than strictly FIFO.
+	olderLowPriority := &httpSlotWaiter{downloadID: 201, ready: make(chan struct{}), priority: 50}
+	newerHighPriority := &httpSlotWaiter{downloadID: 202, ready: make(chan struct{}), priority: 1}
+	service := &Service{store: st, httpActive: 1, httpWaiters: []*httpSlotWaiter{olderLowPriority, newerHighPriority}}
+
+	service.releaseHTTPSlot()
+	select {
+	case <-newerHighPriority.ready:
+	default:
+		t.Fatal("higher-priority (lower value) HTTP download was not promoted first")
+	}
+	select {
+	case <-olderLowPriority.ready:
+		t.Fatal("lower-priority HTTP download was promoted before the higher-priority one")
+	default:
+	}
+
+	service.releaseHTTPSlot()
+	select {
+	case <-olderLowPriority.ready:
+	default:
+		t.Fatal("remaining queued HTTP download was not promoted once it was the only one left")
+	}
+}
+
+func TestPriorityForRelease(t *testing.T) {
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		date string
+		want int
+	}{
+		{"today", "2026-09-09", 1},
+		{"two weeks future within one month window", "2026-09-23", 1},
+		{"just under one month old", "2026-08-15", 1},
+		{"just over one month old", "2026-07-20", 10},
+		{"two months old", "2026-07-01", 10},
+		{"just under three months old", "2026-06-10", 10},
+		{"just over three months old", "2026-06-01", 20},
+		{"four months old", "2026-05-01", 20},
+		{"just over six months old", "2026-03-01", 30},
+		{"nine months old", "2026-01-01", 30},
+		{"just under twelve months old", "2025-09-15", 30},
+		{"just over twelve months old", "2025-09-01", 50},
+		{"years old", "2020-01-01", 50},
+		{"blank date", "", 50},
+		{"unparsable date", "not-a-date", 50},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PriorityForRelease(domain.Release{ReleaseDate: tc.date}, now)
+			if got != tc.want {
+				t.Fatalf("PriorityForRelease(%q) = %d, want %d", tc.date, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPriorityForReleaseOverrideWinsOverDate(t *testing.T) {
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	override := 7
+	got := PriorityForRelease(domain.Release{ReleaseDate: "2026-09-09", PriorityOverride: &override}, now)
+	if got != override {
+		t.Fatalf("PriorityForRelease with override = %d, want %d", got, override)
+	}
+}
+
 func TestVerifyHTTPDownloadFileAgainstPikPakSHA1(t *testing.T) {
 	content := []byte("complete downloaded video payload")
 	path := filepath.Join(t.TempDir(), "video.part")
@@ -680,7 +761,7 @@ func TestHTTPDownloadSkipsFetchWhenDestinationFileAlreadyExists(t *testing.T) {
 func TestHTTPVideoCheckRedownloadsOnceThenFailsClearly(t *testing.T) {
 	row := domain.Download{Status: "downloading", Progress: 1, BytesDownloaded: 100, BytesPerSecond: 5, ETASeconds: 2}
 	retry, shouldRetry := markHTTPVideoCheckFailure(row, errors.New("invalid media packet"))
-	if !shouldRetry || retry.Status != "downloading" || retry.PostStatus != postStatusVideoRetry || !strings.Contains(retry.Error, "failed video check") || retry.Progress != 0 || retry.BytesDownloaded != 0 {
+	if !shouldRetry || retry.Status != "queued" || retry.PostStatus != postStatusVideoRetry || !strings.Contains(retry.Error, "failed video check") || retry.Progress != 0 || retry.BytesDownloaded != 0 {
 		t.Fatalf("first failure = %+v, retry=%v", retry, shouldRetry)
 	}
 	failed, shouldRetry := markHTTPVideoCheckFailure(retry, errors.New("moov atom not found"))

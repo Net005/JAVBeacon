@@ -37,11 +37,15 @@ type ffprobeResult struct {
 }
 
 // ffprobeVideo reads the complete packet table rather than checking only the
-// container header. -xerror turns demuxing corruption into a non-zero exit.
+// container header. -err_detect explode turns demuxing corruption into a
+// non-zero exit (the older -xerror shorthand this used to pass is not a real
+// ffprobe CLI option in current ffmpeg builds - it silently swallows the next
+// argument as its own value and then fails with "Option not found", which
+// rejected every video, corrupt or not).
 func ffprobeVideo(ctx context.Context, path string) error {
 	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(probeCtx, "ffprobe", "-v", "error", "-xerror", "-count_packets", "-show_entries", "format=duration:stream=codec_type,nb_read_packets", "-of", "json", path)
+	cmd := exec.CommandContext(probeCtx, "ffprobe", "-v", "error", "-err_detect", "explode", "-count_packets", "-show_entries", "format=duration:stream=codec_type,nb_read_packets", "-of", "json", path)
 	output, err := cmd.CombinedOutput()
 	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
 		return errors.New("ffprobe timed out after 30 minutes")
@@ -130,7 +134,14 @@ func (s *Service) verifyDownloadedVideo(ctx context.Context, path string) error 
 
 func markHTTPVideoCheckFailure(d domain.Download, probeErr error) (domain.Download, bool) {
 	if d.PostStatus != postStatusVideoRetry {
-		d.Status = "downloading"
+		// "queued", not "downloading": this row has not re-acquired an HTTP
+		// concurrency slot yet - the caller schedules startHTTPDownload on a
+		// short delay, which waits in the same httpWaiters queue as any other
+		// HTTP download. Marking it "downloading" here made it count toward
+		// (and visibly exceed) the http_download_concurrency cap before the
+		// retry had actually started transferring; runHTTPDownload flips this
+		// to "downloading" itself once a slot is really held.
+		d.Status = "queued"
 		d.PostStatus = postStatusVideoRetry
 		d.Error = "failed video check: " + probeErr.Error()
 		d.Progress = 0
@@ -172,7 +183,12 @@ func (s *Service) handleTorrentVideoCheck(ctx context.Context, qb *QBClient, d *
 		return true
 	} else {
 		firstFailure := "failed video check: " + err.Error()
-		d.Status = "downloading"
+		// "queued" rather than "downloading": qBittorrent has not been asked
+		// to re-add this torrent yet at this point (that happens further
+		// below, after deleting the corrupt files and reloading settings),
+		// so this status would otherwise claim an active transfer that has
+		// not actually resumed.
+		d.Status = "queued"
 		d.PostStatus = postStatusVideoRetry
 		d.Error = firstFailure
 		*d, _ = s.store.SaveDownload(ctx, *d)
