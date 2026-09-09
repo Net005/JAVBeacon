@@ -69,7 +69,8 @@ type Server struct {
 	filterOptionCache     map[string]cachedFilterOptions
 	bulkReleaseMu         sync.Mutex
 	bulkReleaseRunning    bool
-	bulkReleaseQueue      []bulkReleaseJob
+	bulkReleaseQueue      []bulkReleaseItem
+	bulkReleaseSeq        int64
 	backgroundSearchMu    sync.Mutex
 	backgroundSearchQueue map[int64]searchDownloadQueueItem
 }
@@ -82,17 +83,30 @@ type searchDownloadQueueItem struct {
 	Status     string    `json:"status"`
 	SourceType string    `json:"source_type,omitempty"`
 	Detail     string    `json:"detail,omitempty"`
+	Priority   int       `json:"priority,omitempty"`
 	Position   int       `json:"position,omitempty"`
 	AddedAt    time.Time `json:"added_at,omitempty"`
 	UpdatedAt  time.Time `json:"updated_at,omitempty"`
 }
 
-type bulkReleaseJob struct {
-	Releases          []domain.Release
-	TaskIDs           []int64
-	Force             []bool
+// bulkReleaseItem is one release's worth of pending Search + Download work.
+// The Search + Download worker (runBulkReleaseJobs) keeps every pending item
+// from every source - a single manual "Search + Download now" click, a
+// Release Library bulk action, or the whole backlog resumed at startup - in
+// one flat queue and always processes the lowest-Priority item next (ties
+// broken by seq, arrival order), rather than finishing an entire
+// already-queued batch before looking at anything submitted afterward. That
+// is what lets a single, individually-triggered high-priority release jump
+// ahead of a large already-running low-priority backlog instead of being
+// stuck behind all of it.
+type bulkReleaseItem struct {
+	Release           domain.Release
+	TaskID            int64
+	Force             bool
 	AllowNonPreferred bool
 	SourceType        string
+	Priority          int
+	seq               int64
 }
 
 type persistedSearchOptions struct {
@@ -814,13 +828,14 @@ func (s *Server) backgroundSearchAndDownloadRelease(w http.ResponseWriter, r *ht
 	}
 	transport := s.searchDownloadTransport(r.Context(), release)
 	const sourceType = "Manual Background Search + Download"
-	taskID, alreadyQueued, err := s.createSearchDownloadTask(r.Context(), release, sourceType, release.AllowNonPreferredFilenames, false, transport)
+	priority := download.PriorityForRelease(release, time.Now())
+	taskID, alreadyQueued, err := s.createSearchDownloadTask(r.Context(), release, sourceType, release.AllowNonPreferredFilenames, false, transport, priority)
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if !alreadyQueued {
-		s.enqueueBulkReleaseJob(bulkReleaseJob{Releases: []domain.Release{release}, TaskIDs: []int64{taskID}, SourceType: sourceType, AllowNonPreferred: release.AllowNonPreferredFilenames})
+		s.enqueueBulkReleaseItems([]bulkReleaseItem{{Release: release, TaskID: taskID, SourceType: sourceType, AllowNonPreferred: release.AllowNonPreferredFilenames, Priority: priority}})
 	}
 	s.json(w, http.StatusAccepted, map[string]any{"queued": true, "release_id": release.ID, "already_queued": alreadyQueued})
 }
@@ -840,7 +855,7 @@ func (s *Server) searchDownloadTransport(ctx context.Context, release domain.Rel
 	return "torrent"
 }
 
-func (s *Server) createSearchDownloadTask(ctx context.Context, release domain.Release, sourceType string, allowNonPreferred, force bool, transport string) (int64, bool, error) {
+func (s *Server) createSearchDownloadTask(ctx context.Context, release domain.Release, sourceType string, allowNonPreferred, force bool, transport string, priority int) (int64, bool, error) {
 	rows, err := s.store.Downloads(ctx, "")
 	if err != nil {
 		return 0, false, err
@@ -855,7 +870,7 @@ func (s *Server) createSearchDownloadTask(ctx context.Context, release domain.Re
 		}
 	}
 	options, _ := json.Marshal(persistedSearchOptions{AllowNonPreferred: allowNonPreferred, Force: force})
-	task, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Provider: "Search + Download", SourceType: sourceType, Query: release.VideoID, Name: "Waiting for provider search", Transport: transport, Status: "search_queued", MatchReason: "Waiting in Search + Download queue", QBResponse: string(options), Priority: download.PriorityForRelease(release, time.Now())})
+	task, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Provider: "Search + Download", SourceType: sourceType, Query: release.VideoID, Name: "Waiting for provider search", Transport: transport, Status: "search_queued", MatchReason: "Waiting in Search + Download queue", QBResponse: string(options), Priority: priority})
 	return task.ID, false, err
 }
 
@@ -865,8 +880,13 @@ func (s *Server) resumeSearchDownloadTasks() {
 	if err != nil {
 		return
 	}
+	// AddedAt only breaks ties between equal-priority tasks here (seq, which
+	// actually governs worker order, is assigned from this same order in
+	// enqueueBulkReleaseItems below) - it is no longer the primary ordering,
+	// since every task's own Priority already reflects its release date (or
+	// bulk-action override) from when it was created.
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].AddedAt.Before(rows[j].AddedAt) })
-	job := bulkReleaseJob{SourceType: "Resumed Search + Download"}
+	items := make([]bulkReleaseItem, 0, len(rows))
 	for _, task := range rows {
 		if task.Status != "search_queued" && task.Status != "searching" {
 			continue
@@ -895,13 +915,10 @@ func (s *Server) resumeSearchDownloadTasks() {
 			task.Transport = expectedTransport
 			_, _ = s.store.SaveDownload(context.Background(), task)
 		}
-		job.Releases = append(job.Releases, release)
-		job.TaskIDs = append(job.TaskIDs, task.ID)
-		job.Force = append(job.Force, options.Force)
-		job.AllowNonPreferred = job.AllowNonPreferred || options.AllowNonPreferred
+		items = append(items, bulkReleaseItem{Release: release, TaskID: task.ID, Force: options.Force, AllowNonPreferred: options.AllowNonPreferred, SourceType: "Resumed Search + Download", Priority: task.Priority})
 	}
-	if len(job.Releases) > 0 {
-		s.enqueueBulkReleaseJob(job)
+	if len(items) > 0 {
+		s.enqueueBulkReleaseItems(items)
 	}
 }
 
@@ -933,7 +950,7 @@ func (s *Server) searchDownloadQueue(w http.ResponseWriter, r *http.Request) {
 		if detail == "" {
 			detail = item.Name
 		}
-		items[item.ReleaseID] = searchDownloadQueueItem{ID: item.ID, ReleaseID: item.ReleaseID, VideoID: videoID, Transport: item.Transport, Status: item.Status, SourceType: item.SourceType, Detail: detail, AddedAt: item.AddedAt, UpdatedAt: item.UpdatedAt}
+		items[item.ReleaseID] = searchDownloadQueueItem{ID: item.ID, ReleaseID: item.ReleaseID, VideoID: videoID, Transport: item.Transport, Status: item.Status, SourceType: item.SourceType, Detail: detail, Priority: item.Priority, AddedAt: item.AddedAt, UpdatedAt: item.UpdatedAt}
 	}
 	queue := make([]searchDownloadQueueItem, 0, len(items))
 	for _, item := range items {
@@ -942,6 +959,12 @@ func (s *Server) searchDownloadQueue(w http.ResponseWriter, r *http.Request) {
 	sort.SliceStable(queue, func(i, j int) bool {
 		if (queue[i].Status == "searching") != (queue[j].Status == "searching") {
 			return queue[i].Status == "searching"
+		}
+		// Mirrors runBulkReleaseJobs' own selection rule (lowest Priority
+		// value next, ties broken by arrival) so the displayed queue order
+		// matches what will actually be processed next.
+		if queue[i].Priority != queue[j].Priority {
+			return queue[i].Priority < queue[j].Priority
 		}
 		if !queue[i].AddedAt.Equal(queue[j].AddedAt) {
 			return queue[i].AddedAt.Before(queue[j].AddedAt)
@@ -2521,9 +2544,8 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	selected := make([]domain.Release, 0, len(ids))
-	taskIDs := make([]int64, 0, len(ids))
-	forceTasks := make([]bool, 0, len(ids))
+	now := time.Now()
+	items := make([]bulkReleaseItem, 0, len(ids))
 	for _, releaseID := range ids {
 		release, releaseErr := s.store.Release(r.Context(), releaseID)
 		if errors.Is(releaseErr, sql.ErrNoRows) {
@@ -2549,7 +2571,8 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 			release.IgnoreDownloadHistory = true
 		}
 		transport := s.searchDownloadTransport(r.Context(), release)
-		taskID, alreadyQueued, taskErr := s.createSearchDownloadTask(r.Context(), release, sourceType, payload.AllowNonPreferredFilenames, force, transport)
+		priority := download.PriorityForRelease(release, now)
+		taskID, alreadyQueued, taskErr := s.createSearchDownloadTask(r.Context(), release, sourceType, payload.AllowNonPreferredFilenames, force, transport, priority)
 		if taskErr != nil {
 			s.problem(w, http.StatusInternalServerError, taskErr.Error())
 			return
@@ -2557,31 +2580,55 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 		if alreadyQueued {
 			continue
 		}
-		selected = append(selected, release)
-		taskIDs = append(taskIDs, taskID)
-		forceTasks = append(forceTasks, force)
+		items = append(items, bulkReleaseItem{Release: release, TaskID: taskID, Force: force, AllowNonPreferred: payload.AllowNonPreferredFilenames, SourceType: sourceType, Priority: priority})
 		s.broadcastRelease(release)
 	}
-	if len(selected) == 0 {
+	if len(items) == 0 {
 		s.json(w, http.StatusAccepted, map[string]any{"queued": 0, "updated": updated, "already_queued": true})
 		return
 	}
 
-	queuePosition := s.enqueueBulkReleaseJob(bulkReleaseJob{Releases: selected, TaskIDs: taskIDs, Force: forceTasks, AllowNonPreferred: payload.AllowNonPreferredFilenames, SourceType: sourceType})
-	s.json(w, http.StatusAccepted, map[string]any{"queued": len(selected), "updated": updated, "queue_position": queuePosition})
+	queuePosition := s.enqueueBulkReleaseItems(items)
+	s.json(w, http.StatusAccepted, map[string]any{"queued": len(items), "updated": updated, "queue_position": queuePosition})
 }
 
-// enqueueBulkReleaseJob returns zero when the submitted job can start now, or
-// its one-based position behind the currently running job. The worker owns the
-// queue until it becomes empty, preventing a completion/submission race from
-// stranding a queued job.
-func (s *Server) enqueueBulkReleaseJob(job bulkReleaseJob) int {
+// bestBulkReleaseQueueIndex returns the index of the item runBulkReleaseJobs
+// should process next: the lowest Priority value (most urgent), breaking a
+// tie by seq (arrival order) so equal-priority items still process
+// first-in-first-out. Extracted from the worker loop so the selection rule
+// itself is unit-testable without spinning up the worker goroutine.
+func bestBulkReleaseQueueIndex(queue []bulkReleaseItem) int {
+	best := 0
+	for i := 1; i < len(queue); i++ {
+		if queue[i].Priority < queue[best].Priority ||
+			(queue[i].Priority == queue[best].Priority && queue[i].seq < queue[best].seq) {
+			best = i
+		}
+	}
+	return best
+}
+
+// enqueueBulkReleaseItems returns zero when the submitted items can start
+// now, or the queue depth behind currently pending work otherwise. The
+// worker (runBulkReleaseJobs) owns the queue until it becomes empty,
+// preventing a completion/submission race from stranding queued items - it
+// always processes the lowest-Priority item across the WHOLE queue next
+// (see runBulkReleaseJobs), not these items specifically nor in the order
+// submitted here, so "position" is only an approximate depth indicator.
+func (s *Server) enqueueBulkReleaseItems(items []bulkReleaseItem) int {
+	if len(items) == 0 {
+		return 0
+	}
 	s.bulkReleaseMu.Lock()
 	position := 0
 	if s.bulkReleaseRunning {
 		position = len(s.bulkReleaseQueue) + 1
 	}
-	s.bulkReleaseQueue = append(s.bulkReleaseQueue, job)
+	for i := range items {
+		s.bulkReleaseSeq++
+		items[i].seq = s.bulkReleaseSeq
+	}
+	s.bulkReleaseQueue = append(s.bulkReleaseQueue, items...)
 	if !s.bulkReleaseRunning {
 		s.bulkReleaseRunning = true
 		go s.runBulkReleaseJobs()
@@ -2590,119 +2637,129 @@ func (s *Server) enqueueBulkReleaseJob(job bulkReleaseJob) int {
 	return position
 }
 
+// runBulkReleaseJobs drains s.bulkReleaseQueue one release at a time,
+// re-picking the lowest-Priority item in the queue (ties broken by seq,
+// arrival order) before every single release it processes - never just the
+// item that happened to be enqueued first. That is what makes a download's
+// Priority actually control processing order end to end: a release queued
+// by itself well after a large low-priority batch is already running still
+// gets processed as soon as the batch's current item finishes, ahead of
+// everything left in that batch, if its Priority is lower (more urgent).
+// Priority only ever decides what is picked up NEXT - it never interrupts
+// whichever single release is already being actively searched/downloaded.
 func (s *Server) runBulkReleaseJobs() {
+	queued, skipped, notFound, notAvailable, failed, processed := 0, 0, 0, 0, 0, 0
 	for {
 		s.bulkReleaseMu.Lock()
 		if len(s.bulkReleaseQueue) == 0 {
 			s.bulkReleaseRunning = false
 			s.bulkReleaseMu.Unlock()
+			if processed > 0 && s.log != nil {
+				s.log.Info("Search + Download queue drained", "processed", processed, "queued", queued, "not_found", notFound, "not_available", notAvailable, "skipped", skipped, "failed", failed)
+			}
 			return
 		}
-		job := s.bulkReleaseQueue[0]
-		s.bulkReleaseQueue[0] = bulkReleaseJob{}
-		s.bulkReleaseQueue = s.bulkReleaseQueue[1:]
+		best := bestBulkReleaseQueueIndex(s.bulkReleaseQueue)
+		item := s.bulkReleaseQueue[best]
+		s.bulkReleaseQueue = append(s.bulkReleaseQueue[:best], s.bulkReleaseQueue[best+1:]...)
 		s.bulkReleaseMu.Unlock()
 
-		queued, skipped, notFound, notAvailable, failed := 0, 0, 0, 0, 0
-		for i, release := range job.Releases {
-			var task domain.Download
-			if i < len(job.TaskIDs) && job.TaskIDs[i] > 0 {
-				for _, row := range mustDownloads(s.store) {
-					if row.ID == job.TaskIDs[i] {
-						task = row
-						break
-					}
-				}
-				if task.ID > 0 {
-					task.Status = "searching"
-					task.Transport = s.searchDownloadTransport(context.Background(), release)
-					task.Name = "Searching download providers"
-					task.MatchReason = "Searching configured providers and ranking candidates"
-					task.Error = ""
-					task, _ = s.store.SaveDownload(context.Background(), task)
+		release := item.Release
+		var task domain.Download
+		if item.TaskID > 0 {
+			for _, row := range mustDownloads(s.store) {
+				if row.ID == item.TaskID {
+					task = row
+					break
 				}
 			}
-			force := i < len(job.Force) && job.Force[i]
-			allowNonPreferred := job.AllowNonPreferred
-			if task.QBResponse != "" {
-				var options persistedSearchOptions
-				if json.Unmarshal([]byte(task.QBResponse), &options) == nil {
-					allowNonPreferred = options.AllowNonPreferred
-					force = force || options.Force
-				}
-			}
-			if force {
-				release.IgnoreLocalForceDownload = true
-				release.IgnoreDownloadHistory = true
-			}
-			outcome, searchErr := s.downloads.SearchAndDownloadDetailed(context.Background(), release, job.SourceType, allowNonPreferred)
-			finishTask := func(status, detail string) {
-				if task.ID == 0 {
-					return
-				}
-				if status == "completed" || outcome.Download.ID > 0 {
-					_, _ = s.store.DeleteDownload(context.Background(), task.ID)
-					return
-				}
-				if status == "not_available" {
-					// Not a failure: the exact release was found on the provider's
-					// own site, it just has no downloadable share link published
-					// yet (a common JavDB pattern for a release announced ahead of
-					// its actual upload). Keep the provider's page link so the
-					// user can check it themselves, and let a later search retry
-					// find it once it is published, without cluttering the Failed
-					// tab with something that never actually failed.
-					task.Status, task.Error, task.MatchReason = "not_available", "", detail
-					if outcome.Result.SourceURL != "" {
-						task.SourcePageURL = outcome.Result.SourceURL
-					}
-					if outcome.Result.Provider != "" {
-						task.Provider = outcome.Result.Provider
-					}
-					_, _ = s.store.SaveDownload(context.Background(), task)
-					return
-				}
-				task.Status, task.Error, task.MatchReason = "failed", detail, "Search + Download did not queue a file"
-				_, _ = s.store.SaveDownload(context.Background(), task)
-			}
-			switch {
-			case searchErr != nil:
-				finishTask("failed", searchErr.Error())
-				failed++
-				if s.log != nil {
-					s.log.Error(job.SourceType+" search and download failed", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "error", searchErr, "reason", outcome.Reason)
-				}
-			case !outcome.Found && outcome.Result.Unavailable:
-				finishTask("not_available", outcome.Reason)
-				notAvailable++
-				if s.log != nil {
-					s.log.Info(job.SourceType+" search matched the release but no download link is published yet", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "source_page_url", outcome.Result.SourceURL, "reason", outcome.Reason)
-				}
-			case !outcome.Found:
-				finishTask("failed", outcome.Reason)
-				notFound++
-				if s.log != nil {
-					s.log.Warn(job.SourceType+" search found no downloadable candidate", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "reason", outcome.Reason)
-				}
-			case outcome.Download.Status == "skipped":
-				finishTask("failed", outcome.Reason)
-				skipped++
-				if s.log != nil {
-					s.log.Warn(job.SourceType+" search and download skipped", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "download_status", outcome.Download.Status, "reason", outcome.Reason)
-				}
-			case outcome.Download.Status == "failed":
-				finishTask("failed", outcome.Reason)
-				failed++
-				if s.log != nil {
-					s.log.Error(job.SourceType+" download failed", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "reason", outcome.Reason)
-				}
-			default:
-				finishTask("completed", "")
-				queued++
+			if task.ID > 0 {
+				task.Status = "searching"
+				task.Transport = s.searchDownloadTransport(context.Background(), release)
+				task.Name = "Searching download providers"
+				task.MatchReason = "Searching configured providers and ranking candidates"
+				task.Error = ""
+				task, _ = s.store.SaveDownload(context.Background(), task)
 			}
 		}
-		if s.log != nil {
-			s.log.Info(job.SourceType+" search and download completed", "selected", len(job.Releases), "queued", queued, "not_found", notFound, "not_available", notAvailable, "skipped", skipped, "failed", failed)
+		force := item.Force
+		allowNonPreferred := item.AllowNonPreferred
+		if task.QBResponse != "" {
+			var options persistedSearchOptions
+			if json.Unmarshal([]byte(task.QBResponse), &options) == nil {
+				allowNonPreferred = options.AllowNonPreferred
+				force = force || options.Force
+			}
+		}
+		if force {
+			release.IgnoreLocalForceDownload = true
+			release.IgnoreDownloadHistory = true
+		}
+		outcome, searchErr := s.downloads.SearchAndDownloadDetailed(context.Background(), release, item.SourceType, allowNonPreferred)
+		finishTask := func(status, detail string) {
+			if task.ID == 0 {
+				return
+			}
+			if status == "completed" || outcome.Download.ID > 0 {
+				_, _ = s.store.DeleteDownload(context.Background(), task.ID)
+				return
+			}
+			if status == "not_available" {
+				// Not a failure: the exact release was found on the provider's
+				// own site, it just has no downloadable share link published
+				// yet (a common JavDB pattern for a release announced ahead of
+				// its actual upload). Keep the provider's page link so the
+				// user can check it themselves, and let a later search retry
+				// find it once it is published, without cluttering the Failed
+				// tab with something that never actually failed.
+				task.Status, task.Error, task.MatchReason = "not_available", "", detail
+				if outcome.Result.SourceURL != "" {
+					task.SourcePageURL = outcome.Result.SourceURL
+				}
+				if outcome.Result.Provider != "" {
+					task.Provider = outcome.Result.Provider
+				}
+				_, _ = s.store.SaveDownload(context.Background(), task)
+				return
+			}
+			task.Status, task.Error, task.MatchReason = "failed", detail, "Search + Download did not queue a file"
+			_, _ = s.store.SaveDownload(context.Background(), task)
+		}
+		processed++
+		switch {
+		case searchErr != nil:
+			finishTask("failed", searchErr.Error())
+			failed++
+			if s.log != nil {
+				s.log.Error(item.SourceType+" search and download failed", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "error", searchErr, "reason", outcome.Reason)
+			}
+		case !outcome.Found && outcome.Result.Unavailable:
+			finishTask("not_available", outcome.Reason)
+			notAvailable++
+			if s.log != nil {
+				s.log.Info(item.SourceType+" search matched the release but no download link is published yet", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "source_page_url", outcome.Result.SourceURL, "reason", outcome.Reason)
+			}
+		case !outcome.Found:
+			finishTask("failed", outcome.Reason)
+			notFound++
+			if s.log != nil {
+				s.log.Warn(item.SourceType+" search found no downloadable candidate", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "reason", outcome.Reason)
+			}
+		case outcome.Download.Status == "skipped":
+			finishTask("failed", outcome.Reason)
+			skipped++
+			if s.log != nil {
+				s.log.Warn(item.SourceType+" search and download skipped", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "download_status", outcome.Download.Status, "reason", outcome.Reason)
+			}
+		case outcome.Download.Status == "failed":
+			finishTask("failed", outcome.Reason)
+			failed++
+			if s.log != nil {
+				s.log.Error(item.SourceType+" download failed", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "reason", outcome.Reason)
+			}
+		default:
+			finishTask("completed", "")
+			queued++
 		}
 	}
 }

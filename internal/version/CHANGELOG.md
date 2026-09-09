@@ -7,6 +7,25 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.148] - 2026-09-09
+
+### Fixed
+
+- Download priority did not actually control processing order end to end.
+  It only decided which already-resolved HTTP download got the next free
+  transfer slot; the Search + Download worker that runs before that point
+  processed submitted batches strictly first-in-first-out, so a single
+  urgent release triggered while a large low-priority batch was already
+  running got stuck behind that entire batch regardless of its priority.
+  The worker now keeps every pending release - from any source: a single
+  "Search + Download now" click, a Release Library bulk action, or work
+  resumed at startup - in one queue and always processes the lowest
+  (most urgent) priority release next, so a high-priority release now
+  genuinely jumps ahead of an already-running lower-priority backlog
+  instead of waiting for all of it to finish first. This does not
+  interrupt a release that is already actively searching or downloading -
+  priority only ever decides what gets picked up next.
+
 ## [1.0.147] - 2026-09-09
 
 ### Added

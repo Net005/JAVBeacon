@@ -1388,18 +1388,50 @@ func TestBulkMonitorAndDownloadReleasesPersistsFlagsAndQueuesEveryRelease(t *tes
 	t.Fatal("background Search + Download did not visit every selected release")
 }
 
-func TestBulkReleaseJobsQueueInSubmissionOrderBehindActiveJob(t *testing.T) {
+func TestBulkReleaseItemsQueueBehindActiveWork(t *testing.T) {
 	s := &Server{bulkReleaseRunning: true}
-	first := bulkReleaseJob{Releases: []domain.Release{{ID: 11}}, SourceType: "Release Library Bulk"}
-	second := bulkReleaseJob{Releases: []domain.Release{{ID: 22}}, SourceType: "Monitored Releases Bulk"}
-	if position := s.enqueueBulkReleaseJob(first); position != 1 {
+	first := []bulkReleaseItem{{Release: domain.Release{ID: 11}, SourceType: "Release Library Bulk", Priority: 50}}
+	second := []bulkReleaseItem{{Release: domain.Release{ID: 22}, SourceType: "Monitored Releases Bulk", Priority: 50}}
+	if position := s.enqueueBulkReleaseItems(first); position != 1 {
 		t.Fatalf("first queued position=%d, want 1", position)
 	}
-	if position := s.enqueueBulkReleaseJob(second); position != 2 {
+	if position := s.enqueueBulkReleaseItems(second); position != 2 {
 		t.Fatalf("second queued position=%d, want 2", position)
 	}
-	if len(s.bulkReleaseQueue) != 2 || s.bulkReleaseQueue[0].Releases[0].ID != 11 || s.bulkReleaseQueue[1].Releases[0].ID != 22 {
-		t.Fatalf("bulk jobs were not retained in FIFO order: %+v", s.bulkReleaseQueue)
+	if len(s.bulkReleaseQueue) != 2 || s.bulkReleaseQueue[0].Release.ID != 11 || s.bulkReleaseQueue[1].Release.ID != 22 {
+		t.Fatalf("bulk items were not retained in arrival order: %+v", s.bulkReleaseQueue)
+	}
+	if s.bulkReleaseQueue[0].seq >= s.bulkReleaseQueue[1].seq {
+		t.Fatalf("seq was not assigned in arrival order: %+v", s.bulkReleaseQueue)
+	}
+}
+
+func TestBulkReleaseQueuePicksLowestPriorityRegardlessOfArrivalOrder(t *testing.T) {
+	// olderLowPriority (priority 50) was queued first, from an already-running
+	// large batch; newerHighPriority (priority 10) arrives afterward, e.g. from
+	// a single manually-triggered release. It must be picked next despite
+	// arriving later - this is the fix for a single high-priority release
+	// getting stuck behind an entire already-queued low-priority backlog.
+	s := &Server{bulkReleaseRunning: true}
+	s.enqueueBulkReleaseItems([]bulkReleaseItem{
+		{Release: domain.Release{ID: 1}, Priority: 50},
+		{Release: domain.Release{ID: 2}, Priority: 50},
+		{Release: domain.Release{ID: 3}, Priority: 50},
+	})
+	s.enqueueBulkReleaseItems([]bulkReleaseItem{{Release: domain.Release{ID: 99}, Priority: 10}})
+	best := bestBulkReleaseQueueIndex(s.bulkReleaseQueue)
+	if s.bulkReleaseQueue[best].Release.ID != 99 {
+		t.Fatalf("expected the later-arriving priority-10 item to be picked next, got release id %d", s.bulkReleaseQueue[best].Release.ID)
+	}
+}
+
+func TestBulkReleaseQueueBreaksEqualPriorityTiesByArrivalOrder(t *testing.T) {
+	s := &Server{bulkReleaseRunning: true}
+	s.enqueueBulkReleaseItems([]bulkReleaseItem{{Release: domain.Release{ID: 1}, Priority: 20}})
+	s.enqueueBulkReleaseItems([]bulkReleaseItem{{Release: domain.Release{ID: 2}, Priority: 20}})
+	best := bestBulkReleaseQueueIndex(s.bulkReleaseQueue)
+	if s.bulkReleaseQueue[best].Release.ID != 1 {
+		t.Fatalf("expected the earlier-arriving equal-priority item to be picked next, got release id %d", s.bulkReleaseQueue[best].Release.ID)
 	}
 }
 
