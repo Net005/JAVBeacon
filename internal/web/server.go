@@ -233,6 +233,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/integrations/jellyfin/playback", s.jellyfinPlayback)
 	s.mux.HandleFunc("GET /api/v1/integrations/jellyfin/releases/{id}/activity", s.jellyfinActivity)
 	s.mux.HandleFunc("POST /api/v1/integrations/jellyfin/releases/{id}/o", s.jellyfinAddO)
+	s.mux.HandleFunc("GET /api/v1/integrations/silo/search", s.siloSearch)
+	s.mux.HandleFunc("GET /api/v1/integrations/silo/releases/{id}", s.siloMetadata)
 	s.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
