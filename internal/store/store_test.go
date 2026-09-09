@@ -1541,6 +1541,79 @@ func TestDeleteNotificationsIsScopedToTypeAndSelection(t *testing.T) {
 	}
 }
 
+// TestDeleteNotificationsTurnsOffNotifyOnReleaseForNewRelease covers the
+// Notifications page's New Release tab: clearing a "new_release"
+// notification without also turning NotifyOnRelease off would just let
+// releaseNotifications (internal/download/service.go) recreate the exact
+// same notification the next time it sweeps, since it only ever checks
+// r.NotifyOnRelease && r.Released. So clearing new_release notifications -
+// whether one at a time or the whole selection/tab - always turns
+// NotifyOnRelease off for the releases they belonged to. Other notification
+// types (here, "downloaded") must be unaffected.
+func TestDeleteNotificationsTurnsOffNotifyOnReleaseForNewRelease(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "notification-clear-notify-off.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, _ := s.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	for _, videoID := range []string{"NOTIFY-1", "NOTIFY-2", "NOTIFY-3"} {
+		_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: videoID, Source: "JavLibrary", NotifyOnRelease: true})
+	}
+	releases, _ := s.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	for _, release := range releases {
+		_, _ = s.CreateNotification(ctx, release.ID, "new_release", "New")
+		_, _ = s.CreateNotification(ctx, release.ID, "downloaded", "Downloaded")
+	}
+	byVideoID := map[string]domain.Release{}
+	for _, release := range releases {
+		byVideoID[release.VideoID] = release
+	}
+	newRows, _ := s.Notifications(ctx, "new_release")
+	var oneID int64
+	for _, row := range newRows {
+		if row.Release != nil && row.Release.VideoID == "NOTIFY-1" {
+			oneID = row.ID
+		}
+	}
+	if oneID == 0 {
+		t.Fatal("could not find NOTIFY-1's new_release notification")
+	}
+	// Clearing a single selected new_release notification turns off
+	// NotifyOnRelease for just that release.
+	if deleted, err := s.DeleteNotifications(ctx, "new_release", []int64{oneID}); err != nil || deleted != 1 {
+		t.Fatalf("selected clear: deleted=%d err=%v", deleted, err)
+	}
+	one, err := s.Release(ctx, byVideoID["NOTIFY-1"].ID)
+	if err != nil || one.NotifyOnRelease {
+		t.Fatalf("NOTIFY-1 NotifyOnRelease should be off: %+v err=%v", one, err)
+	}
+	two, err := s.Release(ctx, byVideoID["NOTIFY-2"].ID)
+	if err != nil || !two.NotifyOnRelease {
+		t.Fatalf("NOTIFY-2 NotifyOnRelease should be untouched: %+v err=%v", two, err)
+	}
+	// Clearing the whole tab (nil ids) turns NotifyOnRelease off for every
+	// remaining release with a new_release notification.
+	if deleted, err := s.DeleteNotifications(ctx, "new_release", nil); err != nil || deleted != 2 {
+		t.Fatalf("tab clear: deleted=%d err=%v", deleted, err)
+	}
+	two, err = s.Release(ctx, byVideoID["NOTIFY-2"].ID)
+	if err != nil || two.NotifyOnRelease {
+		t.Fatalf("NOTIFY-2 NotifyOnRelease should be off after tab clear: %+v err=%v", two, err)
+	}
+	three, err := s.Release(ctx, byVideoID["NOTIFY-3"].ID)
+	if err != nil || three.NotifyOnRelease {
+		t.Fatalf("NOTIFY-3 NotifyOnRelease should be off after tab clear: %+v err=%v", three, err)
+	}
+	// "downloaded" notifications and the flag they have nothing to do with
+	// must be unaffected by any of the above.
+	downloaded, _ := s.Notifications(ctx, "downloaded")
+	if len(downloaded) != 3 {
+		t.Fatalf("downloaded notifications should be untouched: %d", len(downloaded))
+	}
+}
+
 func TestStashAvailabilityCreatesAndRemovesLocalNotification(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "local-notification.db"))

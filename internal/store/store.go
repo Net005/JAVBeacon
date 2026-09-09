@@ -3505,6 +3505,52 @@ func (s *SQLite) DeleteNotifications(ctx context.Context, kind string, ids []int
 	if strings.TrimSpace(kind) == "" {
 		return 0, errors.New("notification type is required")
 	}
+	// "new_release" notifications only exist while NotifyOnRelease is true -
+	// releaseNotifications (internal/download/service.go) only ever creates
+	// one when r.NotifyOnRelease && r.Released. Clearing one without also
+	// turning that flag off would just let the very same notification come
+	// back the next time that sweep runs, which defeats the point of
+	// clearing it. So before deleting, collect the releases these
+	// new_release notifications belong to, and once the delete succeeds,
+	// turn their NotifyOnRelease off too. Every other notification type is
+	// unaffected - this only ever runs for kind=="new_release".
+	var releaseIDs []int64
+	if kind == "new_release" {
+		selectQuery := `SELECT DISTINCT release_id FROM notifications WHERE type=?`
+		selectArgs := []any{kind}
+		if len(ids) > 0 {
+			placeholders := make([]string, 0, len(ids))
+			for _, id := range ids {
+				if id <= 0 {
+					continue
+				}
+				placeholders = append(placeholders, "?")
+				selectArgs = append(selectArgs, id)
+			}
+			if len(placeholders) == 0 {
+				return 0, errors.New("valid notification ids are required")
+			}
+			selectQuery += ` AND id IN (` + strings.Join(placeholders, ",") + `)`
+		}
+		rows, err := s.db.QueryContext(ctx, selectQuery, selectArgs...)
+		if err != nil {
+			return 0, err
+		}
+		for rows.Next() {
+			var releaseID int64
+			if err := rows.Scan(&releaseID); err != nil {
+				rows.Close()
+				return 0, err
+			}
+			releaseIDs = append(releaseIDs, releaseID)
+		}
+		if err := rows.Err(); err != nil {
+			return 0, err
+		}
+		if err := rows.Close(); err != nil {
+			return 0, err
+		}
+	}
 	query := `DELETE FROM notifications WHERE type=?`
 	args := []any{kind}
 	if len(ids) > 0 {
@@ -3525,7 +3571,23 @@ func (s *SQLite) DeleteNotifications(ctx context.Context, kind string, ids []int
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if len(releaseIDs) > 0 {
+		placeholders := make([]string, 0, len(releaseIDs))
+		updateArgs := []any{false}
+		for _, releaseID := range releaseIDs {
+			placeholders = append(placeholders, "?")
+			updateArgs = append(updateArgs, releaseID)
+		}
+		updateQuery := `UPDATE releases SET notify_on_release=? WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+		if _, err := s.db.ExecContext(ctx, updateQuery, updateArgs...); err != nil {
+			return deleted, err
+		}
+	}
+	return deleted, nil
 }
 func (s *SQLite) CreateNotification(ctx context.Context, releaseID int64, kind, message string) (bool, error) {
 	r, e := s.db.ExecContext(ctx, `INSERT INTO notifications(release_id,type,message,created_at) VALUES(?,?,?,?) ON CONFLICT(release_id,type) DO NOTHING`, releaseID, kind, message, time.Now().UTC())

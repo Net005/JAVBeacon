@@ -7,6 +7,40 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.149] - 2026-09-09
+
+### Fixed
+
+- HTTP downloads never showed up in the Notifications page's Downloaded tab.
+  Completing an HTTP download created its notification with the type
+  "download_completed" instead of "downloaded" - the type the Downloaded
+  tab actually filters on, and what torrent completions already used - so
+  those notifications silently existed but never matched the tab. Both
+  HTTP completion paths now use the correct type.
+- The Download Failed tab had no dedicated sort option and always sorted
+  by generic notification date. It now has its own "Download failed date"
+  sort, used as that tab's default.
+- Clearing a New Release notification (individually, via a selection, or
+  the whole page) left the release's Notification setting on, so the
+  exact same notification could reappear the next time releases were
+  swept for newly-passed release dates. Clearing a New Release
+  notification now also turns that release's Notification setting off.
+
+### Changed
+
+- The Notifications toolbar's "Clear selected" and "Clear this tab"
+  buttons are replaced by a single button that relabels itself: "Clear
+  all Notifications" clears everything on the current page when nothing
+  is selected, "Clear notification" clears your selection when something
+  is. This replaces the old "Clear this tab", which deleted every
+  notification of that type in the database regardless of filters or
+  page.
+- Toggling a release's Notification setting off directly from a New
+  Release tab card now also removes that release's entry from the list,
+  instead of leaving a stale card behind until the next reload.
+- The Notifications page's page-size selector now offers 250 and 500,
+  in addition to 10/25/50/100.
+
 ## [1.0.148] - 2026-09-09
 
 ### Fixed
