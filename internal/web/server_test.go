@@ -2100,11 +2100,11 @@ func TestNotificationSortOptionsAndTabDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := string(raw)
-	wantOptions := "notificationSortOptions=[['downloaded','Download date'],['download_started','Download started'],['local_available','Locally available'],['notification','Notification date'],['release','Release date']]"
+	wantOptions := "notificationSortOptions=[['downloaded','Download date'],['download_started','Download started'],['download_failed','Download failed date'],['local_available','Locally available'],['notification','Notification date'],['release','Release date']]"
 	if !strings.Contains(script, wantOptions) {
 		t.Fatal("notification sort options are missing or not alphabetized")
 	}
-	wantDefaults := "notificationDefaultSort={new_release:'release',local_available:'local_available',downloaded:'downloaded',download_started:'download_started',download_failed:'notification'}"
+	wantDefaults := "notificationDefaultSort={new_release:'release',local_available:'local_available',downloaded:'downloaded',download_started:'download_started',download_failed:'download_failed'}"
 	if !strings.Contains(script, wantDefaults) {
 		t.Fatal("notification tabs do not have the requested event-date defaults")
 	}

@@ -1444,7 +1444,11 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		d.MatchReason = appendDownloadPreference("file already present locally; HTTP download skipped", d.MatchReason)
 		d, _ = s.store.SaveDownload(ctx, d)
 		s.logHTTPDownloadEvent("HTTP download skipped: file already exists", d)
-		_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_completed", "File already present locally; HTTP download skipped")
+		// "downloaded" (not the pipelineDownloadCompleted trigger string above,
+		// despite the similar name) is the notification type the Notifications
+		// page's Downloaded tab actually filters on - matching the torrent
+		// completion path below, in the qBittorrent poll loop.
+		_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "downloaded", "File already present locally; HTTP download skipped")
 		s.runHTTPCompletionPipelinesAsync(context.Background(), d, Torrent{Name: filepath.Base(existingPath), ContentPath: existingPath, Progress: 1}, true)
 		return
 	}
@@ -1688,7 +1692,10 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	d.MatchReason = appendDownloadPreference("HTTP file downloaded from Keepshare", d.MatchReason)
 	d, _ = s.store.SaveDownload(context.Background(), d)
 	s.logHTTPDownloadEvent("HTTP download completed", d)
-	_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "download_completed", "HTTP download completed")
+	// "downloaded" is the notification type the Notifications page's
+	// Downloaded tab filters on - see the comment on the other HTTP
+	// completion notification above.
+	_, _ = s.store.CreateNotification(context.Background(), d.ReleaseID, "downloaded", "HTTP download completed")
 	s.runHTTPCompletionPipelinesAsync(context.Background(), d, Torrent{Name: filepath.Base(finalPath), ContentPath: finalPath, Progress: 1}, false)
 }
 
