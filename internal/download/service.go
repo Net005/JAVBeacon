@@ -105,6 +105,15 @@ type httpSlotWaiter struct {
 	downloadID int64
 	ready      chan struct{}
 	granted    bool
+	// priority mirrors the domain.Download.Priority of the download this
+	// waiter represents (lower value = served first). promoteHTTPWaitersLocked
+	// scans httpWaiters for the lowest priority rather than always taking
+	// index 0, so a high-priority download queued after others already
+	// waiting still jumps ahead of them for the next freed HTTP slot. Equal
+	// priorities keep arriving-first-served order, since the scan takes the
+	// first minimum it finds and httpWaiters is always appended to in
+	// arrival order.
+	priority int
 }
 
 // scheduleMaxSleepChunk bounds how long any schedule loop below ever sleeps
@@ -875,10 +884,51 @@ func (s *Service) duplicate(ctx context.Context, r domain.Release, allowLocal, f
 	}
 	return "", 0, false, nil
 }
+
+// PriorityForRelease computes the HTTP download concurrency queue priority
+// (see Service.httpWaiters/promoteHTTPWaitersLocked) for a release, where a
+// lower value is served first. r.PriorityOverride, when set, wins outright -
+// it is how the Release Library "Monitor + download" bulk dialog lets a user
+// pin an entire batch to one priority regardless of release date. Otherwise
+// the release's ReleaseDate places it into one of four recency tiers (a
+// release announced ahead of its actual upload, or scraped without a date at
+// all, naturally falls outside all four and gets the same default tier as
+// anything unparsable):
+//
+//	now-1mo .. now+1mo  -> 1  (newest/upcoming releases, most urgent)
+//	now-3mo .. now-1mo  -> 10
+//	now-6mo .. now-3mo  -> 20
+//	now-12mo .. now-6mo -> 30
+//	everything else     -> 50 (unknown/unparsable date, or older than 12mo)
+func PriorityForRelease(r domain.Release, now time.Time) int {
+	if r.PriorityOverride != nil {
+		return *r.PriorityOverride
+	}
+	t, err := time.Parse("2006-01-02", strings.TrimSpace(r.ReleaseDate))
+	if err != nil {
+		return 50
+	}
+	now = now.UTC().Truncate(24 * time.Hour)
+	t = t.UTC().Truncate(24 * time.Hour)
+	switch {
+	case !t.Before(now.AddDate(0, -1, 0)) && !t.After(now.AddDate(0, 1, 0)):
+		return 1
+	case !t.Before(now.AddDate(0, -3, 0)) && t.Before(now.AddDate(0, -1, 0)):
+		return 10
+	case !t.Before(now.AddDate(0, -6, 0)) && t.Before(now.AddDate(0, -3, 0)):
+		return 20
+	case !t.Before(now.AddDate(0, -12, 0)) && t.Before(now.AddDate(0, -6, 0)):
+		return 30
+	default:
+		return 50
+	}
+}
+
 func (s *Service) Download(ctx context.Context, r domain.Release, result domain.SearchResult, sourceType, sourceRef string) (domain.Download, error) {
 	if strings.EqualFold(result.Transport, "http") {
 		return s.queueHTTPDownload(ctx, r, result, sourceType, sourceRef)
 	}
+	priority := PriorityForRelease(r, time.Now())
 	provider, providerErr := s.provider(ctx)
 	if providerErr != nil {
 		return domain.Download{}, providerErr
@@ -917,7 +967,7 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 	} else if sourceRef == "" {
 		sourceRef = result.Link
 	}
-	x := domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: sourceRef, TransferReference: result.Link, Query: r.VideoID, Name: result.Title, Status: "queued", MatchReason: matchReason, Seeds: result.Seeds, Peers: result.Peers, FilenamePatternExcluded: forced || excluded}
+	x := domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: sourceRef, TransferReference: result.Link, Query: r.VideoID, Name: result.Title, Status: "queued", MatchReason: matchReason, Seeds: result.Seeds, Peers: result.Peers, FilenamePatternExcluded: forced || excluded, Priority: priority}
 	if result.BlacklistedFilenameMatch {
 		x.Status = "failed"
 		x.Error = "result rejected by filename blacklist"
@@ -1079,13 +1129,14 @@ func (s *Service) verifyAddedToQBittorrent(ctx context.Context, qb QBittorrent, 
 }
 
 func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, result domain.SearchResult, sourceType, sourceRef string) (domain.Download, error) {
+	priority := PriorityForRelease(r, time.Now())
 	if result.BlacklistedFilenameMatch {
-		d, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", MatchReason: result.Reason, Error: "result rejected by filename blacklist"})
+		d, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", MatchReason: result.Reason, Error: "result rejected by filename blacklist", Priority: priority})
 		s.logDownloadFailure(d)
 		return d, err
 	}
 	if !result.Accepted && !result.Forced {
-		d, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", Error: "HTTP result did not exactly match the release ID"})
+		d, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", Error: "HTTP result did not exactly match the release ID", Priority: priority})
 		s.logDownloadFailure(d)
 		return d, err
 	}
@@ -1102,7 +1153,7 @@ func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, resul
 	if reason, existingID, replaceable, err := s.duplicateStored(ctx, r, result.IgnoreLocal || r.IgnoreLocalForceDownload, forceRequested, "http"); err != nil {
 		return domain.Download{}, err
 	} else if reason != "" {
-		return s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "skipped", MatchReason: reason, CanReplace: replaceable, ExistingDownloadID: existingID})
+		return s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "skipped", MatchReason: reason, CanReplace: replaceable, ExistingDownloadID: existingID, Priority: priority})
 	}
 	if sourceRef == "" {
 		sourceRef = result.Link
@@ -1117,7 +1168,7 @@ func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, resul
 			matchReason += ": " + result.Reason
 		}
 	}
-	x, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: firstNonEmpty(result.Provider, "JavDB / Keepshare"), SourceType: sourceType, SourceReference: sourceRef, SourcePageURL: result.SourceURL, ProviderFileID: result.ProviderFileID, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "queued", MatchReason: matchReason, BytesTotal: result.SizeBytes})
+	x, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: firstNonEmpty(result.Provider, "JavDB / Keepshare"), SourceType: sourceType, SourceReference: sourceRef, SourcePageURL: result.SourceURL, ProviderFileID: result.ProviderFileID, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "queued", MatchReason: matchReason, BytesTotal: result.SizeBytes, Priority: priority})
 	if err != nil {
 		return x, err
 	}
@@ -1154,8 +1205,14 @@ func httpConnections(settings map[string]string) int {
 }
 func (s *Service) promoteHTTPWaitersLocked(limit int) {
 	for s.httpActive < limit && len(s.httpWaiters) > 0 {
-		waiter := s.httpWaiters[0]
-		s.httpWaiters = s.httpWaiters[1:]
+		best := 0
+		for i, w := range s.httpWaiters {
+			if w.priority < s.httpWaiters[best].priority {
+				best = i
+			}
+		}
+		waiter := s.httpWaiters[best]
+		s.httpWaiters = append(s.httpWaiters[:best], s.httpWaiters[best+1:]...)
 		waiter.granted = true
 		s.httpActive++
 		close(waiter.ready)
@@ -1204,7 +1261,7 @@ func (s *Service) releaseHTTPSlot() {
 
 func (s *Service) startHTTPDownload(d domain.Download) {
 	ctx, cancel := context.WithCancel(context.Background())
-	waiter := &httpSlotWaiter{downloadID: d.ID, ready: make(chan struct{})}
+	waiter := &httpSlotWaiter{downloadID: d.ID, ready: make(chan struct{}), priority: d.Priority}
 	run := &httpDownloadRun{cancel: cancel, done: make(chan struct{}), waiter: waiter}
 	limit := s.httpConcurrency(context.Background())
 	s.httpMu.Lock()
@@ -2092,8 +2149,8 @@ func (s *Service) RetryHTTPDownload(ctx context.Context, downloadID int64) (doma
 	}
 	for _, row := range rows {
 		if row.ID == downloadID && row.Transport == "http" {
-			if row.Status != "failed" {
-				return domain.Download{}, errors.New("only failed HTTP downloads can be retried")
+			if row.Status != "failed" && row.Status != "not_available" {
+				return domain.Download{}, errors.New("only failed or not-available HTTP downloads can be retried")
 			}
 			release, e := s.store.Release(ctx, row.ReleaseID)
 			if e != nil {
@@ -2598,6 +2655,7 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 
 	var torrentCandidate, httpCandidate domain.SearchResult
 	var httpUnavailableReason string
+	var httpUnavailableResult domain.SearchResult
 	var torrentFound, httpFound, torrentSearched, httpSearched bool
 	var torrentErr, httpErr error
 	var torrentRows []domain.SearchResult
@@ -2627,8 +2685,13 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 					httpCandidate, httpFound = row, true
 					break
 				}
-				if httpUnavailableReason == "" {
+				// Prefer surfacing a provider-confirmed "matched but not yet
+				// published" row over a plain non-match, so a later exact hit
+				// that IS known-unavailable still wins the "not available"
+				// treatment even if it was not the first row returned.
+				if httpUnavailableReason == "" || (row.Unavailable && !httpUnavailableResult.Unavailable) {
 					httpUnavailableReason = row.Reason
+					httpUnavailableResult = row
 				}
 			}
 		}
@@ -2657,7 +2720,7 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 			if httpErr != nil {
 				return SearchAndDownloadOutcome{Reason: "HTTP provider lookup failed: " + httpErr.Error()}, httpErr
 			}
-			return SearchAndDownloadOutcome{Reason: "HTTP only: " + firstNonEmpty(httpUnavailableReason, "provider returned no downloadable candidate")}, nil
+			return SearchAndDownloadOutcome{Reason: "HTTP only: " + firstNonEmpty(httpUnavailableReason, "provider returned no downloadable candidate"), Result: httpUnavailableResult}, nil
 		}
 	}
 
@@ -2712,7 +2775,7 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 		return SearchAndDownloadOutcome{Reason: "HTTP provider lookup failed: " + httpErr.Error()}, httpErr
 	}
 	if !torrentFound && httpUnavailableReason != "" {
-		return SearchAndDownloadOutcome{Reason: methodLabel + ": " + httpUnavailableReason}, nil
+		return SearchAndDownloadOutcome{Reason: methodLabel + ": " + httpUnavailableReason, Result: httpUnavailableResult}, nil
 	}
 	reason := "Search providers returned no results"
 	if len(torrentRows) > 0 {

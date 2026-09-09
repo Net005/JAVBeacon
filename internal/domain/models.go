@@ -232,6 +232,15 @@ type Release struct {
 	// transport. Empty inherits the global default; "torrent" and "http" are
 	// strict (no fallback) overrides.
 	DownloadMethodOverride string `json:"download_method_override,omitempty"`
+	// PriorityOverride, when set, replaces download.PriorityForRelease's
+	// date-tier calculation for this release with a fixed queue priority
+	// (lower value = served first from the HTTP concurrency queue). Unlike
+	// the override fields above, this is deliberately transient rather than
+	// a persisted column: it is set in-memory only for the duration of a
+	// single Release Library "Monitor + download" bulk run (see
+	// bulkMonitorAndDownloadReleases), matching the one-off nature of that
+	// action rather than becoming a standing per-release setting.
+	PriorityOverride *int `json:"-"`
 	// HTTPDownloadPrimary is retained for database/API compatibility with
 	// releases saved before the global Default Download Method setting. New
 	// provider selection deliberately ignores it.
@@ -304,7 +313,13 @@ type ReleaseFilter struct {
 	StashFilePath                                       string
 	SiteID                                              int64
 	Watchlist, HideLocal, MonitorDownload, UsePreferred bool
-	Limit, Offset                                       int
+	// StashWatched, when true, restricts results to local releases StashApp
+	// reports as having been played at least once (r.play_count>0) - used by
+	// the Jellyfin integration's "sync watched status from StashApp" library
+	// snapshot to find which releases to mark played, without scanning the
+	// entire catalog in Go.
+	StashWatched  bool
+	Limit, Offset int
 	// ShowNonPreferred, when false (the default), tells Releases/ReleasesCount
 	// to exclude any release matching an ignore rule (see IgnoreTags and
 	// IgnoreTitles) - the Release Library's "hide ignored releases" behavior.
@@ -652,6 +667,14 @@ type Download struct {
 	FilenamePatternExcluded bool  `json:"filename_pattern_excluded,omitempty"`
 	CanReplace              bool  `json:"can_replace,omitempty"`
 	ExistingDownloadID      int64 `json:"existing_download_id,omitempty"`
+	// Priority orders the HTTP download concurrency queue: a lower value is
+	// served first. It is computed once, when the download is created, from
+	// the release's release date (see download.PriorityForRelease) unless a
+	// bulk-action override was in effect at that time. The SQL column
+	// defaults to 50 (the same "unknown/default" tier PriorityForRelease
+	// falls back to), so downloads created before this field existed sort
+	// as ordinary-priority rather than jumping ahead of everything else.
+	Priority int `json:"priority"`
 }
 
 type SearchFile struct {
@@ -693,6 +716,15 @@ type SearchResult struct {
 	PublishedAt string `json:"published_at,omitempty"`
 	Accepted    bool   `json:"accepted"`
 	Reason      string `json:"reason"`
+	// Unavailable marks a result that exactly matched the release on the
+	// provider's own site but has no downloadable file published yet (for
+	// example, a JavDB release page found by exact ID with no Keepshare or
+	// PikPak share link listed - often a release announced ahead of its
+	// actual upload). It is distinct from an ordinary non-match: the
+	// download queue treats it as "not available yet" rather than a failure,
+	// since nothing about the request itself was wrong and the same search
+	// may succeed once the provider publishes a link.
+	Unavailable bool `json:"unavailable,omitempty"`
 	// Forced marks a result that was downloaded via an explicit manual
 	// override after automatic matching rejected it (Phase 5B), so the
 	// resulting Download's history clearly shows it was not an automatic

@@ -278,7 +278,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`history.go(-releaseDepth)`,
 		`title:'Scan the new monitoring site?'`,
 		`mode:'full',pages:0,all_pages:true,kind:'manual_full'`,
-		`function downloadSortTab(){if(downloadStatus==='in_progress')return'queued';return downloadStatus==='downloading'?'downloading':downloadStatus==='queued'?'queued':'other'}`,
+		`function downloadSortTab(){return downloadStatus}`,
 		`['eta','ETA'],['progress','Percentage']`,
 		`function rememberDownloadSort()`,
 		`releaseToastNode.className='releaseToast'`,
@@ -514,7 +514,7 @@ func TestDownloadActivitySeparatesQueuedFromDownloading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`data-download-status="queued">Queued`, `status=downloadStatus==='stalled'?'downloading':downloadStatus`, `downloadStatus==='queued'?'queued':'other'`, `defaultDirection=tab==='queued'?'asc':'desc'`, `headerDownloadQueueGroup('Ready for download',queued,'queued')`} {
+	for _, marker := range []string{`data-download-status="queued">Queued`, `status=downloadStatus==='stalled'?'downloading':downloadStatus`, `downloadSortDefaults={downloading:['eta','desc'],queued:['added','desc']`, `headerDownloadQueueGroup('Ready for download',queued,'queued')`} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("Download Activity is missing queued-tab behavior %q", marker)
 		}
@@ -1844,7 +1844,7 @@ func TestSearchResultsShowProviderProgressAndFileDetails(t *testing.T) {
 			`local||hasHistory`,
 			`_releaseDownloadTransport=release?.download_transport==='http'?'http':'torrent'`,
 			`An active download of the same type is never duplicated.`,
-			`Waiting for enabled providers so the final priority appears once without shifting`,
+			`Waiting for enabled providers…`,
 			`httpSpeedSparkline(x)`,
 			`Transferred / speed`,
 		},

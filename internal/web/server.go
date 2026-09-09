@@ -855,7 +855,7 @@ func (s *Server) createSearchDownloadTask(ctx context.Context, release domain.Re
 		}
 	}
 	options, _ := json.Marshal(persistedSearchOptions{AllowNonPreferred: allowNonPreferred, Force: force})
-	task, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Provider: "Search + Download", SourceType: sourceType, Query: release.VideoID, Name: "Waiting for provider search", Transport: transport, Status: "search_queued", MatchReason: "Waiting in Search + Download queue", QBResponse: string(options)})
+	task, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Provider: "Search + Download", SourceType: sourceType, Query: release.VideoID, Name: "Waiting for provider search", Transport: transport, Status: "search_queued", MatchReason: "Waiting in Search + Download queue", QBResponse: string(options), Priority: download.PriorityForRelease(release, time.Now())})
 	return task.ID, false, err
 }
 
@@ -2474,6 +2474,13 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 		IgnoreLocalForceDownload   bool    `json:"ignore_local_force_download"`
 		IgnoreDownloadHistory      bool    `json:"ignore_download_history"`
 		DownloadMethodOverride     *string `json:"download_method_override"`
+		// PriorityOverride, when set, replaces download.PriorityForRelease's
+		// date-tier calculation for every release in this batch with a fixed
+		// download queue priority (lower value = served first). It is applied
+		// in-memory below, the same way DownloadMethodOverride and the other
+		// override fields are, and is never persisted onto the release itself
+		// - it only governs the tasks this one bulk run creates.
+		PriorityOverride *int `json:"priority_override"`
 	}
 	if !s.decode(w, r, &payload) {
 		return
@@ -2535,6 +2542,7 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 			release.IgnoreLocalForceDownload = payload.IgnoreLocalForceDownload
 			release.IgnoreDownloadHistory = payload.IgnoreDownloadHistory
 		}
+		release.PriorityOverride = payload.PriorityOverride
 		force := wasMonitored[release.ID]
 		if force {
 			release.IgnoreLocalForceDownload = true
@@ -2595,7 +2603,7 @@ func (s *Server) runBulkReleaseJobs() {
 		s.bulkReleaseQueue = s.bulkReleaseQueue[1:]
 		s.bulkReleaseMu.Unlock()
 
-		queued, skipped, notFound, failed := 0, 0, 0, 0
+		queued, skipped, notFound, notAvailable, failed := 0, 0, 0, 0, 0
 		for i, release := range job.Releases {
 			var task domain.Download
 			if i < len(job.TaskIDs) && job.TaskIDs[i] > 0 {
@@ -2636,6 +2644,24 @@ func (s *Server) runBulkReleaseJobs() {
 					_, _ = s.store.DeleteDownload(context.Background(), task.ID)
 					return
 				}
+				if status == "not_available" {
+					// Not a failure: the exact release was found on the provider's
+					// own site, it just has no downloadable share link published
+					// yet (a common JavDB pattern for a release announced ahead of
+					// its actual upload). Keep the provider's page link so the
+					// user can check it themselves, and let a later search retry
+					// find it once it is published, without cluttering the Failed
+					// tab with something that never actually failed.
+					task.Status, task.Error, task.MatchReason = "not_available", "", detail
+					if outcome.Result.SourceURL != "" {
+						task.SourcePageURL = outcome.Result.SourceURL
+					}
+					if outcome.Result.Provider != "" {
+						task.Provider = outcome.Result.Provider
+					}
+					_, _ = s.store.SaveDownload(context.Background(), task)
+					return
+				}
 				task.Status, task.Error, task.MatchReason = "failed", detail, "Search + Download did not queue a file"
 				_, _ = s.store.SaveDownload(context.Background(), task)
 			}
@@ -2645,6 +2671,12 @@ func (s *Server) runBulkReleaseJobs() {
 				failed++
 				if s.log != nil {
 					s.log.Error(job.SourceType+" search and download failed", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "error", searchErr, "reason", outcome.Reason)
+				}
+			case !outcome.Found && outcome.Result.Unavailable:
+				finishTask("not_available", outcome.Reason)
+				notAvailable++
+				if s.log != nil {
+					s.log.Info(job.SourceType+" search matched the release but no download link is published yet", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "source_page_url", outcome.Result.SourceURL, "reason", outcome.Reason)
 				}
 			case !outcome.Found:
 				finishTask("failed", outcome.Reason)
@@ -2670,7 +2702,7 @@ func (s *Server) runBulkReleaseJobs() {
 			}
 		}
 		if s.log != nil {
-			s.log.Info(job.SourceType+" search and download completed", "selected", len(job.Releases), "queued", queued, "not_found", notFound, "skipped", skipped, "failed", failed)
+			s.log.Info(job.SourceType+" search and download completed", "selected", len(job.Releases), "queued", queued, "not_found", notFound, "not_available", notAvailable, "skipped", skipped, "failed", failed)
 		}
 	}
 }
