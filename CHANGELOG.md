@@ -7,6 +7,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.150] - 2026-09-09
+
+### Added
+
+- A Silo Server integration API (`GET /api/v1/integrations/silo/search`,
+  `GET /api/v1/integrations/silo/releases/{id}`), backing a new
+  `silo-plugin-metadata-javbeacon` metadata plugin for
+  [Silo Server](https://github.com/Silo-Server). It reuses the existing
+  Jellyfin integration's release-metadata service, so both integrations
+  serve the same provider-agnostic DTO shape.
+
 ## [1.0.149] - 2026-09-09
 
 ### Fixed
