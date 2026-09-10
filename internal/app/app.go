@@ -484,6 +484,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.downloads.NotificationSchedule(ctx)
 	go a.downloads.PikPakAccountSchedule(ctx)
 	go a.downloads.OperationalHealthSchedule(ctx)
+	go a.downloads.ReleaseUpgradeSchedule(ctx)
 	errs := make(chan error, 1)
 	go func() {
 		a.log.Info("JAVBeacon web server started", "address", a.cfg.ListenAddress, "database", databaseDescription(a.cfg))

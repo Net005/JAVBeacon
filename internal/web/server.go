@@ -393,6 +393,30 @@ func (s *Server) routes() {
 		}
 		s.json(w, http.StatusOK, rows)
 	})
+	// release-upgrade is the Release Upgrade Schedule's status/manual-run
+	// endpoints, mirroring download-search: GET polls the live job status,
+	// POST starts a run on demand (same as the daily schedule firing, just
+	// operator-triggered), and release-upgrade-history lists recent
+	// completed runs for the Download Activity page.
+	s.mux.HandleFunc("GET /api/jobs/release-upgrade", func(w http.ResponseWriter, r *http.Request) {
+		s.json(w, http.StatusOK, s.downloads.ReleaseUpgradeStatus())
+	})
+	s.mux.HandleFunc("POST /api/jobs/release-upgrade", func(w http.ResponseWriter, r *http.Request) {
+		if e := s.downloads.StartReleaseUpgradeSchedule(r.Context(), "manual"); e != nil {
+			s.problem(w, http.StatusConflict, e.Error())
+			return
+		}
+		s.json(w, http.StatusAccepted, s.downloads.ReleaseUpgradeStatus())
+	})
+	s.mux.HandleFunc("GET /api/jobs/release-upgrade-history", func(w http.ResponseWriter, r *http.Request) {
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		rows, err := s.store.ReleaseUpgradeRuns(r.Context(), limit)
+		if err != nil {
+			s.problem(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.json(w, http.StatusOK, rows)
+	})
 	s.mux.HandleFunc("GET /api/jobs/covers", func(w http.ResponseWriter, r *http.Request) { s.json(w, 200, s.coverCacheStatus()) })
 	s.mux.HandleFunc("POST /api/jobs/covers", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.startCoverCache(r.Context()); err != nil {
@@ -1663,6 +1687,19 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, key := range []string{"pushover_pikpak_app_token", "pushover_byparr_app_token", "pushover_download_search_app_token"} {
 		allowed[key] = true
+	}
+	for _, key := range []string{"release_upgrade_enabled", "release_upgrade_time"} {
+		allowed[key] = true
+	}
+	if raw, present := x["release_upgrade_enabled"]; present && raw != "true" && raw != "false" {
+		s.problem(w, http.StatusUnprocessableEntity, "release_upgrade_enabled must be true or false")
+		return
+	}
+	if raw, present := x["release_upgrade_time"]; present && strings.TrimSpace(raw) != "" {
+		if err := monitor.ValidateCalendarSchedule(raw, ""); err != nil {
+			s.problem(w, http.StatusUnprocessableEntity, "release_upgrade_time: "+err.Error())
+			return
+		}
 	}
 	for _, key := range []string{"javdb_gluetun_rotation_enabled", "gluetun_require_ip_change"} {
 		if raw, present := x[key]; present && raw != "true" && raw != "false" {

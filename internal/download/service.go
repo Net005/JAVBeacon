@@ -44,6 +44,10 @@ type Service struct {
 	// replacementJob is the current or most recently completed bulk
 	// Download Activity delete/replacement operation.
 	replacementJob domain.DownloadReplacementJob
+	// releaseUpgradeJob is the current or most recently completed Release
+	// Upgrade Schedule run - see ReleaseUpgradeStatus/RunReleaseUpgradeSchedule
+	// in release_upgrade.go.
+	releaseUpgradeJob domain.ReleaseUpgradeJob
 
 	cleanupRetryMu      sync.Mutex
 	cleanupRetryAt      map[int64]time.Time
