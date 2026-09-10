@@ -7,6 +7,29 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.153] - 2026-09-10
+
+### Fixed
+
+- Download Activity forgot which status tab (Downloading / HTTP /
+  Stalled / Downloaded / Failed) was open on reload or app restart, always
+  resetting to "Downloading" — which also made that tab's remembered sort
+  direction look like it had been forgotten, since the sort was being
+  restored for a different tab than the one being viewed. The active
+  status tab is now persisted the same way the other Download Activity
+  preferences already are.
+- The release detail STATUS row could hide the Played / O-Count badge:
+  once a Downloaded/Downloading badge was also present, the three badges
+  no longer fit on one row, and the wrapped second row was clipped by the
+  card's fixed height. Badges are now sized to fit three per row.
+- Removed leftover "Allow non-preferred filename(s)" controls that should
+  have been fully removed in 1.0.152 along with the concept itself: the
+  Release Library bulk "Monitor + download" dialog, the Download Activity
+  bulk bar, and the Missing Library Files bulk bar. The Download Activity
+  one was a live regression — deleting selected downloads always failed
+  with a "json: unknown field" error, since the checkbox's value was still
+  being sent to an endpoint that no longer accepts it.
+
 ## [1.0.152] - 2026-09-10
 
 ### Changed
