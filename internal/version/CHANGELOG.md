@@ -7,6 +7,30 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.154] - 2026-09-10
+
+### Fixed
+
+- The release detail STATUS row's Played / O-Count badge could stay
+  permanently hidden even for a release with real Stash watch history: once
+  a release was cached from an earlier Release Library visit (where card
+  data intentionally omits playback stats to keep the grid light), opening
+  its detail view rendered that stale, zeroed-out data immediately and never
+  refreshed it after the full detail fetch completed. The DISCOVER badges
+  (download status, local status, and Played / O-Count) are now refreshed
+  with the fetched data the same way the TRACKING buttons already are.
+
+### Added
+
+- The download status badge now distinguishes "queued" from "downloading":
+  an HTTP download waiting for a free concurrency slot now shows "HTTP
+  queued" instead of "HTTP downloading", and hovering it shows its position
+  in the queue and its priority.
+- Search + Download now warns before starting a search that duplicates one
+  already in progress for the same release (searching, waiting to search,
+  queued, or actively downloading), showing its status and letting you
+  proceed anyway or cancel, instead of silently starting a redundant search.
+
 ## [1.0.153] - 2026-09-10
 
 ### Fixed

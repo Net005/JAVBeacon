@@ -1221,6 +1221,28 @@ func (s *Service) promoteHTTPWaitersLocked(limit int) {
 	}
 }
 
+// HTTPQueuePosition returns this download's 1-based position among all HTTP
+// downloads currently waiting for a concurrency slot, in the same priority
+// order promoteHTTPWaitersLocked would serve them (lower priority value
+// first, ties broken by arrival order), plus the total number waiting. ok is
+// false when this download is not currently an HTTP waiter - for example it
+// has already been granted a slot and is actively downloading, or it is not
+// an HTTP download at all.
+func (s *Service) HTTPQueuePosition(downloadID int64) (position int, total int, ok bool) {
+	s.httpMu.Lock()
+	defer s.httpMu.Unlock()
+	order := make([]*httpSlotWaiter, len(s.httpWaiters))
+	copy(order, s.httpWaiters)
+	sort.SliceStable(order, func(i, j int) bool { return order[i].priority < order[j].priority })
+	total = len(order)
+	for i, w := range order {
+		if w.downloadID == downloadID {
+			return i + 1, total, true
+		}
+	}
+	return 0, total, false
+}
+
 func (s *Service) removeHTTPWaiterLocked(target *httpSlotWaiter) {
 	for i, waiter := range s.httpWaiters {
 		if waiter == target {

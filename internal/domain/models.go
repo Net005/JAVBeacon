@@ -163,6 +163,17 @@ type Release struct {
 	DownloadETASeconds   int64     `json:"download_eta_seconds"`
 	DownloadSeenComplete int64     `json:"download_seen_complete"`
 	DownloadAddedAt      time.Time `json:"download_added_at,omitempty"`
+	// DownloadPriority mirrors the selected download's Priority (lower value
+	// downloads first). DownloadQueuePosition/DownloadQueueTotal are set only
+	// while an HTTP download is genuinely waiting for a concurrency slot
+	// (DownloadStatus=="queued" && DownloadTransport=="http"): 1-based
+	// position among the downloads currently waiting, and how many are
+	// waiting in total. Both stay 0 once a download is actively transferring
+	// or for any Torrent download, where qBittorrent - not JAVBeacon - owns
+	// queuing.
+	DownloadPriority      int `json:"download_priority,omitempty"`
+	DownloadQueuePosition int `json:"download_queue_position,omitempty"`
+	DownloadQueueTotal    int `json:"download_queue_total,omitempty"`
 	// DownloadedAt is computed, mirroring DownloadStatus: the completion
 	// timestamp of the most recent successful download, or the zero value
 	// when this release has never finished downloading (TODO-2.0 card/detail
