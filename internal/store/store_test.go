@@ -2292,6 +2292,43 @@ func TestDownloadActivityPaginatesFiltersAndCounts(t *testing.T) {
 	}
 }
 
+// TestDownloadActivitySearchIsCaseInsensitive guards against DownloadActivity's
+// search clause regressing to a bare "LIKE ?" (as releaseFilterWhere and
+// stashMissingFilterWhere both once did - see Dialect.CaseInsensitiveLike),
+// which is silently case-sensitive on the app's PostgreSQL backend even
+// though it happens to still match on SQLite's default collation.
+func TestDownloadActivitySearchIsCaseInsensitive(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "activity-case-insensitive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "RBK-001", Title: "RBK-001", Source: "GIGA"}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.Releases(ctx, domain.ReleaseFilter{Search: "RBK-001"})
+	if err != nil || len(all) != 1 {
+		t.Fatalf("seed release lookup: items=%d err=%v", len(all), err)
+	}
+	if _, err := s.SaveDownload(ctx, domain.Download{ReleaseID: all[0].ID, Query: "RBK-001", Name: "RBK-001.mkv", Provider: "Sukebei", Status: "downloading"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, search := range []string{"rbk", "RBK", "Rbk-001"} {
+		items, total, err := s.DownloadActivity(ctx, domain.DownloadFilter{Search: search})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if total != 1 || len(items) != 1 {
+			t.Fatalf("search=%q: items=%+v total=%d, want exactly 1 case-insensitive match", search, items, total)
+		}
+	}
+}
+
 func TestHTTPDownloadSourceLinksRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "http-source-links.db"))

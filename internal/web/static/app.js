@@ -178,6 +178,13 @@ async function api(path,o={}){o.headers={...(o.body?{'Content-Type':'application
 const toastNode=$('#toast');toastNode.setAttribute('popover','manual');const releaseToastNode=document.createElement('div');releaseToastNode.id='releaseToast';releaseToastNode.className='releaseToast';releaseToastNode.setAttribute('role','status');releaseToastNode.setAttribute('aria-live','polite');releaseDialogInner.append(releaseToastNode);const searchDialogToastNode=document.createElement('div');searchDialogToastNode.id='searchDialogToast';searchDialogToastNode.className='releaseToast searchDialogToast';searchDialogToastNode.setAttribute('role','status');searchDialogToastNode.setAttribute('aria-live','polite');searchDialog.append(searchDialogToastNode);let toastTimer,activeToastNode=null;
 function hideToast(node){if(!node)return;node.classList.remove('show');if(node===toastNode){try{node.hidePopover?.()}catch{}}}
 function toast(v){const target=searchDialog?.open?searchDialogToastNode:releaseDialog?.open?releaseToastNode:toastNode;clearTimeout(toastTimer);if(activeToastNode!==target)hideToast(activeToastNode);target.textContent=v;if(target===toastNode){try{target.showPopover?.()}catch{}}target.classList.add('show');activeToastNode=target;toastTimer=setTimeout(()=>{hideToast(target);if(activeToastNode===target)activeToastNode=null},3200)}
+// centerAlert is a deliberately more noticeable variant of toast(): a
+// center-screen banner (instead of a corner popover) for messages the user
+// should not miss, e.g. Search + Download being denied because the release
+// is already queued/downloading/completed. Stays up longer than a regular
+// toast since it's meant to be read, not just glanced at.
+const centerAlertNode=$('#centerAlert');let centerAlertTimer;
+function centerAlert(v){clearTimeout(centerAlertTimer);centerAlertNode.textContent=v;centerAlertNode.classList.add('show');centerAlertTimer=setTimeout(()=>centerAlertNode.classList.remove('show'),4200)}
 document.body.insertAdjacentHTML('beforeend',`<dialog id="actionConfirmDialog" class="actionConfirmDialog"><button type="button" class="close" aria-label="Close">×</button><p class="eyebrow">CONFIRM ACTION</p><h2 id="actionConfirmTitle">Confirm action</h2><p id="actionConfirmMessage" class="actionConfirmMessage"></p><div class="dialogActions"><button type="button" id="actionConfirmCancel">Cancel</button><button type="button" id="actionConfirmAccept" class="primary">Confirm</button></div></dialog>`);
 const actionConfirmDialog=$('#actionConfirmDialog'),actionConfirmTitle=$('#actionConfirmTitle'),actionConfirmMessage=$('#actionConfirmMessage'),actionConfirmCancel=$('#actionConfirmCancel'),actionConfirmAccept=$('#actionConfirmAccept');let actionConfirmResolve=null;
 function finishActionConfirm(accepted){const resolve=actionConfirmResolve;actionConfirmResolve=null;if(actionConfirmDialog.open)actionConfirmDialog.close();if(resolve)resolve(accepted)}
@@ -1021,7 +1028,7 @@ function searchSwarmLabel(x){const seeds=Number(x.seeds)||0,peers=Number(x.peers
 async function searchRelease(id,download){
   if(download&&settings.search_download_background==='true'){
     const videoID=releaseByID(id)?.video_id||activeReleaseData?.id===id&&activeReleaseData.video_id||`release #${id}`;
-    try{await api(`/releases/${id}/search-download`,{method:'POST'});toast(`Search + Download started in background for ${videoID}`);pollHeaderDownloadQueue()}catch(e){toast(e.message)}
+    try{const res=await api(`/releases/${id}/search-download`,{method:'POST'});if(res?.already_queued){const reasonLabel={search_in_progress:'is already being searched',queued:'is already queued to download',downloading:'is already downloading',processing:'is already downloading',completed:'has already been downloaded'}[res.reason]||'is already queued';centerAlert(`${videoID} ${reasonLabel} — not queued again`)}else{toast(`Search + Download started in background for ${videoID}`)}pollHeaderDownloadQueue()}catch(e){toast(e.message)}
     return
   }
   cancelSearchAutoClose();searchResultFilter.value='';searchDialog.dataset.release=id;searchDialog._results=[];
