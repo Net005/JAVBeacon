@@ -1061,64 +1061,6 @@ func TestBulkRemoveDownloadsRunsDestructiveCleanupInBackground(t *testing.T) {
 	t.Fatal("download history was not cleared by background bulk removal")
 }
 
-// TestDownloadListFiltersByFilenamePatternExcluded covers TODO-2.0 Task A's
-// Download Activity filter: ?filename_pattern_excluded=true must restrict
-// the results to downloads flagged by either the manual "Force download"
-// override or the Missing Library Files non-preferred-filename fallback
-// chain, and omitting the param (or any other value) must not filter at
-// all - mirroring downloadList's other query-param-driven filters.
-func TestDownloadListFiltersByFilenamePatternExcluded(t *testing.T) {
-	ctx := context.Background()
-	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "downloads-excluded.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "DL-2", Title: "DL-2", Source: "JavLibrary"}); err != nil {
-		t.Fatal(err)
-	}
-	all, err := st.Releases(ctx, domain.ReleaseFilter{Search: "DL-2"})
-	if err != nil || len(all) != 1 {
-		t.Fatalf("seed release lookup: items=%d err=%v", len(all), err)
-	}
-	releaseID := all[0].ID
-	for _, x := range []domain.Download{
-		{ReleaseID: releaseID, Query: "NORMAL", Status: "downloading"},
-		{ReleaseID: releaseID, Query: "EXCLUDED", Status: "downloading", FilenamePatternExcluded: true},
-	} {
-		if _, err := st.SaveDownload(ctx, x); err != nil {
-			t.Fatal(err)
-		}
-	}
-	s := &Server{store: st, log: slog.Default()}
-
-	rec := httptest.NewRecorder()
-	s.downloadList(rec, httptest.NewRequest(http.MethodGet, "/api/downloads?filename_pattern_excluded=true", nil))
-	var body struct {
-		Items []domain.Download `json:"items"`
-		Total int               `json:"total"`
-	}
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Total != 1 || len(body.Items) != 1 || body.Items[0].Query != "EXCLUDED" {
-		t.Fatalf("body=%+v, want exactly the EXCLUDED row", body)
-	}
-
-	rec = httptest.NewRecorder()
-	s.downloadList(rec, httptest.NewRequest(http.MethodGet, "/api/downloads", nil))
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Total != 2 || len(body.Items) != 2 {
-		t.Fatalf("body=%+v, want both rows when the filter is omitted", body)
-	}
-}
-
 // TestPatchReleaseUpdatesLabel covers Phase 6B: PATCH /api/releases/{id}
 // accepts a "label" field and persists it via the store.
 func TestPatchReleaseUpdatesLabel(t *testing.T) {
@@ -1161,11 +1103,11 @@ func TestPatchReleaseUpdatesLabel(t *testing.T) {
 	}
 }
 
-// TestPatchReleasesBulkAppliesStopMonitoringAndAllowNonPreferredFlag covers
-// the "Releases checked by the scheduled job" table's mass-select bulk
-// actions: PATCH /api/releases/bulk must apply monitor_download and/or
-// allow_non_preferred_filenames to every id in the request in one call.
-func TestPatchReleasesBulkAppliesStopMonitoringAndAllowNonPreferredFlag(t *testing.T) {
+// TestPatchReleasesBulkAppliesStopMonitoringFlag covers the "Releases
+// checked by the scheduled job" table's mass-select bulk actions: PATCH
+// /api/releases/bulk must apply monitor_download to every id in the
+// request in one call.
+func TestPatchReleasesBulkAppliesStopMonitoringFlag(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "patch-bulk.db"))
 	if err != nil {
@@ -1189,13 +1131,13 @@ func TestPatchReleasesBulkAppliesStopMonitoringAndAllowNonPreferredFlag(t *testi
 	monitor := true
 	for _, r := range rows {
 		ids = append(ids, r.ID)
-		if err := st.PatchRelease(ctx, r.ID, nil, nil, nil, nil, nil, &monitor, nil, nil, nil); err != nil {
+		if err := st.PatchRelease(ctx, r.ID, nil, nil, nil, nil, nil, &monitor, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 	s := &Server{store: st, log: slog.Default()}
 
-	body, _ := json.Marshal(map[string]any{"ids": ids, "monitor_download": false, "allow_non_preferred_filenames": true})
+	body, _ := json.Marshal(map[string]any{"ids": ids, "monitor_download": false})
 	req := httptest.NewRequest(http.MethodPatch, "/api/releases/bulk", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	s.patchReleasesBulk(rec, req)
@@ -1219,15 +1161,12 @@ func TestPatchReleasesBulkAppliesStopMonitoringAndAllowNonPreferredFlag(t *testi
 		if got.MonitorDownload {
 			t.Fatalf("release %d should no longer be monitored: %+v", id, got)
 		}
-		if !got.AllowNonPreferredFilenames {
-			t.Fatalf("release %d should have the allow-non-preferred flag set: %+v", id, got)
-		}
 	}
 }
 
 // TestPatchReleasesBulkAppliesIgnoreLocalForceDownloadFlag mirrors
-// TestPatchReleasesBulkAppliesStopMonitoringAndAllowNonPreferredFlag for the
-// "ignore StashApp Local / force download" bulk action, and confirms
+// TestPatchReleasesBulkAppliesStopMonitoringFlag for the "ignore StashApp
+// Local / force download" bulk action, and confirms
 // /api/releases?ignore_local_force_download=true finds the flagged release
 // via releaseFilterFromQuery.
 func TestPatchReleasesBulkAppliesIgnoreLocalForceDownloadFlag(t *testing.T) {
@@ -1273,11 +1212,75 @@ func TestPatchReleasesBulkAppliesIgnoreLocalForceDownloadFlag(t *testing.T) {
 	}
 }
 
+// TestPatchReleasesBulkResetIgnoreLocalUnmonitorsLocalReleaseOnly covers
+// the "Monitored releases" panel's "Reset local ignore" bulk action:
+// reset_ignore_local clears IgnoreLocalForceDownload for every selected
+// release, and additionally takes a release off monitoring only when it is
+// already local (matched in StashApp) - a release that is not local yet
+// keeps its existing monitoring state, since clearing the override alone
+// gives it no reason to stop being searched for.
+func TestPatchReleasesBulkResetIgnoreLocalUnmonitorsLocalReleaseOnly(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "patch-bulk-reset-ignore-local.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, videoID := range []string{"RESETLOCAL-1", "RESETLOCAL-2"} {
+		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: videoID, Source: "JavLibrary"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("seed release lookup: items=%d err=%v", len(rows), err)
+	}
+	localID, notLocalID := rows[0].ID, rows[1].ID
+	monitor, ignore, local := true, true, true
+	if err := st.PatchRelease(ctx, localID, nil, &local, nil, nil, nil, &monitor, nil, &ignore); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PatchRelease(ctx, notLocalID, nil, nil, nil, nil, nil, &monitor, nil, &ignore); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, log: slog.Default()}
+
+	body, _ := json.Marshal(map[string]any{"ids": []int64{localID, notLocalID}, "reset_ignore_local": true})
+	req := httptest.NewRequest(http.MethodPatch, "/api/releases/bulk", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.patchReleasesBulk(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Updated int64 `json:"updated"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Updated != 2 {
+		t.Fatalf("expected 2 rows updated, got %+v", resp)
+	}
+
+	gotLocal, err := st.Release(ctx, localID)
+	if err != nil || gotLocal.IgnoreLocalForceDownload || gotLocal.MonitorDownload {
+		t.Fatalf("expected the local release to have the override cleared and monitoring turned off: %+v (err=%v)", gotLocal, err)
+	}
+	gotNotLocal, err := st.Release(ctx, notLocalID)
+	if err != nil || gotNotLocal.IgnoreLocalForceDownload || !gotNotLocal.MonitorDownload {
+		t.Fatalf("expected the non-local release to have the override cleared but monitoring left alone: %+v (err=%v)", gotNotLocal, err)
+	}
+}
+
 // TestPatchReleasesBulkRejectsEmptyPatch covers the "nothing to update"
-// guard now that patchReleasesBulk has three independently-optional flags:
-// a request with ids but none of monitor_download,
-// allow_non_preferred_filenames, or ignore_local_force_download set must
-// still be rejected rather than silently doing nothing.
+// guard now that patchReleasesBulk has independently-optional flags: a
+// request with ids but none of monitor_download or
+// ignore_local_force_download set must still be rejected rather than
+// silently doing nothing.
 func TestPatchReleasesBulkRejectsEmptyPatch(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "patch-bulk-empty.db"))
@@ -1349,9 +1352,8 @@ func TestBulkMonitorAndDownloadReleasesPersistsFlagsAndQueuesEveryRelease(t *tes
 	ids := []int64{releases[0].ID, releases[1].ID}
 	s := &Server{store: st, downloads: download.New(st, time.Second, slog.Default()), log: slog.Default()}
 	body, _ := json.Marshal(map[string]any{
-		"ids":                           ids,
-		"ignore_local_force_download":   true,
-		"allow_non_preferred_filenames": true,
+		"ids":                         ids,
+		"ignore_local_force_download": true,
 	})
 	rec := httptest.NewRecorder()
 	s.bulkMonitorAndDownloadReleases(rec, httptest.NewRequest(http.MethodPost, "/api/releases/bulk/monitor-download", bytes.NewReader(body)))
@@ -1363,7 +1365,7 @@ func TestBulkMonitorAndDownloadReleasesPersistsFlagsAndQueuesEveryRelease(t *tes
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !got.MonitorDownload || got.MonitorReason != "manual" || !got.IgnoreLocalForceDownload || !got.AllowNonPreferredFilenames {
+		if !got.MonitorDownload || got.MonitorReason != "manual" || !got.IgnoreLocalForceDownload {
 			t.Fatalf("release %d flags were not committed before reply: %+v", id, got)
 		}
 	}
@@ -1534,7 +1536,7 @@ func TestCreateSearchDownloadTaskSkipsReleaseWithActiveOrCompletedDownload(t *te
 		if _, err := st.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Provider: "Test", SourceType: "Test", Query: release.VideoID, Name: status, Transport: "torrent", Status: status}); err != nil {
 			t.Fatal(err)
 		}
-		taskID, alreadyQueued, reason, err := s.createSearchDownloadTask(ctx, release, "Manual Background Search + Download", false, false, "torrent", 0)
+		taskID, alreadyQueued, reason, err := s.createSearchDownloadTask(ctx, release, "Manual Background Search + Download", false, "torrent", 0)
 		if err != nil {
 			t.Fatalf("status=%s err=%v", status, err)
 		}
@@ -1565,7 +1567,7 @@ func TestCreateSearchDownloadTaskSkipsReleaseWithActiveOrCompletedDownload(t *te
 	if _, err := st.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Provider: "Test", SourceType: "Test", Query: release.VideoID, Name: "failed", Transport: "torrent", Status: "failed"}); err != nil {
 		t.Fatal(err)
 	}
-	taskID, alreadyQueued, reason, err := s.createSearchDownloadTask(ctx, release, "Manual Background Search + Download", false, false, "torrent", 0)
+	taskID, alreadyQueued, reason, err := s.createSearchDownloadTask(ctx, release, "Manual Background Search + Download", false, "torrent", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1877,7 +1879,6 @@ func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testin
 			`id="releaseBulkHeader"`,
 			`id="releaseBulkDownloadDialog"`,
 			`id="releaseBulkIgnoreLocal"`,
-			`id="releaseBulkAllowNonPreferred"`,
 			`>Monitor + Search</button>`,
 		},
 		"static/app.js": {
@@ -1893,7 +1894,6 @@ func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testin
 			`function appendReleases(rows)`,
 			`api('/releases/bulk/monitor-download'`,
 			`ignore_local_force_download:releaseBulkIgnoreLocal.checked`,
-			`allow_non_preferred_filenames:releaseBulkAllowNonPreferred.checked`,
 		},
 		"static/app.css": {
 			`.releaseSelect{position:absolute`,
@@ -1928,7 +1928,6 @@ func TestMonitoredBulkDownloadOverrideDialogIncludesIndependentPolicies(t *testi
 		`id="monitoredOverrideMethod"`,
 		`<option value="torrent">Torrent only</option>`,
 		`<option value="http">HTTP only</option>`,
-		`id="monitoredOverrideNonPreferred"`,
 		`id="monitoredOverrideLocal"`,
 		`id="monitoredOverrideHistory"`,
 		`download_method_override:$('#monitoredOverrideMethod').value`,

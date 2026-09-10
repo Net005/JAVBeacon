@@ -200,17 +200,6 @@ type Release struct {
 	// it does not feed the released/monitored eligibility computation, which
 	// stays governed by ReleaseDate and a download-site match as before.
 	StashReleaseDate string `json:"stash_release_date,omitempty"`
-	// AllowNonPreferredFilenames persists the Missing Library Files "allow
-	// non-preferred filenames" override onto the release itself, rather
-	// than letting it live only as a one-off flag on a single apply run.
-	// Once set (whether from that apply flow or a manual bulk toggle on
-	// the "Releases checked by the scheduled job" table), the scheduled
-	// download-search job's per-release match in runSearch uses the same
-	// relaxed fallbackSearchCandidate chain SearchAndDownloadNow does
-	// instead of requiring a normal accepted-filename-pattern match, so a
-	// release that needed the relaxed rule once keeps getting it on every
-	// future scheduled check too.
-	AllowNonPreferredFilenames bool `json:"allow_non_preferred_filenames"`
 	// IgnoreLocalForceDownload persists a per-release override that permits
 	// a download even though it already has a matched StashApp scene
 	// (Local/StashSceneID set) - the normal rule otherwise skips
@@ -331,11 +320,6 @@ type ReleaseFilter struct {
 	// Releases/ReleasesCount never need their own settings access.
 	ShowNonPreferred         bool
 	IgnoreTags, IgnoreTitles []string
-	// AllowNonPreferredFilenames filters the "Releases checked by the
-	// scheduled job" table by the persistent per-release override of the
-	// same name: nil means no filter, true/false restrict to releases with
-	// the flag set/unset.
-	AllowNonPreferredFilenames *bool
 	// IgnoreLocalForceDownload filters the "Releases checked by the
 	// scheduled job" table by the persistent per-release override of the
 	// same name: nil means no filter, true/false restrict to releases with
@@ -388,15 +372,9 @@ func ParseIgnoreList(raw string) []string {
 type DownloadFilter struct {
 	Status, Search, Source, Transport, Sort, Direction string
 	Limit, Offset                                      int
-	// FilenamePatternExcluded, when true, restricts DownloadActivity to
-	// downloads submitted despite not being a normal accepted-filename
-	// match (TODO-2.0 Task A) - see Download.FilenamePatternExcluded. Like
-	// ReleaseFilter's other one-way toggles (Watchlist, HideLocal, ...),
-	// false means "don't filter on this" rather than "must be false".
-	FilenamePatternExcluded bool
-	Stalled                 bool
-	SeenComplete            string
-	SeenCompleteDate        int64
+	Stalled                                            bool
+	SeenComplete                                       string
+	SeenCompleteDate                                   int64
 }
 
 // StashMissingScene is one StashApp scene whose file(s) could not be found
@@ -656,14 +634,11 @@ type Download struct {
 	SeenComplete      int64           `json:"seen_complete"`
 	AddedAt           time.Time       `json:"added_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`
-	// FilenamePatternExcluded marks a download that was submitted despite
-	// NOT being a normal accepted-filename-pattern match (TODO-2.0 Task A):
-	// either a manual "Force download" override (SearchResult.Forced), or
-	// the Missing Library Files "allow non-preferred filenames" fallback
-	// chain (SearchResult.FilenamePatternExcluded) picking a seeded-but-
-	// unaccepted or, failing that, merely most-recent result. Distinct from
-	// MatchReason's free text so the Download Activity view can filter on
-	// it structurally rather than string-matching a human-readable reason.
+	// FilenamePatternExcluded is deprecated and no longer set by anything -
+	// preferred filename patterns are a pure priority signal now (see
+	// SearchResult.PreferredFilenameMatch), not an accept/reject gate, so
+	// there is no more "excluded despite not matching" case. Kept as an
+	// always-false column so existing rows/scans/binds are undisturbed.
 	FilenamePatternExcluded bool  `json:"filename_pattern_excluded,omitempty"`
 	CanReplace              bool  `json:"can_replace,omitempty"`
 	ExistingDownloadID      int64 `json:"existing_download_id,omitempty"`
@@ -735,13 +710,6 @@ type SearchResult struct {
 	// preferred result can be a valid redownload without being mislabeled as
 	// a filename-rule exception in Download Activity.
 	IgnoreLocal bool `json:"ignore_local,omitempty"`
-	// FilenamePatternExcluded marks a result selected by the Missing
-	// Library Files "allow non-preferred filenames" fallback chain
-	// (TODO-2.0 Task A) rather than a normal accepted-pattern match -
-	// Service.Download folds this into domain.Download.
-	// FilenamePatternExcluded the same way it folds in Forced, so both
-	// paths land on the same structured, filterable flag.
-	FilenamePatternExcluded bool `json:"filename_pattern_excluded,omitempty"`
 	// ReplaceExisting is accepted only on an explicit retry after the manual
 	// search UI has shown and confirmed an active-download conflict.
 	ReplaceExisting bool `json:"replace_existing,omitempty"`
@@ -773,19 +741,18 @@ type DownloadSearchJob struct {
 // DownloadReplacementJob tracks one bulk Download Activity cleanup and its
 // optional best-seeded replacement searches.
 type DownloadReplacementJob struct {
-	Running      bool      `json:"running"`
-	Replace      bool      `json:"replace"`
-	NonPreferred bool      `json:"non_preferred"`
-	StartedAt    time.Time `json:"started_at,omitempty"`
-	FinishedAt   time.Time `json:"finished_at,omitempty"`
-	Total        int       `json:"total"`
-	Processed    int       `json:"processed"`
-	Removed      int       `json:"removed"`
-	Downloaded   int       `json:"downloaded"`
-	NotFound     int       `json:"not_found"`
-	Failed       int       `json:"failed"`
-	CurrentItem  string    `json:"current_item,omitempty"`
-	LastError    string    `json:"last_error,omitempty"`
+	Running     bool      `json:"running"`
+	Replace     bool      `json:"replace"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+	FinishedAt  time.Time `json:"finished_at,omitempty"`
+	Total       int       `json:"total"`
+	Processed   int       `json:"processed"`
+	Removed     int       `json:"removed"`
+	Downloaded  int       `json:"downloaded"`
+	NotFound    int       `json:"not_found"`
+	Failed      int       `json:"failed"`
+	CurrentItem string    `json:"current_item,omitempty"`
+	LastError   string    `json:"last_error,omitempty"`
 }
 
 // DownloadSearchRun is the persisted result of one recent- or older-release

@@ -636,19 +636,26 @@ func (s *Service) searchNative(ctx context.Context, release domain.Release, sour
 
 // sortSearchResults returns a new slice - the input is never mutated, so a
 // caller holding the provider's native order (see searchNative) keeps it -
-// with preferred matches (accepted by the configured filename patterns)
-// first, then within each group the torrent most likely to actually
-// finish - the one with more seeders - first. This is only a sensible
-// default ordering: the UI re-groups/re-filters on top of it, but a caller
-// that just takes rows[0] (or displays them unsorted) still gets the best
-// candidate first.
+// ordered accepted-first (a release-ID match that isn't blacklisted - see
+// SearchResult.Accepted's doc comment), then within the accepted group with
+// a preferred-filename-pattern match (SearchResult.PreferredFilenameMatch)
+// ahead of a plain fallback match, then by pattern priority among the
+// preferred matches, and finally the torrent most likely to actually
+// finish - the one with more seeders - first within any tied group. This
+// is only a sensible default ordering: the UI re-groups/re-filters on top
+// of it, but a caller that just takes rows[0] (or displays them unsorted)
+// still gets the best candidate first: preferred filename gets first
+// choice, everything else falls back to the existing seed-based logic.
 func sortSearchResults(rows []domain.SearchResult) []domain.SearchResult {
 	sorted := append([]domain.SearchResult{}, rows...)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		if sorted[i].Accepted != sorted[j].Accepted {
 			return sorted[i].Accepted
 		}
-		if sorted[i].Accepted && sorted[i].PreferredFilenamePriority != sorted[j].PreferredFilenamePriority {
+		if sorted[i].Accepted && sorted[i].PreferredFilenameMatch != sorted[j].PreferredFilenameMatch {
+			return sorted[i].PreferredFilenameMatch
+		}
+		if sorted[i].Accepted && sorted[i].PreferredFilenameMatch && sorted[i].PreferredFilenamePriority != sorted[j].PreferredFilenamePriority {
 			iPriority, jPriority := sorted[i].PreferredFilenamePriority, sorted[j].PreferredFilenamePriority
 			if iPriority == 0 {
 				iPriority = defaultFilenamePatternPriority
@@ -934,32 +941,27 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 		return domain.Download{}, providerErr
 	}
 	forced := result.Forced
-	// excluded marks a result chosen by the Missing Library Files "allow
-	// non-preferred filenames" fallback chain (TODO-2.0 Task A -
-	// fallbackSearchCandidate) rather than a normal accepted-pattern
-	// match. Like forced, it is an explicit, intentional bypass of
-	// automatic filename matching, so it is folded into the same
-	// structured domain.Download.FilenamePatternExcluded flag forced sets
-	// - the Download Activity view filters on that one flag regardless of
-	// which of the two paths produced it.
-	excluded := result.FilenamePatternExcluded
 	result.Accepted = false
 	if !strings.Contains(canonical(result.Title), canonical(r.VideoID)) {
 		result.Reason = "torrent filename did not contain release ID"
 	} else if nyaa, ok := provider.(*Nyaa); ok {
-		result.Accepted, result.Reason = nyaa.acceptFiles(result.Title, result.Files)
-		result.BlacklistedFilenameMatch, _, _ = nyaa.blacklistMatch(result.Title, result.Files)
+		blacklisted, pattern, candidate := nyaa.blacklistMatch(result.Title, result.Files)
+		result.BlacklistedFilenameMatch = blacklisted
+		if blacklisted {
+			result.Accepted = false
+			result.Reason = fmt.Sprintf("filename matched blacklist pattern %s: %s", pattern, candidate)
+		} else {
+			result.Accepted = true
+			result.Reason = "torrent filename contains release ID and is not blacklisted"
+		}
 	}
 	matchReason := result.Reason
-	// A forced or fallback-excluded download is an explicit, intentional
-	// override of automatic filename matching (Phase 5B; TODO-2.0 Task A):
-	// the real match/reject outcome is still computed above and kept in
-	// history so it is never confused with a normal accepted match.
-	switch {
-	case forced:
+	// A forced download is an explicit, intentional override of automatic
+	// filename matching: the real match/reject outcome is still computed
+	// above and kept in history so it is never confused with a normal
+	// accepted match.
+	if forced {
 		matchReason = "manually forced despite automatic match result: " + result.Reason
-	case excluded:
-		matchReason = "non-preferred filename allowed by Missing Library Files fallback search despite automatic match result: " + result.Reason
 	}
 	matchReason = appendDownloadPreference(matchReason, result.DownloadPreferenceReason)
 	if result.SourceURL != "" {
@@ -967,7 +969,7 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 	} else if sourceRef == "" {
 		sourceRef = result.Link
 	}
-	x := domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: sourceRef, TransferReference: result.Link, Query: r.VideoID, Name: result.Title, Status: "queued", MatchReason: matchReason, Seeds: result.Seeds, Peers: result.Peers, FilenamePatternExcluded: forced || excluded, Priority: priority}
+	x := domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: sourceRef, TransferReference: result.Link, Query: r.VideoID, Name: result.Title, Status: "queued", MatchReason: matchReason, Seeds: result.Seeds, Peers: result.Peers, Priority: priority}
 	if result.BlacklistedFilenameMatch {
 		x.Status = "failed"
 		x.Error = "result rejected by filename blacklist"
@@ -975,9 +977,9 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 		s.logDownloadFailure(x)
 		return x, e
 	}
-	if !result.Accepted && !forced && !excluded {
+	if !result.Accepted && !forced {
 		x.Status = "failed"
-		x.Error = "result rejected by filename rules"
+		x.Error = "torrent result rejected: " + result.Reason
 		x, e := s.store.SaveDownload(ctx, x)
 		s.logDownloadFailure(x)
 		return x, e
@@ -1362,7 +1364,7 @@ func (s *Service) tryFailedHTTPTorrentFallback(d domain.Download, httpFailure st
 		s.logDownloadFailure(d)
 		return
 	}
-	candidate, found := fallbackSearchCandidate(sortSearchResults(native), native, release.AllowNonPreferredFilenames)
+	candidate, found := fallbackSearchCandidate(sortSearchResults(native), native)
 	if !found {
 		d.PostStatus = "torrent_fallback_unavailable"
 		d.Error = httpFailure + "; Torrent fallback found no acceptable result"
@@ -2453,12 +2455,12 @@ func (s *Service) setReplacementJob(job domain.DownloadReplacementJob) {
 	s.mu.Unlock()
 }
 
-func (s *Service) searchAndDownloadBestSeeded(ctx context.Context, release domain.Release, trigger string, allowNonPreferred bool) (bool, error) {
+func (s *Service) searchAndDownloadBestSeeded(ctx context.Context, release domain.Release, trigger string) (bool, error) {
 	results, err := s.searchNative(ctx, release, trigger)
 	if err != nil {
 		return false, err
 	}
-	candidate, found := bestSeededCandidate(results, allowNonPreferred)
+	candidate, found := bestSeededCandidate(results)
 	if !found {
 		return false, nil
 	}
@@ -2466,11 +2468,11 @@ func (s *Service) searchAndDownloadBestSeeded(ctx context.Context, release domai
 	return err == nil && downloaded.Status == "downloading", err
 }
 
-func bestSeededCandidate(results []domain.SearchResult, allowNonPreferred bool) (domain.SearchResult, bool) {
+func bestSeededCandidate(results []domain.SearchResult) (domain.SearchResult, bool) {
 	var candidate domain.SearchResult
 	found := false
 	for _, result := range results {
-		if !allowNonPreferred && !result.Accepted {
+		if !result.Accepted {
 			continue
 		}
 		if !found || result.Seeds > candidate.Seeds {
@@ -2480,13 +2482,10 @@ func bestSeededCandidate(results []domain.SearchResult, allowNonPreferred bool) 
 	if !found {
 		return domain.SearchResult{}, false
 	}
-	if !candidate.Accepted {
-		candidate.FilenamePatternExcluded = true
-	}
 	return candidate, true
 }
 
-func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []int64, replace, allowNonPreferred bool) (domain.DownloadReplacementJob, error) {
+func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []int64, replace bool) (domain.DownloadReplacementJob, error) {
 	rows, err := s.store.Downloads(ctx, "")
 	if err != nil {
 		return domain.DownloadReplacementJob{}, err
@@ -2519,11 +2518,11 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 		// Deletion is idempotent: a live refresh can remove a terminal row after
 		// the user selected it but before this request arrives. Accept the stale
 		// selection and let the client refresh instead of presenting an error.
-		job := domain.DownloadReplacementJob{Replace: replace, NonPreferred: allowNonPreferred, StartedAt: time.Now().UTC(), FinishedAt: time.Now().UTC(), Total: len(wanted)}
+		job := domain.DownloadReplacementJob{Replace: replace, StartedAt: time.Now().UTC(), FinishedAt: time.Now().UTC(), Total: len(wanted)}
 		s.setReplacementJob(job)
 		return job, nil
 	}
-	job := domain.DownloadReplacementJob{Running: true, Replace: replace, NonPreferred: allowNonPreferred, StartedAt: time.Now().UTC(), Total: len(selected) + len(localHistory)}
+	job := domain.DownloadReplacementJob{Running: true, Replace: replace, StartedAt: time.Now().UTC(), Total: len(selected) + len(localHistory)}
 	s.mu.Lock()
 	if s.replacementJob.Running {
 		existing := s.replacementJob
@@ -2573,7 +2572,7 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 				s.setReplacementJob(job)
 				continue
 			}
-			started, err := s.searchAndDownloadBestSeeded(background, release, "Download Activity replacement", allowNonPreferred)
+			started, err := s.searchAndDownloadBestSeeded(background, release, "Download Activity replacement")
 			if err != nil || !started {
 				s.log.Warn("bulk replacement search did not start a download", "release_id", item.id, "video_id", item.query, "started", started, "error", err)
 				if err != nil {
@@ -2626,16 +2625,13 @@ func (s *Service) Auto(context.Context, domain.Release) {}
 // started, so a caller driving a bulk run can tally "found X releases"
 // results for the person without polling download history.
 //
-// allowNonPreferred is TODO-2.0 Task A's "allow non-preferred filenames"
-// toggle: false preserves this function's original behavior exactly -
-// download the best accepted-filename-pattern match, or nothing at all if
-// there isn't one. true additionally applies fallbackSearchCandidate's
-// three-tier fallback chain whenever the best accepted match has no seeds
-// (or there is no accepted match at all): prefer any other result that has
-// seeds, and failing that, the single most recent result. A candidate
-// chosen by that fallback is marked
-// domain.SearchResult.FilenamePatternExcluded so the resulting download's
-// history is never confused with a normal accepted match.
+// Selection always applies fallbackSearchCandidate's three-tier fallback
+// chain: prefer the best accepted-and-preferred match if it has seeds,
+// otherwise the best-seeded accepted result of any preference, otherwise
+// the single most recent accepted result. Preferred filename patterns
+// (domain.SearchResult.PreferredFilenameMatch/Priority) are a ranking
+// signal only, applied by sortSearchResults before this runs - they are
+// never a hard accept/reject gate.
 // SearchAndDownloadOutcome preserves the useful detail from an immediate
 // search/download attempt for callers that present a background task view.
 // Found means a torrent candidate was selected; Download records whether it
@@ -2647,7 +2643,7 @@ type SearchAndDownloadOutcome struct {
 	Download domain.Download
 }
 
-func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Release, trigger string, allowNonPreferred bool) (SearchAndDownloadOutcome, error) {
+func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Release, trigger string) (SearchAndDownloadOutcome, error) {
 	settings, settingsErr := s.store.Settings(ctx)
 	if settingsErr != nil {
 		return SearchAndDownloadOutcome{}, settingsErr
@@ -2676,7 +2672,7 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 		native, torrentErr = s.searchNative(ctx, r, trigger)
 		torrentRows = native
 		if torrentErr == nil {
-			torrentCandidate, torrentFound = fallbackSearchCandidate(sortSearchResults(native), native, allowNonPreferred)
+			torrentCandidate, torrentFound = fallbackSearchCandidate(sortSearchResults(native), native)
 		}
 	}
 	loadHTTP := func() {
@@ -2819,8 +2815,8 @@ func (s *Service) searchAndDownloadHTTP(ctx context.Context, r domain.Release, t
 
 // SearchAndDownloadNow keeps the original compact API for callers that only
 // need to know whether a candidate was found.
-func (s *Service) SearchAndDownloadNow(ctx context.Context, r domain.Release, trigger string, allowNonPreferred bool) (bool, error) {
-	outcome, err := s.SearchAndDownloadDetailed(ctx, r, trigger, allowNonPreferred)
+func (s *Service) SearchAndDownloadNow(ctx context.Context, r domain.Release, trigger string) (bool, error) {
+	outcome, err := s.SearchAndDownloadDetailed(ctx, r, trigger)
 	return outcome.Found && err == nil, err
 }
 
@@ -2829,29 +2825,26 @@ func (s *Service) SearchAndDownloadNow(ctx context.Context, r domain.Release, tr
 // first, then by seed count) and native (the provider's own original
 // order, used only for the "most recent" fallback tier below).
 //
-// allowNonPreferred false reproduces this selection's original, simpler
-// behavior exactly: the best accepted match if there is one, regardless of
-// its seed count, otherwise nothing.
-//
-// allowNonPreferred true applies TODO-2.0 Task A's three-tier fallback
-// chain instead:
+// This applies a three-tier fallback chain:
 //  1. the best accepted match, but only if it has at least one seed -
-//     sorted's ordering means sorted[0] is that match whenever one exists;
-//  2. otherwise, whichever result (accepted or not) has the most seeds,
-//     as long as it has at least one;
-//  3. otherwise, the single most recent result - native[0], the provider's
-//     own first-returned result, before display sorting reordered it.
+//     sorted's ordering (accepted-and-preferred first, then by seed count -
+//     see sortSearchResults) means sorted[0] is that match whenever one
+//     exists;
+//  2. otherwise, whichever accepted result has the most seeds, as long as
+//     it has at least one;
+//  3. otherwise, the single most recent accepted result - native[0], the
+//     provider's own first-returned result, before display sorting
+//     reordered it.
 //
-// The returned bool reports whether any candidate was found at all. Tiers
-// 2 and 3 set the returned SearchResult.FilenamePatternExcluded so callers
-// never confuse that pick with a normal accepted match.
-func fallbackSearchCandidate(sorted, native []domain.SearchResult, allowNonPreferred bool) (domain.SearchResult, bool) {
-	selectable := func(result domain.SearchResult) bool { return !result.BlacklistedFilenameMatch }
-	if len(sorted) > 0 && sorted[0].Accepted && selectable(sorted[0]) && (!allowNonPreferred || sorted[0].Seeds > 0) {
+// The returned bool reports whether any candidate was found at all.
+// Preferred filename patterns are not part of this selection at all beyond
+// the ordering sortSearchResults already applied - a non-preferred but
+// accepted (ID-matched, not blacklisted) result is just as eligible as a
+// preferred one.
+func fallbackSearchCandidate(sorted, native []domain.SearchResult) (domain.SearchResult, bool) {
+	selectable := func(result domain.SearchResult) bool { return result.Accepted && !result.BlacklistedFilenameMatch }
+	if len(sorted) > 0 && selectable(sorted[0]) && sorted[0].Seeds > 0 {
 		return sorted[0], true
-	}
-	if !allowNonPreferred {
-		return domain.SearchResult{}, false
 	}
 	var best domain.SearchResult
 	bestFound := false
@@ -2861,12 +2854,10 @@ func fallbackSearchCandidate(sorted, native []domain.SearchResult, allowNonPrefe
 		}
 	}
 	if bestFound {
-		best.FilenamePatternExcluded = true
 		return best, true
 	}
 	for _, candidate := range native {
 		if selectable(candidate) {
-			candidate.FilenamePatternExcluded = true
 			return candidate, true
 		}
 	}
@@ -3060,7 +3051,7 @@ func (s *Service) runMonitoredSearch(ctx context.Context, schedule string, getJo
 		// releases HTTP-first and makes the default torrent-first path fall
 		// back to HTTP for lookup failures, no acceptable torrent, zero
 		// seeders, or a failed qBittorrent submission.
-		outcome, err := s.SearchAndDownloadDetailed(ctx, release, sourceType, release.AllowNonPreferredFilenames)
+		outcome, err := s.SearchAndDownloadDetailed(ctx, release, sourceType)
 		if outcome.Found {
 			job.Found++
 		}
@@ -3315,7 +3306,7 @@ func (s *Service) releaseNotifications(ctx context.Context) {
 					for _, result := range results {
 						if result.Accepted {
 							v := true
-							_ = s.store.PatchRelease(ctx, r.ID, &v, nil, nil, nil, nil, nil, nil, nil, nil)
+							_ = s.store.PatchRelease(ctx, r.ID, &v, nil, nil, nil, nil, nil, nil, nil)
 							r.Released = true
 							break
 						}

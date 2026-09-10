@@ -164,7 +164,7 @@ func TestBulkRemoveFailedHTTPDeletesOnlySelectedHistoryWithoutQBittorrent(t *tes
 	retained, _ := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "HTTP-404", Transport: "torrent", Status: "completed", TorrentHash: "retained"})
 
 	service := New(st, 50*time.Millisecond, slog.Default())
-	if _, err := service.StartBulkRemoveAndReplace(ctx, []int64{failed.ID}, false, false); err != nil {
+	if _, err := service.StartBulkRemoveAndReplace(ctx, []int64{failed.ID}, false); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -199,7 +199,7 @@ func TestBulkRemoveCompletedRemovedTorrentDeletesLocalHistoryOnly(t *testing.T) 
 	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
 	stale, _ := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "REAL-971", Transport: "torrent", Status: "completed", PostStatus: postStatusCompletedRemoved, TorrentHash: "already-gone"})
 	service := New(st, 50*time.Millisecond, slog.Default())
-	if _, err := service.StartBulkRemoveAndReplace(ctx, []int64{stale.ID}, false, false); err != nil {
+	if _, err := service.StartBulkRemoveAndReplace(ctx, []int64{stale.ID}, false); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -219,7 +219,7 @@ func TestBulkRemoveAlreadyAbsentSelectionIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	job, err := New(st, time.Second, slog.Default()).StartBulkRemoveAndReplace(ctx, []int64{987654}, false, false)
+	job, err := New(st, time.Second, slog.Default()).StartBulkRemoveAndReplace(ctx, []int64{987654}, false)
 	if err != nil || job.Running || job.Total != 1 {
 		t.Fatalf("stale selection should be accepted: job=%+v err=%v", job, err)
 	}
@@ -289,21 +289,17 @@ func TestManualReplacementDeletesFilesClearsHistoryAndStartsFreshDownload(t *tes
 	}
 }
 
-func TestBestSeededCandidateCanIgnoreFilenamePreference(t *testing.T) {
+func TestBestSeededCandidateOnlyConsidersAcceptedResults(t *testing.T) {
 	results := []domain.SearchResult{
 		{Title: "accepted-low", Accepted: true, Seeds: 4},
 		{Title: "rejected-high", Accepted: false, Seeds: 25},
 		{Title: "accepted-mid", Accepted: true, Seeds: 12},
 	}
-	preferred, found := bestSeededCandidate(results, false)
-	if !found || preferred.Title != "accepted-mid" || preferred.FilenamePatternExcluded {
-		t.Fatalf("preferred candidate = %+v found=%v", preferred, found)
+	best, found := bestSeededCandidate(results)
+	if !found || best.Title != "accepted-mid" {
+		t.Fatalf("best candidate = %+v found=%v", best, found)
 	}
-	nonPreferred, found := bestSeededCandidate(results, true)
-	if !found || nonPreferred.Title != "rejected-high" || !nonPreferred.FilenamePatternExcluded {
-		t.Fatalf("non-preferred candidate = %+v found=%v", nonPreferred, found)
-	}
-	if _, found := bestSeededCandidate([]domain.SearchResult{{Accepted: false, Seeds: 99}}, false); found {
-		t.Fatal("rejected-only results should not be selected without the non-preferred option")
+	if _, found := bestSeededCandidate([]domain.SearchResult{{Accepted: false, Seeds: 99}}); found {
+		t.Fatal("rejected-only results should not be selected")
 	}
 }

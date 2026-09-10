@@ -72,13 +72,6 @@ func (s *Server) stashMissingScanJob(w http.ResponseWriter, r *http.Request) {
 type stashMissingIDsRequest struct {
 	IDs  []int64 `json:"ids"`
 	Mode string  `json:"mode,omitempty"`
-	// AllowNonPreferredFilenames only applies to the apply-job endpoint
-	// (mode monitor_download): when true it enables the TODO-2.0 Task A
-	// fallback chain in download.Service.SearchAndDownloadNow, accepting a
-	// seeded-but-unaccepted, or failing that merely most-recent, result
-	// instead of requiring a clean accepted-filename-pattern match. Ignored
-	// by the retrieve endpoint.
-	AllowNonPreferredFilenames bool `json:"allow_non_preferred_filenames,omitempty"`
 }
 
 func (s *Server) stashMissingRetrieveJob(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +115,7 @@ func (s *Server) stashMissingApplyJob(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusUnprocessableEntity, "mode must be monitor_only or monitor_download")
 		return
 	}
-	if e := s.stash.StartApply(r.Context(), body.IDs, body.Mode, body.AllowNonPreferredFilenames); e != nil {
+	if e := s.stash.StartApply(r.Context(), body.IDs, body.Mode); e != nil {
 		s.problem(w, http.StatusConflict, e.Error())
 		return
 	}

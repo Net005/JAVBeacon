@@ -13,7 +13,14 @@ type transportFunc func(*http.Request) (*http.Response, error)
 
 func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func TestNyaaSearchAppliesFilenameRules(t *testing.T) {
+// TestNyaaSearchTracksPreferredFilenameMatchSeparatelyFromAccepted covers
+// the preferred-filename-gate removal: a release-ID match that isn't
+// blacklisted is Accepted regardless of whether it matches a configured
+// preferred-filename pattern - PreferredFilenameMatch is now a pure
+// ranking signal (see matchFiles's doc comment), not a separate
+// accept/reject concept. A result for a different release ID entirely is
+// still excluded outright.
+func TestNyaaSearchTracksPreferredFilenameMatchSeparatelyFromAccepted(t *testing.T) {
 	client := &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
 		if !strings.Contains(r.URL.RawQuery, "PRED-888") {
 			t.Fatalf("query did not include release ID: %s", r.URL.String())
@@ -26,8 +33,11 @@ func TestNyaaSearchAppliesFilenameRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 || !rows[0].Accepted || rows[1].Accepted {
-		t.Fatalf("unexpected results: %+v", rows)
+	if len(rows) != 2 || !rows[0].Accepted || !rows[0].PreferredFilenameMatch {
+		t.Fatalf("expected the pattern-matched release-ID match to be accepted and preferred, got %+v", rows)
+	}
+	if !rows[1].Accepted || rows[1].PreferredFilenameMatch {
+		t.Fatalf("expected the non-pattern-matched release-ID match to still be accepted, just not preferred, got %+v", rows[1])
 	}
 }
 
@@ -45,18 +55,29 @@ func TestNyaaFilenameMatchingUsesHighestPriorityPatternFirst(t *testing.T) {
 	}
 }
 
+// TestNyaaBlacklistOverridesPreferredFilenameMatch covers the combined
+// path (resolveResult, which Search uses): a filename that matches both a
+// preferred pattern and a blacklist pattern must still come out rejected
+// overall. matchFiles itself only ever reports pattern matching - it has
+// no opinion on blacklisting (that is blacklistMatch's job, checked
+// separately below) - so the two are exercised together through
+// resolveResult to prove the combination actually rejects.
 func TestNyaaBlacklistOverridesPreferredFilenameMatch(t *testing.T) {
 	p := &Nyaa{
 		PreferredPatterns:   []PreferredFilenamePattern{{Pattern: "trusted@", Priority: 1}},
 		BlacklistedPatterns: []string{"camrip"},
 	}
-	accepted, reason, _, matched := p.matchFiles("PRED-888", []string{"trusted@PRED-888-CAMRIP.mp4"})
-	if accepted || matched != "" || !strings.Contains(strings.ToLower(reason), "blacklist pattern camrip") {
-		t.Fatalf("accepted=%v reason=%q matched=%q", accepted, reason, matched)
+	matched, _, priority, matchedFile := p.matchFiles("PRED-888", []string{"trusted@PRED-888-CAMRIP.mp4"})
+	if !matched || priority != 1 || matchedFile != "trusted@PRED-888-CAMRIP.mp4" {
+		t.Fatalf("matchFiles alone (no blacklist awareness) should still report the pattern match: matched=%v priority=%d matchedFile=%q", matched, priority, matchedFile)
 	}
 	blacklisted, pattern, filename := p.blacklistMatch("PRED-888", []string{"trusted@PRED-888-CAMRIP.mp4"})
 	if !blacklisted || pattern != "camrip" || filename != "trusted@PRED-888-CAMRIP.mp4" {
 		t.Fatalf("blacklisted=%v pattern=%q filename=%q", blacklisted, pattern, filename)
+	}
+	result := p.resolveResult(context.Background(), "PRED-888", "", "magnet:?xt=urn:btih:abc&dn=trusted%40PRED-888-CAMRIP.mp4")
+	if result.Accepted || !result.BlacklistedFilenameMatch || !strings.Contains(strings.ToLower(result.Reason), "blacklisted pattern") {
+		t.Fatalf("blacklist did not override the preferred-filename match in the combined path: %+v", result)
 	}
 }
 

@@ -7,6 +7,32 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.152] - 2026-09-10
+
+### Changed
+
+- Downloading (both HTTP and torrent) no longer hard-requires a preferred
+  filename match to proceed. "Preferred filename patterns" is now purely a
+  priority-ranking signal: a result matching one still gets first choice,
+  but a release with no preferred-pattern match now falls back to the
+  existing seed-based selection instead of being rejected outright. The
+  now-redundant "preferred filename required" / "allow non-preferred
+  filenames" concept has been removed from the matching logic, the
+  per-release override, and the Missing Library Files apply endpoint.
+- Cleaned up the "Monitored releases" panel's table: the site name and its
+  flags (Watchlist, Notify, Local ignored) are now shown as a clean site
+  line with individually-wrapping flag chips, replacing the two-pill-box
+  layout that wrapped badly.
+
+### Added
+
+- A "Reset local ignore" bulk action on the "Monitored releases" panel:
+  clears the persistent "ignore StashApp Local" override for the selected
+  releases, and for any of them that are now actually local (matched in
+  StashApp), also takes that release off monitoring in the same action,
+  since there is no remaining reason to keep searching for it. A release
+  that is not local yet keeps its existing monitoring state.
+
 ## [1.0.151] - 2026-09-10
 
 ### Fixed

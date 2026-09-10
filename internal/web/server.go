@@ -100,18 +100,16 @@ type searchDownloadQueueItem struct {
 // ahead of a large already-running low-priority backlog instead of being
 // stuck behind all of it.
 type bulkReleaseItem struct {
-	Release           domain.Release
-	TaskID            int64
-	Force             bool
-	AllowNonPreferred bool
-	SourceType        string
-	Priority          int
-	seq               int64
+	Release    domain.Release
+	TaskID     int64
+	Force      bool
+	SourceType string
+	Priority   int
+	seq        int64
 }
 
 type persistedSearchOptions struct {
-	AllowNonPreferred bool `json:"allow_non_preferred"`
-	Force             bool `json:"force"`
+	Force bool `json:"force"`
 }
 
 func mustDownloads(st store.Store) []domain.Download {
@@ -831,13 +829,13 @@ func (s *Server) backgroundSearchAndDownloadRelease(w http.ResponseWriter, r *ht
 	transport := s.searchDownloadTransport(r.Context(), release)
 	const sourceType = "Manual Background Search + Download"
 	priority := download.PriorityForRelease(release, time.Now())
-	taskID, alreadyQueued, reason, err := s.createSearchDownloadTask(r.Context(), release, sourceType, release.AllowNonPreferredFilenames, false, transport, priority)
+	taskID, alreadyQueued, reason, err := s.createSearchDownloadTask(r.Context(), release, sourceType, false, transport, priority)
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if !alreadyQueued {
-		s.enqueueBulkReleaseItems([]bulkReleaseItem{{Release: release, TaskID: taskID, SourceType: sourceType, AllowNonPreferred: release.AllowNonPreferredFilenames, Priority: priority}})
+		s.enqueueBulkReleaseItems([]bulkReleaseItem{{Release: release, TaskID: taskID, SourceType: sourceType, Priority: priority}})
 	}
 	s.json(w, http.StatusAccepted, map[string]any{"queued": !alreadyQueued, "release_id": release.ID, "already_queued": alreadyQueued, "reason": reason})
 }
@@ -864,7 +862,7 @@ func (s *Server) searchDownloadTransport(ctx context.Context, release domain.Rel
 // "completed") when a second queue attempt was denied outright - so callers
 // (e.g. backgroundSearchAndDownloadRelease) can tell the user exactly why
 // nothing new was started instead of always claiming it was.
-func (s *Server) createSearchDownloadTask(ctx context.Context, release domain.Release, sourceType string, allowNonPreferred, force bool, transport string, priority int) (int64, bool, string, error) {
+func (s *Server) createSearchDownloadTask(ctx context.Context, release domain.Release, sourceType string, force bool, transport string, priority int) (int64, bool, string, error) {
 	rows, err := s.store.Downloads(ctx, "")
 	if err != nil {
 		return 0, false, "", err
@@ -896,7 +894,7 @@ func (s *Server) createSearchDownloadTask(ctx context.Context, release domain.Re
 			return row.ID, true, row.Status, nil
 		}
 	}
-	options, _ := json.Marshal(persistedSearchOptions{AllowNonPreferred: allowNonPreferred, Force: force})
+	options, _ := json.Marshal(persistedSearchOptions{Force: force})
 	task, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Provider: "Search + Download", SourceType: sourceType, Query: release.VideoID, Name: "Waiting for provider search", Transport: transport, Status: "search_queued", MatchReason: "Waiting in Search + Download queue", QBResponse: string(options), Priority: priority})
 	return task.ID, false, "", err
 }
@@ -942,7 +940,7 @@ func (s *Server) resumeSearchDownloadTasks() {
 			task.Transport = expectedTransport
 			_, _ = s.store.SaveDownload(context.Background(), task)
 		}
-		items = append(items, bulkReleaseItem{Release: release, TaskID: task.ID, Force: options.Force, AllowNonPreferred: options.AllowNonPreferred, SourceType: "Resumed Search + Download", Priority: task.Priority})
+		items = append(items, bulkReleaseItem{Release: release, TaskID: task.ID, Force: options.Force, SourceType: "Resumed Search + Download", Priority: task.Priority})
 	}
 	if len(items) > 0 {
 		s.enqueueBulkReleaseItems(items)
@@ -1073,7 +1071,7 @@ func (s *Server) downloadList(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusUnprocessableEntity, "last seen complete date is required for this filter")
 		return
 	}
-	rows, total, e := s.store.DownloadActivity(r.Context(), domain.DownloadFilter{Status: q.Get("status"), Search: q.Get("search"), Source: q.Get("source"), Transport: q.Get("transport"), Sort: q.Get("sort"), Direction: q.Get("direction"), FilenamePatternExcluded: q.Get("filename_pattern_excluded") == "true", Stalled: q.Get("stalled") == "true", SeenComplete: seenComplete, SeenCompleteDate: seenCompleteDate, Limit: limit, Offset: offset})
+	rows, total, e := s.store.DownloadActivity(r.Context(), domain.DownloadFilter{Status: q.Get("status"), Search: q.Get("search"), Source: q.Get("source"), Transport: q.Get("transport"), Sort: q.Get("sort"), Direction: q.Get("direction"), Stalled: q.Get("stalled") == "true", SeenComplete: seenComplete, SeenCompleteDate: seenCompleteDate, Limit: limit, Offset: offset})
 	if e != nil {
 		s.problem(w, 500, e.Error())
 		return
@@ -1127,14 +1125,13 @@ func (s *Server) removeDownload(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) bulkRemoveDownloads(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		IDs                       []int64 `json:"ids"`
-		Replace                   bool    `json:"replace"`
-		AllowNonPreferredFilename bool    `json:"allow_non_preferred_filename"`
+		IDs     []int64 `json:"ids"`
+		Replace bool    `json:"replace"`
 	}
 	if !s.decode(w, r, &payload) {
 		return
 	}
-	job, err := s.downloads.StartBulkRemoveAndReplace(r.Context(), payload.IDs, payload.Replace, payload.AllowNonPreferredFilename)
+	job, err := s.downloads.StartBulkRemoveAndReplace(r.Context(), payload.IDs, payload.Replace)
 	if err != nil {
 		s.problem(w, http.StatusUnprocessableEntity, err.Error())
 		return
@@ -2242,10 +2239,6 @@ func releaseFilterFromQuery(q url.Values, settings map[string]string) domain.Rel
 		f.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
 		f.UsePreferred = len(f.IgnoreTags) > 0 || len(f.IgnoreTitles) > 0
 	}
-	if raw := q.Get("allow_non_preferred_filenames"); raw == "true" || raw == "false" {
-		v := raw == "true"
-		f.AllowNonPreferredFilenames = &v
-	}
 	if raw := q.Get("ignore_local_force_download"); raw == "true" || raw == "false" {
 		v := raw == "true"
 		f.IgnoreLocalForceDownload = &v
@@ -2421,23 +2414,22 @@ func (s *Server) release(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) patchRelease(w http.ResponseWriter, r *http.Request) {
 	var p struct {
-		Released                   *bool   `json:"released"`
-		Local                      *bool   `json:"local"`
-		Notified                   *bool   `json:"notified"`
-		NotifyOnRelease            *bool   `json:"notify_on_release"`
-		Watchlist                  *bool   `json:"watchlist"`
-		MonitorDownload            *bool   `json:"monitor_download"`
-		Label                      *string `json:"label"`
-		AllowNonPreferredFilenames *bool   `json:"allow_non_preferred_filenames"`
-		IgnoreLocalForceDownload   *bool   `json:"ignore_local_force_download"`
-		HTTPDownloadPrimary        *bool   `json:"http_download_primary"`
+		Released                 *bool   `json:"released"`
+		Local                    *bool   `json:"local"`
+		Notified                 *bool   `json:"notified"`
+		NotifyOnRelease          *bool   `json:"notify_on_release"`
+		Watchlist                *bool   `json:"watchlist"`
+		MonitorDownload          *bool   `json:"monitor_download"`
+		Label                    *string `json:"label"`
+		IgnoreLocalForceDownload *bool   `json:"ignore_local_force_download"`
+		HTTPDownloadPrimary      *bool   `json:"http_download_primary"`
 	}
 	if !s.decode(w, r, &p) {
 		return
 	}
 	n, e := id(r)
 	if e == nil {
-		e = s.store.PatchRelease(r.Context(), n, p.Released, p.Local, p.Notified, p.NotifyOnRelease, p.Watchlist, p.MonitorDownload, p.Label, p.AllowNonPreferredFilenames, p.IgnoreLocalForceDownload, p.HTTPDownloadPrimary)
+		e = s.store.PatchRelease(r.Context(), n, p.Released, p.Local, p.Notified, p.NotifyOnRelease, p.Watchlist, p.MonitorDownload, p.Label, p.IgnoreLocalForceDownload, p.HTTPDownloadPrimary)
 	}
 	if errors.Is(e, sql.ErrNoRows) {
 		s.problem(w, 404, "release not found")
@@ -2474,13 +2466,19 @@ func (s *Server) patchRelease(w http.ResponseWriter, r *http.Request) {
 // applied to every selected release id in one request.
 func (s *Server) patchReleasesBulk(w http.ResponseWriter, r *http.Request) {
 	var p struct {
-		IDs                        []int64 `json:"ids"`
-		MonitorDownload            *bool   `json:"monitor_download"`
-		AllowNonPreferredFilenames *bool   `json:"allow_non_preferred_filenames"`
-		IgnoreLocalForceDownload   *bool   `json:"ignore_local_force_download"`
-		HTTPDownloadPrimary        *bool   `json:"http_download_primary"`
-		DownloadMethodOverride     *string `json:"download_method_override"`
-		IgnoreDownloadHistory      *bool   `json:"ignore_download_history"`
+		IDs                      []int64 `json:"ids"`
+		MonitorDownload          *bool   `json:"monitor_download"`
+		IgnoreLocalForceDownload *bool   `json:"ignore_local_force_download"`
+		HTTPDownloadPrimary      *bool   `json:"http_download_primary"`
+		DownloadMethodOverride   *string `json:"download_method_override"`
+		IgnoreDownloadHistory    *bool   `json:"ignore_download_history"`
+		// ResetIgnoreLocal clears the persistent "ignore StashApp Local"
+		// override and, for any selected release that is now actually
+		// local (matched in StashApp), also takes it off monitoring in the
+		// same statement - see BulkResetIgnoreLocalForceDownload's doc
+		// comment. Mutually exclusive with the other fields: it is its own
+		// action, not a flag to combine with a plain flag patch.
+		ResetIgnoreLocal bool `json:"reset_ignore_local"`
 	}
 	if !s.decode(w, r, &p) {
 		return
@@ -2489,20 +2487,23 @@ func (s *Server) patchReleasesBulk(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusUnprocessableEntity, "select at least one release")
 		return
 	}
-	if p.MonitorDownload == nil && p.AllowNonPreferredFilenames == nil && p.IgnoreLocalForceDownload == nil && p.HTTPDownloadPrimary == nil && p.DownloadMethodOverride == nil && p.IgnoreDownloadHistory == nil {
+	if !p.ResetIgnoreLocal && p.MonitorDownload == nil && p.IgnoreLocalForceDownload == nil && p.HTTPDownloadPrimary == nil && p.DownloadMethodOverride == nil && p.IgnoreDownloadHistory == nil {
 		s.problem(w, http.StatusUnprocessableEntity, "nothing to update")
 		return
 	}
 	var n int64
 	var e error
-	if p.DownloadMethodOverride != nil || p.IgnoreDownloadHistory != nil {
-		if p.DownloadMethodOverride == nil || p.AllowNonPreferredFilenames == nil || p.IgnoreLocalForceDownload == nil || p.IgnoreDownloadHistory == nil {
-			s.problem(w, http.StatusUnprocessableEntity, "download overrides must include method and all three override values")
+	switch {
+	case p.ResetIgnoreLocal:
+		n, e = s.store.BulkResetIgnoreLocalForceDownload(r.Context(), p.IDs)
+	case p.DownloadMethodOverride != nil || p.IgnoreDownloadHistory != nil:
+		if p.DownloadMethodOverride == nil || p.IgnoreLocalForceDownload == nil || p.IgnoreDownloadHistory == nil {
+			s.problem(w, http.StatusUnprocessableEntity, "download overrides must include method and both override values")
 			return
 		}
-		n, e = s.store.BulkSetReleaseDownloadOverrides(r.Context(), p.IDs, *p.DownloadMethodOverride, *p.AllowNonPreferredFilenames, *p.IgnoreLocalForceDownload, *p.IgnoreDownloadHistory)
-	} else {
-		n, e = s.store.BulkSetReleaseFlags(r.Context(), p.IDs, p.MonitorDownload, p.AllowNonPreferredFilenames, p.IgnoreLocalForceDownload, p.HTTPDownloadPrimary)
+		n, e = s.store.BulkSetReleaseDownloadOverrides(r.Context(), p.IDs, *p.DownloadMethodOverride, *p.IgnoreLocalForceDownload, *p.IgnoreDownloadHistory)
+	default:
+		n, e = s.store.BulkSetReleaseFlags(r.Context(), p.IDs, p.MonitorDownload, p.IgnoreLocalForceDownload, p.HTTPDownloadPrimary)
 	}
 	if e != nil {
 		s.problem(w, 500, e.Error())
@@ -2519,11 +2520,10 @@ func (s *Server) patchReleasesBulk(w http.ResponseWriter, r *http.Request) {
 // instead of being rejected while another bulk job is active.
 func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		IDs                        []int64 `json:"ids"`
-		AllowNonPreferredFilenames bool    `json:"allow_non_preferred_filenames"`
-		IgnoreLocalForceDownload   bool    `json:"ignore_local_force_download"`
-		IgnoreDownloadHistory      bool    `json:"ignore_download_history"`
-		DownloadMethodOverride     *string `json:"download_method_override"`
+		IDs                      []int64 `json:"ids"`
+		IgnoreLocalForceDownload bool    `json:"ignore_local_force_download"`
+		IgnoreDownloadHistory    bool    `json:"ignore_download_history"`
+		DownloadMethodOverride   *string `json:"download_method_override"`
 		// PriorityOverride, when set, replaces download.PriorityForRelease's
 		// date-tier calculation for every release in this batch with a fixed
 		// download queue priority (lower value = served first). It is applied
@@ -2563,9 +2563,9 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 	}
 
 	monitor := true
-	updated, err := s.store.BulkSetReleaseFlags(r.Context(), ids, &monitor, &payload.AllowNonPreferredFilenames, &payload.IgnoreLocalForceDownload)
+	updated, err := s.store.BulkSetReleaseFlags(r.Context(), ids, &monitor, &payload.IgnoreLocalForceDownload)
 	if err == nil && payload.DownloadMethodOverride != nil {
-		updated, err = s.store.BulkSetReleaseDownloadOverrides(r.Context(), ids, *payload.DownloadMethodOverride, payload.AllowNonPreferredFilenames, payload.IgnoreLocalForceDownload, payload.IgnoreDownloadHistory)
+		updated, err = s.store.BulkSetReleaseDownloadOverrides(r.Context(), ids, *payload.DownloadMethodOverride, payload.IgnoreLocalForceDownload, payload.IgnoreDownloadHistory)
 	}
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, err.Error())
@@ -2587,7 +2587,6 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 		// if a store implementation returns a cached/pre-update release snapshot.
 		if payload.DownloadMethodOverride != nil {
 			release.DownloadMethodOverride = *payload.DownloadMethodOverride
-			release.AllowNonPreferredFilenames = payload.AllowNonPreferredFilenames
 			release.IgnoreLocalForceDownload = payload.IgnoreLocalForceDownload
 			release.IgnoreDownloadHistory = payload.IgnoreDownloadHistory
 		}
@@ -2599,7 +2598,7 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 		}
 		transport := s.searchDownloadTransport(r.Context(), release)
 		priority := download.PriorityForRelease(release, now)
-		taskID, alreadyQueued, _, taskErr := s.createSearchDownloadTask(r.Context(), release, sourceType, payload.AllowNonPreferredFilenames, force, transport, priority)
+		taskID, alreadyQueued, _, taskErr := s.createSearchDownloadTask(r.Context(), release, sourceType, force, transport, priority)
 		if taskErr != nil {
 			s.problem(w, http.StatusInternalServerError, taskErr.Error())
 			return
@@ -2607,7 +2606,7 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 		if alreadyQueued {
 			continue
 		}
-		items = append(items, bulkReleaseItem{Release: release, TaskID: taskID, Force: force, AllowNonPreferred: payload.AllowNonPreferredFilenames, SourceType: sourceType, Priority: priority})
+		items = append(items, bulkReleaseItem{Release: release, TaskID: taskID, Force: force, SourceType: sourceType, Priority: priority})
 		s.broadcastRelease(release)
 	}
 	if len(items) == 0 {
@@ -2710,11 +2709,9 @@ func (s *Server) runBulkReleaseJobs() {
 			}
 		}
 		force := item.Force
-		allowNonPreferred := item.AllowNonPreferred
 		if task.QBResponse != "" {
 			var options persistedSearchOptions
 			if json.Unmarshal([]byte(task.QBResponse), &options) == nil {
-				allowNonPreferred = options.AllowNonPreferred
 				force = force || options.Force
 			}
 		}
@@ -2722,7 +2719,7 @@ func (s *Server) runBulkReleaseJobs() {
 			release.IgnoreLocalForceDownload = true
 			release.IgnoreDownloadHistory = true
 		}
-		outcome, searchErr := s.downloads.SearchAndDownloadDetailed(context.Background(), release, item.SourceType, allowNonPreferred)
+		outcome, searchErr := s.downloads.SearchAndDownloadDetailed(context.Background(), release, item.SourceType)
 		finishTask := func(status, detail string) {
 			if task.ID == 0 {
 				return

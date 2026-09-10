@@ -253,7 +253,7 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 		}
 		if strings.TrimSpace(settings["stash_watchlist_tag_id"]) != "" && match.Watchlist {
 			watchlist := false
-			if err := s.store.PatchRelease(ctx, match.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil, nil); err != nil {
+			if err := s.store.PatchRelease(ctx, match.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil); err != nil {
 				return "", err
 			}
 		}
@@ -290,7 +290,7 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 			}
 		}
 		if watchlist != match.Watchlist {
-			if err := s.store.PatchRelease(ctx, match.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil, nil); err != nil {
+			if err := s.store.PatchRelease(ctx, match.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil); err != nil {
 				return "", err
 			}
 		}
