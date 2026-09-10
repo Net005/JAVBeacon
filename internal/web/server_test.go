@@ -279,7 +279,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`className='actionGroup statusGroup'`,
 		`status.innerHTML='<div class="actionGroupTitle">Status</div>'`,
 		`items.className='statusItems'`,
-		`items.append(...badges.children)`,
+		`function syncReleaseDetailDiscoverStatus(x){`,
 		`function detailFilterList(values,category)`,
 		`function syncDetailValueOverflow(root=releaseDetail)`,
 		`class="detailValueMore"`,

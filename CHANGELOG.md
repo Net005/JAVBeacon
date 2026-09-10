@@ -7,6 +7,32 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.156] - 2026-09-10
+
+### Fixed
+
+- Release Details could show different data depending on how it was
+  opened - e.g. Duration and the "Stash history" play badge present when
+  opened from Monitoring but missing when opened for the same release from
+  the Release Library - even with a fully cleared cache. Opening a release
+  that was already sitting in the Release Library's lightweight card list
+  painted an instant preview from that (deliberately trimmed) card data,
+  then only patched a couple of small pieces of the dialog once the full
+  release fetch resolved, leaving fields such as Duration, Story, and the
+  release date range that only the full record carries stuck at the
+  incomplete preview's values for as long as the dialog stayed open.
+  Release Details now always finishes with a full re-render once the
+  authoritative fetch resolves, so every field reflects the same complete
+  record regardless of entry point.
+- The Discover "Status" badges (download progress, local/library status,
+  Stash watch history) in Release Details were written into a DOM node
+  that a moment earlier had already been detached from the page as part of
+  building the visible "Status" panel, so after a release's first render
+  those badges could never be refreshed again for as long as the dialog
+  stayed open - they would go stale, disappear, or (once a background
+  update did land) reappear duplicated in the wrong spot. The Status panel
+  is now updated directly, in place, every time.
+
 ## [1.0.155] - 2026-09-10
 
 ### Fixed
