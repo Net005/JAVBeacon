@@ -813,11 +813,29 @@ function wireTouchSwipe(el,{next,previous,tap}={}){
 }
 function wireReleaseDetailTouchNavigation(){const layout=releaseDetail.querySelector('.releaseLayout'),art=layout?.querySelector('.releaseArt');if(!layout||!art)return;art.insertAdjacentHTML('beforeend','<button type="button" class="mobileCoverNav prev" aria-label="Previous release">‹</button><button type="button" class="mobileCoverNav next" aria-label="Next release">›</button>');art.querySelector('.mobileCoverNav.prev').onclick=e=>{e.stopPropagation();navigateRelease(-1)};art.querySelector('.mobileCoverNav.next').onclick=e=>{e.stopPropagation();navigateRelease(1)};wireTouchSwipe(layout,{next:()=>navigateRelease(1),previous:()=>navigateRelease(-1),tap:({clientX,target,pointerType})=>{const tappedArt=target.closest?.('.releaseArt');if(!tappedArt)return false;const rect=tappedArt.getBoundingClientRect(),x=clientX-rect.left;if(runEdgeTap(x,rect.width,navigateRelease))return true;if(pointerType!=='touch')return false;toggleDetailScreenshots(tappedArt);return true}})}
 function addReleaseMediaIndicators(){const art=releaseDetail.querySelector('.releaseArt');if(!art)return;art.insertAdjacentHTML('afterbegin','<span class="releaseNavPosition mediaPosition" aria-hidden="true" hidden></span><span class="detailScreenshotPosition mediaPosition" aria-hidden="true" hidden></span>')}
-function syncReleaseDetailStateControls(x){const states=[['.watchlistButton',x.watchlist,'Watchlist','patchWatchlist'],['.notifyButton',x.notify_on_release,'Notification','patchNotify'],['.monitorButton',x.monitor_download,'Monitoring','patchMonitor']];for(const[selector,active,label,action]of states){const button=releaseDetail.querySelector('.stateActions '+selector);if(!button)continue;button.classList.toggle('on',!!active);button.setAttribute('aria-pressed',String(!!active));button.setAttribute('onclick',`${action}(${x.id},${!active})`);button.innerHTML=stateToggleIcon(!!active)+`<span>${label}</span>`}const badges=releaseDetail.querySelector('.discoverBadges');if(badges)badges.innerHTML=downloadStatusBadge(x,'inline',true)+localStatusBadge(x,'inline',true)+releaseWatchHistoryButton(x)}
+// syncReleaseDetailDiscoverStatus keeps the release-detail "Status" group
+// (created by polishReleaseDetailControls, holding the download/local/watch-
+// history badges) in sync with fresh release data. It is idempotent and
+// creates or removes the Status group as needed, so it is safe to call any
+// time release data changes while the dialog is open - not just on first
+// render.
+function syncReleaseDetailDiscoverStatus(x){
+  const discover=releaseDetail.querySelector('.actionGroup.discoverActions'),html=downloadStatusBadge(x,'inline',true)+localStatusBadge(x,'inline',true)+releaseWatchHistoryButton(x);
+  let status=releaseDetail.querySelector('.statusGroup');
+  if(!html){status?.remove();return}
+  if(!status){
+    status=document.createElement('div');status.className='actionGroup statusGroup';
+    const items=document.createElement('div');items.className='statusItems';
+    status.innerHTML='<div class="actionGroupTitle">Status</div>';status.append(items);
+    if(discover)discover.before(status);else releaseDetail.querySelector('.detailActionGroups')?.prepend(status)
+  }
+  const items=status.querySelector('.statusItems')||status;
+  items.innerHTML=html
+}
+function syncReleaseDetailStateControls(x){const states=[['.watchlistButton',x.watchlist,'Watchlist','patchWatchlist'],['.notifyButton',x.notify_on_release,'Notification','patchNotify'],['.monitorButton',x.monitor_download,'Monitoring','patchMonitor']];for(const[selector,active,label,action]of states){const button=releaseDetail.querySelector('.stateActions '+selector);if(!button)continue;button.classList.toggle('on',!!active);button.setAttribute('aria-pressed',String(!!active));button.setAttribute('onclick',`${action}(${x.id},${!active})`);button.innerHTML=stateToggleIcon(!!active)+`<span>${label}</span>`}syncReleaseDetailDiscoverStatus(x)}
 function polishReleaseDetailControls(x){
-	const groups=releaseDetail.querySelector('.detailActionGroups'),discover=releaseDetail.querySelector('.actionGroup:not(.stateActions)'),actions=discover?.querySelectorAll(':scope > button')||[],head=discover?.querySelector('.actionGroupHead'),badges=head?.querySelector('.discoverBadges');
+	const discover=releaseDetail.querySelector('.actionGroup:not(.stateActions)'),actions=discover?.querySelectorAll(':scope > button')||[],head=discover?.querySelector('.actionGroupHead');
 	discover?.classList.add('discoverActions');
-	if(badges?.children.length){const status=document.createElement('div'),items=document.createElement('div');status.className='actionGroup statusGroup';items.className='statusItems';status.innerHTML='<div class="actionGroupTitle">Status</div>';status.append(items);items.append(...badges.children);groups?.insertBefore(status,discover)}
   if(head){head.className='actionGroupTitle';head.textContent='Discover'}
   const trackingTitle=releaseDetail.querySelector('.stateActions > small');if(trackingTitle){const title=document.createElement('div');title.className='actionGroupTitle';title.textContent='Tracking';trackingTitle.replaceWith(title)}
   if(actions[0])actions[0].innerHTML=actionIcon('search')+'<span>Search</span>';if(actions[1])actions[1].innerHTML=actionIcon('search')+'<span>+ Download</span>';if(actions[2])actions[2].innerHTML=actionIcon('update')+'<span>Update details</span>';
@@ -944,8 +962,7 @@ async function openRelease(id,navigable=false,navigationIDs=null,recordHistory=t
     await preloadReleaseAssets(x);
     if(request!==releaseOpenRequest||activeReleaseID!==id)return;
     activeReleaseData=x;document.title=releaseDocumentTitle(x);
-    if(cached)syncReleaseDetailStateControls(x);
-    else{releaseDetail.classList.remove('releaseSwapPending');renderReleaseDetail(x);animateReleaseDetailSwap();updateReleaseNav()}
+    releaseDetail.classList.remove('releaseSwapPending');renderReleaseDetail(x);animateReleaseDetailSwap();updateReleaseNav();
     prefetchReleaseNavigation()
   }catch(error){
     if(request!==releaseOpenRequest||activeReleaseID!==id)return;
