@@ -189,6 +189,38 @@ func (s *Server) setAPIKey(key string) {
 	s.key = key
 }
 
+var (
+	indexHTMLOnce sync.Once
+	indexHTMLBody []byte
+)
+
+// indexHTML returns static/index.html with its asset cache-busting query
+// string substituted for the running build's version. The committed file
+// carries a frozen placeholder ("...failed-timestamp" - a leftover from an
+// earlier, apparently broken versioning attempt that never actually
+// changed across releases), so every deployed version served the exact
+// same "/assets/app.js?v=..." URL - browsers that had already cached that
+// URL kept serving a stale copy indefinitely, no matter how many releases
+// shipped after. Substituting the real version here means the URL changes
+// on every release, the same way /assets/ already forces revalidation via
+// its own Cache-Control header.
+func indexHTML() []byte {
+	indexHTMLOnce.Do(func() {
+		raw, err := assets.ReadFile("static/index.html")
+		if err != nil {
+			return
+		}
+		indexHTMLBody = bytes.ReplaceAll(raw, []byte("20260908-failed-timestamp"), []byte(buildversion.Current()))
+	})
+	return indexHTMLBody
+}
+
+func serveIndexHTML(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(indexHTML())
+}
+
 func (s *Server) routes() {
 	static, _ := fs.Sub(assets, "static")
 	s.mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -238,10 +270,10 @@ func (s *Server) routes() {
 			http.NotFound(w, r)
 			return
 		}
-		http.ServeFileFS(w, r, assets, "static/index.html")
+		serveIndexHTML(w)
 	})
 	s.mux.HandleFunc("GET /search", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFileFS(w, r, assets, "static/index.html")
+		serveIndexHTML(w)
 	})
 	s.mux.HandleFunc("GET /opensearch.xml", func(w http.ResponseWriter, r *http.Request) {
 		scheme := "http"
@@ -262,7 +294,7 @@ func (s *Server) routes() {
 			http.NotFound(w, r)
 			return
 		}
-		http.ServeFileFS(w, r, assets, "static/index.html")
+		serveIndexHTML(w)
 	})
 	s.mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		s.json(w, 200, map[string]any{"status": "ok", "time": time.Now().UTC()})
