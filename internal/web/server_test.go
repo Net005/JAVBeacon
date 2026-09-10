@@ -2028,7 +2028,7 @@ func TestMissingLibrarySearchDownloadUsesNonBlockingActiveTasksView(t *testing.T
 			`result.error||result.reason||result.match_reason`,
 			`function retryMissingTasks(ids)`,
 			`.filter(missingTaskFailed).map(result=>result.scene_id)`,
-			`allow_non_preferred_filenames:!!missingActiveTaskStatus.allow_non_preferred_filenames`,
+			`api('/jobs/stash-missing-apply',{method:'POST',body:JSON.stringify({ids,mode:'monitor_download'})})`,
 		},
 		"static/app.css": {
 			`#missingActiveTasksTab.tasksRunning{`,

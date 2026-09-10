@@ -1365,7 +1365,7 @@ html.releaseOverlayOpen,body.releaseOverlayOpen{overflow:hidden!important;oversc
    geometry while retaining distinct, readable status colors. */
 .actionGroupHead{align-items:stretch}
 .actionGroupHead>small{align-self:center;flex:0 0 auto}
-.discoverBadges{display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));flex:1;gap:6px;min-width:0}
+.discoverBadges{display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));flex:1;gap:5px;min-width:0}.discoverBadges .releaseStatusInfo{grid-template-columns:18px minmax(0,1fr);gap:4px;min-height:34px;padding:4px 6px}.discoverBadges .releaseStatusIcon{width:18px;height:18px;font-size:10px}.discoverBadges .releaseStatusInfo small{font-size:7.5px}.discoverBadges .releaseStatusInfo b{font-size:9px}
 .releaseStatusInfo{
   display:grid;grid-template-columns:22px minmax(0,1fr);align-items:center;gap:7px;min-width:0;min-height:38px;padding:5px 8px;
   border:1px solid #40505d;border-radius:7px;background:#111820;color:#e4ebf2;text-decoration:none;box-shadow:inset 0 0 0 1px #ffffff05
