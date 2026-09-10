@@ -2813,3 +2813,26 @@ func TestReleasesVideoIDExactMatch(t *testing.T) {
 		t.Fatalf("expected no match for an unknown video_id, got %+v", none)
 	}
 }
+
+func TestReleaseUpgradeRunsPersistAndOrder(t *testing.T) {
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "release-upgrade-runs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	if _, err := s.SaveReleaseUpgradeRun(ctx, domain.ReleaseUpgradeRun{StartedAt: now.Add(-time.Minute), FinishedAt: now, Checked: 5, Upgraded: 2, Skipped: 3, Details: `[{"release_id":1,"video_id":"ABC-123","outcome":"upgraded"}]`}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveReleaseUpgradeRun(ctx, domain.ReleaseUpgradeRun{StartedAt: now.Add(time.Hour), FinishedAt: now.Add(2 * time.Hour), Checked: 1, Skipped: 1, Error: "search failed"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ReleaseUpgradeRuns(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Error != "search failed" || rows[1].Checked != 5 || rows[1].Upgraded != 2 || !strings.Contains(rows[1].Details, "ABC-123") {
+		t.Fatalf("release upgrade runs=%+v, want most recent (search failed) first", rows)
+	}
+}

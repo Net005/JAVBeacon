@@ -2372,3 +2372,142 @@ func TestReleasesEndpointVideoIDExactMatch(t *testing.T) {
 		t.Fatalf("expected case-insensitive exact Stash file path to resolve SSIS-001, got %+v", got)
 	}
 }
+
+// TestSettingsRejectsInvalidReleaseUpgradeValues covers PUT /api/settings
+// validation for the Release Upgrade Schedule's two settings:
+// release_upgrade_enabled must be "true"/"false" and release_upgrade_time
+// must be a valid HH:MM (or empty).
+func TestSettingsRejectsInvalidReleaseUpgradeValues(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "release-upgrade-settings-validation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{store: st, log: slog.Default()}
+	for _, body := range []string{
+		`{"release_upgrade_enabled":"yes"}`,
+		`{"release_upgrade_time":"25:99"}`,
+		`{"release_upgrade_time":"not-a-time"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.settings(rec, req)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body=%s status=%d response=%s, want 422", body, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestReleaseUpgradeSettingsAreReturnedBySettingsGet covers that the two
+// Release Upgrade Schedule settings round-trip through GET /api/settings
+// once saved - the settings store is a flat key-value map, so this mainly
+// guards against the response filtering (which drops a few sensitive
+// PikPak keys) accidentally also dropping these.
+func TestReleaseUpgradeSettingsAreReturnedBySettingsGet(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "release-upgrade-settings-roundtrip.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(context.Background(), map[string]string{"release_upgrade_enabled": "true", "release_upgrade_time": "03:30"}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, log: slog.Default()}
+	rec := httptest.NewRecorder()
+	s.settings(rec, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["release_upgrade_enabled"] != "true" || got["release_upgrade_time"] != "03:30" {
+		t.Fatalf("response = %+v, want release_upgrade_enabled=true release_upgrade_time=03:30", got)
+	}
+}
+
+// TestReleaseUpgradeJobStatusEndpoint covers GET /api/jobs/release-upgrade -
+// with nothing running it should report an idle job rather than error.
+func TestReleaseUpgradeJobStatusEndpoint(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "release-upgrade-status.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{mux: http.NewServeMux(), store: st, downloads: download.New(st, time.Second, slog.Default()), log: slog.Default()}
+	s.routes()
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/jobs/release-upgrade", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got domain.ReleaseUpgradeJob
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Running {
+		t.Fatalf("expected an idle job with nothing started, got %+v", got)
+	}
+}
+
+// TestReleaseUpgradeHistoryEndpoint covers GET /api/jobs/release-upgrade-history
+// - it should list previously persisted runs, most recent first, so the
+// Download Activity page can show "what it did" beyond just the live
+// status banner.
+func TestReleaseUpgradeHistoryEndpoint(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "release-upgrade-history.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	if _, err := st.SaveReleaseUpgradeRun(ctx, domain.ReleaseUpgradeRun{StartedAt: now.Add(-time.Minute), FinishedAt: now, Checked: 3, Upgraded: 1, Skipped: 2, Details: `[{"release_id":1,"video_id":"ABC-123","outcome":"upgraded"}]`}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{mux: http.NewServeMux(), store: st, downloads: download.New(st, time.Second, slog.Default()), log: slog.Default()}
+	s.routes()
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/jobs/release-upgrade-history", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got []domain.ReleaseUpgradeRun
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Checked != 3 || got[0].Upgraded != 1 || got[0].Skipped != 2 || !strings.Contains(got[0].Details, "ABC-123") {
+		t.Fatalf("history = %+v, want one run with checked=3 upgraded=1 skipped=2 and ABC-123 in details", got)
+	}
+}
+
+// TestReleaseUpgradeManualRunEndpoint covers POST /api/jobs/release-upgrade
+// - the operator "Run now" action. With no preferred-filename patterns
+// configured the run has nothing to check and finishes immediately, but
+// the endpoint should still accept the request and the completed run
+// should show up in the job status once it finishes.
+func TestReleaseUpgradeManualRunEndpoint(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "release-upgrade-manual-run.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{mux: http.NewServeMux(), store: st, downloads: download.New(st, time.Second, slog.Default()), log: slog.Default()}
+	s.routes()
+
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs/release-upgrade", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s, want 202", rec.Code, rec.Body.String())
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !s.downloads.ReleaseUpgradeStatus().Running {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("release upgrade run did not finish in time")
+}

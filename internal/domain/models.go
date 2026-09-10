@@ -782,6 +782,55 @@ type DownloadSearchRun struct {
 	Error      string    `json:"error,omitempty"`
 }
 
+// ReleaseUpgradeJob tracks the live/in-progress state of the Release
+// Upgrade Schedule - the scheduled job that re-checks already-downloaded
+// (HTTP-transport) releases within the configured release-date window and
+// replaces the local file with a better match when one is found that now
+// satisfies the #1 (highest-priority) preferred-filename pattern, where the
+// currently saved file does not.
+type ReleaseUpgradeJob struct {
+	Running     bool      `json:"running"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+	FinishedAt  time.Time `json:"finished_at,omitempty"`
+	Total       int       `json:"total"`
+	Checked     int       `json:"checked"`
+	Upgraded    int       `json:"upgraded"`
+	Skipped     int       `json:"skipped"`
+	Failed      int       `json:"failed"`
+	CurrentItem string    `json:"current_item,omitempty"`
+	LastError   string    `json:"last_error,omitempty"`
+}
+
+// ReleaseUpgradeRun is one completed Release Upgrade Schedule run, persisted
+// so the Download Activity page can show a history of what the schedule
+// found and changed - not just the live status of a run in progress.
+// Details is a JSON-encoded []ReleaseUpgradeOutcome describing exactly what
+// happened to each release the run looked at.
+type ReleaseUpgradeRun struct {
+	ID         int64     `json:"id"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at"`
+	Checked    int       `json:"checked"`
+	Upgraded   int       `json:"upgraded"`
+	Skipped    int       `json:"skipped"`
+	Failed     int       `json:"failed"`
+	Error      string    `json:"error,omitempty"`
+	Details    string    `json:"details,omitempty"`
+}
+
+// ReleaseUpgradeOutcome is one release's result within a single Release
+// Upgrade Schedule run. A slice of these, JSON-encoded, is what
+// ReleaseUpgradeRun.Details holds.
+type ReleaseUpgradeOutcome struct {
+	ReleaseID int64  `json:"release_id"`
+	VideoID   string `json:"video_id"`
+	// Outcome is "upgraded", "skipped", or "failed".
+	Outcome     string `json:"outcome"`
+	Reason      string `json:"reason,omitempty"`
+	OldFilename string `json:"old_filename,omitempty"`
+	NewFilename string `json:"new_filename,omitempty"`
+}
+
 type PathMapping struct {
 	ID             int64  `json:"id"`
 	DownloadPrefix string `json:"download_prefix"`

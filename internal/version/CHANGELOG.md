@@ -7,6 +7,26 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.157] - 2026-09-10
+
+### Added
+
+- New scheduled job: **Release Upgrade Schedule**. Once a day (time
+  configurable under Settings → Downloads), it re-checks every already
+  HTTP-downloaded release with a release date within 30 days of today (past
+  or future) whose saved file does not match your #1 (highest-priority)
+  preferred filename pattern, re-runs the normal Search + Download against
+  JavDB/Keepshare, and — only if a result is now found matching that #1
+  pattern — deletes the old video and its stale `.en.srt`, `.en.srt.json`,
+  `.ja.srt`, `.ja.srt.json`, and `.subtitles.json` sibling files and
+  downloads the replacement. Disabled by default; enable it and set a run
+  time under Settings → Downloads → Release Upgrade Schedule. Only
+  considers releases with a known HTTP download history, and only
+  HTTP-transport downloads (torrent-sourced releases are not upgraded). A
+  live status panel and a history of what each run checked, upgraded, and
+  skipped are shown on the Download Activity page, alongside a "Run now"
+  button and the usual scheduled-job log lines.
+
 ## [1.0.156] - 2026-09-10
 
 ### Fixed

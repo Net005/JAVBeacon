@@ -81,6 +81,8 @@ type Store interface {
 	JobHistory(context.Context, int, int) ([]domain.JobHistoryEntry, int, error)
 	SaveDownloadSearchRun(context.Context, domain.DownloadSearchRun) (domain.DownloadSearchRun, error)
 	DownloadSearchRuns(context.Context, string, int) ([]domain.DownloadSearchRun, error)
+	SaveReleaseUpgradeRun(context.Context, domain.ReleaseUpgradeRun) (domain.ReleaseUpgradeRun, error)
+	ReleaseUpgradeRuns(context.Context, int) ([]domain.ReleaseUpgradeRun, error)
 	SaveDownload(context.Context, domain.Download) (domain.Download, error)
 	Downloads(context.Context, string) ([]domain.Download, error)
 	DownloadActivity(context.Context, domain.DownloadFilter) ([]domain.Download, int, error)
@@ -184,6 +186,8 @@ CREATE TABLE IF NOT EXISTS filter_presets (id INTEGER PRIMARY KEY, user_id INTEG
 CREATE TABLE IF NOT EXISTS job_history (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, mode TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', scheduled INTEGER NOT NULL DEFAULT 0, site_count INTEGER NOT NULL DEFAULT 0, site_title TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', started_at DATETIME, finished_at DATETIME, added INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS download_search_runs (id INTEGER PRIMARY KEY, schedule TEXT NOT NULL, started_at DATETIME NOT NULL, finished_at DATETIME NOT NULL, checked INTEGER NOT NULL DEFAULT 0, found INTEGER NOT NULL DEFAULT 0, downloaded INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_download_search_runs_schedule_finished ON download_search_runs(schedule,finished_at DESC);
+CREATE TABLE IF NOT EXISTS release_upgrade_runs (id INTEGER PRIMARY KEY, started_at DATETIME NOT NULL, finished_at DATETIME NOT NULL, checked INTEGER NOT NULL DEFAULT 0, upgraded INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', details TEXT NOT NULL DEFAULT '[]');
+CREATE INDEX IF NOT EXISTS idx_release_upgrade_runs_finished ON release_upgrade_runs(finished_at DESC);
 CREATE TABLE IF NOT EXISTS downloads (id INTEGER PRIMARY KEY, release_id INTEGER REFERENCES releases(id) ON DELETE SET NULL, provider TEXT NOT NULL DEFAULT '', source_type TEXT NOT NULL DEFAULT '', source_reference TEXT NOT NULL DEFAULT '', transfer_reference TEXT NOT NULL DEFAULT '', source_page_url TEXT NOT NULL DEFAULT '', provider_file_id TEXT NOT NULL DEFAULT '', restored_file_id TEXT NOT NULL DEFAULT '', restored_parent_id TEXT NOT NULL DEFAULT '', restored_file_owned INTEGER NOT NULL DEFAULT 0, query TEXT NOT NULL DEFAULT '', torrent_hash TEXT NOT NULL DEFAULT '', transport TEXT NOT NULL DEFAULT 'torrent', destination_path TEXT NOT NULL DEFAULT '', bytes_total INTEGER NOT NULL DEFAULT 0, bytes_downloaded INTEGER NOT NULL DEFAULT 0, bytes_per_second INTEGER NOT NULL DEFAULT 0, name TEXT NOT NULL DEFAULT '', files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL, match_reason TEXT NOT NULL DEFAULT '', qb_response TEXT NOT NULL DEFAULT '', post_status TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', seed_ratio REAL NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, seeds INTEGER NOT NULL DEFAULT 0, peers INTEGER NOT NULL DEFAULT 0, eta_seconds INTEGER NOT NULL DEFAULT 0, seen_complete INTEGER NOT NULL DEFAULT 0, filename_pattern_excluded INTEGER NOT NULL DEFAULT 0, priority INTEGER NOT NULL DEFAULT 50, added_at DATETIME NOT NULL, updated_at DATETIME NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_downloads_status ON downloads(status);
 CREATE INDEX IF NOT EXISTS idx_downloads_release ON downloads(release_id);
@@ -3113,6 +3117,38 @@ func (s *SQLite) DownloadSearchRuns(ctx context.Context, schedule string, limit 
 	for rows.Next() {
 		var x domain.DownloadSearchRun
 		if err := rows.Scan(&x.ID, &x.Schedule, &x.StartedAt, &x.FinishedAt, &x.Checked, &x.Found, &x.Downloaded, &x.Skipped, &x.Failed, &x.Error); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) SaveReleaseUpgradeRun(ctx context.Context, x domain.ReleaseUpgradeRun) (domain.ReleaseUpgradeRun, error) {
+	if x.Details == "" {
+		x.Details = "[]"
+	}
+	id, err := s.dialect.InsertReturningID(ctx, s.db, `INSERT INTO release_upgrade_runs(started_at,finished_at,checked,upgraded,skipped,failed,error,details) VALUES(?,?,?,?,?,?,?,?)`, x.StartedAt, x.FinishedAt, x.Checked, x.Upgraded, x.Skipped, x.Failed, x.Error, x.Details)
+	if err != nil {
+		return x, err
+	}
+	x.ID = id
+	return x, nil
+}
+
+func (s *SQLite) ReleaseUpgradeRuns(ctx context.Context, limit int) ([]domain.ReleaseUpgradeRun, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 25
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,started_at,finished_at,checked,upgraded,skipped,failed,error,details FROM release_upgrade_runs ORDER BY finished_at DESC,id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.ReleaseUpgradeRun{}
+	for rows.Next() {
+		var x domain.ReleaseUpgradeRun
+		if err := rows.Scan(&x.ID, &x.StartedAt, &x.FinishedAt, &x.Checked, &x.Upgraded, &x.Skipped, &x.Failed, &x.Error, &x.Details); err != nil {
 			return nil, err
 		}
 		out = append(out, x)
