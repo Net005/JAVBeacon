@@ -157,113 +157,99 @@ func TestStashMissingApplyJobValidatesMode(t *testing.T) {
 	}
 }
 
-// TestStashMissingApplyJobPassesAllowNonPreferredFilenamesThrough covers
-// TODO-2.0 Task A's "Allow non-preferred filenames" toggle end-to-end
-// through the HTTP layer: the apply-job body's
-// allow_non_preferred_filenames field must reach
-// download.Service.SearchAndDownloadNow via stash.Service.StartApply, so a
-// seeded-but-unaccepted torrent is found and downloaded when the toggle is
-// set, and reported not_found (the pre-existing, stricter behavior) when
-// it's omitted - proving the field isn't silently dropped anywhere between
-// the JSON body and the download service.
-func TestStashMissingApplyJobPassesAllowNonPreferredFilenamesThrough(t *testing.T) {
-	run := func(t *testing.T, allowNonPreferred bool) stash.ApplyStatus {
-		ctx := context.Background()
-		st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "web-apply-fallback.db"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer st.Close()
+// TestStashMissingApplyJobDownloadsResultRegardlessOfFilenamePattern covers
+// the apply-job endpoint end-to-end through the HTTP layer: an ID-matched,
+// non-blacklisted torrent is found and downloaded via
+// download.Service.SearchAndDownloadNow (through stash.Service.StartApply)
+// even when it matches no preferred filename pattern at all - preferred
+// filename patterns are a pure priority/ranking signal now, not an
+// accept/reject gate.
+func TestStashMissingApplyJobDownloadsResultRegardlessOfFilenamePattern(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "web-apply-no-pattern.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
 
-		mux := http.NewServeMux()
-		mux.HandleFunc("/feed", func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(`<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>` +
-				`<item><title>rejected@ WEBFALLBACK-100 seeded</title><link>magnet:?xt=urn:btih:web</link><nyaa:seeders>5</nyaa:seeders></item>` +
-				`</channel></rss>`))
-		})
-		server := httptest.NewServer(mux)
-		defer server.Close()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/feed", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>` +
+			`<item><title>untrusted WEBFALLBACK-100 seeded</title><link>magnet:?xt=urn:btih:web</link><nyaa:seeders>5</nyaa:seeders></item>` +
+			`</channel></rss>`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
 
-		qbMux := http.NewServeMux()
-		qbMux.HandleFunc("POST /api/v2/auth/login", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("Ok.")) })
-		qbMux.HandleFunc("GET /api/v2/torrents/categories", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) })
-		// Service.Download now verifies a torrent actually registered in
-		// qBittorrent before trusting the "Ok." /add response (it can be
-		// returned for input qBittorrent never actually queues), so this
-		// stub must echo the torrent back through /torrents/info the same
-		// way a real qBittorrent instance would - but only once /add has
-		// actually been called, or the up-front duplicate check would see
-		// the torrent "already there" before anything was ever added.
-		var added bool
-		qbMux.HandleFunc("GET /api/v2/torrents/info", func(w http.ResponseWriter, _ *http.Request) {
-			if !added {
-				_, _ = w.Write([]byte(`[]`))
-				return
-			}
-			_, _ = w.Write([]byte(`[{"hash":"webfallbackhash","name":"rejected@ WEBFALLBACK-100 seeded"}]`))
-		})
-		qbMux.HandleFunc("POST /api/v2/torrents/add", func(w http.ResponseWriter, _ *http.Request) {
-			added = true
-			_, _ = w.Write([]byte("Ok."))
-		})
-		qbServer := httptest.NewServer(qbMux)
-		defer qbServer.Close()
+	qbMux := http.NewServeMux()
+	qbMux.HandleFunc("POST /api/v2/auth/login", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("Ok.")) })
+	qbMux.HandleFunc("GET /api/v2/torrents/categories", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) })
+	// Service.Download now verifies a torrent actually registered in
+	// qBittorrent before trusting the "Ok." /add response (it can be
+	// returned for input qBittorrent never actually queues), so this stub
+	// must echo the torrent back through /torrents/info the same way a
+	// real qBittorrent instance would - but only once /add has actually
+	// been called, or the up-front duplicate check would see the torrent
+	// "already there" before anything was ever added.
+	var added bool
+	qbMux.HandleFunc("GET /api/v2/torrents/info", func(w http.ResponseWriter, _ *http.Request) {
+		if !added {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"hash":"webfallbackhash","name":"untrusted WEBFALLBACK-100 seeded"}]`))
+	})
+	qbMux.HandleFunc("POST /api/v2/torrents/add", func(w http.ResponseWriter, _ *http.Request) {
+		added = true
+		_, _ = w.Write([]byte("Ok."))
+	})
+	qbServer := httptest.NewServer(qbMux)
+	defer qbServer.Close()
 
-		if err := st.SaveSettings(ctx, map[string]string{
-			"search_url_template": server.URL + "/feed?q=<release_id>",
-			"qb_url":              qbServer.URL,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		site, _ := st.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: false, Download: false})
-		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "WEBFALLBACK-100", Title: "T", Source: "GIGA"}); err != nil {
-			t.Fatal(err)
-		}
-		releases, _ := st.Releases(ctx, domain.ReleaseFilter{Search: "WEBFALLBACK-100", Limit: 1})
-		id, err := st.UpsertStashMissingScene(ctx, domain.StashMissingScene{StashSceneID: "scn-web-fallback", Title: "T", Code: "WEBFALLBACK-100"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := st.LinkStashMissingRelease(ctx, id, releases[0].ID); err != nil {
-			t.Fatal(err)
-		}
-
-		downloads := download.New(st, 2*time.Second, slog.Default())
-		stashSvc := stash.New(st, time.Second, slog.Default(), nil, downloads)
-		s := &Server{store: st, stash: stashSvc, log: slog.Default()}
-
-		body := map[string]any{"ids": []int64{id}, "mode": "monitor_download", "allow_non_preferred_filenames": allowNonPreferred}
-		raw, _ := json.Marshal(body)
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/jobs/stash-missing-apply", bytes.NewReader(raw))
-		s.stashMissingApplyJob(rec, req)
-		if rec.Code != http.StatusAccepted {
-			t.Fatalf("apply start: code=%d body=%s", rec.Code, rec.Body.String())
-		}
-
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if !stashSvc.ApplyRunStatus().Running {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		return stashSvc.ApplyRunStatus()
+	if err := st.SaveSettings(ctx, map[string]string{
+		"accepted_patterns":   "trusted@",
+		"search_url_template": server.URL + "/feed?q=<release_id>",
+		"qb_url":              qbServer.URL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: false, Download: false})
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "WEBFALLBACK-100", Title: "T", Source: "GIGA"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Search: "WEBFALLBACK-100", Limit: 1})
+	id, err := st.UpsertStashMissingScene(ctx, domain.StashMissingScene{StashSceneID: "scn-web-fallback", Title: "T", Code: "WEBFALLBACK-100"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LinkStashMissingRelease(ctx, id, releases[0].ID); err != nil {
+		t.Fatal(err)
 	}
 
-	t.Run("false: reports not_found despite the seeded result", func(t *testing.T) {
-		status := run(t, false)
-		if status.Found != 0 || status.NotFound != 1 {
-			t.Fatalf("expected not_found with the toggle off, got %+v", status)
-		}
-	})
+	downloads := download.New(st, 2*time.Second, slog.Default())
+	stashSvc := stash.New(st, time.Second, slog.Default(), nil, downloads)
+	s := &Server{store: st, stash: stashSvc, log: slog.Default()}
 
-	t.Run("true: finds and downloads the seeded-but-unaccepted result", func(t *testing.T) {
-		status := run(t, true)
-		if status.Found != 1 || status.NotFound != 0 {
-			t.Fatalf("expected found=1 with the toggle on, got %+v", status)
+	body := map[string]any{"ids": []int64{id}, "mode": "monitor_download"}
+	raw, _ := json.Marshal(body)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs/stash-missing-apply", bytes.NewReader(raw))
+	s.stashMissingApplyJob(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("apply start: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !stashSvc.ApplyRunStatus().Running {
+			break
 		}
-	})
+		time.Sleep(10 * time.Millisecond)
+	}
+	status := stashSvc.ApplyRunStatus()
+	if status.Found != 1 || status.NotFound != 0 {
+		t.Fatalf("expected found=1 despite matching no preferred filename pattern, got %+v", status)
+	}
 }
 
 // TestBrowseDirListsSubdirectoriesOnly covers the Settings "Browse" control

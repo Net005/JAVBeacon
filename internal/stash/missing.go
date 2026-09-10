@@ -734,20 +734,19 @@ type ApplyResult struct {
 // selection's search-and-download apply run is still in progress, rather
 // than a progress bar stuck at 0 until the whole batch finishes.
 type ApplyStatus struct {
-	Running           bool          `json:"running"`
-	Mode              string        `json:"mode,omitempty"`
-	AllowNonPreferred bool          `json:"allow_non_preferred_filenames,omitempty"`
-	StartedAt         time.Time     `json:"started_at,omitempty"`
-	FinishedAt        time.Time     `json:"finished_at,omitempty"`
-	Total             int           `json:"total"`
-	Processed         int           `json:"processed"`
-	CurrentItem       string        `json:"current_item,omitempty"`
-	Monitored         int           `json:"monitored"`
-	Found             int           `json:"found"`
-	NotFound          int           `json:"not_found"`
-	Failed            int           `json:"failed"`
-	Results           []ApplyResult `json:"results,omitempty"`
-	Error             string        `json:"error,omitempty"`
+	Running     bool          `json:"running"`
+	Mode        string        `json:"mode,omitempty"`
+	StartedAt   time.Time     `json:"started_at,omitempty"`
+	FinishedAt  time.Time     `json:"finished_at,omitempty"`
+	Total       int           `json:"total"`
+	Processed   int           `json:"processed"`
+	CurrentItem string        `json:"current_item,omitempty"`
+	Monitored   int           `json:"monitored"`
+	Found       int           `json:"found"`
+	NotFound    int           `json:"not_found"`
+	Failed      int           `json:"failed"`
+	Results     []ApplyResult `json:"results,omitempty"`
+	Error       string        `json:"error,omitempty"`
 }
 
 func (s *Service) ApplyRunStatus() ApplyStatus {
@@ -763,27 +762,23 @@ func (s *Service) ApplyRunStatus() ApplyStatus {
 // scene: mode ApplyModeMonitorOnly just flips MonitorDownload on; mode
 // ApplyModeMonitorDownload additionally searches and downloads immediately
 // in the background (no per-release confirmation), via download.Service's
-// SearchAndDownloadNow. allowNonPreferred is forwarded to SearchAndDownloadNow
-// as-is (see its doc comment) - it enables the TODO-2.0 Task A fallback chain
-// that accepts a seeded-but-unaccepted, or failing that merely most-recent,
-// result instead of requiring a clean accepted-filename-pattern match.
-// Both modes also always set IgnoreLocalForceDownload on the release (see
-// its doc comment) - unlike allowNonPreferred this is not a toggle, since
-// every release reachable from here already has a StashApp scene by
-// definition of being a "missing file" entry.
-func (s *Service) StartApply(ctx context.Context, ids []int64, mode string, allowNonPreferred bool) error {
+// SearchAndDownloadNow. Both modes also always set IgnoreLocalForceDownload
+// on the release (see its doc comment), since every release reachable from
+// here already has a StashApp scene by definition of being a "missing
+// file" entry.
+func (s *Service) StartApply(ctx context.Context, ids []int64, mode string) error {
 	s.applyMu.Lock()
 	if s.applyStatus.Running {
 		s.applyMu.Unlock()
 		return errors.New("apply already running")
 	}
-	s.applyStatus = ApplyStatus{Running: true, Mode: mode, AllowNonPreferred: allowNonPreferred, StartedAt: time.Now().UTC(), Total: len(ids)}
+	s.applyStatus = ApplyStatus{Running: true, Mode: mode, StartedAt: time.Now().UTC(), Total: len(ids)}
 	s.applyMu.Unlock()
-	go s.runApply(context.WithoutCancel(ctx), ids, mode, allowNonPreferred)
+	go s.runApply(context.WithoutCancel(ctx), ids, mode)
 	return nil
 }
 
-func (s *Service) runApply(ctx context.Context, ids []int64, mode string, allowNonPreferred bool) {
+func (s *Service) runApply(ctx context.Context, ids []int64, mode string) {
 	result := s.ApplyRunStatus()
 	result.Results = make([]ApplyResult, len(ids))
 	for index, id := range ids {
@@ -859,35 +854,21 @@ func (s *Service) runApply(ctx context.Context, ids []int64, mode string, allowN
 		task.Stage = "monitoring"
 		update(index, task)
 		monitor := true
-		// Persist allowNonPreferred onto the release itself (not just this
-		// one apply run) whenever the toggle was on: the scheduled
-		// download-search job's runSearch reads this same field so a
-		// release recovered with relaxed matching keeps getting relaxed
-		// matching on every future scheduled check too, instead of only
-		// this one manual apply ever seeing it.
-		var allowNonPreferredFlag *bool
-		if allowNonPreferred {
-			allowNonPreferredFlag = &allowNonPreferred
-		}
-		// ignoreLocal is always set (not conditional like allowNonPreferred)
-		// whenever a release is marked monitored from here: a Missing
-		// Library Files entry means the release's StashApp scene already
-		// exists (release.Local/StashSceneID set) but its actual file on
-		// disk is what's gone missing - the exact case
-		// download.Service.duplicate's normal "already exists in StashApp"
-		// skip gets wrong. Without this, both this apply's own immediate
-		// SearchAndDownloadNow call below and every future scheduled
-		// monitored-search check would silently skip these releases
-		// forever, since they show as already linked in StashApp.
+		// ignoreLocal is always set whenever a release is marked monitored
+		// from here: a Missing Library Files entry means the release's
+		// StashApp scene already exists (release.Local/StashSceneID set)
+		// but its actual file on disk is what's gone missing - the exact
+		// case download.Service.duplicate's normal "already exists in
+		// StashApp" skip gets wrong. Without this, both this apply's own
+		// immediate SearchAndDownloadNow call below and every future
+		// scheduled monitored-search check would silently skip these
+		// releases forever, since they show as already linked in StashApp.
 		ignoreLocal := true
-		if err := s.store.PatchRelease(ctx, release.ID, nil, nil, nil, nil, nil, &monitor, nil, allowNonPreferredFlag, &ignoreLocal); err != nil {
+		if err := s.store.PatchRelease(ctx, release.ID, nil, nil, nil, nil, nil, &monitor, nil, &ignoreLocal); err != nil {
 			task.Status = "failed"
 			task.Error = "Could not set release monitoring: " + err.Error()
 			record(index, task, true)
 			continue
-		}
-		if allowNonPreferred {
-			release.AllowNonPreferredFilenames = true
 		}
 		release.IgnoreLocalForceDownload = true
 		result.Monitored++
@@ -909,7 +890,7 @@ func (s *Service) runApply(ctx context.Context, ids []int64, mode string, allowN
 		result.CurrentItem = "Searching for " + release.VideoID + "…"
 		task.Stage = "searching"
 		update(index, task)
-		outcome, err := s.downloads.SearchAndDownloadDetailed(ctx, release, "Missing Library Recovery", allowNonPreferred)
+		outcome, err := s.downloads.SearchAndDownloadDetailed(ctx, release, "Missing Library Recovery")
 		task.Provider = outcome.Result.Provider
 		task.TorrentTitle = outcome.Result.Title
 		task.SourceURL = outcome.Result.SourceURL

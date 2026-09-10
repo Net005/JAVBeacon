@@ -451,7 +451,7 @@ func TestApplySelectionMonitorOnlySetsFlagWithoutSearching(t *testing.T) {
 	}
 
 	s := New(st, time.Second, slog.Default(), nil, nil)
-	s.runApply(ctx, []int64{id}, ApplyModeMonitorOnly, false)
+	s.runApply(ctx, []int64{id}, ApplyModeMonitorOnly)
 
 	status := s.ApplyRunStatus()
 	if status.Monitored != 1 || status.Found != 0 || status.NotFound != 0 || status.Failed != 0 {
@@ -501,7 +501,7 @@ func TestApplySelectionMonitorAndDownloadSearchesInBackground(t *testing.T) {
 
 	downloads := download.New(st, 2*time.Second, slog.Default())
 	s := New(st, time.Second, slog.Default(), nil, downloads)
-	s.runApply(ctx, []int64{id}, ApplyModeMonitorDownload, false)
+	s.runApply(ctx, []int64{id}, ApplyModeMonitorDownload)
 
 	status := s.ApplyRunStatus()
 	if status.Monitored != 1 || status.NotFound != 1 || status.Found != 0 || status.Failed != 0 {
@@ -537,7 +537,7 @@ func TestApplySelectionExplainsDatabaseAndJavLibraryLookupFailures(t *testing.T)
 	}
 
 	s := New(st, time.Second, slog.Default(), nil, nil)
-	s.runApply(ctx, []int64{missingID, javID}, ApplyModeMonitorDownload, false)
+	s.runApply(ctx, []int64{missingID, javID}, ApplyModeMonitorDownload)
 	status := s.ApplyRunStatus()
 	if status.Processed != 2 || status.Failed != 2 || len(status.Results) != 2 {
 		t.Fatalf("unexpected failure task summary: %+v", status)
@@ -576,7 +576,7 @@ func TestApplySelectionCanRetryPreviouslyFailedTask(t *testing.T) {
 		t.Fatal("apply task did not finish")
 		return ApplyStatus{}
 	}
-	if err := s.StartApply(ctx, []int64{sceneID}, ApplyModeMonitorDownload, true); err != nil {
+	if err := s.StartApply(ctx, []int64{sceneID}, ApplyModeMonitorDownload); err != nil {
 		t.Fatal(err)
 	}
 	first := wait()
@@ -608,23 +608,22 @@ func TestApplySelectionCanRetryPreviouslyFailedTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.downloads = download.New(st, time.Second, slog.Default())
-	if err := s.StartApply(ctx, []int64{sceneID}, ApplyModeMonitorDownload, first.AllowNonPreferred); err != nil {
+	if err := s.StartApply(ctx, []int64{sceneID}, ApplyModeMonitorDownload); err != nil {
 		t.Fatal(err)
 	}
 	retried := wait()
-	if !retried.AllowNonPreferred || retried.Processed != 1 || retried.Failed != 0 || retried.NotFound != 1 || len(retried.Results) != 1 || retried.Results[0].Status != "not_found" {
-		t.Fatalf("expected retry to replace the failed task and preserve its option, got %+v", retried)
+	if retried.Processed != 1 || retried.Failed != 0 || retried.NotFound != 1 || len(retried.Results) != 1 || retried.Results[0].Status != "not_found" {
+		t.Fatalf("expected retry to replace the failed task, got %+v", retried)
 	}
 }
 
-// TestApplySelectionSetsIgnoreLocalForceDownloadFlagAutomatically covers the
-// second half of the "Missing Library Files" fix: unlike allowNonPreferred
-// (an explicit checkbox), IgnoreLocalForceDownload is always set on a
-// release the moment runApply marks it monitored, in both apply modes and
-// regardless of the allowNonPreferred toggle - because every release
-// reachable from Missing Library Files already has a StashApp scene by
-// definition of being a "missing file" entry, so download.Service must
-// never skip it as an "already in StashApp" duplicate.
+// TestApplySelectionSetsIgnoreLocalForceDownloadFlagAutomatically covers
+// the "Missing Library Files" fix: IgnoreLocalForceDownload is always set
+// on a release the moment runApply marks it monitored, in both apply modes
+// - because every release reachable from Missing Library Files already has
+// a StashApp scene by definition of being a "missing file" entry, so
+// download.Service must never skip it as an "already in StashApp"
+// duplicate.
 func TestApplySelectionSetsIgnoreLocalForceDownloadFlagAutomatically(t *testing.T) {
 	ctx := context.Background()
 
@@ -648,7 +647,7 @@ func TestApplySelectionSetsIgnoreLocalForceDownloadFlagAutomatically(t *testing.
 		}
 
 		s := New(st, time.Second, slog.Default(), nil, nil)
-		s.runApply(ctx, []int64{id}, ApplyModeMonitorOnly, false)
+		s.runApply(ctx, []int64{id}, ApplyModeMonitorOnly)
 
 		release, err := st.Release(ctx, releases[0].ID)
 		if err != nil || !release.IgnoreLocalForceDownload {
@@ -656,7 +655,7 @@ func TestApplySelectionSetsIgnoreLocalForceDownloadFlagAutomatically(t *testing.
 		}
 	})
 
-	t.Run("monitor and download, allowNonPreferred off", func(t *testing.T) {
+	t.Run("monitor and download", func(t *testing.T) {
 		st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "apply-ignore-local-monitor-download.db"))
 		if err != nil {
 			t.Fatal(err)
@@ -686,7 +685,7 @@ func TestApplySelectionSetsIgnoreLocalForceDownloadFlagAutomatically(t *testing.
 
 		downloads := download.New(st, 2*time.Second, slog.Default())
 		s := New(st, time.Second, slog.Default(), nil, downloads)
-		s.runApply(ctx, []int64{id}, ApplyModeMonitorDownload, false)
+		s.runApply(ctx, []int64{id}, ApplyModeMonitorDownload)
 
 		release, err := st.Release(ctx, releases[0].ID)
 		if err != nil || !release.IgnoreLocalForceDownload {
@@ -766,7 +765,7 @@ func TestApplySelectionMonitorDownloadDownloadsDespiteExistingLocalStashScene(t 
 
 	downloads := download.New(st, 2*time.Second, slog.Default())
 	s := New(st, time.Second, slog.Default(), nil, downloads)
-	s.runApply(ctx, []int64{id}, ApplyModeMonitorDownload, false)
+	s.runApply(ctx, []int64{id}, ApplyModeMonitorDownload)
 
 	status := s.ApplyRunStatus()
 	if status.Found != 1 || status.NotFound != 0 || status.Failed != 0 {
@@ -790,147 +789,102 @@ func TestApplySelectionMonitorDownloadDownloadsDespiteExistingLocalStashScene(t 
 	}
 }
 
-// TestApplySelectionThreadsAllowNonPreferredThroughToSearchAndDownloadNow is
-
-// TODO-2.0 Task A's coverage for StartApply/runApply's new allowNonPreferred
-// parameter: given an identical feed carrying only a seeded-but-unaccepted
-// torrent, the apply job must report "not_found" when the toggle is off
-// (download.Service.SearchAndDownloadNow's original, stricter behavior) and
-// must actually find and download that result when the toggle is on - proof
-// the bool set by the "Allow non-preferred filenames" checkbox actually
-// reaches download.Service rather than being silently dropped somewhere in
-// stash.Service.
-func TestApplySelectionThreadsAllowNonPreferredThroughToSearchAndDownloadNow(t *testing.T) {
+// TestApplySelectionDownloadsResultRegardlessOfFilenamePattern covers
+// StartApply/runApply's search-and-download step after the
+// preferred-filename-gate removal: a release recovered through Missing
+// Library Files is found and downloaded via
+// download.Service.SearchAndDownloadNow even when the only available
+// result matches no preferred filename pattern at all - preferred
+// filename patterns are a pure priority/ranking signal now (see
+// matchFiles's doc comment), not an accept/reject gate a checkbox needed
+// to relax.
+func TestApplySelectionDownloadsResultRegardlessOfFilenamePattern(t *testing.T) {
 	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "apply-no-pattern-match.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
 
-	newScene := func(t *testing.T, st store.Store, videoID, sceneID string) (releaseID, sceneRowID int64) {
-		t.Helper()
-		site, _ := st.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: false, Download: false})
-		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: "T", Source: "GIGA"}); err != nil {
-			t.Fatal(err)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/feed", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>` +
+			`<item><title>untrusted THREAD-100 seeded</title><link>magnet:?xt=urn:btih:thread100hash</link><nyaa:seeders>3</nyaa:seeders></item>` +
+			`</channel></rss>`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	qbMux := http.NewServeMux()
+	qbMux.HandleFunc("POST /api/v2/auth/login", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("Ok.")) })
+	qbMux.HandleFunc("GET /api/v2/torrents/categories", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) })
+	// Service.Download now verifies a torrent actually registered in
+	// qBittorrent before trusting the "Ok." /add response (it can be
+	// returned for input qBittorrent never actually queues), so this stub
+	// must echo the torrent back through /torrents/info the same way a
+	// real qBittorrent instance would - but only once /add has actually
+	// been called, or the up-front duplicate check would see the torrent
+	// "already there" before anything was ever added.
+	var added bool
+	qbMux.HandleFunc("GET /api/v2/torrents/info", func(w http.ResponseWriter, _ *http.Request) {
+		if !added {
+			_, _ = w.Write([]byte(`[]`))
+			return
 		}
-		releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: videoID, Limit: 1})
-		if err != nil || len(releases) != 1 {
-			t.Fatalf("release setup failed: rows=%d err=%v", len(releases), err)
-		}
-		id, err := st.UpsertStashMissingScene(ctx, domain.StashMissingScene{StashSceneID: sceneID, Title: "T", Code: videoID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := st.LinkStashMissingRelease(ctx, id, releases[0].ID); err != nil {
-			t.Fatal(err)
-		}
-		return releases[0].ID, id
+		_, _ = w.Write([]byte(`[{"hash":"thread100hash","name":"untrusted THREAD-100 seeded"}]`))
+	})
+	qbMux.HandleFunc("POST /api/v2/torrents/add", func(w http.ResponseWriter, _ *http.Request) {
+		added = true
+		_, _ = w.Write([]byte("Ok."))
+	})
+	qbServer := httptest.NewServer(qbMux)
+	defer qbServer.Close()
+
+	if err := st.SaveSettings(ctx, map[string]string{
+		"accepted_patterns":   "trusted@",
+		"search_url_template": server.URL + "/feed?q=<release_id>",
+		"qb_url":              qbServer.URL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: false, Download: false})
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "THREAD-100", Title: "T", Source: "GIGA"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "THREAD-100", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release setup failed: rows=%d err=%v", len(releases), err)
+	}
+	id, err := st.UpsertStashMissingScene(ctx, domain.StashMissingScene{StashSceneID: "scn-thread-100", Title: "T", Code: "THREAD-100"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LinkStashMissingRelease(ctx, id, releases[0].ID); err != nil {
+		t.Fatal(err)
 	}
 
-	feed := func() *httptest.Server {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/feed", func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(`<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>` +
-				`<item><title>rejected@ THREAD-100 seeded but unaccepted</title><link>magnet:?xt=urn:btih:thread</link><nyaa:seeders>3</nyaa:seeders></item>` +
-				`</channel></rss>`))
-		})
-		return httptest.NewServer(mux)
+	downloads := download.New(st, 2*time.Second, slog.Default())
+	s := New(st, time.Second, slog.Default(), nil, downloads)
+	s.runApply(ctx, []int64{id}, ApplyModeMonitorDownload)
+
+	status := s.ApplyRunStatus()
+	if status.Found != 1 || status.NotFound != 0 || status.Failed != 0 {
+		t.Fatalf("expected found=1 despite matching no preferred filename pattern, got %+v", status)
 	}
 
-	t.Run("off: reports not_found even though a seeded result exists", func(t *testing.T) {
-		st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "allow-non-preferred-off.db"))
-		if err != nil {
-			t.Fatal(err)
+	rows, err := st.Downloads(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var downloading bool
+	for _, d := range rows {
+		if d.Name == "untrusted THREAD-100 seeded" && d.Status == "downloading" {
+			downloading = true
 		}
-		defer st.Close()
-		server := feed()
-		defer server.Close()
-		if err := st.SaveSettings(ctx, map[string]string{"search_url_template": server.URL + "/feed?q=<release_id>"}); err != nil {
-			t.Fatal(err)
-		}
-		_, sceneID := newScene(t, st, "THREAD-100", "scn-thread-100")
-
-		downloads := download.New(st, 2*time.Second, slog.Default())
-		s := New(st, time.Second, slog.Default(), nil, downloads)
-		s.runApply(ctx, []int64{sceneID}, ApplyModeMonitorDownload, false)
-
-		status := s.ApplyRunStatus()
-		if status.Found != 0 || status.NotFound != 1 || status.Failed != 0 {
-			t.Fatalf("expected not_found with allowNonPreferred=false, got %+v", status)
-		}
-	})
-
-	t.Run("on: downloads the seeded-but-unaccepted result via the fallback chain", func(t *testing.T) {
-		st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "allow-non-preferred-on.db"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer st.Close()
-		server := feed()
-		defer server.Close()
-
-		qbMux := http.NewServeMux()
-		qbMux.HandleFunc("POST /api/v2/auth/login", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("Ok.")) })
-		qbMux.HandleFunc("GET /api/v2/torrents/categories", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) })
-		// Service.Download now verifies a torrent actually registered in
-		// qBittorrent before trusting the "Ok." /add response (it can be
-		// returned for input qBittorrent never actually queues), so this
-		// stub must echo the torrent back through /torrents/info the same
-		// way a real qBittorrent instance would - but only once /add has
-		// actually been called, or the up-front duplicate check would see
-		// the torrent "already there" before anything was ever added.
-		var added bool
-		qbMux.HandleFunc("GET /api/v2/torrents/info", func(w http.ResponseWriter, _ *http.Request) {
-			if !added {
-				_, _ = w.Write([]byte(`[]`))
-				return
-			}
-			_, _ = w.Write([]byte(`[{"hash":"thread100hash","name":"rejected@ THREAD-100 seeded but unaccepted"}]`))
-		})
-		qbMux.HandleFunc("POST /api/v2/torrents/add", func(w http.ResponseWriter, _ *http.Request) {
-			added = true
-			_, _ = w.Write([]byte("Ok."))
-		})
-		qbServer := httptest.NewServer(qbMux)
-		defer qbServer.Close()
-
-		if err := st.SaveSettings(ctx, map[string]string{
-			"search_url_template": server.URL + "/feed?q=<release_id>",
-			"qb_url":              qbServer.URL,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		releaseID, sceneID := newScene(t, st, "THREAD-100", "scn-thread-100")
-
-		downloads := download.New(st, 2*time.Second, slog.Default())
-		s := New(st, time.Second, slog.Default(), nil, downloads)
-		s.runApply(ctx, []int64{sceneID}, ApplyModeMonitorDownload, true)
-
-		status := s.ApplyRunStatus()
-		if status.Found != 1 || status.NotFound != 0 || status.Failed != 0 {
-			t.Fatalf("expected found=1 with allowNonPreferred=true and a working qBittorrent, got %+v", status)
-		}
-
-		rows, err := st.Downloads(ctx, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var sawExcluded bool
-		for _, d := range rows {
-			if d.Name == "rejected@ THREAD-100 seeded but unaccepted" && d.FilenamePatternExcluded && d.Status == "downloading" {
-				sawExcluded = true
-			}
-		}
-		if !sawExcluded {
-			t.Fatalf("expected the fallback pick to be downloaded and marked FilenamePatternExcluded, got %+v", rows)
-		}
-		// The override must persist on the release itself, not just this
-		// one apply run, so the scheduled download-search job keeps using
-		// relaxed matching for it on every future check too.
-		release, err := st.Release(ctx, releaseID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !release.AllowNonPreferredFilenames {
-			t.Fatalf("expected allowNonPreferred=true to persist onto the release, got %+v", release)
-		}
-	})
+	}
+	if !downloading {
+		t.Fatalf("expected the result to be downloaded, got %+v", rows)
+	}
 }
 
 // TestRetrieveReportsLiveProgressBetweenScenes is TODO-2.0 Task A's core
@@ -1054,7 +1008,7 @@ func TestApplyReportsLiveProgressBetweenScenes(t *testing.T) {
 
 	downloads := download.New(st, 2*time.Second, slog.Default())
 	s = New(st, time.Second, slog.Default(), nil, downloads)
-	s.runApply(ctx, []int64{idA, idB}, ApplyModeMonitorDownload, false)
+	s.runApply(ctx, []int64{idA, idB}, ApplyModeMonitorDownload)
 
 	// By the time release B's search fires, both releases have already had
 	// PatchRelease's monitor flag set (that happens before each release's

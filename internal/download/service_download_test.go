@@ -459,7 +459,15 @@ func TestHTTPDownloadSizeMismatchExplainsAuthenticatedAccountLimit(t *testing.T)
 	}
 }
 
-func TestDownloadRechecksFilenameRulesServerSide(t *testing.T) {
+// TestDownloadRechecksReleaseIDMatchServerSide covers the preferred-
+// filename-gate removal: Download no longer re-checks a torrent result
+// against the configured filename patterns (a match against no preferred
+// pattern is accepted now - see matchFiles's doc comment). It still never
+// blindly trusts a caller-supplied Accepted=true, though - it always
+// recomputes acceptance itself from the release-ID match and the
+// blacklist, so a result whose title does not actually contain the
+// release ID is still rejected server-side.
+func TestDownloadRechecksReleaseIDMatchServerSide(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "downloads.db"))
 	if err != nil {
@@ -474,11 +482,11 @@ func TestDownloadRechecksFilenameRulesServerSide(t *testing.T) {
 	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
 	service := New(st, time.Second, slog.Default())
 	sourceURL := "https://sukebei.nyaa.si/view/4544529"
-	result, err := service.Download(ctx, releases[0], domain.SearchResult{Provider: "Sukebei/Nyaa", Title: "PRED-888 untrusted filename", Link: "magnet:?xt=fake", SourceURL: sourceURL, Accepted: true}, "Manual Search", "test")
+	result, err := service.Download(ctx, releases[0], domain.SearchResult{Provider: "Sukebei/Nyaa", Title: "unrelated title", Link: "magnet:?xt=fake", SourceURL: sourceURL, Accepted: true}, "Manual Search", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "failed" || result.Error != "result rejected by filename rules" {
+	if result.Status != "failed" || result.Error != "torrent result rejected: torrent filename did not contain release ID" {
 		t.Fatalf("client-provided acceptance was trusted: %+v", result)
 	}
 	if result.SourceReference != sourceURL {
@@ -542,11 +550,13 @@ func TestDownloadProceedsImmediatelyRegardlessOfReleaseDate(t *testing.T) {
 	}
 }
 
-// TestDownloadForcedOverrideBypassesFilenameRejection covers Phase 5B:
-// forcing a download must bypass the automatic accepted-filename rejection
-// for that one result, while still recording in history that it was a
-// manual override rather than a normal accepted match.
-func TestDownloadForcedOverrideBypassesFilenameRejection(t *testing.T) {
+// TestDownloadForcedOverrideBypassesReleaseIDRejection covers Phase 5B
+// under the preferred-filename-gate removal: forcing a download must
+// bypass the automatic release-ID-match rejection for that one result
+// (the only remaining hard accept/reject check besides the blacklist),
+// while still recording in history that it was a manual override rather
+// than a normal accepted match.
+func TestDownloadForcedOverrideBypassesReleaseIDRejection(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "downloads.db"))
 	if err != nil {
@@ -564,20 +574,20 @@ func TestDownloadForcedOverrideBypassesFilenameRejection(t *testing.T) {
 	}
 	service := New(st, time.Second, slog.Default())
 
-	rejected, err := service.Download(ctx, releases[0], domain.SearchResult{Provider: "Sukebei/Nyaa", Title: "PRED-890 untrusted filename", Link: "magnet:?xt=fake"}, "Manual Search", "test")
+	rejected, err := service.Download(ctx, releases[0], domain.SearchResult{Provider: "Sukebei/Nyaa", Title: "unrelated title", Link: "magnet:?xt=fake"}, "Manual Search", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rejected.Status != "failed" || rejected.Error != "result rejected by filename rules" {
+	if rejected.Status != "failed" || rejected.Error != "torrent result rejected: torrent filename did not contain release ID" {
 		t.Fatalf("baseline (non-forced) result was not rejected: %+v", rejected)
 	}
 
-	forced, err := service.Download(ctx, releases[0], domain.SearchResult{Provider: "Sukebei/Nyaa", Title: "PRED-890 untrusted filename", Link: "magnet:?xt=fake", Forced: true}, "Manual Search", "test")
+	forced, err := service.Download(ctx, releases[0], domain.SearchResult{Provider: "Sukebei/Nyaa", Title: "unrelated title", Link: "magnet:?xt=fake", Forced: true}, "Manual Search", "test")
 	if err != nil && forced.Status == "" {
 		t.Fatal(err)
 	}
-	if forced.Status == "failed" && forced.Error == "result rejected by filename rules" {
-		t.Fatalf("forced download was still rejected by filename rules: %+v", forced)
+	if forced.Status == "failed" && strings.Contains(forced.Error, "torrent result rejected") {
+		t.Fatalf("forced download was still rejected: %+v", forced)
 	}
 	if forced.Status != "failed" || forced.Error != "qBittorrent URL is not configured" {
 		t.Fatalf("expected the forced download to reach the qBittorrent step, got: %+v err=%v", forced, err)
@@ -623,7 +633,7 @@ func TestManualLocalRedownloadRequiresExplicitIgnoreLocalOverride(t *testing.T) 
 	if err == nil || forced.Status != "failed" || forced.Error != "qBittorrent URL is not configured" {
 		t.Fatalf("explicit local override did not reach the download client: %+v err=%v", forced, err)
 	}
-	if forced.FilenamePatternExcluded || !strings.Contains(forced.MatchReason, "existing StashApp match") {
+	if !strings.Contains(forced.MatchReason, "existing StashApp match") {
 		t.Fatalf("local override was not recorded independently from filename matching: %+v", forced)
 	}
 }

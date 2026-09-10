@@ -101,9 +101,18 @@ func (n *Nyaa) Search(ctx context.Context, releaseID string) ([]domain.SearchRes
 			if !strings.Contains(canonical(title), canonical(releaseID)) {
 				continue
 			}
-			accepted, reason, priority, matchedFile := n.matchFiles(title, nil)
+			preferredMatch, preferredReason, priority, matchedFile := n.matchFiles(title, nil)
 			blacklisted, _, _ := n.blacklistMatch(title, nil)
-			results = append(results, domain.SearchResult{Provider: n.Name(), Title: title, MatchedFile: matchedFile, PreferredFilenameMatch: accepted, PreferredFilenamePriority: priority, BlacklistedFilenameMatch: blacklisted, Link: html.UnescapeString(string(m[1])), Accepted: accepted, Reason: reason})
+			// Accepted no longer requires a preferred-filename match (see
+			// matchFiles's doc comment) - only a blacklist match rejects a
+			// torrent result outright. The release-ID match that gated this
+			// result into `results` in the first place already stands in for
+			// the old ID-containment check.
+			accepted, reason := !blacklisted, preferredReason
+			if blacklisted {
+				reason = "torrent filename matched a blacklisted pattern"
+			}
+			results = append(results, domain.SearchResult{Provider: n.Name(), Title: title, MatchedFile: matchedFile, PreferredFilenameMatch: preferredMatch, PreferredFilenamePriority: priority, BlacklistedFilenameMatch: blacklisted, Link: html.UnescapeString(string(m[1])), Accepted: accepted, Reason: reason})
 		}
 	}
 	return results, nil
@@ -136,8 +145,15 @@ func (n *Nyaa) resolveResult(ctx context.Context, title, detailURL, directURL st
 			fileDetails = []domain.SearchFile{{Name: magnetName}}
 		}
 	}
-	accepted, reason, priority, matchedFile := n.matchFiles(title, files)
+	preferredMatch, preferredReason, priority, matchedFile := n.matchFiles(title, files)
 	blacklisted, _, _ := n.blacklistMatch(title, files)
+	// Accepted no longer requires a preferred-filename match (see
+	// matchFiles's doc comment) - only a blacklist match or a missing
+	// download link rejects a torrent result outright.
+	accepted, reason := !blacklisted, preferredReason
+	if blacklisted {
+		reason = "torrent filename matched a blacklisted pattern"
+	}
 	if link == "" {
 		accepted = false
 		reason = "torrent detail did not expose a magnet or .torrent link"
@@ -149,7 +165,7 @@ func (n *Nyaa) resolveResult(ctx context.Context, title, detailURL, directURL st
 	for i := range fileDetails {
 		fileDetails[i].Matched = fileDetails[i].Name == matchedFile
 	}
-	return domain.SearchResult{Provider: n.Name(), Title: title, Files: files, FileDetails: fileDetails, MatchedFile: matchedFile, PreferredFilenameMatch: accepted && matchedFile != "", PreferredFilenamePriority: priority, BlacklistedFilenameMatch: blacklisted, Link: link, SourceURL: sourceURL, Accepted: accepted, Reason: reason}
+	return domain.SearchResult{Provider: n.Name(), Title: title, Files: files, FileDetails: fileDetails, MatchedFile: matchedFile, PreferredFilenameMatch: preferredMatch, PreferredFilenamePriority: priority, BlacklistedFilenameMatch: blacklisted, Link: link, SourceURL: sourceURL, Accepted: accepted, Reason: reason}
 }
 
 func (n *Nyaa) resolveDetail(ctx context.Context, rawURL string) (string, string, []string, []domain.SearchFile, error) {
@@ -214,19 +230,16 @@ func magnetDisplayName(link string) string {
 	}
 	return strings.TrimSpace(parsed.Query().Get("dn"))
 }
-func (n *Nyaa) accept(title string) (bool, string) {
-	return n.acceptFiles(title, nil)
-}
 
-func (n *Nyaa) acceptFiles(title string, files []string) (bool, string) {
-	accepted, reason, _, _ := n.matchFiles(title, files)
-	return accepted, reason
-}
-
+// matchFiles scores title/files against the configured (or legacy/default)
+// preferred filename patterns, in priority order, and reports the highest-
+// priority match. It is a PURE preference signal, not an accept/reject
+// gate: callers no longer treat "no pattern matched" as a reason to reject
+// a result - a preferred match is simply tried/ranked first, and download
+// falls back to the best remaining candidate otherwise (see
+// fallbackSearchCandidate in service.go). A blacklist match is a separate,
+// still-hard exclusion handled by blacklistMatch, not by this function.
 func (n *Nyaa) matchFiles(title string, files []string) (bool, string, int, string) {
-	if matched, pattern, candidate := n.blacklistMatch(title, files); matched {
-		return false, fmt.Sprintf("filename matched blacklist pattern %s: %s", pattern, candidate), 0, ""
-	}
 	patterns := normalizePreferredFilenamePatterns(n.PreferredPatterns)
 	if len(patterns) == 0 {
 		patterns = legacyPreferredFilenamePatterns(n.AcceptedPatterns)
@@ -246,7 +259,7 @@ func (n *Nyaa) matchFiles(title string, files []string) (bool, string, int, stri
 			}
 		}
 	}
-	return false, "filename did not match preferred patterns", 0, ""
+	return false, "no preferred filename pattern matched", 0, ""
 }
 
 func (n *Nyaa) blacklistMatch(title string, files []string) (bool, string, string) {

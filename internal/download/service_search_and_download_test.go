@@ -51,7 +51,7 @@ func TestSearchAndDownloadNowIgnoresSiteDownloadGate(t *testing.T) {
 	}
 
 	service := New(st, 2*time.Second, slog.Default())
-	accepted, err := service.SearchAndDownloadNow(ctx, releases[0], "Missing Library Recovery", false)
+	accepted, err := service.SearchAndDownloadNow(ctx, releases[0], "Missing Library Recovery")
 	// qBittorrent is not configured, so the accepted match still fails at the
 	// final step - proving the flow reached Download (past the Auto gate that
 	// would otherwise have skipped it silently) rather than actually needing
@@ -78,12 +78,18 @@ func TestSearchAndDownloadNowIgnoresSiteDownloadGate(t *testing.T) {
 	}
 }
 
-// TestSearchSortsAcceptedMatchesFirstThenBySeeders covers the Search &
-// Download window's default ordering: a release with several candidate
-// torrents should surface the one actually likely to finish - accepted by
-// the filename patterns, then most seeded - first, rather than whatever
-// order the indexer happened to list them in.
-func TestSearchSortsAcceptedMatchesFirstThenBySeeders(t *testing.T) {
+// TestSearchSortsPreferredFilenameMatchesFirstThenBySeeders covers the
+// Search & Download window's default ordering: a release with several
+// candidate torrents should surface the one actually likely to finish -
+// matching a configured preferred-filename pattern first (first choice),
+// then most seeded within that tier - rather than whatever order the
+// indexer happened to list them in. A release-ID match that matches no
+// preferred pattern is still Accepted (see SearchResult.Accepted's doc
+// comment - the preferred-pattern toggle was removed, it's a ranking
+// signal only now), so it must still sort behind the preferred matches
+// despite a higher seed count - that's the "fallback on the existing
+// logic after that" half of the ordering.
+func TestSearchSortsPreferredFilenameMatchesFirstThenBySeeders(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "search-sort-order.db"))
 	if err != nil {
@@ -125,13 +131,16 @@ func TestSearchSortsAcceptedMatchesFirstThenBySeeders(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("expected 3 results, got %+v", rows)
 	}
-	if !rows[0].Accepted || rows[0].Seeds != 50 {
-		t.Fatalf("first result = %+v, want the higher-seeded accepted match first", rows[0])
+	if !rows[0].Accepted || !rows[0].PreferredFilenameMatch || rows[0].Seeds != 50 {
+		t.Fatalf("first result = %+v, want the higher-seeded preferred-pattern match first", rows[0])
 	}
-	if !rows[1].Accepted || rows[1].Seeds != 2 {
-		t.Fatalf("second result = %+v, want the lower-seeded accepted match second", rows[1])
+	if !rows[1].Accepted || !rows[1].PreferredFilenameMatch || rows[1].Seeds != 2 {
+		t.Fatalf("second result = %+v, want the lower-seeded preferred-pattern match second", rows[1])
 	}
-	if rows[2].Accepted {
-		t.Fatalf("third result = %+v, want the rejected match last despite its higher seed count", rows[2])
+	// Still Accepted (release-ID matched, not blacklisted) despite matching
+	// no preferred pattern - it just falls to the back of the order behind
+	// both preferred matches, seed count notwithstanding.
+	if !rows[2].Accepted || rows[2].PreferredFilenameMatch {
+		t.Fatalf("third result = %+v, want an accepted-but-not-preferred-matched result last despite its higher seed count", rows[2])
 	}
 }

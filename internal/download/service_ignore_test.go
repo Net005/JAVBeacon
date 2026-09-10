@@ -217,14 +217,6 @@ func TestRunSearchSkipsIgnoredMonitoredRelease(t *testing.T) {
 	}
 }
 
-// TestRunSearchUsesPersistedAllowNonPreferredFlagForFlaggedRelease covers
-// the fix for the reported bug: a release recovered via Missing Library
-// Files with "allow non-preferred filenames" on (or manually flagged
-// through the monitored-releases bulk action) persists that choice on
-// domain.Release.AllowNonPreferredFilenames, and the scheduled
-// download-search job (runSearch) must honor it the same way
-// SearchAndDownloadNow does - applying fallbackSearchCandidate's relaxed
-// matching instead of only ever accepting a normal filename-pattern match.
 // TestRunSearchSkipsLocalReleaseWithoutIgnoreLocalFlag covers the scheduled
 // monitored-search job's default behavior, unchanged: a release already
 // linked in StashApp (Local=true) is skipped before ever searching, exactly
@@ -271,7 +263,7 @@ func TestRunSearchSkipsLocalReleaseWithoutIgnoreLocalFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	monitor := true
-	if err := st.PatchRelease(ctx, releases[0].ID, nil, nil, nil, nil, nil, &monitor, nil, nil, nil); err != nil {
+	if err := st.PatchRelease(ctx, releases[0].ID, nil, nil, nil, nil, nil, &monitor, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -358,7 +350,7 @@ func TestRunSearchDownloadsLocalReleaseWhenIgnoreLocalFlagSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	monitor, ignore := true, true
-	if err := st.PatchRelease(ctx, releases[0].ID, nil, nil, nil, nil, nil, &monitor, nil, nil, &ignore); err != nil {
+	if err := st.PatchRelease(ctx, releases[0].ID, nil, nil, nil, nil, nil, &monitor, nil, &ignore); err != nil {
 		t.Fatal(err)
 	}
 
@@ -395,9 +387,16 @@ func TestRunSearchDownloadsLocalReleaseWhenIgnoreLocalFlagSet(t *testing.T) {
 	}
 }
 
-func TestRunSearchUsesPersistedAllowNonPreferredFlagForFlaggedRelease(t *testing.T) {
+// TestRunSearchDownloadsAnyIDMatchedResultRegardlessOfFilenamePattern covers
+// the preferred-filename-gate removal: the scheduled download-search job
+// (runSearch) downloads an ID-matched, non-blacklisted result even when it
+// matches no preferred filename pattern at all - preferred filename
+// patterns are a pure priority/ranking signal now (see matchFiles's doc
+// comment), not an accept/reject gate that needed a persisted per-release
+// override to relax.
+func TestRunSearchDownloadsAnyIDMatchedResultRegardlessOfFilenamePattern(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "runsearch-allow-non-preferred.db"))
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "runsearch-no-pattern-match.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +405,7 @@ func TestRunSearchUsesPersistedAllowNonPreferredFlagForFlaggedRelease(t *testing
 	mux := http.NewServeMux()
 	mux.HandleFunc("/feed", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>` +
-			`<item><title>rejected@ PRED-905 seeded</title><link>magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&amp;dn=rejected%40+PRED-905+seeded</link><nyaa:seeders>3</nyaa:seeders></item>` +
+			`<item><title>untrusted PRED-905 seeded</title><link>magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&amp;dn=untrusted+PRED-905+seeded</link><nyaa:seeders>3</nyaa:seeders></item>` +
 			`</channel></rss>`))
 	})
 	server := httptest.NewServer(mux)
@@ -420,7 +419,7 @@ func TestRunSearchUsesPersistedAllowNonPreferredFlagForFlaggedRelease(t *testing
 			_, _ = w.Write([]byte(`[]`))
 			return
 		}
-		_, _ = w.Write([]byte(`[{"hash":"0123456789abcdef0123456789abcdef01234567","name":"rejected@ PRED-905 seeded"}]`))
+		_, _ = w.Write([]byte(`[{"hash":"0123456789abcdef0123456789abcdef01234567","name":"untrusted PRED-905 seeded"}]`))
 	})
 	qbMux.HandleFunc("POST /api/v2/torrents/add", func(w http.ResponseWriter, _ *http.Request) {
 		added = true
@@ -440,14 +439,6 @@ func TestRunSearchUsesPersistedAllowNonPreferredFlagForFlaggedRelease(t *testing
 	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "PRED-905", Title: "Test", Source: "JavLibrary", Released: true, MonitorDownload: true}); err != nil {
 		t.Fatal(err)
 	}
-	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "PRED-905", Limit: 10})
-	if err != nil || len(releases) != 1 {
-		t.Fatalf("release setup failed: rows=%+v err=%v", releases, err)
-	}
-	allow := true
-	if err := st.PatchRelease(ctx, releases[0].ID, nil, nil, nil, nil, nil, nil, nil, &allow, nil); err != nil {
-		t.Fatal(err)
-	}
 
 	service := New(st, 2*time.Second, slog.Default())
 	if err := service.StartSearch(ctx); err != nil {
@@ -462,19 +453,19 @@ func TestRunSearchUsesPersistedAllowNonPreferredFlagForFlaggedRelease(t *testing
 		t.Fatalf("scheduled search job did not finish in time: %+v", status)
 	}
 	if status.Downloaded != 1 {
-		t.Fatalf("expected the flagged release's non-preferred match to be downloaded by the scheduled job, got %+v", status)
+		t.Fatalf("expected the result to be downloaded by the scheduled job despite matching no preferred filename pattern, got %+v", status)
 	}
 	downloads, err := st.Downloads(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sawExcluded bool
+	var downloading bool
 	for _, d := range downloads {
-		if d.Status == "downloading" && d.FilenamePatternExcluded {
-			sawExcluded = true
+		if d.Status == "downloading" {
+			downloading = true
 		}
 	}
-	if !sawExcluded {
-		t.Fatalf("expected the scheduled job's fallback pick to be recorded as downloading and FilenamePatternExcluded, got %+v", downloads)
+	if !downloading {
+		t.Fatalf("expected a downloading download row, got %+v", downloads)
 	}
 }

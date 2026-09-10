@@ -42,9 +42,10 @@ type Store interface {
 	// so a run that merely confirms or repairs screenshots on an old release
 	// doesn't pull it back to the top of "sort by date updated."
 	UpsertReleaseKeepUpdatedAt(context.Context, domain.Release) (bool, error)
-	PatchRelease(context.Context, int64, *bool, *bool, *bool, *bool, *bool, *bool, *string, *bool, *bool, ...*bool) error
-	BulkSetReleaseFlags(context.Context, []int64, *bool, *bool, *bool, ...*bool) (int64, error)
-	BulkSetReleaseDownloadOverrides(context.Context, []int64, string, bool, bool, bool) (int64, error)
+	PatchRelease(context.Context, int64, *bool, *bool, *bool, *bool, *bool, *bool, *string, *bool, ...*bool) error
+	BulkSetReleaseFlags(context.Context, []int64, *bool, *bool, ...*bool) (int64, error)
+	BulkResetIgnoreLocalForceDownload(context.Context, []int64) (int64, error)
+	BulkSetReleaseDownloadOverrides(context.Context, []int64, string, bool, bool) (int64, error)
 	SetReleaseMonitoring(context.Context, int64, bool, string, int64) error
 	SetStashState(context.Context, int64, bool, string) error
 	SetStashFilePath(context.Context, int64, string) error
@@ -1044,7 +1045,7 @@ func releaseSelect(d Dialect) string {
 	// completion time. Active downloads take precedence over completed ones so
 	// the status pill and its URL always describe the same download row.
 	tags := d.JSONArrayAgg("name", "SELECT name FROM release_tags WHERE release_id=r.id ORDER BY position")
-	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,r.director,r.studio,r.label,` + tags + `,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_file_path,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.ignore_local_force_download,r.ignore_download_history,r.download_method_override,r.http_download_primary,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.transport FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),'torrent'),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	return `SELECT r.id,r.site_id,s.title,` + siteIDs + `,` + siteTitles + `,r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,r.director,r.studio,r.label,` + tags + `,r.duration,r.story,r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_file_path,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.ignore_local_force_download,r.ignore_download_history,r.download_method_override,r.http_download_primary,r.o_counter,r.play_count,r.last_played_at,r.last_o_count_at,r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.transport FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),'torrent'),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 // releaseCardSelect keeps the Release Library payload small. Release Details
@@ -1054,14 +1055,14 @@ func releaseSelect(d Dialect) string {
 func releaseCardSelect(d Dialect) string {
 	actresses := d.JSONArrayAgg("name", "SELECT name FROM release_actresses WHERE release_id=r.id ORDER BY position")
 	tags := d.JSONArrayAgg("name", "SELECT name FROM release_tags WHERE release_id=r.id ORDER BY position")
-	return `SELECT r.id,r.site_id,s.title,'[]','[]',r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,'',r.studio,r.label,` + tags + `,'','',r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_file_path,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.allow_non_preferred_filenames,r.ignore_local_force_download,r.ignore_download_history,r.download_method_override,r.http_download_primary,0,0,'','',r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.transport FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),'torrent'),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
+	return `SELECT r.id,r.site_id,s.title,'[]','[]',r.video_id,r.scraper_id,r.title,r.release_date,r.source,r.image_url,r.product_url,` + actresses + `,'',r.studio,r.label,` + tags + `,'','',r.screenshots,r.released,r.is_local,r.notified,r.notify_on_release,r.watchlist,r.watchlist_at,r.monitor_download,r.monitor_reason,r.monitor_site_id,COALESCE((SELECT ms.title FROM sites ms WHERE ms.id=r.monitor_site_id),''),r.stash_scene_id,r.stash_file_path,r.stash_added_at,r.stash_created_at,r.stash_release_date,r.ignore_local_force_download,r.ignore_download_history,r.download_method_override,r.http_download_primary,0,0,'','',r.added_at,r.updated_at,COALESCE((SELECT d.status FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.source_reference FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),''),COALESCE((SELECT d.transport FROM downloads d WHERE d.release_id=r.id AND d.status IN ('queued','downloading','completed') ORDER BY CASE d.status WHEN 'queued' THEN 0 WHEN 'downloading' THEN 1 ELSE 2 END,d.updated_at DESC LIMIT 1),'torrent'),(SELECT d.updated_at FROM downloads d WHERE d.release_id=r.id AND d.status='completed' ORDER BY d.updated_at DESC LIMIT 1) FROM releases r JOIN sites s ON s.id=r.site_id`
 }
 
 func scanRelease(scanner interface{ Scan(...any) error }) (domain.Release, error) {
 	var x domain.Release
 	var siteIDs, siteTitles, actresses, genres, shots string
 	var stashAddedAt, stashCreatedAt, watchlistAt, downloadedAt sql.NullTime
-	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Watchlist, &watchlistAt, &x.MonitorDownload, &x.MonitorReason, &x.MonitorSiteID, &x.MonitorSiteTitle, &x.StashSceneID, &x.StashFilePath, &stashAddedAt, &stashCreatedAt, &x.StashReleaseDate, &x.AllowNonPreferredFilenames, &x.IgnoreLocalForceDownload, &x.IgnoreDownloadHistory, &x.DownloadMethodOverride, &x.HTTPDownloadPrimary, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &x.DownloadTransport, &downloadedAt)
+	err := scanner.Scan(&x.ID, &x.SiteID, &x.SiteTitle, &siteIDs, &siteTitles, &x.VideoID, &x.ScraperID, &x.Title, &x.ReleaseDate, &x.Source, &x.ImageURL, &x.ProductURL, &actresses, &x.Director, &x.Studio, &x.Label, &genres, &x.Duration, &x.Story, &shots, &x.Released, &x.Local, &x.Notified, &x.NotifyOnRelease, &x.Watchlist, &watchlistAt, &x.MonitorDownload, &x.MonitorReason, &x.MonitorSiteID, &x.MonitorSiteTitle, &x.StashSceneID, &x.StashFilePath, &stashAddedAt, &stashCreatedAt, &x.StashReleaseDate, &x.IgnoreLocalForceDownload, &x.IgnoreDownloadHistory, &x.DownloadMethodOverride, &x.HTTPDownloadPrimary, &x.OCounter, &x.PlayCount, &x.LastPlayedAt, &x.LastOCountAt, &x.AddedAt, &x.UpdatedAt, &x.DownloadStatus, &x.DownloadSourceReference, &x.DownloadTransport, &downloadedAt)
 	if err == nil {
 		_ = json.Unmarshal([]byte(siteIDs), &x.SiteIDs)
 		_ = json.Unmarshal([]byte(siteTitles), &x.SiteTitles)
@@ -1451,10 +1452,6 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 	}
 	if f.MonitorDownload {
 		q += ` AND r.monitor_download=1`
-	}
-	if f.AllowNonPreferredFilenames != nil {
-		q += ` AND r.allow_non_preferred_filenames=?`
-		a = append(a, *f.AllowNonPreferredFilenames)
 	}
 	if f.IgnoreLocalForceDownload != nil {
 		q += ` AND r.ignore_local_force_download=?`
@@ -2463,7 +2460,7 @@ func (s *SQLite) migrateNormalizedReleaseMetadata(ctx context.Context) error {
 	return err
 }
 
-func (s *SQLite) PatchRelease(ctx context.Context, id int64, released, local, notified, notifyOnRelease, watchlist, monitorDownload *bool, label *string, allowNonPreferredFilenames *bool, ignoreLocalForceDownload *bool, httpPrimary ...*bool) error {
+func (s *SQLite) PatchRelease(ctx context.Context, id int64, released, local, notified, notifyOnRelease, watchlist, monitorDownload *bool, label *string, ignoreLocalForceDownload *bool, httpPrimary ...*bool) error {
 	now := time.Now().UTC()
 	var httpDownloadPrimary *bool
 	if len(httpPrimary) > 0 {
@@ -2471,7 +2468,7 @@ func (s *SQLite) PatchRelease(ctx context.Context, id int64, released, local, no
 	}
 	sets := []string{"updated_at=?"}
 	a := []any{now}
-	for k, v := range map[string]*bool{"released": released, "is_local": local, "notified": notified, "notify_on_release": notifyOnRelease, "watchlist": watchlist, "monitor_download": monitorDownload, "allow_non_preferred_filenames": allowNonPreferredFilenames, "ignore_local_force_download": ignoreLocalForceDownload, "http_download_primary": httpDownloadPrimary} {
+	for k, v := range map[string]*bool{"released": released, "is_local": local, "notified": notified, "notify_on_release": notifyOnRelease, "watchlist": watchlist, "monitor_download": monitorDownload, "ignore_local_force_download": ignoreLocalForceDownload, "http_download_primary": httpDownloadPrimary} {
 		if v != nil {
 			sets = append(sets, k+"=?")
 			a = append(a, *v)
@@ -2512,19 +2509,18 @@ func (s *SQLite) PatchRelease(ctx context.Context, id int64, released, local, no
 	return e
 }
 
-// BulkSetReleaseFlags applies monitor_download, allow_non_preferred_filenames,
-// and/or ignore_local_force_download to every release in ids in a single
-// statement - the mass-select "stop monitoring", "ignore filename
-// exclusions / preferred filename patterns", and "ignore StashApp Local /
-// force download" bulk actions on the "Releases checked by the scheduled
-// job" table. Any pointer may be nil to leave that column untouched; all
-// nil (or an empty ids) is a no-op.
-func (s *SQLite) BulkSetReleaseFlags(ctx context.Context, ids []int64, monitorDownload, allowNonPreferredFilenames, ignoreLocalForceDownload *bool, httpPrimary ...*bool) (int64, error) {
+// BulkSetReleaseFlags applies monitor_download and/or
+// ignore_local_force_download to every release in ids in a single
+// statement - the mass-select "stop monitoring" and "ignore StashApp
+// Local / force download" bulk actions on the "Releases checked by the
+// scheduled job" table. Any pointer may be nil to leave that column
+// untouched; all nil (or an empty ids) is a no-op.
+func (s *SQLite) BulkSetReleaseFlags(ctx context.Context, ids []int64, monitorDownload, ignoreLocalForceDownload *bool, httpPrimary ...*bool) (int64, error) {
 	var httpDownloadPrimary *bool
 	if len(httpPrimary) > 0 {
 		httpDownloadPrimary = httpPrimary[0]
 	}
-	if len(ids) == 0 || (monitorDownload == nil && allowNonPreferredFilenames == nil && ignoreLocalForceDownload == nil && httpDownloadPrimary == nil) {
+	if len(ids) == 0 || (monitorDownload == nil && ignoreLocalForceDownload == nil && httpDownloadPrimary == nil) {
 		return 0, nil
 	}
 	sets := []string{"updated_at=?"}
@@ -2538,10 +2534,6 @@ func (s *SQLite) BulkSetReleaseFlags(ctx context.Context, ids []int64, monitorDo
 		} else {
 			a = append(a, "")
 		}
-	}
-	if allowNonPreferredFilenames != nil {
-		sets = append(sets, "allow_non_preferred_filenames=?")
-		a = append(a, *allowNonPreferredFilenames)
 	}
 	if ignoreLocalForceDownload != nil {
 		sets = append(sets, "ignore_local_force_download=?")
@@ -2563,11 +2555,37 @@ func (s *SQLite) BulkSetReleaseFlags(ctx context.Context, ids []int64, monitorDo
 	return r.RowsAffected()
 }
 
+// BulkResetIgnoreLocalForceDownload clears IgnoreLocalForceDownload for
+// every given release id, and - for any release that is already matched in
+// StashApp (is_local=1) - also clears MonitorDownload/MonitorReason/
+// MonitorSiteID in the same statement. This mirrors SetStashState's own
+// not-local-to-local auto-unmonitor transition: a release whose "keep
+// searching despite the StashApp match" override is being turned off, and
+// that already has a local match, has no remaining reason to stay
+// monitored. A release that is not local yet keeps whatever monitoring
+// state it already had - clearing the override alone does not touch it.
+func (s *SQLite) BulkResetIgnoreLocalForceDownload(ctx context.Context, ids []int64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	a := []any{time.Now().UTC()}
+	placeholders := make([]string, len(ids))
+	for i, releaseID := range ids {
+		placeholders[i] = "?"
+		a = append(a, releaseID)
+	}
+	r, e := s.db.ExecContext(ctx, `UPDATE releases SET ignore_local_force_download=0,updated_at=?,monitor_download=CASE WHEN is_local=1 THEN 0 ELSE monitor_download END,monitor_reason=CASE WHEN is_local=1 THEN '' ELSE monitor_reason END,monitor_site_id=CASE WHEN is_local=1 THEN 0 ELSE monitor_site_id END WHERE id IN (`+strings.Join(placeholders, ",")+`)`, a...)
+	if e != nil {
+		return 0, e
+	}
+	return r.RowsAffected()
+}
+
 // BulkSetReleaseDownloadOverrides atomically replaces the complete download
 // policy for selected monitored releases. Unchecked switches intentionally
 // clear their existing overrides, making the dialog a reliable view/edit
 // operation rather than a collection of one-way actions.
-func (s *SQLite) BulkSetReleaseDownloadOverrides(ctx context.Context, ids []int64, method string, allowNonPreferred, ignoreLocal, ignoreHistory bool) (int64, error) {
+func (s *SQLite) BulkSetReleaseDownloadOverrides(ctx context.Context, ids []int64, method string, ignoreLocal, ignoreHistory bool) (int64, error) {
 	method = strings.ToLower(strings.TrimSpace(method))
 	if method != "" && method != "torrent" && method != "http" {
 		return 0, fmt.Errorf("download method override must be empty, torrent, or http")
@@ -2575,13 +2593,13 @@ func (s *SQLite) BulkSetReleaseDownloadOverrides(ctx context.Context, ids []int6
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	args := []any{method, allowNonPreferred, ignoreLocal, ignoreHistory, time.Now().UTC()}
+	args := []any{method, ignoreLocal, ignoreHistory, time.Now().UTC()}
 	placeholders := make([]string, len(ids))
 	for i, releaseID := range ids {
 		placeholders[i] = "?"
 		args = append(args, releaseID)
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE releases SET download_method_override=?,allow_non_preferred_filenames=?,ignore_local_force_download=?,ignore_download_history=?,updated_at=? WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	result, err := s.db.ExecContext(ctx, `UPDATE releases SET download_method_override=?,ignore_local_force_download=?,ignore_download_history=?,updated_at=? WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -3205,9 +3223,6 @@ func (s *SQLite) DownloadActivity(ctx context.Context, f domain.DownloadFilter) 
 	if f.Transport != "" {
 		where += ` AND d.transport=?`
 		a = append(a, f.Transport)
-	}
-	if f.FilenamePatternExcluded {
-		where += ` AND d.filename_pattern_excluded=1`
 	}
 	if f.Stalled {
 		where += ` AND (d.seeds=0 OR d.seen_complete=0)`

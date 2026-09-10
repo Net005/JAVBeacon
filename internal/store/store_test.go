@@ -34,7 +34,7 @@ func TestSQLiteReleaseLifecycle(t *testing.T) {
 		t.Fatalf("items=%d err=%v", len(items), err)
 	}
 	local := true
-	if err := s.PatchRelease(ctx, items[0].ID, nil, &local, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := s.PatchRelease(ctx, items[0].ID, nil, &local, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	stats, err := s.Stats(ctx)
@@ -1113,7 +1113,7 @@ func TestReleaseLabelAndDownloadStatus(t *testing.T) {
 	}
 
 	updated := "Patched Label"
-	if err := s.PatchRelease(ctx, got.ID, nil, nil, nil, nil, nil, nil, &updated, nil, nil); err != nil {
+	if err := s.PatchRelease(ctx, got.ID, nil, nil, nil, nil, nil, nil, &updated, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := fetch(); got.Label != "Patched Label" {
@@ -1737,7 +1737,7 @@ func TestReleaseDownloadMonitoringPersistsAndFilters(t *testing.T) {
 	_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "MON-1", Title: "Monitor me", Source: "GIGA"})
 	releases, _ := s.Releases(ctx, domain.ReleaseFilter{Limit: 10})
 	monitor := true
-	if err := s.PatchRelease(ctx, releases[0].ID, nil, nil, nil, nil, nil, &monitor, nil, nil, nil); err != nil {
+	if err := s.PatchRelease(ctx, releases[0].ID, nil, nil, nil, nil, nil, &monitor, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	monitored, err := s.Releases(ctx, domain.ReleaseFilter{MonitorDownload: true, Limit: 10})
@@ -1746,67 +1746,11 @@ func TestReleaseDownloadMonitoringPersistsAndFilters(t *testing.T) {
 	}
 }
 
-// TestBulkSetReleaseFlagsAppliesToEverySelectedReleaseAndFilterFindsThem
-// covers the "Releases checked by the scheduled job" table's mass-select
-// bulk actions: stop monitoring and set the persistent "allow non-preferred
-// filenames" override across every selected release id in one call, and the
-// AllowNonPreferredFilenames filter that lets the table find them again.
-func TestBulkSetReleaseFlagsAppliesToEverySelectedReleaseAndFilterFindsThem(t *testing.T) {
-	ctx := context.Background()
-	s, err := OpenSQLite(filepath.Join(t.TempDir(), "bulk-flags.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	site, _ := s.SaveSite(ctx, domain.Site{Title: "Bulk", Type: "Site", Name: "GIGA", Enabled: true})
-	for _, videoID := range []string{"BULK-1", "BULK-2", "BULK-3"} {
-		_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: "T", Source: "GIGA"})
-	}
-	rows, err := s.Releases(ctx, domain.ReleaseFilter{Limit: 10})
-	if err != nil || len(rows) != 3 {
-		t.Fatalf("release setup failed: rows=%+v err=%v", rows, err)
-	}
-	var ids []int64
-	monitor := true
-	for _, r := range rows {
-		ids = append(ids, r.ID)
-		if err := s.PatchRelease(ctx, r.ID, nil, nil, nil, nil, nil, &monitor, nil, nil, nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	allow := true
-	n, err := s.BulkSetReleaseFlags(ctx, ids, nil, &allow, nil)
-	if err != nil || n != 3 {
-		t.Fatalf("expected 3 rows updated, got n=%d err=%v", n, err)
-	}
-	flagged, err := s.Releases(ctx, domain.ReleaseFilter{AllowNonPreferredFilenames: &allow, Limit: 10})
-	if err != nil || len(flagged) != 3 {
-		t.Fatalf("expected all 3 releases to match the filter, got %+v err=%v", flagged, err)
-	}
-
-	stopMonitoring := false
-	n, err = s.BulkSetReleaseFlags(ctx, ids[:2], &stopMonitoring, nil, nil)
-	if err != nil || n != 2 {
-		t.Fatalf("expected 2 rows updated, got n=%d err=%v", n, err)
-	}
-	monitored2, err := s.Releases(ctx, domain.ReleaseFilter{MonitorDownload: true, Limit: 10})
-	if err != nil || len(monitored2) != 1 || monitored2[0].ID != ids[2] {
-		t.Fatalf("expected only the untouched release to still be monitored, got %+v err=%v", monitored2, err)
-	}
-	// The allow-non-preferred flag must be untouched by the monitor-only
-	// bulk call above (nil for that field means "leave it alone").
-	stillFlagged, err := s.Releases(ctx, domain.ReleaseFilter{AllowNonPreferredFilenames: &allow, Limit: 10})
-	if err != nil || len(stillFlagged) != 3 {
-		t.Fatalf("expected the allow-non-preferred flag to survive an unrelated bulk update, got %+v err=%v", stillFlagged, err)
-	}
-}
-
 // TestPatchReleaseSetsIgnoreLocalForceDownload covers the "Download
-// monitoring area" flag that mirrors AllowNonPreferredFilenames: setting it
-// on a single release via PatchRelease persists it, the
-// IgnoreLocalForceDownload filter finds it again, and leaving the pointer
-// nil on an unrelated patch call never disturbs it.
+// monitoring area" ignore-local flag: setting it on a single release via
+// PatchRelease persists it, the IgnoreLocalForceDownload filter finds it
+// again, and leaving the pointer nil on an unrelated patch call never
+// disturbs it.
 func TestPatchReleaseSetsIgnoreLocalForceDownload(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "ignore-local-patch.db"))
@@ -1824,7 +1768,7 @@ func TestPatchReleaseSetsIgnoreLocalForceDownload(t *testing.T) {
 	}
 
 	ignore := true
-	if err := s.PatchRelease(ctx, rows[0].ID, nil, nil, nil, nil, nil, nil, nil, nil, &ignore); err != nil {
+	if err := s.PatchRelease(ctx, rows[0].ID, nil, nil, nil, nil, nil, nil, nil, &ignore); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Release(ctx, rows[0].ID)
@@ -1837,7 +1781,7 @@ func TestPatchReleaseSetsIgnoreLocalForceDownload(t *testing.T) {
 	}
 
 	label := "relabeled"
-	if err := s.PatchRelease(ctx, rows[0].ID, nil, nil, nil, nil, nil, nil, &label, nil, nil); err != nil {
+	if err := s.PatchRelease(ctx, rows[0].ID, nil, nil, nil, nil, nil, nil, &label, nil); err != nil {
 		t.Fatal(err)
 	}
 	stillFlagged, err := s.Release(ctx, rows[0].ID)
@@ -1846,9 +1790,9 @@ func TestPatchReleaseSetsIgnoreLocalForceDownload(t *testing.T) {
 	}
 }
 
-// TestBulkSetReleaseFlagsAppliesIgnoreLocalForceDownloadFlag mirrors
-// TestBulkSetReleaseFlagsAppliesToEverySelectedReleaseAndFilterFindsThem for
-// the third bulk-settable flag: bulk-setting it across every selected
+// TestBulkSetReleaseFlagsAppliesIgnoreLocalForceDownloadFlag covers the
+// "Releases checked by the scheduled job" table's mass-select bulk actions:
+// bulk-setting the ignore-local-force-download flag across every selected
 // release id, the filter finding them again, and an unrelated bulk call
 // (stop monitoring) leaving it untouched.
 func TestBulkSetReleaseFlagsAppliesIgnoreLocalForceDownloadFlag(t *testing.T) {
@@ -1872,7 +1816,7 @@ func TestBulkSetReleaseFlagsAppliesIgnoreLocalForceDownloadFlag(t *testing.T) {
 	}
 
 	ignore := true
-	n, err := s.BulkSetReleaseFlags(ctx, ids, nil, nil, &ignore)
+	n, err := s.BulkSetReleaseFlags(ctx, ids, nil, &ignore)
 	if err != nil || n != 3 {
 		t.Fatalf("expected 3 rows updated, got n=%d err=%v", n, err)
 	}
@@ -1882,13 +1826,65 @@ func TestBulkSetReleaseFlagsAppliesIgnoreLocalForceDownloadFlag(t *testing.T) {
 	}
 
 	stopMonitoring := false
-	n, err = s.BulkSetReleaseFlags(ctx, ids[:2], &stopMonitoring, nil, nil)
+	n, err = s.BulkSetReleaseFlags(ctx, ids[:2], &stopMonitoring, nil)
 	if err != nil || n != 2 {
 		t.Fatalf("expected 2 rows updated, got n=%d err=%v", n, err)
 	}
 	stillFlagged, err := s.Releases(ctx, domain.ReleaseFilter{IgnoreLocalForceDownload: &ignore, Limit: 10})
 	if err != nil || len(stillFlagged) != 3 {
 		t.Fatalf("expected the ignore-local flag to survive an unrelated bulk update, got %+v err=%v", stillFlagged, err)
+	}
+}
+
+// TestBulkResetIgnoreLocalForceDownloadUnmonitorsOnlyLocalReleases covers
+// the "Monitored releases" panel's "Reset local ignore" bulk action:
+// clearing IgnoreLocalForceDownload for a release that is already local
+// (matched in StashApp) also takes it off monitoring in the same call,
+// since there is no remaining reason to keep searching for it - mirroring
+// SetStashState's own not-local-to-local auto-unmonitor transition. A
+// release that is not local yet keeps whatever monitoring state it
+// already had.
+func TestBulkResetIgnoreLocalForceDownloadUnmonitorsOnlyLocalReleases(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "reset-ignore-local.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, _ := s.SaveSite(ctx, domain.Site{Title: "Bulk", Type: "Site", Name: "GIGA", Enabled: true})
+	for _, videoID := range []string{"RESETLOCAL-1", "RESETLOCAL-2"} {
+		_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: "T", Source: "GIGA"})
+	}
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("release setup failed: rows=%+v err=%v", rows, err)
+	}
+	localID, notLocalID := rows[0].ID, rows[1].ID
+
+	monitor, ignore, local := true, true, true
+	if err := s.PatchRelease(ctx, localID, nil, &local, nil, nil, nil, &monitor, nil, &ignore); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PatchRelease(ctx, notLocalID, nil, nil, nil, nil, nil, &monitor, nil, &ignore); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.BulkResetIgnoreLocalForceDownload(ctx, []int64{localID, notLocalID})
+	if err != nil || n != 2 {
+		t.Fatalf("expected 2 rows updated, got n=%d err=%v", n, err)
+	}
+
+	gotLocal, err := s.Release(ctx, localID)
+	if err != nil || gotLocal.IgnoreLocalForceDownload || gotLocal.MonitorDownload {
+		t.Fatalf("expected the local release to have both the override cleared and monitoring turned off: %+v err=%v", gotLocal, err)
+	}
+	gotNotLocal, err := s.Release(ctx, notLocalID)
+	if err != nil || gotNotLocal.IgnoreLocalForceDownload || !gotNotLocal.MonitorDownload {
+		t.Fatalf("expected the non-local release to have the override cleared but monitoring left alone: %+v err=%v", gotNotLocal, err)
+	}
+
+	if n, err := s.BulkResetIgnoreLocalForceDownload(ctx, nil); err != nil || n != 0 {
+		t.Fatalf("expected an empty id list to be a no-op, got n=%d err=%v", n, err)
 	}
 }
 
@@ -1908,24 +1904,24 @@ func TestBulkSetReleaseDownloadOverridesReplacesEverySelectedPolicy(t *testing.T
 		t.Fatalf("release setup failed: rows=%+v err=%v", rows, err)
 	}
 	ids := []int64{rows[0].ID, rows[1].ID}
-	n, err := s.BulkSetReleaseDownloadOverrides(ctx, ids, "HTTP", true, true, true)
+	n, err := s.BulkSetReleaseDownloadOverrides(ctx, ids, "HTTP", true, true)
 	if err != nil || n != 2 {
 		t.Fatalf("expected two updated rows, got n=%d err=%v", n, err)
 	}
 	for _, id := range ids {
 		got, getErr := s.Release(ctx, id)
-		if getErr != nil || got.DownloadMethodOverride != "http" || !got.AllowNonPreferredFilenames || !got.IgnoreLocalForceDownload || !got.IgnoreDownloadHistory {
+		if getErr != nil || got.DownloadMethodOverride != "http" || !got.IgnoreLocalForceDownload || !got.IgnoreDownloadHistory {
 			t.Fatalf("download overrides were not persisted together: %+v err=%v", got, getErr)
 		}
 	}
-	if _, err := s.BulkSetReleaseDownloadOverrides(ctx, ids, "torrent", false, false, false); err != nil {
+	if _, err := s.BulkSetReleaseDownloadOverrides(ctx, ids, "torrent", false, false); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Release(ctx, ids[0])
-	if err != nil || got.DownloadMethodOverride != "torrent" || got.AllowNonPreferredFilenames || got.IgnoreLocalForceDownload || got.IgnoreDownloadHistory {
+	if err != nil || got.DownloadMethodOverride != "torrent" || got.IgnoreLocalForceDownload || got.IgnoreDownloadHistory {
 		t.Fatalf("unchecked overrides must clear previous values: %+v err=%v", got, err)
 	}
-	if _, err := s.BulkSetReleaseDownloadOverrides(ctx, ids, "fallback", false, false, false); err == nil {
+	if _, err := s.BulkSetReleaseDownloadOverrides(ctx, ids, "fallback", false, false); err == nil {
 		t.Fatal("expected invalid method override to be rejected")
 	}
 }
@@ -2372,15 +2368,14 @@ func TestHTTPDownloadSourceLinksRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDownloadFilenamePatternExcludedRoundTripsAndFilters covers TODO-2.0
-// Task A's structured filename-pattern-exclusion flag: SaveDownload must
-// persist it (both on insert and on a later update, since qBittorrent
-// pipeline events re-save the same row), Downloads/DownloadActivity must
-// read it back, and DownloadFilter.FilenamePatternExcluded must restrict
-// DownloadActivity to only the rows that have it set - mirroring the other
-// one-way boolean toggles on DownloadFilter (false means "don't filter on
-// this", not "must be false").
-func TestDownloadFilenamePatternExcludedRoundTripsAndFilters(t *testing.T) {
+// TestDownloadFilenamePatternExcludedRoundTrips covers the vestigial
+// filename-pattern-exclusion flag still persisted on Download (the DB
+// column and Go field remain for backward compatibility, but nothing sets
+// it true anymore): SaveDownload must still persist whatever value is
+// given, both on insert and on a later update (since qBittorrent pipeline
+// events re-save the same row), and Downloads() must read it back
+// unchanged.
+func TestDownloadFilenamePatternExcludedRoundTrips(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "filename-pattern-excluded.db"))
 	if err != nil {
@@ -2450,22 +2445,6 @@ func TestDownloadFilenamePatternExcludedRoundTripsAndFilters(t *testing.T) {
 	}
 	if !stillExcluded {
 		t.Fatalf("FilenamePatternExcluded did not survive an UPDATE via SaveDownload: %+v", afterUpdate)
-	}
-
-	items, total, err := s.DownloadActivity(ctx, domain.DownloadFilter{FilenamePatternExcluded: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 1 || len(items) != 1 || items[0].ID != excluded.ID {
-		t.Fatalf("FilenamePatternExcluded filter items=%+v total=%d, want exactly the excluded row", items, total)
-	}
-
-	items, total, err = s.DownloadActivity(ctx, domain.DownloadFilter{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 2 || len(items) != 2 {
-		t.Fatalf("FilenamePatternExcluded=false must not filter at all, got items=%+v total=%d", items, total)
 	}
 }
 

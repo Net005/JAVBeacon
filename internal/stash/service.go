@@ -297,7 +297,7 @@ func (s *Service) run(ctx context.Context) {
 						}
 					}
 					if watchlist != release.Watchlist {
-						if e := s.store.PatchRelease(ctx, release.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil, nil); e != nil {
+						if e := s.store.PatchRelease(ctx, release.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil); e != nil {
 							result.Error = e.Error()
 						} else {
 							releaseUpdated = true
