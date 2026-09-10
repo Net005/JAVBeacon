@@ -7,6 +7,23 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.155] - 2026-09-10
+
+### Fixed
+
+- The served app shell's `app.js`/`app.css` URLs carried a frozen
+  cache-busting placeholder that never actually changed between releases,
+  so a browser that had already cached that exact URL kept serving the
+  stale script/stylesheet indefinitely - through any number of later
+  releases - until its cache was cleared by hand. This is very likely the
+  cause of "it looks different depending on where I open it from" reports:
+  different tabs/sessions could each be running a different cached build
+  at once. The asset URLs now carry the actual running version and change
+  on every release, the same way `/assets/` already forces revalidation.
+  If the release detail page still looks inconsistent after updating to
+  this version, a hard refresh (Ctrl/Cmd+Shift+R) clears out the
+  previously-stuck cached copy.
+
 ## [1.0.154] - 2026-09-10
 
 ### Fixed

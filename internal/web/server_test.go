@@ -57,6 +57,32 @@ func TestBrowserSearchEndpointServesApplicationShell(t *testing.T) {
 	}
 }
 
+func TestApplicationShellAssetURLsCarryTheRunningVersion(t *testing.T) {
+	// The served shell's app.js/app.css URLs must change on every release -
+	// otherwise a browser that already cached the old asset URL keeps
+	// serving it forever, since the URL itself never changes. This guards
+	// against the shipped static/index.html reverting to a frozen
+	// placeholder query string that never actually varies across builds.
+	s := &Server{mux: http.NewServeMux()}
+	s.routes()
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	expected := fmt.Sprintf("v=%s", buildversion.Current())
+	if !strings.Contains(body, "/assets/app.js?"+expected) {
+		t.Fatalf("shell app.js URL does not carry the running version %q: %s", expected, body)
+	}
+	if !strings.Contains(body, "/assets/app.css?"+expected) {
+		t.Fatalf("shell app.css URL does not carry the running version %q: %s", expected, body)
+	}
+	if strings.Contains(body, "failed-timestamp") {
+		t.Fatal("shell still contains the frozen placeholder asset version")
+	}
+}
+
 func TestOpenSearchDescriptorUsesForwardedHTTPSHost(t *testing.T) {
 	s := &Server{mux: http.NewServeMux()}
 	s.routes()
