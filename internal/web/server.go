@@ -831,7 +831,7 @@ func (s *Server) backgroundSearchAndDownloadRelease(w http.ResponseWriter, r *ht
 	transport := s.searchDownloadTransport(r.Context(), release)
 	const sourceType = "Manual Background Search + Download"
 	priority := download.PriorityForRelease(release, time.Now())
-	taskID, alreadyQueued, err := s.createSearchDownloadTask(r.Context(), release, sourceType, release.AllowNonPreferredFilenames, false, transport, priority)
+	taskID, alreadyQueued, reason, err := s.createSearchDownloadTask(r.Context(), release, sourceType, release.AllowNonPreferredFilenames, false, transport, priority)
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
@@ -839,7 +839,7 @@ func (s *Server) backgroundSearchAndDownloadRelease(w http.ResponseWriter, r *ht
 	if !alreadyQueued {
 		s.enqueueBulkReleaseItems([]bulkReleaseItem{{Release: release, TaskID: taskID, SourceType: sourceType, AllowNonPreferred: release.AllowNonPreferredFilenames, Priority: priority}})
 	}
-	s.json(w, http.StatusAccepted, map[string]any{"queued": true, "release_id": release.ID, "already_queued": alreadyQueued})
+	s.json(w, http.StatusAccepted, map[string]any{"queued": !alreadyQueued, "release_id": release.ID, "already_queued": alreadyQueued, "reason": reason})
 }
 
 func (s *Server) searchDownloadTransport(ctx context.Context, release domain.Release) string {
@@ -857,23 +857,48 @@ func (s *Server) searchDownloadTransport(ctx context.Context, release domain.Rel
 	return "torrent"
 }
 
-func (s *Server) createSearchDownloadTask(ctx context.Context, release domain.Release, sourceType string, allowNonPreferred, force bool, transport string, priority int) (int64, bool, error) {
+// createSearchDownloadTask returns (taskID, alreadyQueued, reason, err). reason
+// is "" for a freshly created task, "search_in_progress" when an existing
+// search_queued/searching placeholder for this release was reused, or the
+// blocking download's own Status ("queued", "downloading", "processing", or
+// "completed") when a second queue attempt was denied outright - so callers
+// (e.g. backgroundSearchAndDownloadRelease) can tell the user exactly why
+// nothing new was started instead of always claiming it was.
+func (s *Server) createSearchDownloadTask(ctx context.Context, release domain.Release, sourceType string, allowNonPreferred, force bool, transport string, priority int) (int64, bool, string, error) {
 	rows, err := s.store.Downloads(ctx, "")
 	if err != nil {
-		return 0, false, err
+		return 0, false, "", err
 	}
 	for _, row := range rows {
-		if row.ReleaseID == release.ID && (row.Status == "search_queued" || row.Status == "searching") {
+		if row.ReleaseID != release.ID {
+			continue
+		}
+		if row.Status == "search_queued" || row.Status == "searching" {
 			if row.Transport != transport {
 				row.Transport = transport
 				_, _ = s.store.SaveDownload(ctx, row)
 			}
-			return row.ID, true, nil
+			return row.ID, true, "search_in_progress", nil
+		}
+		// A release with an already-active (or, unless force, already-completed)
+		// download must not be queued a second time - mirrors Service.duplicateStored's
+		// exact active/completed rules so Search + Download can't race a download
+		// that's already in progress or done. "failed" is deliberately excluded so a
+		// previously failed release can always be retried.
+		active := row.Status == "queued" || row.Status == "downloading" || row.Status == "processing"
+		if force {
+			if active && row.Transport == transport {
+				return row.ID, true, row.Status, nil
+			}
+			continue
+		}
+		if active || row.Status == "completed" {
+			return row.ID, true, row.Status, nil
 		}
 	}
 	options, _ := json.Marshal(persistedSearchOptions{AllowNonPreferred: allowNonPreferred, Force: force})
 	task, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Provider: "Search + Download", SourceType: sourceType, Query: release.VideoID, Name: "Waiting for provider search", Transport: transport, Status: "search_queued", MatchReason: "Waiting in Search + Download queue", QBResponse: string(options), Priority: priority})
-	return task.ID, false, err
+	return task.ID, false, "", err
 }
 
 func (s *Server) resumeSearchDownloadTasks() {
@@ -2574,7 +2599,7 @@ func (s *Server) bulkMonitorAndDownloadReleases(w http.ResponseWriter, r *http.R
 		}
 		transport := s.searchDownloadTransport(r.Context(), release)
 		priority := download.PriorityForRelease(release, now)
-		taskID, alreadyQueued, taskErr := s.createSearchDownloadTask(r.Context(), release, sourceType, payload.AllowNonPreferredFilenames, force, transport, priority)
+		taskID, alreadyQueued, _, taskErr := s.createSearchDownloadTask(r.Context(), release, sourceType, payload.AllowNonPreferredFilenames, force, transport, priority)
 		if taskErr != nil {
 			s.problem(w, http.StatusInternalServerError, taskErr.Error())
 			return

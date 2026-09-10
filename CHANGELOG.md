@@ -7,6 +7,31 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.151] - 2026-09-10
+
+### Fixed
+
+- Search + Download (and the "Monitor + download" bulk action) could queue
+  a release a second time even while it already had an active
+  (queued/downloading/processing) or completed download, creating a
+  redundant duplicate download entry and running a wasted provider search.
+  It's now denied outright unless the release's only download history is
+  "failed", which can still always be retried. The scheduled monitored-
+  release download job was checked and already guarded against this
+  correctly.
+- The Download Activity search field was case-sensitive on the app's
+  PostgreSQL backend (SQLite's default collation happened to mask it
+  there), so a search like "rbk" would not match "RBK". It now uses the
+  same case-insensitive matching already used elsewhere in the app.
+
+### Added
+
+- Manual Search + Download now shows a notification explaining why a
+  release was not queued (e.g. "is already downloading", "has already
+  been downloaded") instead of always claiming it started in the
+  background. Because this is easy to miss as a routine corner toast, it
+  is shown as a more noticeable center-screen alert.
+
 ## [1.0.150] - 2026-09-09
 
 ### Added

@@ -3194,7 +3194,7 @@ func (s *SQLite) DownloadActivity(ctx context.Context, f domain.DownloadFilter) 
 		a = append(a, f.Status)
 	}
 	if f.Search != "" {
-		where += ` AND (r.video_id LIKE ? OR d.query LIKE ? OR d.name LIKE ?)`
+		where += ` AND (` + s.dialect.CaseInsensitiveLike("r.video_id") + ` OR ` + s.dialect.CaseInsensitiveLike("d.query") + ` OR ` + s.dialect.CaseInsensitiveLike("d.name") + `)`
 		like := "%" + f.Search + "%"
 		a = append(a, like, like, like)
 	}

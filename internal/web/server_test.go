@@ -1499,6 +1499,97 @@ func TestBackgroundSearchAndDownloadReleaseQueuesWithoutChangingMonitoring(t *te
 	t.Fatal("background Search + Download did not run")
 }
 
+// TestCreateSearchDownloadTaskSkipsReleaseWithActiveOrCompletedDownload is the
+// regression test for the double-queue bug: Search + Download (and the
+// "Monitor + download" bulk action, which shares createSearchDownloadTask)
+// used to only check for an existing search_queued/searching placeholder
+// task, never for a release that already has an active (queued/downloading/
+// processing) or completed download - so clicking it again created a second,
+// redundant download row instead of being denied. A "failed" download must
+// NOT block a retry, mirroring Service.duplicateStored's own rules.
+func TestCreateSearchDownloadTaskSkipsReleaseWithActiveOrCompletedDownload(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "create-search-download-task.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Dup Guard Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "DUPGUARD-1", Title: "DUPGUARD-1", Source: "JavLibrary", Released: true}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := st.Releases(ctx, domain.ReleaseFilter{Search: "DUPGUARD-1", Limit: 1})
+	if err != nil || len(all) != 1 {
+		t.Fatalf("seed release lookup: items=%d err=%v", len(all), err)
+	}
+	release := all[0]
+	s := &Server{store: st, log: slog.Default()}
+
+	blockingStatuses := []string{"queued", "downloading", "processing", "completed"}
+	for _, status := range blockingStatuses {
+		if _, err := st.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Provider: "Test", SourceType: "Test", Query: release.VideoID, Name: status, Transport: "torrent", Status: status}); err != nil {
+			t.Fatal(err)
+		}
+		taskID, alreadyQueued, reason, err := s.createSearchDownloadTask(ctx, release, "Manual Background Search + Download", false, false, "torrent", 0)
+		if err != nil {
+			t.Fatalf("status=%s err=%v", status, err)
+		}
+		if !alreadyQueued {
+			t.Fatalf("status=%s: expected createSearchDownloadTask to deny a second queue attempt, got a new task %d", status, taskID)
+		}
+		if reason != status {
+			t.Fatalf("status=%s: expected reason=%q to report the blocking download's own status, got %q", status, status, reason)
+		}
+		downloads, err := st.Downloads(ctx, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		count := 0
+		for _, d := range downloads {
+			if d.ReleaseID == release.ID {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("status=%s: createSearchDownloadTask created a duplicate download row (have %d, want 1)", status, count)
+		}
+		if _, err := st.DeleteDownload(ctx, downloads[0].ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := st.SaveDownload(ctx, domain.Download{ReleaseID: release.ID, Provider: "Test", SourceType: "Test", Query: release.VideoID, Name: "failed", Transport: "torrent", Status: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	taskID, alreadyQueued, reason, err := s.createSearchDownloadTask(ctx, release, "Manual Background Search + Download", false, false, "torrent", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alreadyQueued {
+		t.Fatal("a previously failed download must not block a new Search + Download task")
+	}
+	if reason != "" {
+		t.Fatalf("expected no reason for a freshly created task, got %q", reason)
+	}
+	downloads, err := st.Downloads(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range downloads {
+		if d.ID == taskID && d.Status == "search_queued" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a new search_queued task %d after a failed download, downloads=%+v", taskID, downloads)
+	}
+}
+
 func TestBackgroundSearchAndDownloadSettingFrontend(t *testing.T) {
 	javascript, err := assets.ReadFile("static/app.js")
 	if err != nil {
