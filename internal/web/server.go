@@ -2408,6 +2408,13 @@ func (s *Server) release(w http.ResponseWriter, r *http.Request) {
 			x.DownloadETASeconds = download.ETASeconds
 			x.DownloadSeenComplete = download.SeenComplete
 			x.DownloadAddedAt = download.AddedAt
+			x.DownloadPriority = download.Priority
+			if download.Status == "queued" && download.Transport == "http" && s.downloads != nil {
+				if position, total, ok := s.downloads.HTTPQueuePosition(download.ID); ok {
+					x.DownloadQueuePosition = position
+					x.DownloadQueueTotal = total
+				}
+			}
 		}
 	}
 	s.json(w, 200, x)

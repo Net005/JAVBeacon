@@ -133,6 +133,30 @@ func TestHTTPParallelDownloadQueuePromotesLowestPriorityFirst(t *testing.T) {
 	}
 }
 
+func TestHTTPQueuePosition(t *testing.T) {
+	// Waiters are ordered by priority (lower value first), not arrival order
+	// - matching promoteHTTPWaitersLocked - so 302 (priority 1, arrived
+	// second) should report position 1 despite 301 (priority 50, arrived
+	// first) being ahead of it in the underlying slice.
+	first := &httpSlotWaiter{downloadID: 301, ready: make(chan struct{}), priority: 50}
+	second := &httpSlotWaiter{downloadID: 302, ready: make(chan struct{}), priority: 1}
+	third := &httpSlotWaiter{downloadID: 303, ready: make(chan struct{}), priority: 50}
+	service := &Service{httpWaiters: []*httpSlotWaiter{first, second, third}}
+
+	if position, total, ok := service.HTTPQueuePosition(302); !ok || position != 1 || total != 3 {
+		t.Fatalf("highest-priority waiter: position=%d total=%d ok=%v, want 1/3/true", position, total, ok)
+	}
+	if position, total, ok := service.HTTPQueuePosition(301); !ok || position != 2 || total != 3 {
+		t.Fatalf("first equal-priority waiter: position=%d total=%d ok=%v, want 2/3/true", position, total, ok)
+	}
+	if position, total, ok := service.HTTPQueuePosition(303); !ok || position != 3 || total != 3 {
+		t.Fatalf("second equal-priority waiter: position=%d total=%d ok=%v, want 3/3/true", position, total, ok)
+	}
+	if _, total, ok := service.HTTPQueuePosition(999); ok || total != 3 {
+		t.Fatalf("unknown download: ok=%v total=%d, want false/3 (unaffected)", ok, total)
+	}
+}
+
 func TestPriorityForRelease(t *testing.T) {
 	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
