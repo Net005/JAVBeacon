@@ -1924,6 +1924,17 @@ func TestBulkSetReleaseDownloadOverridesReplacesEverySelectedPolicy(t *testing.T
 	if _, err := s.BulkSetReleaseDownloadOverrides(ctx, ids, "fallback", false, false); err == nil {
 		t.Fatal("expected invalid method override to be rejected")
 	}
+	// An empty method is the "use the global default" choice the Monitored
+	// Releases bulk-override dialog offers alongside Torrent only/HTTP
+	// only - it must clear a previously forced method rather than being
+	// rejected, or a release forced to one transport could never go back
+	// to following Settings -> Downloads -> Default download method.
+	if _, err := s.BulkSetReleaseDownloadOverrides(ctx, ids, "", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Release(ctx, ids[0]); err != nil || got.DownloadMethodOverride != "" {
+		t.Fatalf("empty method override must clear the previously forced value: %+v err=%v", got, err)
+	}
 }
 
 func TestNotificationDeduplication(t *testing.T) {
