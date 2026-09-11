@@ -185,3 +185,102 @@ func TestAkibaScrapeFilteredRetriesTransientDetailFetchFailureOnce(t *testing.T)
 		t.Fatalf("items=%+v, want the recovered detail page's Director merged in", items)
 	}
 }
+
+func TestGigaLargeCoverURL(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+		ok   bool
+	}{
+		{"detail page style small cover", "https://www.giga-web.jp/db_titles/tbw/tbw06/pac_s.jpg", "https://www.giga-web.jp/db_titles/tbw/tbw06/pac_l.jpg", true},
+		{"listing card style small cover", "https://www.akiba-web.com/img/spsf52_pac_s.jpg", "https://www.akiba-web.com/img/spsf52_pac_l.jpg", true},
+		{"uppercase extension still matches", "https://www.giga-web.jp/db_titles/tbw/tbw06/pac_s.JPG", "https://www.giga-web.jp/db_titles/tbw/tbw06/pac_l.JPG", true},
+		{"already the large variant does not match", "https://www.giga-web.jp/db_titles/tbw/tbw06/pac_l.jpg", "", false},
+		{"filename without an _s suffix does not match", "https://www.akiba-web.com/common/spsf57.jpg", "", false},
+		{"empty URL does not match", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := gigaLargeCoverURL(tc.raw)
+			if ok != tc.ok || (ok && got != tc.want) {
+				t.Fatalf("gigaLargeCoverURL(%q) = (%q, %v), want (%q, %v)", tc.raw, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestAkibaDetailPrefersLargeCoverWhenAvailable(t *testing.T) {
+	var largeRequests int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/product/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<html><div id="works_pic"><h5>TBW-06</h5><img src="/db_titles/tbw/tbw06/pac_s.jpg"></div><div id="works_txt">Product detail</div></html>`))
+	})
+	mux.HandleFunc("/db_titles/tbw/tbw06/pac_l.jpg", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&largeRequests, 1)
+		w.WriteHeader(http.StatusOK)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	r, err := NewAkiba(server.URL, "/search/", 2*time.Second, nil).detail(context.Background(), server.URL+"/product/?product_id=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := server.URL + "/db_titles/tbw/tbw06/pac_l.jpg"
+	if r.ImageURL != want {
+		t.Fatalf("ImageURL = %q, want large variant %q", r.ImageURL, want)
+	}
+	if atomic.LoadInt32(&largeRequests) == 0 {
+		t.Fatal("expected the large cover variant to be probed at least once")
+	}
+}
+
+func TestAkibaDetailFallsBackToSmallCoverWhenLargeMissing(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/product/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<html><div id="works_pic"><h5>TBW-06</h5><img src="/db_titles/tbw/tbw06/pac_s.jpg"></div><div id="works_txt">Product detail</div></html>`))
+	})
+	mux.HandleFunc("/db_titles/tbw/tbw06/pac_l.jpg", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	r, err := NewAkiba(server.URL, "/search/", 2*time.Second, nil).detail(context.Background(), server.URL+"/product/?product_id=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := server.URL + "/db_titles/tbw/tbw06/pac_s.jpg"
+	if r.ImageURL != want {
+		t.Fatalf("ImageURL = %q, want the original small cover %q kept as fallback", r.ImageURL, want)
+	}
+}
+
+func TestAkibaDetailSkipsCoverProbeForNonMatchingImageURL(t *testing.T) {
+	var unexpectedRequests int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/product/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<html><div id="works_pic"><h5>SPSF-57</h5><img src="/common/spsf57.jpg"></div><div id="works_txt">Product detail</div></html>`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/product/" {
+			atomic.AddInt32(&unexpectedRequests, 1)
+		}
+		http.NotFound(w, r)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	r, err := NewAkiba(server.URL, "/search/", 2*time.Second, nil).detail(context.Background(), server.URL+"/product/?product_id=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := server.URL + "/common/spsf57.jpg"
+	if r.ImageURL != want {
+		t.Fatalf("ImageURL = %q, want the unmatched cover URL left untouched %q", r.ImageURL, want)
+	}
+	if atomic.LoadInt32(&unexpectedRequests) != 0 {
+		t.Fatal("expected no large-cover probe request for an image URL that isn't a GIGA small cover")
+	}
+}

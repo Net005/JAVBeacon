@@ -36,6 +36,82 @@ var productPattern = regexp.MustCompile(`(?i)[?&]product_id=([^&#]+)`)
 var pagePattern = regexp.MustCompile(`([?&]count=)\d+`)
 var akibaTitleCountPattern = regexp.MustCompile(`(?i)\b([0-9][0-9,]*)\s+Titles\b`)
 
+// gigaSmallCoverPattern matches a GIGA (Akiba-Web) cover image filename
+// ending in the small "_s" variant GIGA's own detail page links to by
+// default (e.g. "pac_s.jpg", "spsf52_pac_s.jpg"), capturing everything
+// before "_s" plus the file extension so the large "_l" variant's filename
+// - same directory, same base name, just "_s" swapped for "_l" - can be
+// built directly, without a second page fetch to discover it.
+var gigaSmallCoverPattern = regexp.MustCompile(`(?i)^(.*)_s(\.(?:jpe?g|png|webp))$`)
+
+// gigaLargeCoverURL returns the large "_l" cover variant's URL for a GIGA
+// small "_s" cover URL raw, and whether raw actually matched that naming
+// pattern. A URL that isn't shaped like a GIGA small cover at all (wrong
+// site, already the large variant, or some other filename GIGA hasn't used
+// here) is reported unmatched so the caller keeps it unchanged rather than
+// guessing at a URL that was never real to begin with.
+func gigaLargeCoverURL(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	slash := strings.LastIndex(u.Path, "/")
+	dir, file := u.Path[:slash+1], u.Path[slash+1:]
+	m := gigaSmallCoverPattern.FindStringSubmatch(file)
+	if len(m) != 3 {
+		return "", false
+	}
+	u.Path = dir + m[1] + "_l" + m[2]
+	return u.String(), true
+}
+
+// preferLargeCover swaps imageURL for its GIGA large "_l" cover variant
+// when that image actually exists, and returns imageURL unchanged
+// otherwise - including when imageURL isn't a GIGA small "_s" cover URL to
+// begin with, or checking the large variant errors or doesn't come back
+// success. A network hiccup here must never fail the whole scrape over a
+// cover-quality nicety: any error probing the large variant is treated the
+// same as "not available" and falls back to the small cover, which is
+// already known-good since it's exactly what GIGA's own page linked to.
+func (a *Akiba) preferLargeCover(ctx context.Context, imageURL string) string {
+	large, ok := gigaLargeCoverURL(imageURL)
+	if !ok {
+		return imageURL
+	}
+	if !a.coverAvailable(ctx, large) {
+		return imageURL
+	}
+	return large
+}
+
+// coverAvailable reports whether rawURL resolves to an actual, fetchable
+// image. It tries a lightweight HEAD request first and only falls back to
+// a full GET - discarding the body either way - when HEAD doesn't come
+// back with a plain success status, since some static image hosts don't
+// implement HEAD at all.
+func (a *Akiba) coverAvailable(ctx context.Context, rawURL string) bool {
+	if a.probeCoverRequest(ctx, http.MethodHead, rawURL) {
+		return true
+	}
+	return a.probeCoverRequest(ctx, http.MethodGet, rawURL)
+}
+
+func (a *Akiba) probeCoverRequest(ctx context.Context, method, rawURL string) bool {
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/132 Safari/537.36")
+	resp, err := a.client.Do(req)
+	if err != nil {
+		a.log.Debug("GIGA large cover probe failed", "method", method, "url", rawURL, "error", err)
+		return false
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	return resp.StatusCode/100 == 2
+}
+
 const akibaTitlesPerPage = 20
 
 func akibaPageEstimate(doc *html.Node) int {
@@ -365,7 +441,7 @@ func (a *Akiba) detail(ctx context.Context, raw string, stage ...DetailStage) (d
 		r.Title = nodeText(n)
 	}
 	if n := first(doc, func(n *html.Node) bool { return n.Data == "img" && hasAncestorID(n, "works_pic") }); n != nil {
-		r.ImageURL = resolve(a.base, attr(n, "src"))
+		r.ImageURL = a.preferLargeCover(ctx, resolve(a.base, attr(n, "src")))
 	}
 	for _, dt := range findAll(doc, func(n *html.Node) bool { return n.Data == "dt" && hasAncestorID(n, "works_txt") }) {
 		label := strings.ToLower(nodeText(dt))
