@@ -7,6 +7,22 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.159] - 2026-09-11
+
+### Changed
+
+- GIGA (Akiba-Web) release covers now prefer the large "_l" cover image
+  GIGA also serves alongside its default small "_s" one (for example
+  `pac_l.jpg` next to `pac_s.jpg`), used whenever that larger image is
+  actually available and falling back to the small cover otherwise. This
+  applies to every release detail fetch, so Quick and Full refresh both
+  pick it up automatically for releases already in your library: each
+  time a GIGA release is re-checked, its cached cover is compared against
+  the newly scraped image and replaced if it changed - no separate
+  backfill step is needed, a Full refresh (or a Quick refresh reaching the
+  release's page) is what upgrades an existing small cover to the large
+  one over time.
+
 ## [1.0.158] - 2026-09-11
 
 ### Fixed
