@@ -7,6 +7,22 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.158] - 2026-09-11
+
+### Fixed
+
+- Once a release's download method was forced to Torrent only or HTTP
+  only from Monitoring's "Force Search + Download" bulk action, nothing
+  in the app could ever clear it again - not even switching Settings ->
+  Downloads -> Default download method to the opposite "Only" mode. The
+  release quietly kept using its old forced transport forever, including
+  from unrelated actions like a plain Release Library bulk search, which
+  is why HTTP-only downloads could still show Torrent search failures
+  against Sukebei/Nyaa. The same "Force Search + Download" dialog now
+  offers "Use global default", which clears the forced override on the
+  selected releases so your Default download method setting governs them
+  again.
+
 ## [1.0.157] - 2026-09-10
 
 ### Added
