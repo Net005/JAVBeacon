@@ -550,6 +550,70 @@ func TestDownloadActivitySeparatesQueuedFromDownloading(t *testing.T) {
 	}
 }
 
+func TestDownloadActivityRetriesNotAvailableAndEditsPriority(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		`downloadStatus==='failed'||downloadStatus==='not_available'`,
+		`status:downloadStatus`,
+		`promptDownloadPriority(${x.id}`,
+		`['in_progress','queued','failed','not_available'].includes(downloadStatus)`,
+	} {
+		if !strings.Contains(string(javascript), marker) {
+			t.Fatalf("Download Activity retry/priority UI is missing marker %q", marker)
+		}
+	}
+	serverSource, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(serverSource), `PATCH /api/downloads/priority`) {
+		t.Fatal("Download Activity priority endpoint is not registered")
+	}
+}
+
+func TestRetryNotAvailableDownloadsRequeuesProviderSearch(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "retry-not-available.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"default_download_method": "http"}); err != nil {
+		t.Fatal(err)
+	}
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "RETRY-NA-1", Title: "Retry", Source: "JavLibrary", Released: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "RETRY-NA-1", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release setup: rows=%v err=%v", releases, err)
+	}
+	row, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, Transport: "http", Status: "not_available", Priority: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, downloads: download.New(st, time.Second, slog.Default()), bulkReleaseRunning: true}
+	result, err := s.retryNotAvailableDownloads(ctx, []int64{row.ID}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["retried"] != 1 || len(s.bulkReleaseQueue) != 1 || s.bulkReleaseQueue[0].TaskID != row.ID {
+		t.Fatalf("retry result=%#v queue=%#v", result, s.bulkReleaseQueue)
+	}
+	rows, err := st.Downloads(ctx, "search_queued")
+	if err != nil || len(rows) != 1 || rows[0].ID != row.ID || rows[0].Priority != 7 {
+		t.Fatalf("requeued rows=%#v err=%v", rows, err)
+	}
+}
+
 func TestDownloadActivityShowsHTTPBeforeTorrent(t *testing.T) {
 	markup, err := assets.ReadFile("static/index.html")
 	if err != nil {

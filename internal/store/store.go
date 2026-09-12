@@ -84,6 +84,7 @@ type Store interface {
 	SaveReleaseUpgradeRun(context.Context, domain.ReleaseUpgradeRun) (domain.ReleaseUpgradeRun, error)
 	ReleaseUpgradeRuns(context.Context, int) ([]domain.ReleaseUpgradeRun, error)
 	SaveDownload(context.Context, domain.Download) (domain.Download, error)
+	UpdateDownloadPriority(context.Context, int64, int) (bool, error)
 	Downloads(context.Context, string) ([]domain.Download, error)
 	DownloadActivity(context.Context, domain.DownloadFilter) ([]domain.Download, int, error)
 	DeleteDownload(context.Context, int64) (int64, error)
@@ -3241,6 +3242,19 @@ func (s *SQLite) SaveDownload(ctx context.Context, x domain.Download) (domain.Do
 	}
 	x.UpdatedAt = now
 	return x, nil
+}
+
+// UpdateDownloadPriority changes only the queue-order field and timestamp,
+// avoiding a full-row SaveDownload that could overwrite concurrent transfer
+// progress. The status guard closes the race where a queued row starts while
+// a priority edit is being submitted.
+func (s *SQLite) UpdateDownloadPriority(ctx context.Context, downloadID int64, priority int) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE downloads SET priority=?,updated_at=? WHERE id=? AND status IN ('search_queued','searching','queued','failed','not_available')`, priority, time.Now().UTC(), downloadID)
+	if err != nil {
+		return false, err
+	}
+	updated, err := result.RowsAffected()
+	return updated > 0, err
 }
 
 const downloadSelect = `SELECT d.id,COALESCE(d.release_id,0),COALESCE(r.video_id,''),COALESCE(r.image_url,''),d.provider,d.source_type,d.source_reference,d.transfer_reference,d.source_page_url,d.provider_file_id,d.restored_file_id,d.restored_parent_id,d.restored_file_owned,d.query,d.torrent_hash,d.transport,d.destination_path,d.bytes_total,d.bytes_downloaded,d.bytes_per_second,d.name,d.files,d.status,d.match_reason,d.qb_response,d.post_status,d.error,d.seed_ratio,d.progress,d.seeds,d.peers,d.eta_seconds,d.seen_complete,d.filename_pattern_excluded,d.priority,d.added_at,d.updated_at FROM downloads d LEFT JOIN releases r ON r.id=d.release_id`

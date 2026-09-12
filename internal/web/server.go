@@ -358,6 +358,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/downloads", s.downloadList)
 	s.mux.HandleFunc("POST /api/downloads/{id}/retry", s.retryDownload)
 	s.mux.HandleFunc("POST /api/downloads/bulk-retry", s.bulkRetryDownloads)
+	s.mux.HandleFunc("PATCH /api/downloads/priority", s.updateDownloadPriorities)
 	s.mux.HandleFunc("DELETE /api/downloads/{id}", s.removeDownload)
 	s.mux.HandleFunc("POST /api/downloads/bulk-remove", s.bulkRemoveDownloads)
 	s.mux.HandleFunc("GET /api/jobs/download-replacements", func(w http.ResponseWriter, r *http.Request) {
@@ -1162,6 +1163,17 @@ func (s *Server) retryDownload(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusBadRequest, "invalid download id")
 		return
 	}
+	for _, row := range mustDownloads(s.store) {
+		if row.ID == n && row.Transport == "http" && row.Status == "not_available" {
+			result, retryErr := s.retryNotAvailableDownloads(r.Context(), []int64{n}, false)
+			if retryErr != nil {
+				s.problem(w, http.StatusBadRequest, retryErr.Error())
+				return
+			}
+			s.json(w, http.StatusAccepted, result)
+			return
+		}
+	}
 	x, err := s.downloads.RetryHTTPDownload(r.Context(), n)
 	if err != nil {
 		s.problem(w, http.StatusBadRequest, err.Error())
@@ -1171,18 +1183,116 @@ func (s *Server) retryDownload(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) bulkRetryDownloads(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		IDs []int64 `json:"ids"`
-		All bool    `json:"all"`
+		IDs    []int64 `json:"ids"`
+		All    bool    `json:"all"`
+		Status string  `json:"status"`
 	}
 	if !s.decode(w, r, &payload) {
 		return
 	}
-	result, err := s.downloads.RetryFailedHTTPDownloads(r.Context(), payload.IDs, payload.All)
+	var result map[string]any
+	var err error
+	if payload.Status == "not_available" {
+		result, err = s.retryNotAvailableDownloads(r.Context(), payload.IDs, payload.All)
+	} else {
+		result, err = s.downloads.RetryFailedHTTPDownloads(r.Context(), payload.IDs, payload.All)
+	}
 	if err != nil {
 		s.problem(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 	s.json(w, http.StatusAccepted, result)
+}
+
+func (s *Server) updateDownloadPriorities(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		IDs      []int64 `json:"ids"`
+		Priority int     `json:"priority"`
+	}
+	if !s.decode(w, r, &payload) {
+		return
+	}
+	updated, err := s.downloads.UpdateDownloadPriorities(r.Context(), payload.IDs, payload.Priority)
+	if err != nil {
+		s.problem(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	wanted := make(map[int64]bool, len(payload.IDs))
+	for _, downloadID := range payload.IDs {
+		wanted[downloadID] = true
+	}
+	// Search + Download placeholders have a second in-memory queue. Keep its
+	// ordering synchronized with the persisted download row priority.
+	s.bulkReleaseMu.Lock()
+	for i := range s.bulkReleaseQueue {
+		if wanted[s.bulkReleaseQueue[i].TaskID] {
+			s.bulkReleaseQueue[i].Priority = payload.Priority
+		}
+	}
+	s.bulkReleaseMu.Unlock()
+	s.backgroundSearchMu.Lock()
+	for releaseID, item := range s.backgroundSearchQueue {
+		if wanted[item.ID] {
+			item.Priority = payload.Priority
+			s.backgroundSearchQueue[releaseID] = item
+		}
+	}
+	s.backgroundSearchMu.Unlock()
+	s.json(w, http.StatusOK, map[string]any{"updated": updated, "priority": payload.Priority})
+}
+
+// retryNotAvailableDownloads reuses the retained Search + Download rows and
+// sends them back through provider discovery. Unlike a failed HTTP transfer,
+// a not-available row has no download URL to retry directly: its provider page
+// must be searched again to discover whether a link has since been published.
+func (s *Server) retryNotAvailableDownloads(ctx context.Context, downloadIDs []int64, all bool) (map[string]any, error) {
+	if !all && len(downloadIDs) == 0 {
+		return nil, errors.New("select at least one not-available HTTP download")
+	}
+	rows, err := s.store.Downloads(ctx, "not_available")
+	if err != nil {
+		return nil, err
+	}
+	wanted := make(map[int64]bool, len(downloadIDs))
+	for _, downloadID := range downloadIDs {
+		wanted[downloadID] = true
+	}
+	seenReleases := make(map[int64]bool)
+	items := make([]bulkReleaseItem, 0, len(rows))
+	failures := make([]string, 0)
+	const sourceType = "Manual Not Available Retry"
+	for _, row := range rows {
+		if row.Transport != "http" || (!all && !wanted[row.ID]) || seenReleases[row.ReleaseID] {
+			continue
+		}
+		seenReleases[row.ReleaseID] = true
+		release, releaseErr := s.store.Release(ctx, row.ReleaseID)
+		if releaseErr != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", row.Query, releaseErr))
+			continue
+		}
+		row.Status = "search_queued"
+		row.Transport = s.searchDownloadTransport(ctx, release)
+		row.Name = "Waiting for provider search"
+		row.SourceType = sourceType
+		row.MatchReason = "Waiting in Search + Download queue"
+		row.Error = ""
+		row.PostStatus = ""
+		row.Progress = 0
+		row, releaseErr = s.store.SaveDownload(ctx, row)
+		if releaseErr != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", row.Query, releaseErr))
+			continue
+		}
+		items = append(items, bulkReleaseItem{Release: release, TaskID: row.ID, SourceType: sourceType, Priority: row.Priority})
+	}
+	if len(items) == 0 && len(failures) == 0 {
+		return nil, errors.New("no not-available HTTP downloads matched this request")
+	}
+	if len(items) > 0 {
+		s.enqueueBulkReleaseItems(items)
+	}
+	return map[string]any{"matched": len(items) + len(failures), "retried": len(items), "failed": len(failures), "errors": failures}, nil
 }
 func (s *Server) removeDownload(w http.ResponseWriter, r *http.Request) {
 	n, err := id(r)
@@ -2789,6 +2899,9 @@ func (s *Server) runBulkReleaseJobs() {
 		s.bulkReleaseMu.Unlock()
 
 		release := item.Release
+		// Preserve the Search + Download task's editable queue priority on the
+		// materialized HTTP/Torrent download selected by provider discovery.
+		release.PriorityOverride = &item.Priority
 		var task domain.Download
 		if item.TaskID > 0 {
 			for _, row := range mustDownloads(s.store) {

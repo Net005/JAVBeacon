@@ -88,3 +88,52 @@ func TestRetryHTTPDownloadReusesFailedRowAndBypassesLocalHistory(t *testing.T) {
 	service.httpActive = 0
 	service.httpMu.Unlock()
 }
+
+func TestUpdateDownloadPrioritiesUpdatesStoredRowsAndHTTPWaiter(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "priority-downloads.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "PRIORITY-1", Title: "Priority", Source: "JavLibrary", Released: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "PRIORITY-1", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release setup: rows=%v err=%v", releases, err)
+	}
+	queued, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "PRIORITY-1", Transport: "http", Status: "queued", Priority: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "PRIORITY-2", Transport: "http", Status: "failed", Priority: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiter := &httpSlotWaiter{downloadID: queued.ID, ready: make(chan struct{}), priority: 50}
+	service := New(st, time.Second, slog.Default())
+	run := &httpDownloadRun{waiter: waiter, priority: 50}
+	service.httpRuns = map[int64]*httpDownloadRun{queued.ID: run}
+	updated, err := service.UpdateDownloadPriorities(ctx, []int64{queued.ID, failed.ID}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated != 2 || waiter.priority != 3 || run.priority != 3 {
+		t.Fatalf("updated=%d waiter priority=%d run priority=%d, want 2, 3, and 3", updated, waiter.priority, run.priority)
+	}
+	rows, err := st.Downloads(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if (row.ID == queued.ID || row.ID == failed.ID) && row.Priority != 3 {
+			t.Fatalf("download %d priority=%d, want 3", row.ID, row.Priority)
+		}
+	}
+}
