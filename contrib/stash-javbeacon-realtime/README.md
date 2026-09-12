@@ -22,11 +22,17 @@ not expose the API token to the scene page.
    - **JAVBeacon-Subs base URL** to the address reachable from Stash, such as
      `https://subs.example.com`;
    - **JAVBeacon-Subs API token** to the bearer token issued by JAVBeacon-Subs.
+   - Optionally set **Scene path filters** to one or more partial paths. Matches
+     are case-insensitive and may be separated by new lines, commas, or
+     semicolons. Leave it blank to allow all scene paths.
 5. Reload the Stash page after installing or updating the plugin.
 
-The closed-caption icon appears in the scene action row and at the bottom-right
-of cards on the scene overview. Selecting either button resolves the scene's
-first full file path from Stash on the server and submits:
+For matching scene paths, the action appears in the scene action row and at
+the bottom-right of cards on the scene overview. **+ CC** requests subtitles
+when Stash reports no linked caption or subtitle tracks. When subtitles are
+already linked, it changes to a disabled **✓ CC** completion indicator.
+Selecting **+ CC** resolves the scene's first full file path from Stash on the
+server and submits:
 
 ```json
 {
@@ -49,6 +55,9 @@ Every request option shown above is available separately in the plugin
 settings, with the values above used as server-side defaults. **Job options
 (JSON)** can override those fields or add fields supported by JAVBeacon-Subs.
 For safety, `inputs` is always replaced with the current scene's full path.
+When **Scene path filters** is configured, the action is shown only when the
+first scene file path contains at least one configured fragment. The same
+check is enforced by the server when the request is submitted.
 
 ## Realtime sync
 

@@ -107,6 +107,33 @@ class SubtitleRequestTests(unittest.TestCase):
             "https://subs.example.com/api/v1/jobs",
         )
 
+    def test_scene_path_filters_are_partial_and_case_insensitive(self):
+        settings = {
+            "subs_scene_path_filters": "/OTHER/PATH; /collections/JAV\n/archive"
+        }
+
+        self.assertTrue(
+            plugin._scene_path_matches("/Collections/jav/NSPS-642.mp4", settings)
+        )
+        self.assertFalse(plugin._scene_path_matches("/media/NSPS-642.mp4", settings))
+        self.assertTrue(plugin._scene_path_matches("/media/NSPS-642.mp4", {}))
+
+    @mock.patch.object(plugin, "_scene_and_subs_settings")
+    @mock.patch.object(plugin.urllib.request, "urlopen")
+    def test_request_rejects_scene_outside_path_filters(self, urlopen, scene_settings):
+        scene_settings.return_value = (
+            "/media/NSPS-642.mp4",
+            {
+                "subs_scene_path_filters": "/collections/jav/",
+                "subs_base_url": "https://subs.example.com",
+                "subs_api_token": "secret-token",
+            },
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "does not match"):
+            plugin.request_subtitles({}, {"scene_id": "39381"})
+        urlopen.assert_not_called()
+
     @mock.patch.object(plugin, "_scene_and_subs_settings")
     @mock.patch.object(plugin.urllib.request, "urlopen")
     def test_request_uses_bearer_token_and_scene_path(self, urlopen, scene_settings):
