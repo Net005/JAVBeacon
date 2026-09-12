@@ -285,9 +285,10 @@ Under **Settings → Downloads → HTTP Downloads**, configure:
 - **Download folder** — where completed HTTP videos are written.
 - **Parallel HTTP downloads** — the maximum simultaneous HTTP transfers.
 - **Connections per HTTP download** — parallel byte-range connections used for
-  one file (default and maximum 4). JAVBeacon verifies the CDN's `Content-Range` response
-  before segmenting and automatically uses one connection when ranges are not
-  supported.
+  one file (default 4, maximum 32). JAVBeacon verifies the CDN's `Content-Range`
+  response before segmenting, progressively reduces the connection count after
+  range or gateway failures, and automatically uses one connection when ranges
+  are not supported.
 - Completed files are verified against PikPak's SHA-1 hash (or MD5 checksum)
   when the provider supplies one. The final on-disk byte size is always checked
   before the temporary download is renamed to its final `.mp4` filename.

@@ -674,7 +674,7 @@ func TestHTTPConnectionSettingDistinguishesFilesFromSegments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`Connections per HTTP download`, `name="http_download_connections"`, `parallel byte-range connections`, `Falls back safely to one connection`} {
+	for _, marker := range []string{`Connections per HTTP download`, `name="http_download_connections"`, `max="32"`, `parallel byte-range connections`, `falls back safely to one connection`} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("HTTP connection setting is missing marker %q", marker)
 		}
@@ -1843,6 +1843,9 @@ func TestHeaderSearchDownloadQueueFrontend(t *testing.T) {
 	}
 	if !bytes.Contains(styles, []byte(`.headerQueueItem`)) || !bytes.Contains(styles, []byte(`.headerQueueHighlight`)) {
 		t.Fatal("embedded app.css is missing header queue styling")
+	}
+	if !bytes.Contains(styles, []byte(`border-radius:0 12px 12px 0`)) {
+		t.Fatal("header Download Activity summary does not clip its background to the outer rounded edge")
 	}
 }
 

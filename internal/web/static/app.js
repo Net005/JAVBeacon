@@ -1611,10 +1611,10 @@ autoRefreshDownloads.checked=localStorage.getItem('javbeacon.autoRefreshDownload
 const httpParallelDownloadsInput=settingsForm.elements.http_download_concurrency;
 if(httpParallelDownloadsInput){
   const connectionsLabel=document.createElement('label');
-  connectionsLabel.innerHTML='Connections per HTTP download<input name="http_download_connections" type="number" min="1" max="4" step="1" value="4">';
+  connectionsLabel.innerHTML='Connections per HTTP download<input name="http_download_connections" type="number" min="1" max="32" step="1" value="4">';
   const connectionsHelp=document.createElement('p');
   connectionsHelp.className='settingHelp';
-  connectionsHelp.innerHTML='Splits one file across parallel byte-range connections when supported. Default: <strong>4</strong>. Falls back safely to one connection when ranges are unavailable.';
+  connectionsHelp.innerHTML='Splits one file across parallel byte-range connections when supported. Default: <strong>4</strong>; maximum: <strong>32</strong>. Automatically reduces the connection count and falls back safely to one connection when ranges or the upstream gateway have issues.';
   httpParallelDownloadsInput.closest('label').after(connectionsLabel,connectionsHelp);
 }
 const loadSettingsWithoutHTTPConnections=loadSettings;
