@@ -64,7 +64,10 @@
             role: "status",
             size: "sm",
           })
-        : React.createElement(FontAwesomeIcon, { icon: subtitleIcon })
+        : React.createElement(FontAwesomeIcon, {
+            className: "fa-icon javbeacon-subs-icon",
+            icon: subtitleIcon,
+          })
     );
   }
 
