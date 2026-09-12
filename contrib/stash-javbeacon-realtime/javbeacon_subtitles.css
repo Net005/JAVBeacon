@@ -26,8 +26,9 @@
 }
 
 .javbeacon-subs-button.javbeacon-subs-complete[disabled] {
+  color: #b98a96;
   cursor: default;
-  opacity: 0.75;
+  opacity: 1;
 }
 
 .scene-card .javbeacon-subs-card-action {
@@ -40,8 +41,11 @@
   z-index: 3;
 }
 
-.scene-card .javbeacon-subs-card-action .javbeacon-subs-button {
-  padding: 0.35rem 0.45rem;
+.scene-card .javbeacon-subs-card-action .javbeacon-subs-button,
+.scene-card .javbeacon-watchlist-button.btn.minimal {
+  height: 2rem;
+  min-height: 2rem;
+  padding: 0.35rem 0.5rem;
 }
 
 .scene-card .javbeacon-subs-card-action .javbeacon-subs-label {
@@ -61,16 +65,15 @@
 .scene-card .javbeacon-watchlist-button.btn.minimal {
   align-items: center;
   display: inline-flex;
-  font-size: 0.95rem;
+  font-size: 1rem;
   font-weight: 700;
   justify-content: center;
   line-height: 1;
-  padding: 0.35rem 0.55rem;
   white-space: nowrap;
 }
 
 .scene-card .javbeacon-watchlist-button.is-watchlisted {
-  color: var(--success, #65c98f);
+  color: #c75c78;
 }
 
 .scene-card .javbeacon-watchlist-button[disabled] {
