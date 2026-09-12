@@ -1208,8 +1208,8 @@ func httpConnections(settings map[string]string) int {
 	if n < 1 {
 		n = 4
 	}
-	if n > 4 {
-		n = 4
+	if n > 32 {
+		n = 32
 	}
 	return n
 }
@@ -1605,7 +1605,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	if err != nil && ctx.Err() == nil && resolved.Authenticated {
 		// Signed PikPak CDN URLs can expire or be invalidated while a large
 		// transfer is retrying. Resolve the exact selected account file once
-		// more, then repeat the adaptive 4 -> 2 -> 1 transfer with a fresh URL.
+		// more, then repeat the adaptive connection-reduction transfer with a fresh URL.
 		s.log.Warn("PikPak HTTP transfer failed; refreshing authenticated download URL",
 			"download_id", d.ID,
 			"release_id", d.ReleaseID,
@@ -1813,7 +1813,7 @@ func resetHTTPTransfer(out *os.File, total int64, transferred *atomic.Int64) err
 }
 
 func downloadHTTPToFile(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, out *os.File, total int64, connections int, transferred *atomic.Int64, onDowngrade func(int, int, error)) (int, error) {
-	connections = min(connections, 4)
+	connections = min(connections, 32)
 	if connections < 2 || total <= 0 {
 		return 1, downloadHTTPSingleStream(ctx, client, resolved, out, total, transferred)
 	}
@@ -1861,7 +1861,7 @@ func downloadHTTPToFile(ctx context.Context, client *http.Client, resolved resol
 		} else {
 			next := 1
 			if current > 2 {
-				next = 2
+				next = max(2, current/2)
 			}
 			if onDowngrade != nil {
 				onDowngrade(current, next, err)

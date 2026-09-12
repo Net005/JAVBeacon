@@ -50,7 +50,8 @@ func TestHTTPConnectionsDefaultAndBounds(t *testing.T) {
 	}{
 		"default": {map[string]string{}, 4},
 		"custom":  {map[string]string{"http_download_connections": "3"}, 3},
-		"maximum": {map[string]string{"http_download_connections": "99"}, 4},
+		"maximum": {map[string]string{"http_download_connections": "32"}, 32},
+		"capped":  {map[string]string{"http_download_connections": "99"}, 32},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := httpConnections(testCase.settings); got != testCase.want {

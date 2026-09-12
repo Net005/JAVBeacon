@@ -7,6 +7,20 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.168] - 2026-09-12
+
+### Changed
+
+- Connections per HTTP download can now be configured from 1 to 32. The
+  existing adaptive fallback remains active: range or gateway failures reduce
+  the connection count progressively and ultimately retry with one connection,
+  including after authenticated PikPak URLs are refreshed.
+
+### Fixed
+
+- Fixed the Download Activity header summary background extending beyond its
+  rounded outer border while the header status was paused or active.
+
 ## [1.0.167] - 2026-09-12
 
 ### Added
