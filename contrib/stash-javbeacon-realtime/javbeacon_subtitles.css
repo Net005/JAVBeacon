@@ -12,20 +12,27 @@
   padding: 0.375rem 0.5rem;
 }
 
-.javbeacon-subs-button .javbeacon-subs-icon {
-  height: 1.45rem;
+.javbeacon-subs-button .javbeacon-subs-label {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
   margin: 0;
-  vertical-align: middle;
-  width: 1.45rem;
+  white-space: nowrap;
 }
 
-.javbeacon-subs-button[disabled] {
+.javbeacon-subs-button[disabled]:not(.javbeacon-subs-complete) {
   cursor: wait;
+}
+
+.javbeacon-subs-button.javbeacon-subs-complete[disabled] {
+  cursor: default;
+  opacity: 0.75;
 }
 
 .scene-card .javbeacon-subs-card-action {
   align-items: center;
-  bottom: 0.4rem;
+  bottom: 0.95rem;
   display: inline-flex;
   justify-content: center;
   position: absolute;
@@ -37,7 +44,6 @@
   padding: 0.35rem 0.45rem;
 }
 
-.scene-card .javbeacon-subs-card-action .javbeacon-subs-icon {
-  height: 1.3rem;
-  width: 1.3rem;
+.scene-card .javbeacon-subs-card-action .javbeacon-subs-label {
+  font-size: 1rem;
 }

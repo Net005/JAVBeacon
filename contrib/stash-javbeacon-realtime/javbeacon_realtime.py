@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -110,6 +111,19 @@ def _bool_setting(settings, name, default):
     return bool(value)
 
 
+def _scene_path_matches(scene_path, settings):
+    raw_filters = str(settings.get("subs_scene_path_filters") or "")
+    filters = [
+        value.strip().casefold()
+        for value in re.split(r"[\n,;]+", raw_filters)
+        if value.strip()
+    ]
+    if not filters:
+        return True
+    normalized_path = str(scene_path or "").casefold()
+    return any(value in normalized_path for value in filters)
+
+
 def _jobs_endpoint(base_url):
     value = str(base_url or "").strip().rstrip("/")
     parsed = urllib.parse.urlparse(value)
@@ -150,6 +164,8 @@ def request_subtitles(payload, args):
     if not scene_id:
         raise RuntimeError("subtitle request did not include a scene ID")
     scene_path, settings = _scene_and_subs_settings(payload, scene_id)
+    if not _scene_path_matches(scene_path, settings):
+        raise RuntimeError("scene path does not match the configured subtitle path filters")
     endpoint = _jobs_endpoint(settings.get("subs_base_url"))
     token = str(settings.get("subs_api_token") or "").strip()
     if not token:

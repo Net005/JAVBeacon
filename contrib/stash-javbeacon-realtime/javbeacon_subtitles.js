@@ -5,11 +5,7 @@
   const React = window.PluginApi.React;
   const ReactDOM = window.PluginApi.ReactDOM;
   const { Button, Spinner } = window.PluginApi.libraries.Bootstrap;
-  const { gql, useMutation } = window.PluginApi.libraries.Apollo;
-  const { FontAwesomeIcon } = window.PluginApi.libraries.ReactFontAwesome;
-  const icons = window.PluginApi.libraries.FontAwesomeSolid;
-  const subtitleIcon =
-    icons.faClosedCaptioning || icons.faLanguage || icons.faFileAlt;
+  const { gql, useMutation, useQuery } = window.PluginApi.libraries.Apollo;
 
   const REQUEST_SUBTITLES = gql`
     mutation JAVBeaconRequestSubtitles($pluginId: ID!, $args: Map) {
@@ -17,7 +13,52 @@
     }
   `;
 
-  function SubtitleButton({ sceneId }) {
+  const FIND_SCENE_CAPTIONS = gql`
+    query JAVBeaconSceneCaptions($id: ID!) {
+      findScene(id: $id) {
+        id
+        captions {
+          language_code
+          caption_type
+        }
+      }
+    }
+  `;
+
+  const FIND_PLUGIN_SETTINGS = gql`
+    query JAVBeaconSubtitleSettings {
+      configuration {
+        plugins(include: ["javbeacon-realtime"])
+      }
+    }
+  `;
+
+  function hasLinkedSubtitles(scene) {
+    return Array.isArray(scene?.captions) && scene.captions.length > 0;
+  }
+
+  function sceneMatchesPathFilters(scene, settings) {
+    const filters = String(settings?.subs_scene_path_filters || "")
+      .split(/[\n,;]+/)
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    if (filters.length === 0) return true;
+
+    const path = String(scene?.files?.[0]?.path || "").toLowerCase();
+    return filters.some((value) => path.includes(value));
+  }
+
+  function usePluginSettings() {
+    const result = useQuery(FIND_PLUGIN_SETTINGS, {
+      fetchPolicy: "cache-first",
+    });
+    return {
+      ...result,
+      settings: result.data?.configuration?.plugins?.[PLUGIN_ID],
+    };
+  }
+
+  function SubtitleButton({ sceneId, completed = false }) {
     const Toast = window.PluginApi.hooks.useToast();
     const [runPluginOperation] = useMutation(REQUEST_SUBTITLES);
     const [loading, setLoading] = React.useState(false);
@@ -25,7 +66,7 @@
     const onClick = async (event) => {
       event?.preventDefault();
       event?.stopPropagation();
-      if (loading) return;
+      if (loading || completed) return;
       setLoading(true);
       try {
         const response = await runPluginOperation({
@@ -51,14 +92,20 @@
     return React.createElement(
       Button,
       {
-        "aria-label": "Request subtitles from JAVBeacon-Subs",
-        className: "minimal javbeacon-subs-button",
-        disabled: loading,
-        onClick,
-        onMouseDown: (event) => event.stopPropagation(),
-        title: loading
-          ? "Sending subtitle request…"
+        "aria-label": completed
+          ? "Subtitle linked to this scene"
           : "Request subtitles from JAVBeacon-Subs",
+        className: `minimal javbeacon-subs-button${
+          completed ? " javbeacon-subs-complete" : ""
+        }`,
+        disabled: loading || completed,
+        onClick: completed ? undefined : onClick,
+        onMouseDown: (event) => event.stopPropagation(),
+        title: completed
+          ? "Subtitle linked to this scene"
+          : loading
+            ? "Sending subtitle request…"
+            : "Request subtitles from JAVBeacon-Subs",
         variant: "secondary",
       },
       loading
@@ -67,14 +114,71 @@
             role: "status",
             size: "sm",
           })
-        : React.createElement(FontAwesomeIcon, {
-            className: "fa-icon javbeacon-subs-icon",
-            icon: subtitleIcon,
-          })
+        : React.createElement(
+            "span",
+            { className: "javbeacon-subs-label", "aria-hidden": "true" },
+            completed ? "✓ CC" : "+ CC"
+          )
     );
   }
 
-  function SubtitleToolbarPortal({ sceneId }) {
+  function SceneCardSubtitleAction({ scene }) {
+    const settingsQuery = usePluginSettings();
+    const captionsKnown =
+      scene != null &&
+      Object.prototype.hasOwnProperty.call(scene, "captions");
+    const { data, loading, error } = useQuery(FIND_SCENE_CAPTIONS, {
+      fetchPolicy: "cache-first",
+      skip: captionsKnown,
+      variables: { id: String(scene.id) },
+    });
+    const captions = captionsKnown
+      ? scene.captions
+      : data?.findScene?.captions;
+    const resolved = captionsKnown || data?.findScene != null;
+
+    // Keep the action hidden until Stash confirms the linked-subtitle state.
+    if (
+      settingsQuery.loading ||
+      settingsQuery.error ||
+      settingsQuery.settings == null ||
+      !sceneMatchesPathFilters(scene, settingsQuery.settings) ||
+      loading ||
+      error ||
+      !resolved
+    ) {
+      return null;
+    }
+
+    return React.createElement(
+      "div",
+      {
+        className: "javbeacon-subs-card-action",
+      },
+      React.createElement(SubtitleButton, {
+        completed: hasLinkedSubtitles({ captions }),
+        sceneId: scene.id,
+      })
+    );
+  }
+
+  function ScenePageSubtitleAction({ scene }) {
+    const { settings, loading, error } = usePluginSettings();
+    if (
+      loading ||
+      error ||
+      settings == null ||
+      !sceneMatchesPathFilters(scene, settings)
+    ) {
+      return null;
+    }
+    return React.createElement(SubtitleToolbarPortal, {
+      completed: hasLinkedSubtitles(scene),
+      sceneId: scene.id,
+    });
+  }
+
+  function SubtitleToolbarPortal({ sceneId, completed }) {
     const [mountNode, setMountNode] = React.useState(null);
 
     React.useLayoutEffect(() => {
@@ -96,7 +200,7 @@
 
     if (!mountNode) return null;
     return ReactDOM.createPortal(
-      React.createElement(SubtitleButton, { sceneId }),
+      React.createElement(SubtitleButton, { completed, sceneId }),
       mountNode
     );
   }
@@ -109,9 +213,9 @@
       React.Fragment,
       null,
       rendered,
-      React.createElement(SubtitleToolbarPortal, {
+      React.createElement(ScenePageSubtitleAction, {
         key: "javbeacon-subs-portal",
-        sceneId: props.scene.id,
+        scene: props.scene,
       })
     );
   });
@@ -124,14 +228,10 @@
       React.Fragment,
       null,
       rendered,
-      React.createElement(
-        "div",
-        {
-          className: "javbeacon-subs-card-action",
-          key: "javbeacon-subs-card-action",
-        },
-        React.createElement(SubtitleButton, { sceneId: props.scene.id })
-      )
+      React.createElement(SceneCardSubtitleAction, {
+        key: "javbeacon-subs-card-action",
+        scene: props.scene,
+      })
     );
   });
 })();

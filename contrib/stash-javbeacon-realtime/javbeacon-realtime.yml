@@ -1,6 +1,6 @@
 name: JAVBeacon Realtime Sync + Subtitles
 description: Sends changed scenes to JAVBeacon and lets scene pages request subtitles from JAVBeacon-Subs.
-version: 1.3.0
+version: 1.6.0
 ui:
   javascript:
     - javbeacon_subtitles.js
@@ -14,6 +14,10 @@ settings:
   subs_api_token:
     displayName: JAVBeacon-Subs API token
     description: Bearer token used by Stash for subtitle job requests. It is sent only by the server-side plugin.
+    type: STRING
+  subs_scene_path_filters:
+    displayName: Scene path filters
+    description: Optional case-insensitive partial path matches controlling where + CC is shown. Separate multiple values with new lines, commas, or semicolons. Blank allows every scene path.
     type: STRING
   subs_timeout_seconds:
     displayName: Request timeout (seconds)
