@@ -109,6 +109,37 @@ func TestPikPakSessionRefreshesWithoutCredentialLogin(t *testing.T) {
 	}
 }
 
+func TestPikPakSessionReusesValidAccessToken(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "pikpak-reuse.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{
+		"pikpak_session_username":      "person@example.test",
+		"pikpak_session_access_token":  "valid-access",
+		"pikpak_session_refresh_token": "saved-refresh",
+		"pikpak_session_device_id":     "saved-device",
+		"pikpak_session_expires_at":    time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("valid saved session unexpectedly made a token request: %s", req.URL)
+		return nil, nil
+	})}
+	svc := New(st, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc.client = client
+	session, err := svc.authenticatePikPakSession(ctx, "person@example.test", "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.accessToken != "valid-access" || session.refreshToken != "saved-refresh" {
+		t.Fatalf("session=%+v", session)
+	}
+}
+
 func TestPushoverPikPakStatusUsesConfiguredKeysAndSafeMessage(t *testing.T) {
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "pushover.db"))
 	if err != nil {

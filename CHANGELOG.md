@@ -7,6 +7,29 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.167] - 2026-09-12
+
+### Added
+
+- Added Release Library-style multi-selection to Notifications: selection
+  controls appear on hover and remain visible after the first item is selected,
+  cover clicks extend the selection, and Shift-click selects ranges.
+- Added screenshot previews to Notifications cards and an explicit touch
+  preview control for Release Library and Notifications cards. On iPhone and
+  iPad, the preview control starts or stops screenshot rotation, long-pressing
+  a cover begins selection, and a normal cover tap still opens Release Details.
+
+### Fixed
+
+- Fixed selected Release Library and Notifications cards so screenshot rotation
+  remains available instead of selection interrupting the preview behavior.
+- Fixed authenticated PikPak HTTP downloads stalling before restore while they
+  recursively inventoried large accounts. Restore deduplication now scans only
+  the drive root and Pack From Shared tree, resolution has a two-minute bound,
+  and logs distinguish provider resolution from the actual transfer.
+- Reused still-valid PikPak access tokens until their refresh window instead of
+  refreshing the same session separately for every concurrent download worker.
+
 ## [1.0.166] - 2026-09-12
 
 ### Fixed

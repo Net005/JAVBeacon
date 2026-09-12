@@ -13,7 +13,10 @@ import (
 	"github.com/Net005/JAVBeacon/internal/domain"
 )
 
-const defaultPikPakCheckInterval = 24 * time.Hour
+const (
+	defaultPikPakCheckInterval = 24 * time.Hour
+	pikPakTokenRefreshSkew     = 5 * time.Minute
+)
 
 var pushoverMessagesURL = "https://api.pushover.net/1/messages.json"
 
@@ -116,6 +119,10 @@ func (s *Service) pikPakSession(ctx context.Context, username, password string, 
 	client.tokenExpiresAt, _ = time.Parse(time.RFC3339Nano, settings["pikpak_session_expires_at"])
 
 	matchingAccount := username != "" && username == settings["pikpak_session_username"]
+	if !forceLogin && matchingAccount && client.accessToken != "" && client.tokenExpiresAt.After(time.Now().Add(pikPakTokenRefreshSkew)) {
+		s.clearPikPakReauthState(ctx)
+		return client, nil
+	}
 	if !forceLogin && matchingAccount && client.refreshToken != "" {
 		if err := client.refreshLogin(ctx); err == nil {
 			if saveErr := s.persistPikPakSession(ctx, client, username); saveErr != nil {

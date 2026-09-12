@@ -2048,6 +2048,41 @@ func TestReleaseLibraryBulkSelectionFrontendSupportsIncrementalLoading(t *testin
 	}
 }
 
+func TestReleaseAndNotificationCardsShareSelectionAndScreenshotPreview(t *testing.T) {
+	files := map[string][]string{
+		"static/app.js": {
+			`data-notification-id="${n.id}"`,
+			`data-has-screenshots="${(x.screenshots||[]).length?'true':'false'}"`,
+			`handleNotificationCoverClick(event,${n.id},${x.id})`,
+			`handleNotificationSelectClick(event,${n.id},this)`,
+			`notificationList.classList.toggle('selectionMode',notificationSelection.size>0)`,
+			`function cardPreviewButton(x)`,
+			`function toggleCardScreenshots(button,event)`,
+			`if(e.pointerType==='touch')return;const cover=e.target.closest('.card .cover')`,
+			`setTimeout(()=>{const notificationID=Number(card.dataset.notificationId)`,
+			`suppressCardCoverClickUntil=Date.now()+800`,
+		},
+		"static/app.css": {
+			`.notificationList.selectionMode .releaseSelect`,
+			`.cardPreviewToggle{display:none`,
+			`@media (hover:none), (pointer:coarse)`,
+			`.cardPreviewToggle{display:grid}`,
+			`.card .coverLink{-webkit-touch-callout:none`,
+		},
+	}
+	for name, markers := range files {
+		body, err := assets.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, marker := range markers {
+			if !strings.Contains(string(body), marker) {
+				t.Errorf("%s missing %q", name, marker)
+			}
+		}
+	}
+}
+
 func TestMonitoredBulkDownloadOverrideDialogIncludesIndependentPolicies(t *testing.T) {
 	body, err := assets.ReadFile("static/app.js")
 	if err != nil {

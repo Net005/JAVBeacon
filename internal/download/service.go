@@ -1499,6 +1499,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		fail(fmt.Errorf("no HTTP provider can resolve %s", d.Provider))
 		return
 	}
+	s.logHTTPDownloadEvent("HTTP download resolving provider source", d)
 	resolved, err = resolver.Resolve(ctx, d)
 	if err != nil {
 		fail(fmt.Errorf("resolve %s download: %w", resolver.Name(), err))
@@ -1535,6 +1536,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	// makes explicit Download Activity removal able to clean it up even after a
 	// cancellation, transfer failure, or application restart.
 	d, _ = s.store.SaveDownload(context.Background(), d)
+	s.logHTTPDownloadEvent("HTTP provider resolved; transfer starting", d)
 	finalPath := httpDestinationPath(dir, strings.ToUpper(strings.TrimSpace(d.Query)))
 	tempPath := finalPath + ".part"
 	out, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
