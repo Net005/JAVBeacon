@@ -7,6 +7,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.164] - 2026-09-12
+
+### Added
+
+- Added individual and bulk retry actions to Download Activity's Not
+  available tab. Retrying searches the providers again so releases whose
+  download links have since appeared can enter the download queue.
+- Added individual and bulk priority editing for Download Activity rows in
+  In Progress, Queued, Failed, and Not available. Pending provider searches
+  and HTTP downloads immediately adopt the new queue order.
+
 ## [1.0.163] - 2026-09-12
 
 ### Added

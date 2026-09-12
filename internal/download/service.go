@@ -103,6 +103,10 @@ type httpDownloadRun struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	waiter *httpSlotWaiter
+	// priority is kept beside the waiter so a queued download whose priority
+	// changes does not later overwrite the persisted value with the stale
+	// domain.Download captured when its goroutine was created.
+	priority int
 }
 
 type httpSlotWaiter struct {
@@ -1290,7 +1294,7 @@ func (s *Service) releaseHTTPSlot() {
 func (s *Service) startHTTPDownload(d domain.Download) {
 	ctx, cancel := context.WithCancel(context.Background())
 	waiter := &httpSlotWaiter{downloadID: d.ID, ready: make(chan struct{}), priority: d.Priority}
-	run := &httpDownloadRun{cancel: cancel, done: make(chan struct{}), waiter: waiter}
+	run := &httpDownloadRun{cancel: cancel, done: make(chan struct{}), waiter: waiter, priority: d.Priority}
 	limit := s.httpConcurrency(context.Background())
 	s.httpMu.Lock()
 	if s.httpRuns == nil {
@@ -1323,6 +1327,9 @@ func (s *Service) startHTTPDownload(d domain.Download) {
 			return
 		}
 		defer s.releaseHTTPSlot()
+		s.httpMu.Lock()
+		d.Priority = run.priority
+		s.httpMu.Unlock()
 		s.runHTTPDownload(ctx, d)
 	}()
 }
@@ -2290,6 +2297,58 @@ func (s *Service) RetryFailedHTTPDownloads(ctx context.Context, downloadIDs []in
 		retried++
 	}
 	return map[string]any{"matched": len(selected), "retried": retried, "failed": len(failures), "errors": failures}, nil
+}
+
+// UpdateDownloadPriorities changes the scheduling priority of retained or
+// pending Download Activity rows. It also updates any HTTP concurrency waiter
+// already held in memory so the next free slot observes the new ordering.
+func (s *Service) UpdateDownloadPriorities(ctx context.Context, downloadIDs []int64, priority int) (int, error) {
+	if len(downloadIDs) == 0 {
+		return 0, errors.New("select at least one download")
+	}
+	if priority < 1 || priority > 999 {
+		return 0, errors.New("priority must be between 1 and 999")
+	}
+	wanted := make(map[int64]bool, len(downloadIDs))
+	for _, downloadID := range downloadIDs {
+		wanted[downloadID] = true
+	}
+	rows, err := s.store.Downloads(ctx, "")
+	if err != nil {
+		return 0, err
+	}
+	allowed := map[string]bool{"search_queued": true, "searching": true, "queued": true, "failed": true, "not_available": true}
+	updated := 0
+	for _, row := range rows {
+		if !wanted[row.ID] || !allowed[row.Status] {
+			continue
+		}
+		s.httpMu.Lock()
+		run := s.httpRuns[row.ID]
+		if run != nil && run.waiter != nil && run.waiter.granted {
+			s.httpMu.Unlock()
+			continue
+		}
+		changed, err := s.store.UpdateDownloadPriority(ctx, row.ID, priority)
+		if err != nil {
+			s.httpMu.Unlock()
+			return updated, err
+		}
+		if changed && run != nil {
+			run.priority = priority
+			if run.waiter != nil && !run.waiter.granted {
+				run.waiter.priority = priority
+			}
+		}
+		s.httpMu.Unlock()
+		if changed {
+			updated++
+		}
+	}
+	if updated == 0 {
+		return 0, errors.New("no editable downloads matched this request")
+	}
+	return updated, nil
 }
 
 func (s *Service) TestQB(ctx context.Context, baseURL, username, password string) (string, []string, error) {
