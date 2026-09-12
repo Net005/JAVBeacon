@@ -98,6 +98,18 @@ def _setting(settings, name, default):
     return default if value is None or value == "" else value
 
 
+def _bool_setting(settings, name, default):
+    value = _setting(settings, name, default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "1", "yes", "on"):
+            return True
+        if normalized in ("false", "0", "no", "off"):
+            return False
+        raise RuntimeError(f"{name} must be true or false")
+    return bool(value)
+
+
 def _jobs_endpoint(base_url):
     value = str(base_url or "").strip().rstrip("/")
     parsed = urllib.parse.urlparse(value)
@@ -120,16 +132,16 @@ def _subtitle_body(scene_path, settings):
         raise RuntimeError("Job options must be a JSON object")
 
     body = {
-        "overwrite": False,
-        "auto_detect_release": True,
-        "release_within_days": 0,
-        "debug_mode": True,
-        "keep_japanese": True,
-        "write_ass": False,
+        "recursive": _bool_setting(settings, "subs_recursive", False),
+        "overwrite": _bool_setting(settings, "subs_overwrite", False),
+        "auto_detect_release": _bool_setting(settings, "subs_auto_detect_release", True),
+        "release_within_days": int(_setting(settings, "subs_release_within_days", 0)),
+        "debug_mode": _bool_setting(settings, "subs_debug_mode", True),
+        "keep_japanese": _bool_setting(settings, "subs_keep_japanese", True),
+        "write_ass": _bool_setting(settings, "subs_write_ass", False),
     }
     body.update(options)
     body["inputs"] = [scene_path]
-    body["recursive"] = False
     return body
 
 
