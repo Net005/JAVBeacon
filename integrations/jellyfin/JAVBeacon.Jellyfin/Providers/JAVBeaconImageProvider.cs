@@ -25,7 +25,7 @@ public sealed class JAVBeaconImageProvider(JAVBeaconClient client) : IRemoteImag
         if (!id.HasValue)
         {
             var match = await client.Match(item.Path, item.Name, ct).ConfigureAwait(false);
-            if (!match?.Matched ?? true || match?.Release is null)
+            if (match is null || !match.Matched || match.Release is null)
                 return [];
             id = match.Release.ReleaseId;
             if (id <= 0)
