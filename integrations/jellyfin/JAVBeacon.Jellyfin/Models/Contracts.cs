@@ -33,12 +33,20 @@ public sealed record LibrarySyncItemDto
     [JsonPropertyName("stash_scene_id")] public string StashSceneId { get; init; } = string.Empty;
     [JsonPropertyName("path")] public string? Path { get; init; }
     [JsonPropertyName("watchlisted_at")] public DateTimeOffset? WatchlistedAt { get; init; }
+    // WatchedAt is only populated on LibrarySyncDto.Watched entries: the most
+    // recent time StashApp recorded this scene as played.
+    [JsonPropertyName("watched_at")] public DateTimeOffset? WatchedAt { get; init; }
 }
 
 public sealed record LibrarySyncDto
 {
     [JsonPropertyName("revision")] public string Revision { get; init; } = string.Empty;
     [JsonPropertyName("watchlist")] public LibrarySyncItemDto[] Watchlist { get; init; } = [];
+    // Watched lists every local, StashApp-linked release StashApp reports as
+    // played at least once - independent of Watchlist. JAVBeacon always
+    // includes it; the plugin only acts on it when SyncWatchedFromStash is
+    // enabled.
+    [JsonPropertyName("watched")] public LibrarySyncItemDto[] Watched { get; init; } = [];
 }
 
 public sealed record PlaybackDto

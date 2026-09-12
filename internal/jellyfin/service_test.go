@@ -163,6 +163,43 @@ func TestLibrarySyncReturnsOnlyLocalWatchlistItems(t *testing.T) {
 	}
 }
 
+func TestLibrarySyncReportsStashPlayedReleasesAsWatchedIndependentlyOfWatchlist(t *testing.T) {
+	svc, st, _, r := testService(t)
+	defer st.Close()
+	// Deliberately not on the Watchlist - watched status must not depend on
+	// it (StashApp playback and the Watchlist tag are unrelated concepts).
+	lastPlayed := "2026-09-08T12:30:00Z"
+	if err := st.SetStashPlaybackStats(context.Background(), r.ID, 0, 3, lastPlayed, ""); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := svc.LibrarySync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Watchlist) != 0 {
+		t.Fatalf("watchlist=%+v, want empty (release was never watchlisted)", snapshot.Watchlist)
+	}
+	if len(snapshot.Watched) != 1 || snapshot.Watched[0].ReleaseID != r.ID || snapshot.Watched[0].StashSceneID != "stash-1" {
+		t.Fatalf("watched=%+v", snapshot.Watched)
+	}
+	wantWatchedAt, _ := time.Parse(time.RFC3339, lastPlayed)
+	if !snapshot.Watched[0].WatchedAt.Equal(wantWatchedAt) {
+		t.Fatalf("watched_at=%v, want %v", snapshot.Watched[0].WatchedAt, wantWatchedAt)
+	}
+}
+
+func TestLibrarySyncOmitsUnplayedReleasesFromWatched(t *testing.T) {
+	svc, st, _, _ := testService(t)
+	defer st.Close()
+	snapshot, err := svc.LibrarySync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Watched) != 0 {
+		t.Fatalf("watched=%+v, want empty (play_count is 0)", snapshot.Watched)
+	}
+}
+
 func TestPlaybackUsesWallTimeCheckpointsAndCountsCompletionOnce(t *testing.T) {
 	svc, st, bridge, r := testService(t)
 	defer st.Close()

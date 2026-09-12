@@ -124,6 +124,23 @@ func stashMissingConditionGroupClause(d Dialect, conditions []stashMissingFilter
 	var parts []string
 	var a []any
 	for _, c := range conditions {
+		if c.Wildcard {
+			values := splitWildcardValues(c.Value)
+			if len(values) > 1 {
+				alternatives := make([]stashMissingFilterCondition, 0, len(values))
+				for _, value := range values {
+					alternative := c
+					alternative.Value = value
+					alternatives = append(alternatives, alternative)
+				}
+				clause, args := stashMissingConditionGroupClause(d, alternatives, "or")
+				if clause != "" {
+					parts = append(parts, clause)
+					a = append(a, args...)
+				}
+				continue
+			}
+		}
 		value := strings.TrimSpace(c.Value)
 		switch strings.ToLower(c.Field) {
 		case "path":

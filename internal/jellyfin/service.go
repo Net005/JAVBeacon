@@ -102,11 +102,24 @@ type LibrarySyncItem struct {
 	StashSceneID  string    `json:"stash_scene_id"`
 	Path          string    `json:"path,omitempty"`
 	WatchlistedAt time.Time `json:"watchlisted_at,omitempty"`
+	// WatchedAt is only populated on LibrarySyncSnapshot.Watched entries: the
+	// most recent time StashApp recorded this scene as played
+	// (domain.Release.LastPlayedAt), used as Jellyfin's per-user
+	// LastPlayedDate when the plugin's optional "sync watched status from
+	// StashApp" setting marks the matching item played.
+	WatchedAt time.Time `json:"watched_at,omitempty"`
 }
 
 type LibrarySyncSnapshot struct {
 	Revision  string            `json:"revision"`
 	Watchlist []LibrarySyncItem `json:"watchlist"`
+	// Watched lists every local, StashApp-linked release StashApp reports as
+	// played at least once (play_count>0) - independent of Watchlist, since
+	// a release can be watched without ever having been on the Watchlist.
+	// The Jellyfin plugin only acts on this when its own "sync watched
+	// status from StashApp" setting is enabled; JAVBeacon always includes it
+	// in the snapshot so enabling that setting later needs no backend change.
+	Watched []LibrarySyncItem `json:"watched"`
 }
 
 var releaseCode = regexp.MustCompile(`(?i)[a-z]{2,}(?:[-_ ]?\d){2,7}`)
@@ -236,7 +249,7 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 	if err != nil {
 		return LibrarySyncSnapshot{}, err
 	}
-	out := LibrarySyncSnapshot{Revision: settings["jellyfin_library_revision"], Watchlist: []LibrarySyncItem{}}
+	out := LibrarySyncSnapshot{Revision: settings["jellyfin_library_revision"], Watchlist: []LibrarySyncItem{}, Watched: []LibrarySyncItem{}}
 	for offset := 0; ; offset += 500 {
 		rows, err := s.store.Releases(ctx, domain.ReleaseFilter{Watchlist: true, Limit: 500, Offset: offset})
 		if err != nil {
@@ -246,6 +259,19 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 			if r.Local && r.StashSceneID != "" {
 				out.Watchlist = append(out.Watchlist, LibrarySyncItem{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Path: r.StashFilePath, WatchlistedAt: r.WatchlistAt})
 			}
+		}
+		if len(rows) < 500 {
+			break
+		}
+	}
+	for offset := 0; ; offset += 500 {
+		rows, err := s.store.Releases(ctx, domain.ReleaseFilter{StashWatched: true, Limit: 500, Offset: offset})
+		if err != nil {
+			return LibrarySyncSnapshot{}, err
+		}
+		for _, r := range rows {
+			watchedAt, _ := time.Parse(time.RFC3339, r.LastPlayedAt)
+			out.Watched = append(out.Watched, LibrarySyncItem{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Path: r.StashFilePath, WatchedAt: watchedAt})
 		}
 		if len(rows) < 500 {
 			break

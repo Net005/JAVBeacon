@@ -1135,6 +1135,24 @@ type releaseSearchExpression struct {
 	Groups     []releaseFilterConditionGroup `json:"groups"`
 }
 
+// splitWildcardValues expands a comma-separated wildcard field into unique
+// alternatives. A single value is returned unchanged for full compatibility
+// with existing saved filters.
+func splitWildcardValues(value string) []string {
+	seen := map[string]bool{}
+	values := make([]string, 0)
+	for _, raw := range strings.Split(value, ",") {
+		value := strings.TrimSpace(raw)
+		key := strings.ToLower(value)
+		if value == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		values = append(values, value)
+	}
+	return values
+}
+
 // releaseConditionGroupClause builds one parenthesized "(... AND/OR ...)"
 // clause for a single condition group, joining its own conditions with its
 // own logic. Returns "", nil if the group has no matchable conditions
@@ -1180,6 +1198,27 @@ func releaseConditionGroupClause(d Dialect, conditions []releaseFilterCondition,
 		"monitored":        "r.monitor_download=1",
 	}
 	for _, condition := range conditions {
+		if condition.Wildcard {
+			values := splitWildcardValues(condition.Value)
+			if len(values) > 1 {
+				alternatives := make([]releaseFilterCondition, 0, len(values))
+				for _, value := range values {
+					alternative := condition
+					alternative.Value = value
+					alternative.Invert = false
+					alternatives = append(alternatives, alternative)
+				}
+				clause, args := releaseConditionGroupClause(d, alternatives, "or")
+				if clause != "" {
+					if condition.Invert {
+						clause = "NOT " + clause
+					}
+					parts = append(parts, clause)
+					a = append(a, args...)
+				}
+				continue
+			}
+		}
 		// Negate the complete normal predicate so inversion behaves the same
 		// for text, metadata, numeric/date comparisons and boolean fields.
 		if condition.Invert {
@@ -1349,7 +1388,7 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		// from) can be used as the search term - the community StashApp
 		// JavLibrary scraper's optional JAVBeacon-backed mode does this to
 		// resolve an already-tagged scene without re-scraping JavLibrary.
-		q += ` AND (` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR ` + d.CaseInsensitiveLike("r.scraper_id") + ` OR ` + d.CaseInsensitiveLike("r.product_url") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name") + `) OR EXISTS (SELECT 1 FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE rss.release_id=r.id AND ` + d.CaseInsensitiveLike("ss.title") + `)`
+		q += ` AND (` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR ` + d.CaseInsensitiveLike("r.scraper_id") + ` OR ` + d.CaseInsensitiveLike("r.product_url") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE rss.release_id=r.id AND ` + d.CaseInsensitiveLike("ss.title") + `)`
 		v := "%" + f.Search + "%"
 		a = append(a, v, v, v, v, v, v, v, v, v)
 		if reversed := reverseTwoWordName(f.Search); reversed != "" {
@@ -3211,6 +3250,38 @@ func (s *SQLite) Downloads(ctx context.Context, status string) ([]domain.Downloa
 	}
 	defer rows.Close()
 	return scanDownloads(rows)
+}
+
+// ActiveDownloadQueue returns only the small set of columns required by the
+// global activity widget. It avoids loading large provider responses and file
+// manifests from the complete download history on every UI poll.
+func (s *SQLite) ActiveDownloadQueue(ctx context.Context, limit int) ([]domain.Download, int, error) {
+	const where = ` WHERE d.status IN ('search_queued','searching','queued','downloading')`
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM downloads d`+where).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	q := `SELECT d.id,d.release_id,COALESCE(r.video_id,''),d.transport,d.status,d.source_type,COALESCE(NULLIF(d.match_reason,''),d.name),d.priority,d.added_at,d.updated_at FROM downloads d LEFT JOIN releases r ON r.id=d.release_id` + where + ` ORDER BY CASE d.status WHEN 'searching' THEN 0 WHEN 'search_queued' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END,d.priority ASC,d.added_at ASC,d.id ASC`
+	var rows *sql.Rows
+	var err error
+	if limit > 0 {
+		rows, err = s.db.QueryContext(ctx, q+` LIMIT ?`, limit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, q)
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]domain.Download, 0)
+	for rows.Next() {
+		var x domain.Download
+		if err := rows.Scan(&x.ID, &x.ReleaseID, &x.VideoID, &x.Transport, &x.Status, &x.SourceType, &x.MatchReason, &x.Priority, &x.AddedAt, &x.UpdatedAt); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, x)
+	}
+	return out, total, rows.Err()
 }
 
 // LatestReleaseDownload returns the same active-first row represented by a

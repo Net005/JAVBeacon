@@ -12,6 +12,7 @@ namespace Jellyfin.Plugin.JAVBeacon;
 public sealed class LibrarySyncService(
     ILibraryManager library,
     ICollectionManager collections,
+    WatchedStatusSynchronizer watchedSync,
     JAVBeaconClient client,
     ILogger<LibrarySyncService> logger) : BackgroundService
 {
@@ -25,7 +26,7 @@ public sealed class LibrarySyncService(
             var interval = TimeSpan.FromSeconds(Math.Max(config?.LibrarySyncIntervalSeconds ?? 60, 15));
             try
             {
-                if (config is not null && (config.EnableWatchlistCollection || config.ScanLibraryOnStashChanges))
+                if (config is not null && (config.EnableWatchlistCollection || config.ScanLibraryOnStashChanges || config.SyncWatchedFromStash))
                 {
                     var snapshot = await client.LibrarySync(stoppingToken).ConfigureAwait(false);
                     if (snapshot is not null)
@@ -41,6 +42,10 @@ public sealed class LibrarySyncService(
                         if (config.EnableWatchlistCollection)
                         {
                             await ReconcileCollection(snapshot.Watchlist, config.WatchlistCollectionName).ConfigureAwait(false);
+                        }
+                        if (config.SyncWatchedFromStash)
+                        {
+                            watchedSync.Synchronize(snapshot.Watched, config.TrackedUserIds);
                         }
                     }
                 }

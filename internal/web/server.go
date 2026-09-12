@@ -1004,6 +1004,11 @@ func (s *Server) resumeSearchDownloadTasks() {
 }
 
 func (s *Server) searchDownloadQueue(w http.ResponseWriter, r *http.Request) {
+	details := r.URL.Query().Get("summary") != "true"
+	limit := 0
+	if details {
+		limit = 200
+	}
 	items := make(map[int64]searchDownloadQueueItem)
 	s.backgroundSearchMu.Lock()
 	for releaseID, item := range s.backgroundSearchQueue {
@@ -1011,7 +1016,16 @@ func (s *Server) searchDownloadQueue(w http.ResponseWriter, r *http.Request) {
 	}
 	s.backgroundSearchMu.Unlock()
 
-	downloads, err := s.store.Downloads(r.Context(), "")
+	var downloads []domain.Download
+	storedTotal := 0
+	var err error
+	if activeStore, ok := s.store.(interface {
+		ActiveDownloadQueue(context.Context, int) ([]domain.Download, int, error)
+	}); ok {
+		downloads, storedTotal, err = activeStore.ActiveDownloadQueue(r.Context(), limit)
+	} else {
+		downloads, err = s.store.Downloads(r.Context(), "")
+	}
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1055,7 +1069,15 @@ func (s *Server) searchDownloadQueue(w http.ResponseWriter, r *http.Request) {
 	for i := range queue {
 		queue[i].Position = i + 1
 	}
-	s.json(w, http.StatusOK, map[string]any{"items": queue, "total": len(queue)})
+	total := max(storedTotal, len(queue))
+	counts := map[string]int{}
+	for _, item := range queue {
+		counts[item.Status]++
+	}
+	if !details {
+		queue = nil
+	}
+	s.json(w, http.StatusOK, map[string]any{"items": queue, "total": total, "counts": counts, "truncated": details && total > len(queue)})
 }
 
 func (s *Server) downloadRelease(w http.ResponseWriter, r *http.Request) {
