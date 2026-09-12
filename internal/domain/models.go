@@ -313,6 +313,10 @@ type ReleaseFilter struct {
 	StashFilePath                                       string
 	SiteID                                              int64
 	Watchlist, HideLocal, MonitorDownload, UsePreferred bool
+	// SearchWildcards enables the web UI's generic search syntax: comma-
+	// separated alternatives combined with OR, with * and ? wildcards.
+	// Programmatic callers keep the original literal substring semantics.
+	SearchWildcards bool
 	// StashWatched, when true, restricts results to local releases StashApp
 	// reports as having been played at least once (r.play_count>0) - used by
 	// the Jellyfin integration's "sync watched status from StashApp" library

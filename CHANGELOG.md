@@ -7,6 +7,18 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.163] - 2026-09-12
+
+### Added
+
+- Added case-insensitive comma-separated wildcard alternatives to the main
+  Release Library and Notifications search boxes. The Release Library applies
+  them server-side across the complete result set, while both searches display
+  multiple values as removable badges.
+- Clarified and verified the same comma-separated wildcard behavior for the
+  Release Library and Notifications metadata entry fields and for wildcard
+  conditions in Release Library and Missing Files structured search.
+
 ## [1.0.162] - 2026-09-12
 
 ### Added
