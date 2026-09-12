@@ -4,16 +4,25 @@ const assert = require("node:assert/strict");
 
 const afterPatches = {};
 let captionQueryResult = {};
+const mutationCalls = [];
 let settingsQueryResult = {
   data: {
     configuration: {
-      plugins: { "javbeacon-realtime": { subs_scene_path_filters: "" } },
+      plugins: {
+        "javbeacon-realtime": {
+          subs_scene_path_filters: "",
+          watchlist_tag_id: "9",
+        },
+      },
     },
   },
   loading: false,
 };
 const React = {
   Fragment: Symbol("Fragment"),
+  useState(initial) {
+    return [initial, () => {}];
+  },
   createElement(type, props, ...children) {
     return {
       type,
@@ -29,13 +38,20 @@ global.window = {
   PluginApi: {
     React,
     ReactDOM: { createPortal() {} },
-    hooks: { useToast() {} },
+    hooks: { useToast: () => ({ error() {}, success() {} }) },
     libraries: {
       Apollo: {
         gql(strings) {
           return strings.join("");
         },
-        useMutation() {},
+        useMutation(query) {
+          return [
+            async (options) => {
+              mutationCalls.push({ options, query });
+              return { data: {} };
+            },
+          ];
+        },
         useQuery(query) {
           return query.includes("JAVBeaconSubtitleSettings")
             ? settingsQueryResult
@@ -87,6 +103,7 @@ settingsQueryResult = {
       plugins: {
         "javbeacon-realtime": {
           subs_scene_path_filters: "/other/path; /collections/jav/",
+          watchlist_tag_id: "9",
         },
       },
     },
@@ -145,7 +162,7 @@ assert.equal(
   "39382"
 );
 captionQueryResult = {
-  data: { findScene: { captions: null } },
+  data: { findScene: { captions: null, tags: [] } },
   loading: false,
 };
 assert.equal(
@@ -153,6 +170,17 @@ assert.equal(
     .className,
   "javbeacon-subs-card-action"
 );
+const watchlistAction = cardResult.props.children[2].type(
+  cardResult.props.children[2].props
+);
+const watchlistButton = watchlistAction.props.children;
+assert.equal(watchlistAction.props.className, "javbeacon-watchlist-card-action");
+assert.equal(watchlistButton.props.children.props.children, "+ Watchlist");
+assert.equal(watchlistButton.props.disabled, false);
+watchlistButton.props.onClick({ preventDefault() {}, stopPropagation() {} });
+assert.deepEqual(mutationCalls.at(-1).options.variables, {
+  input: { id: "39382", tag_ids: ["9"] },
+});
 settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "/COLLECTIONS/jav/";
@@ -167,11 +195,23 @@ assert.equal(
   cardResult.props.children[1].type(cardResult.props.children[1].props),
   null
 );
+assert.notEqual(
+  cardResult.props.children[2].type(cardResult.props.children[2].props),
+  null
+);
 settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "";
 captionQueryResult = {
-  data: { findScene: { captions: [{ language_code: "en" }] } },
+  data: {
+    findScene: {
+      captions: [{ language_code: "en" }],
+      tags: [
+        { id: "9", name: "Watchlist" },
+        { id: "4", name: "Keep me" },
+      ],
+    },
+  },
   loading: false,
 };
 const completedCardAction = cardResult.props.children[1].type(
@@ -179,6 +219,24 @@ const completedCardAction = cardResult.props.children[1].type(
 );
 assert.equal(completedCardAction.props.className, "javbeacon-subs-card-action");
 assert.equal(completedCardAction.props.children.props.completed, true);
+const completedWatchlistAction = cardResult.props.children[2].type(
+  cardResult.props.children[2].props
+);
+assert.equal(
+  completedWatchlistAction.props.children.props.children.props.children,
+  "✓ Watchlist"
+);
+assert.equal(
+  completedWatchlistAction.props.children.props["aria-pressed"],
+  true
+);
+completedWatchlistAction.props.children.props.onClick({
+  preventDefault() {},
+  stopPropagation() {},
+});
+assert.deepEqual(mutationCalls.at(-1).options.variables, {
+  input: { id: "39382", tag_ids: ["4"] },
+});
 
 const knownCompletedCard = afterPatches["SceneCard.Popovers"](
   sceneWithCaptions,

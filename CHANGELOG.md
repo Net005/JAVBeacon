@@ -7,6 +7,21 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.169] - 2026-09-12
+
+### Added
+
+- Added an always-visible Watchlist control to Stash scene cards. The control
+  uses a configurable Stash tag ID, clearly distinguishes add and active
+  states, supports removal, and preserves every unrelated scene tag.
+
+### Changed
+
+- Moved the Stash realtime plugin's JAVBeacon URL, webhook secret, and request
+  timeout from hardcoded YAML arguments into the normal Stash plugin settings
+  UI. Realtime hooks and the connection-test task now load the saved settings
+  dynamically.
+
 ## [1.0.168] - 2026-09-12
 
 ### Changed

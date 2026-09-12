@@ -47,3 +47,32 @@
 .scene-card .javbeacon-subs-card-action .javbeacon-subs-label {
   font-size: 1rem;
 }
+
+.scene-card .javbeacon-watchlist-card-action {
+  align-items: center;
+  bottom: 0.95rem;
+  display: inline-flex;
+  justify-content: center;
+  left: 0.55rem;
+  position: absolute;
+  z-index: 3;
+}
+
+.scene-card .javbeacon-watchlist-button.btn.minimal {
+  align-items: center;
+  display: inline-flex;
+  font-size: 0.95rem;
+  font-weight: 700;
+  justify-content: center;
+  line-height: 1;
+  padding: 0.35rem 0.55rem;
+  white-space: nowrap;
+}
+
+.scene-card .javbeacon-watchlist-button.is-watchlisted {
+  color: var(--success, #65c98f);
+}
+
+.scene-card .javbeacon-watchlist-button[disabled] {
+  cursor: not-allowed;
+}

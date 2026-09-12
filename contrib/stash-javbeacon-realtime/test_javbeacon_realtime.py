@@ -159,6 +159,48 @@ class SubtitleRequestTests(unittest.TestCase):
         self.assertEqual(result["filename"], "NSPS-642.mp4")
         self.assertEqual(result["javbeacon_subs"], {"id": "job-123"})
 
+    @mock.patch.object(plugin, "_plugin_settings")
+    @mock.patch.object(plugin.urllib.request, "urlopen")
+    def test_realtime_sync_uses_plugin_ui_settings(self, urlopen, plugin_settings):
+        plugin_settings.return_value = {
+            "javbeacon_url": "http://javbeacon:8080/",
+            "webhook_secret": "hook-secret",
+            "timeout_seconds": 14,
+        }
+        urlopen.return_value = FakeResponse({"state": "queued"})
+
+        result = plugin.request_realtime_sync(
+            {"server_connection": {}},
+            {
+                "mode": "hook",
+                "hookContext": {"id": "39381", "type": "Scene.Update.Post"},
+            },
+        )
+
+        request = urlopen.call_args.args[0]
+        body = json.loads(request.data)
+        self.assertEqual(
+            request.full_url, "http://javbeacon:8080/api/hooks/stash/scene"
+        )
+        self.assertEqual(request.get_header("Authorization"), "Bearer hook-secret")
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 14)
+        self.assertEqual(
+            body,
+            {
+                "event": "Scene.Update.Post",
+                "request_id": result["request_id"],
+                "scene_id": "39381",
+            },
+        )
+
+    @mock.patch.object(plugin, "_plugin_settings", return_value={})
+    def test_realtime_sync_requires_plugin_ui_settings(self, _plugin_settings):
+        with self.assertRaisesRegex(RuntimeError, "Settings > Plugins"):
+            plugin.request_realtime_sync(
+                {},
+                {"mode": "hook", "hookContext": {"id": "39381"}},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

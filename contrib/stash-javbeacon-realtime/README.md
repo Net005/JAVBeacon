@@ -5,6 +5,7 @@ This plugin provides two integrations:
 - realtime scene-change notifications from Stash to JAVBeacon;
 - a native subtitle button on each Stash scene page that submits the scene's
   full file path to JAVBeacon-Subs.
+- an always-visible Watchlist toggle on Stash scene cards.
 
 The subtitle request runs in Python inside the Stash plugin process. It does
 not require `curl`, does not call JAVBeacon-Subs from the browser, and does
@@ -13,19 +14,27 @@ not expose the API token to the scene page.
 ## Install
 
 1. Copy this entire directory into Stash's `plugins` directory.
-2. Edit `javbeacon-realtime.yml`: set `javbeacon_url` to an address
-   reachable from the Stash container and set `webhook_secret` to the same
-   random value saved in JAVBeacon under **Settings → StashApp → Changed-scene
-   sync**.
-3. In Stash, open **Settings → Plugins** and reload plugins.
-4. Open this plugin's settings and set:
+2. In Stash, open **Settings → Plugins** and reload plugins.
+3. Open this plugin's settings and set:
+   - **JAVBeacon URL** to an address reachable from the Stash server, normally
+     `http://javbeacon:8080` when both applications share a Docker network;
+   - **JAVBeacon webhook secret** to the same dedicated secret saved in
+     JAVBeacon under **Settings → StashApp → Changed-scene sync**;
+   - optionally adjust **JAVBeacon request timeout** from its 10-second default;
    - **JAVBeacon-Subs base URL** to the address reachable from Stash, such as
      `https://subs.example.com`;
    - **JAVBeacon-Subs API token** to the bearer token issued by JAVBeacon-Subs.
+   - **Watchlist tag ID** to the Stash tag ID that represents your Watchlist.
    - Optionally set **Scene path filters** to one or more partial paths. Matches
      are case-insensitive and may be separated by new lines, commas, or
      semicolons. Leave it blank to allow all scene paths.
-5. Reload the Stash page after installing or updating the plugin.
+4. Reload the Stash page after installing or updating the plugin.
+
+The scene-card Watchlist control is independent of subtitle path filtering.
+It always remains visible: **+ Watchlist** adds the configured tag and
+**✓ Watchlist** clearly shows membership and removes the tag when selected.
+All other tags on the scene are preserved. If no Watchlist tag ID is configured,
+the control remains visible but disabled with a configuration hint.
 
 For matching scene paths, the action appears in the scene action row and at
 the bottom-right of cards on the scene overview. **+ CC** requests subtitles
@@ -62,7 +71,7 @@ check is enforced by the server when the request is submitted.
 ## Realtime sync
 
 Use **Settings → Tasks → Test JAVBeacon connection** in Stash to verify the
-container URL and dedicated webhook secret. The task writes the request ID,
+URL and dedicated webhook secret configured in the plugin UI. The task writes the request ID,
 endpoint, elapsed time, and result to Stash's debug log; JAVBeacon records the
 same request ID in its own log so a connection can be traced end to end.
 
