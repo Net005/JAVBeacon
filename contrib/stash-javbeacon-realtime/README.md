@@ -1,11 +1,55 @@
-# JAVBeacon realtime Stash sync
+# JAVBeacon Stash integration
 
-1. Copy this directory into Stash's `plugins` directory.
-2. Edit `javbeacon-realtime.yml`: set `javbeacon_url` to an address reachable
-   from the Stash container and set `webhook_secret` to the same random value
-   saved in JAVBeacon under **Settings → StashApp → Changed-scene sync**.
+This plugin provides two integrations:
+
+- realtime scene-change notifications from Stash to JAVBeacon;
+- a native subtitle button on each Stash scene page that submits the scene's
+  full file path to JAVBeacon-Subs.
+
+The subtitle request runs in Python inside the Stash plugin process. It does
+not require `curl`, does not call JAVBeacon-Subs from the browser, and does
+not expose the API token to the scene page.
+
+## Install
+
+1. Copy this entire directory into Stash's `plugins` directory.
+2. Edit `javbeacon-realtime.yml`: set `javbeacon_url` to an address
+   reachable from the Stash container and set `webhook_secret` to the same
+   random value saved in JAVBeacon under **Settings → StashApp → Changed-scene
+   sync**.
 3. In Stash, open **Settings → Plugins** and reload plugins.
-4. Enable realtime sync in JAVBeacon.
+4. Open this plugin's settings and set:
+   - **JAVBeacon-Subs base URL** to the address reachable from Stash, such as
+     `https://subs.example.com`;
+   - **JAVBeacon-Subs API token** to the bearer token issued by JAVBeacon-Subs.
+5. Reload the Stash page after installing or updating the plugin.
+
+The closed-caption icon appears in the scene action row. Selecting it resolves
+the scene's first full file path from Stash on the server and submits:
+
+```json
+{
+  "inputs": ["/collections/jav/NSPS-642.mp4"],
+  "recursive": false,
+  "overwrite": false,
+  "auto_detect_release": true,
+  "release_within_days": 0,
+  "debug_mode": true,
+  "keep_japanese": true,
+  "write_ass": false
+}
+```
+
+The request is sent to `<base URL>/api/v1/jobs` with the configured token.
+The base URL may also include `/api/v1/jobs`; the plugin will not append it
+twice.
+
+The timeout can be changed in the plugin settings. **Job options (JSON)** can
+override any of the documented defaults or add fields supported by
+JAVBeacon-Subs. For safety, `inputs` and `recursive` are always replaced with
+the current scene path and `false`, respectively.
+
+## Realtime sync
 
 Use **Settings → Tasks → Test JAVBeacon connection** in Stash to verify the
 container URL and dedicated webhook secret. The task writes the request ID,
