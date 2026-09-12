@@ -1503,9 +1503,18 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 .releaseBulkHeader #releaseBulkSelectAll{border-color:#705665;background:#211923;color:#e6cbd1;white-space:nowrap}
 .releaseSelect{position:absolute;z-index:5;top:var(--cover-pill-inset,4px);left:var(--cover-pill-inset,4px);display:grid;place-items:center;width:26px;height:26px;margin:0;border:1px solid #ffffff4a;border-radius:7px;background:#080b10e8;box-shadow:0 3px 12px #000c;cursor:pointer;opacity:0;pointer-events:none;transform:scale(.88);transition:opacity .12s ease,transform .12s ease}
 .releaseSelect input{width:16px!important;height:16px;min-height:0;margin:0;padding:0;accent-color:var(--accent)}
-.card:hover .releaseSelect,.card:focus-within .releaseSelect,.coverGrid.selectionMode .releaseSelect,.card.selected .releaseSelect{opacity:1;pointer-events:auto;transform:none}
+.card:hover .releaseSelect,.card:focus-within .releaseSelect,.coverGrid.selectionMode .releaseSelect,.notificationList.selectionMode .releaseSelect,.card.selected .releaseSelect{opacity:1;pointer-events:auto;transform:none}
 .card .coverBadges{padding-left:0;transition:padding-left .12s ease}
-.card:hover .coverBadges,.card:focus-within .coverBadges,.coverGrid.selectionMode .card .coverBadges,.card.selected .coverBadges{padding-left:32px}
+.card:hover .coverBadges,.card:focus-within .coverBadges,.coverGrid.selectionMode .card .coverBadges,.notificationList.selectionMode .card .coverBadges,.card.selected .coverBadges{padding-left:32px}
+.cardPreviewToggle{display:none;position:absolute;right:8px;bottom:8px;z-index:6;place-items:center;width:42px;height:42px;padding:0;border:1px solid #ffffff55;border-radius:50%;background:#090d14e8;color:#fff;box-shadow:0 4px 16px #000c;font-size:18px;line-height:1;backdrop-filter:blur(6px)}
+.cardPreviewToggle[aria-pressed="true"]{border-color:var(--accent);background:color-mix(in srgb,var(--primary) 82%,#090d14);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 32%,transparent),0 4px 16px #000c}
+@media (hover:none), (pointer:coarse){
+  .cardPreviewToggle{display:grid}
+  .card .coverLink{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+  .card:hover .releaseSelect,.card:focus-within .releaseSelect{opacity:0;pointer-events:none;transform:scale(.88)}
+  .coverGrid.selectionMode .releaseSelect,.notificationList.selectionMode .releaseSelect,.card.selected .releaseSelect{opacity:1;pointer-events:auto;transform:none}
+  .cover.showingScreenshots::after{right:auto;left:var(--cover-pill-inset)}
+}
 .card.selected{border-color:#d35468;box-shadow:0 0 0 2px #d3546866,0 10px 26px #0008}
 .card.selected:hover{border-color:#ed7184}
 .releaseBulkDownloadDialog{width:min(92vw,620px)}
@@ -1524,7 +1533,7 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
   .releaseBulkHeader #releaseBulkOpen{white-space:nowrap}
   .releaseBulkHeader #releaseBulkSelectAll{white-space:nowrap}
   .card .coverBadges{padding-left:0}
-  .card:hover .coverBadges,.card:focus-within .coverBadges,.coverGrid.selectionMode .card .coverBadges,.card.selected .coverBadges{padding-left:30px}
+  .card:hover .coverBadges,.card:focus-within .coverBadges,.coverGrid.selectionMode .card .coverBadges,.notificationList.selectionMode .card .coverBadges,.card.selected .coverBadges{padding-left:30px}
 }
 
 /* Missing Library Files background Search + Download tasks */

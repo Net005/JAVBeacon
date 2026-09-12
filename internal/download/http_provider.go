@@ -121,24 +121,28 @@ func (p *javDBProvider) Resolve(ctx context.Context, download domain.Download) (
 	if (p.pikPakUsername == "") != (p.pikPakPassword == "") {
 		return resolvedHTTPFile{}, errors.New("PikPak account configuration is incomplete: configure both username and password, or clear both")
 	}
+	resolveCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	ctx = resolveCtx
 	// Restoring a share mutates the user's drive, so this used to cap the
 	// authenticated path at a single attempt to avoid repeating that
 	// mutation blindly on every transient failure (a timed-out API call,
 	// not necessarily a failed restore). restoreSharedFile now checks the
-	// account's existing files for an exact name+size match before ever
+	// restore area's existing files for an exact name+size match before ever
 	// calling PikPak's restore endpoint again, so a retry here reuses an
 	// already-restored file instead of duplicating it - the same 3 attempts
 	// as the unauthenticated path is safe.
 	attempts := 3
 	var resolved resolvedHTTPFile
 	var err error
+resolveAttempts:
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
 			timer := time.NewTimer(time.Duration(attempt) * 500 * time.Millisecond)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return resolvedHTTPFile{}, ctx.Err()
+				break resolveAttempts
 			case <-timer.C:
 			}
 		}
@@ -150,6 +154,12 @@ func (p *javDBProvider) Resolve(ctx context.Context, download domain.Download) (
 		if err == nil {
 			return resolved, nil
 		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return resolvedHTTPFile{}, fmt.Errorf("PikPak resolution timed out after 2 minutes: %w", ctx.Err())
 	}
 	return resolvedHTTPFile{}, fmt.Errorf("PikPak resolution failed after %d attempts: %w", attempts, err)
 }
@@ -1365,7 +1375,11 @@ func (p *pikPakClient) restoredFileFromTaskIDs(ctx context.Context, raw json.Raw
 	return pikPakFile{}, false
 }
 
-func (p *pikPakClient) listDriveFiles(ctx context.Context) ([]pikPakFile, error) {
+func (p *pikPakClient) listPikPakRestoreAreaFiles(ctx context.Context) ([]pikPakFile, error) {
+	// Restores are placed at the drive root or below PikPak's "Pack From
+	// Shared" folder. Do not recursively inventory unrelated account folders:
+	// large drives can otherwise occupy every HTTP worker for hours before the
+	// restore request is even submitted.
 	queue := []string{""}
 	seen := map[string]bool{"": true}
 	var all []pikPakFile
@@ -1381,7 +1395,8 @@ func (p *pikPakClient) listDriveFiles(ctx context.Context) ([]pikPakFile, error)
 			}
 			for _, file := range response.Files {
 				if file.Kind == "drive#folder" {
-					if file.ID != "" && !seen[file.ID] && len(seen) < 250 {
+					inRestoreArea := parentID != "" || strings.Contains(strings.ToLower(file.Name), "pack from shared")
+					if inRestoreArea && file.ID != "" && !seen[file.ID] && len(seen) < 250 {
 						seen[file.ID] = true
 						queue = append(queue, file.ID)
 					}
@@ -1444,19 +1459,15 @@ func (p *pikPakClient) findRestoredFile(ctx context.Context, expectedName string
 			if err := p.authenticatedJSON(ctx, http.MethodGet, "/drive/v1/files", q, nil, &response); err != nil {
 				return pikPakFile{}, false, false, err
 			}
-			priorityFolders := make([]string, 0)
-			otherFolders := make([]string, 0)
+			folders := make([]string, 0)
 			for _, file := range response.Files {
 				if file.Kind == "drive#folder" {
-					if file.ID == "" || seen[file.ID] || len(seen) >= 250 {
+					inRestoreArea := parentID != "" || strings.Contains(strings.ToLower(file.Name), "pack from shared")
+					if !inRestoreArea || file.ID == "" || seen[file.ID] || len(seen) >= 250 {
 						continue
 					}
 					seen[file.ID] = true
-					if strings.Contains(strings.ToLower(file.Name), "pack from shared") {
-						priorityFolders = append(priorityFolders, file.ID)
-					} else {
-						otherFolders = append(otherFolders, file.ID)
-					}
+					folders = append(folders, file.ID)
 					continue
 				}
 				if match, found := exactPikPakAccountFile([]pikPakFile{file}, expectedName, expectedSize, nil); found {
@@ -1468,9 +1479,7 @@ func (p *pikPakClient) findRestoredFile(ctx context.Context, expectedName string
 					}
 				}
 			}
-			// Restored files normally live below Pack From Shared. Put that
-			// virtual folder ahead of unrelated account folders already queued.
-			queue = append(priorityFolders, append(queue, otherFolders...)...)
+			queue = append(folders, queue...)
 			page = response.NextPageToken
 			if page == "" {
 				break
@@ -1484,11 +1493,11 @@ func (p *pikPakClient) findRestoredFile(ctx context.Context, expectedName string
 }
 
 func (p *pikPakClient) restoreSharedFile(ctx context.Context, shareID, fileID, expectedName string, expectedSize int64) (pikPakFile, bool, error) {
-	before, err := p.listDriveFiles(ctx)
+	before, err := p.listPikPakRestoreAreaFiles(ctx)
 	if err != nil {
-		return pikPakFile{}, false, fmt.Errorf("inventory PikPak account before restore: %w", err)
+		return pikPakFile{}, false, fmt.Errorf("inventory PikPak restore area before restore: %w", err)
 	}
-	// A file already sitting in the account under this exact name and size is
+	// A file already sitting in the restore area under this exact name and size is
 	// almost certainly a restore from an earlier attempt at this same release
 	// (an earlier download, a retry, a resume after restart, ...). Restoring
 	// the share again would place a second copy alongside it - PikPak's

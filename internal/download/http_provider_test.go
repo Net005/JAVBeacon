@@ -379,6 +379,45 @@ func TestFindRestoredPikPakFilePrioritizesSharedFolderAndStopsEarly(t *testing.T
 	}
 }
 
+func TestPikPakRestoreSkipsUnrelatedAccountFoldersBeforeRestore(t *testing.T) {
+	restorePosted := false
+	visitedUnrelated := false
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/v1/shield/captcha/init" {
+			return pikPakJSONResponse(http.StatusOK, `{"captcha_token":"captcha"}`), nil
+		}
+		switch req.URL.Path {
+		case "/drive/v1/share/restore":
+			restorePosted = true
+			return pikPakJSONResponse(http.StatusOK, `{"restore_status":"RESTORE_COMPLETE"}`), nil
+		case "/drive/v1/files":
+			switch req.URL.Query().Get("parent_id") {
+			case "":
+				return pikPakJSONResponse(http.StatusOK, `{"files":[{"id":"archive","name":"Archive","kind":"drive#folder"},{"id":"shared","name":"Pack From Shared","kind":"drive#folder"}]}`), nil
+			case "shared":
+				if !restorePosted {
+					return pikPakJSONResponse(http.StatusOK, `{"files":[]}`), nil
+				}
+				return pikPakJSONResponse(http.StatusOK, `{"files":[{"id":"restored","name":"TEST-004.mp4","kind":"drive#file","size":"6000"}]}`), nil
+			case "archive":
+				visitedUnrelated = true
+				return pikPakJSONResponse(http.StatusInternalServerError, `{"error":"unrelated folder should not be visited"}`), nil
+			}
+		}
+		t.Fatalf("unexpected PikPak request: %s %s", req.Method, req.URL)
+		return nil, nil
+	})}
+	account := newPikPakClient(client)
+	account.accessToken = "access"
+	file, newlyRestored, err := account.restoreSharedFile(context.Background(), "share", "shared-file", "TEST-004.mp4", 6000)
+	if err != nil || !newlyRestored || file.ID != "restored" {
+		t.Fatalf("file=%+v newly=%t err=%v", file, newlyRestored, err)
+	}
+	if visitedUnrelated {
+		t.Fatal("restore scanned an unrelated account folder")
+	}
+}
+
 func TestPikPakSignInErrorRedactsCredentials(t *testing.T) {
 	client := &http.Client{Transport: pikPakRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path == "/v1/shield/captcha/init" {
