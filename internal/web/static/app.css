@@ -186,6 +186,7 @@ button{min-height:0}input[type=checkbox],input[type=radio],.notificationCheck in
 .releaseUpgradeRun summary{cursor:pointer}
 .releaseUpgradeRun ul{margin:.4rem 0 0;padding-left:1.1rem}
 .releaseUpgradeRun li{margin:.15rem 0}
+.settingsInlineActions{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 8px}
 
 .sidebarFooter{display:grid;grid-template-columns:max-content minmax(0,1fr);align-items:center;gap:6px;margin-top:auto;min-width:0;padding-top:8px;border-top:1px solid #252a33}.sidebarFooter #appVersion{display:block;min-width:max-content;padding:3px 7px;white-space:nowrap;border:1px solid #303643;border-radius:999px;background:#12161e;color:#9ba3b2;font:700 10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.25px}.sidebarFooter #logout{min-width:0;width:auto;margin-top:0;padding:8px;gap:7px}.sidebarFooter #logout span{min-width:0;overflow:hidden;text-overflow:ellipsis}.navCollapsed .sidebarFooter,.navCollapsedInitial .sidebarFooter{grid-template-columns:1fr;justify-items:center;gap:6px}.navCollapsed .sidebarFooter #appVersion,.navCollapsedInitial .sidebarFooter #appVersion{max-width:100%;overflow:hidden;text-overflow:ellipsis;padding:3px 5px;font-size:9px}.navCollapsed .sidebarFooter #logout,.navCollapsedInitial .sidebarFooter #logout{justify-content:center}@media(max-width:650px){.sidebarFooter{display:none}}
 
