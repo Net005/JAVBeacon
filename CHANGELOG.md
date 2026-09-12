@@ -7,6 +7,18 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.161] - 2026-09-12
+
+### Changed
+
+- Moved "Run Release Upgrade Schedule now" and its run history out of
+  Download Activity and into Settings -> Downloads -> Release Upgrade
+  Schedule, next to the schedule's own enable/time settings instead of
+  sitting on a page about something else. The history toggle is renamed
+  "Show run history" (with a line explaining it lists the last 10 times
+  this schedule ran and what each one upgraded, skipped, or failed to
+  upgrade) and now flips to "Hide run history" while expanded.
+
 ## [1.0.160] - 2026-09-12
 
 ### Fixed
