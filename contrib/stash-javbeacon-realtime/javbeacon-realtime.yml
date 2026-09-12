@@ -1,6 +1,28 @@
-name: JAVBeacon Realtime Sync
-description: Sends changed Stash scenes to JAVBeacon for an immediate targeted sync.
-version: 1.1.0
+name: JAVBeacon Realtime Sync + Subtitles
+description: Sends changed scenes to JAVBeacon and lets scene pages request subtitles from JAVBeacon-Subs.
+version: 1.2.0
+ui:
+  javascript:
+    - javbeacon_subtitles.js
+  css:
+    - javbeacon_subtitles.css
+settings:
+  subs_base_url:
+    displayName: JAVBeacon-Subs base URL
+    description: Base URL reachable from the Stash server, for example https://subs.example.com. Do not include /api/v1/jobs.
+    type: STRING
+  subs_api_token:
+    displayName: JAVBeacon-Subs API token
+    description: Bearer token used by Stash for subtitle job requests. It is sent only by the server-side plugin.
+    type: STRING
+  subs_timeout_seconds:
+    displayName: Request timeout (seconds)
+    description: HTTP timeout for JAVBeacon-Subs requests. Defaults to 30 seconds.
+    type: NUMBER
+  subs_job_options:
+    displayName: Job options (JSON)
+    description: Optional JSON object for adjusting the JAVBeacon-Subs request. Blank uses the documented defaults. inputs and recursive are always controlled by the current scene.
+    type: STRING
 exec:
   - python3
   - "{pluginDir}/javbeacon_realtime.py"

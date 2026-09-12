@@ -1,0 +1,9 @@
+.javbeacon-subs-button.btn.minimal {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.javbeacon-subs-button[disabled] {
+  cursor: wait;
+}
