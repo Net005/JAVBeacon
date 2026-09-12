@@ -13,6 +13,18 @@
     }
   `;
 
+  const UPDATE_SCENE_WATCHLIST = gql`
+    mutation JAVBeaconUpdateSceneWatchlist($input: SceneUpdateInput!) {
+      sceneUpdate(input: $input) {
+        id
+        tags {
+          id
+          name
+        }
+      }
+    }
+  `;
+
   const FIND_SCENE_CAPTIONS = gql`
     query JAVBeaconSceneCaptions($id: ID!) {
       findScene(id: $id) {
@@ -20,6 +32,10 @@
         captions {
           language_code
           caption_type
+        }
+        tags {
+          id
+          name
         }
       }
     }
@@ -119,6 +135,104 @@
             { className: "javbeacon-subs-label", "aria-hidden": "true" },
             completed ? "✓ CC" : "+ CC"
           )
+    );
+  }
+
+  function SceneCardWatchlistAction({ scene }) {
+    const Toast = window.PluginApi.hooks.useToast();
+    const settingsQuery = usePluginSettings();
+    const [updateScene] = useMutation(UPDATE_SCENE_WATCHLIST);
+    const [pending, setPending] = React.useState(false);
+    const [membershipOverride, setMembershipOverride] = React.useState(null);
+    const tagsKnown =
+      scene != null && Object.prototype.hasOwnProperty.call(scene, "tags");
+    const statusQuery = useQuery(FIND_SCENE_CAPTIONS, {
+      fetchPolicy: "cache-first",
+      skip: tagsKnown,
+      variables: { id: String(scene.id) },
+    });
+    const tags = tagsKnown ? scene.tags : statusQuery.data?.findScene?.tags;
+    const resolved = tagsKnown || statusQuery.data?.findScene != null;
+    const tagID = String(settingsQuery.settings?.watchlist_tag_id || "").trim();
+    const storedMembership =
+      tagID !== "" &&
+      Array.isArray(tags) &&
+      tags.some((tag) => String(tag?.id) === tagID);
+    const inWatchlist =
+      membershipOverride == null ? storedMembership : membershipOverride;
+    const configured = tagID !== "";
+    const disabled =
+      pending ||
+      settingsQuery.loading ||
+      settingsQuery.error != null ||
+      settingsQuery.settings == null ||
+      statusQuery.loading ||
+      statusQuery.error != null ||
+      !resolved ||
+      !configured;
+
+    const onClick = async (event) => {
+      event?.preventDefault();
+      event?.stopPropagation();
+      if (disabled) return;
+
+      const existingTagIDs = Array.isArray(tags)
+        ? tags.map((tag) => String(tag?.id || "")).filter(Boolean)
+        : [];
+      const tagIDs = inWatchlist
+        ? existingTagIDs.filter((id) => id !== tagID)
+        : Array.from(new Set([...existingTagIDs, tagID]));
+      setPending(true);
+      try {
+        await updateScene({
+          variables: { input: { id: String(scene.id), tag_ids: tagIDs } },
+        });
+        setMembershipOverride(!inWatchlist);
+        Toast.success(
+          inWatchlist ? "Removed from Watchlist" : "Added to Watchlist"
+        );
+      } catch (error) {
+        Toast.error(error instanceof Error ? error.message : String(error));
+      } finally {
+        setPending(false);
+      }
+    };
+
+    const title = !configured
+      ? "Configure the Watchlist tag ID in plugin settings"
+      : inWatchlist
+        ? "In Watchlist · click to remove"
+        : "Add to Watchlist";
+
+    return React.createElement(
+      "div",
+      { className: "javbeacon-watchlist-card-action" },
+      React.createElement(
+        Button,
+        {
+          "aria-label": title,
+          "aria-pressed": inWatchlist,
+          className: `minimal javbeacon-watchlist-button${
+            inWatchlist ? " is-watchlisted" : ""
+          }`,
+          disabled,
+          onClick,
+          onMouseDown: (event) => event.stopPropagation(),
+          title,
+          variant: "secondary",
+        },
+        pending
+          ? React.createElement(Spinner, {
+              animation: "border",
+              role: "status",
+              size: "sm",
+            })
+          : React.createElement(
+              "span",
+              { "aria-hidden": "true" },
+              inWatchlist ? "✓ Watchlist" : "+ Watchlist"
+            )
+      )
     );
   }
 
@@ -230,6 +344,10 @@
       rendered,
       React.createElement(SceneCardSubtitleAction, {
         key: "javbeacon-subs-card-action",
+        scene: props.scene,
+      }),
+      React.createElement(SceneCardWatchlistAction, {
+        key: "javbeacon-watchlist-card-action",
         scene: props.scene,
       })
     );

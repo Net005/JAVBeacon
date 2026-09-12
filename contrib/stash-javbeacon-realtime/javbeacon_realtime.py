@@ -94,6 +94,17 @@ def _scene_and_subs_settings(payload, scene_id):
     return paths[0], settings
 
 
+def _plugin_settings(payload):
+    query = """
+      query JAVBeaconPluginSettings {
+        configuration { plugins(include: [\"javbeacon-realtime\"]) }
+      }
+    """
+    data = _stash_graphql(payload, query, {})
+    plugin_configs = (data.get("configuration") or {}).get("plugins") or {}
+    return plugin_configs.get(PLUGIN_ID) or {}
+
+
 def _setting(settings, name, default):
     value = settings.get(name)
     return default if value is None or value == "" else value
@@ -208,16 +219,17 @@ def request_subtitles(payload, args):
     }
 
 
-def request_realtime_sync(args):
+def request_realtime_sync(payload, args):
     hook = args.get("hookContext") or {}
     scene_id = str(hook.get("id") or "").strip()
-    base_url = str(args.get("javbeacon_url") or "").strip().rstrip("/")
-    secret = str(args.get("webhook_secret") or "").strip()
-    timeout = max(1, int(args.get("timeout_seconds") or 10))
+    settings = _plugin_settings(payload)
+    base_url = str(settings.get("javbeacon_url") or "").strip().rstrip("/")
+    secret = str(settings.get("webhook_secret") or "").strip()
+    timeout = max(1, int(_setting(settings, "timeout_seconds", 10)))
     mode = str(args.get("mode") or "hook").strip().lower()
     request_id = uuid.uuid4().hex[:12]
-    if not base_url or not secret or secret.startswith("CHANGE_ME"):
-        raise RuntimeError("configure javbeacon_url and webhook_secret in javbeacon-realtime.yml")
+    if not base_url or not secret:
+        raise RuntimeError("configure the JAVBeacon URL and webhook secret in Settings > Plugins")
     if mode != "test" and not scene_id:
         raise RuntimeError("Stash hook did not include a scene ID")
 
@@ -255,7 +267,7 @@ def main():
     if mode == "subtitles":
         output = request_subtitles(payload, args)
     else:
-        output = request_realtime_sync(args)
+        output = request_realtime_sync(payload, args)
     return {"output": output}
 
 

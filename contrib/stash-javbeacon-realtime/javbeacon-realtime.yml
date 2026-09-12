@@ -1,12 +1,28 @@
 name: JAVBeacon Realtime Sync + Subtitles
-description: Sends changed scenes to JAVBeacon and lets scene pages request subtitles from JAVBeacon-Subs.
-version: 1.6.0
+description: Sends changed scenes to JAVBeacon, requests subtitles from JAVBeacon-Subs, and adds scene-card Watchlist controls.
+version: 1.8.0
 ui:
   javascript:
     - javbeacon_subtitles.js
   css:
     - javbeacon_subtitles.css
 settings:
+  javbeacon_url:
+    displayName: JAVBeacon URL
+    description: Base URL reachable from the Stash server, for example http://javbeacon:8080. Do not include /api/hooks/stash.
+    type: STRING
+  webhook_secret:
+    displayName: JAVBeacon webhook secret
+    description: Dedicated secret configured in JAVBeacon under Settings > StashApp > Changed-scene sync.
+    type: STRING
+  timeout_seconds:
+    displayName: JAVBeacon request timeout (seconds)
+    description: HTTP timeout for realtime scene notifications and the connection test. Defaults to 10 seconds.
+    type: NUMBER
+  watchlist_tag_id:
+    displayName: Watchlist tag ID
+    description: Stash tag ID used by the always-visible Watchlist button on scene cards.
+    type: STRING
   subs_base_url:
     displayName: JAVBeacon-Subs base URL
     description: Base URL reachable from the Stash server, for example https://subs.example.com. Do not include /api/v1/jobs.
@@ -65,9 +81,6 @@ tasks:
     description: Verifies the URL and webhook secret and records the test in both Stash and JAVBeacon logs.
     defaultArgs:
       mode: test
-      javbeacon_url: "http://javbeacon:8080"
-      webhook_secret: "CHANGE_ME_TO_THE_SAME_LONG_RANDOM_SECRET"
-      timeout_seconds: 10
 hooks:
   - name: Sync created or changed scene to JAVBeacon
     description: Queues only the affected scene; repeated updates are coalesced by JAVBeacon.
@@ -77,9 +90,3 @@ hooks:
       - Scene.Destroy.Post
     defaultArgs:
       mode: hook
-      # Use the URL Stash can reach. In Docker this is normally the JAVBeacon
-      # service/container name, not localhost.
-      javbeacon_url: "http://javbeacon:8080"
-      # Must exactly match Settings > StashApp > Changed-scene sync.
-      webhook_secret: "CHANGE_ME_TO_THE_SAME_LONG_RANDOM_SECRET"
-      timeout_seconds: 10
