@@ -7,6 +7,14 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.165] - 2026-09-12
+
+### Fixed
+
+- Fixed the Jellyfin 12 plugin build by updating watched-status
+  synchronization to the current user-manager and user-data APIs.
+- Fixed a nullable release-result warning in the Jellyfin image provider.
+
 ## [1.0.164] - 2026-09-12
 
 ### Added

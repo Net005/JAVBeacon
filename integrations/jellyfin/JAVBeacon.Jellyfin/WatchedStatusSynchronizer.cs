@@ -4,6 +4,7 @@ using Jellyfin.Plugin.JAVBeacon.Models;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.JAVBeacon;
@@ -39,7 +40,7 @@ public sealed class WatchedStatusSynchronizer(ILibraryManager library, IUserMana
 
         var targetUsers = (trackedUserIds is { Length: > 0 }
                 ? trackedUserIds.Select(raw => Guid.TryParse(raw, out var id) ? users.GetUserById(id) : null)
-                : users.Users)
+                : users.GetUsers())
             .Where(user => user is not null)
             .Select(user => user!)
             .ToArray();
@@ -52,7 +53,7 @@ public sealed class WatchedStatusSynchronizer(ILibraryManager library, IUserMana
             foreach (var user in targetUsers)
             {
                 var data = userData.GetUserData(user, item);
-                if (data.Played) continue;
+                if (data is null || data.Played) continue;
                 data.Played = true;
                 data.PlayCount = Math.Max(data.PlayCount, 1);
                 data.LastPlayedDate = entry.WatchedAt?.UtcDateTime ?? data.LastPlayedDate ?? DateTime.UtcNow;
