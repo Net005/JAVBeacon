@@ -44,10 +44,10 @@ The request is sent to `<base URL>/api/v1/jobs` with the configured token.
 The base URL may also include `/api/v1/jobs`; the plugin will not append it
 twice.
 
-The timeout can be changed in the plugin settings. **Job options (JSON)** can
-override any of the documented defaults or add fields supported by
-JAVBeacon-Subs. For safety, `inputs` and `recursive` are always replaced with
-the current scene path and `false`, respectively.
+Every request option shown above is available separately in the plugin
+settings, with the values above used as server-side defaults. **Job options
+(JSON)** can override those fields or add fields supported by JAVBeacon-Subs.
+For safety, `inputs` is always replaced with the current scene's full path.
 
 ## Realtime sync
 

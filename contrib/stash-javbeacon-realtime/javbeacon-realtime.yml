@@ -1,6 +1,6 @@
 name: JAVBeacon Realtime Sync + Subtitles
 description: Sends changed scenes to JAVBeacon and lets scene pages request subtitles from JAVBeacon-Subs.
-version: 1.2.0
+version: 1.2.1
 ui:
   javascript:
     - javbeacon_subtitles.js
@@ -19,9 +19,37 @@ settings:
     displayName: Request timeout (seconds)
     description: HTTP timeout for JAVBeacon-Subs requests. Defaults to 30 seconds.
     type: NUMBER
+  subs_recursive:
+    displayName: Recursive
+    description: Process inputs recursively. Defaults to false for the single scene file.
+    type: BOOLEAN
+  subs_overwrite:
+    displayName: Overwrite
+    description: Replace subtitle files that already exist. Defaults to false.
+    type: BOOLEAN
+  subs_auto_detect_release:
+    displayName: Auto-detect release
+    description: Detect the release from the scene filename. Defaults to true.
+    type: BOOLEAN
+  subs_release_within_days:
+    displayName: Release within days
+    description: Restrict release matching to this many days. Defaults to 0.
+    type: NUMBER
+  subs_debug_mode:
+    displayName: Debug mode
+    description: Enable JAVBeacon-Subs debug mode for submitted jobs. Defaults to true.
+    type: BOOLEAN
+  subs_keep_japanese:
+    displayName: Keep Japanese
+    description: Preserve Japanese subtitle tracks. Defaults to true.
+    type: BOOLEAN
+  subs_write_ass:
+    displayName: Write ASS
+    description: Ask JAVBeacon-Subs to write ASS output. Defaults to false.
+    type: BOOLEAN
   subs_job_options:
     displayName: Job options (JSON)
-    description: Optional JSON object for adjusting the JAVBeacon-Subs request. Blank uses the documented defaults. inputs and recursive are always controlled by the current scene.
+    description: Optional advanced JSON overrides for the JAVBeacon-Subs request. Blank uses the individual settings and documented defaults. inputs is always controlled by the current scene.
     type: STRING
 exec:
   - python3

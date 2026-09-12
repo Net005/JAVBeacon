@@ -74,12 +74,14 @@ class SubtitleRequestTests(unittest.TestCase):
             },
         )
 
-    def test_extra_options_cannot_replace_scene_path_or_recursive(self):
+    def test_individual_settings_and_json_options_are_applied(self):
         settings = {
+            "subs_recursive": True,
+            "subs_overwrite": True,
+            "subs_keep_japanese": False,
             "subs_job_options": json.dumps(
                 {
                     "inputs": ["/wrong/file.mp4"],
-                    "recursive": True,
                     "language": "en",
                     "auto_detect_release": False,
                 }
@@ -89,7 +91,9 @@ class SubtitleRequestTests(unittest.TestCase):
         body = plugin._subtitle_body("/media/right.mp4", settings)
 
         self.assertEqual(body["inputs"], ["/media/right.mp4"])
-        self.assertFalse(body["recursive"])
+        self.assertTrue(body["recursive"])
+        self.assertTrue(body["overwrite"])
+        self.assertFalse(body["keep_japanese"])
         self.assertFalse(body["auto_detect_release"])
         self.assertEqual(body["language"], "en")
 

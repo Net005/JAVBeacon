@@ -3,6 +3,7 @@
 
   const PLUGIN_ID = "javbeacon-realtime";
   const React = window.PluginApi.React;
+  const ReactDOM = window.PluginApi.ReactDOM;
   const { Button, Spinner } = window.PluginApi.libraries.Bootstrap;
   const { gql, useMutation } = window.PluginApi.libraries.Apollo;
   const { FontAwesomeIcon } = window.PluginApi.libraries.ReactFontAwesome;
@@ -67,40 +68,43 @@
     );
   }
 
-  function isActionGroup(element) {
-    if (!React.isValidElement(element)) return false;
-    const className = element.props?.className;
-    if (typeof className !== "string") return false;
-    if (!className.split(/\s+/).includes("scene-toolbar-group")) return false;
-    return React.Children.count(element.props.children) > 1;
-  }
+  function SubtitleToolbarPortal({ sceneId }) {
+    const [mountNode, setMountNode] = React.useState(null);
 
-  function injectButton(element, sceneId, state) {
-    if (!React.isValidElement(element) || state.inserted) return element;
-
-    if (isActionGroup(element)) {
-      state.inserted = true;
-      return React.cloneElement(
-        element,
-        element.props,
-        React.createElement(
-          "span",
-          { className: "javbeacon-subs-action", key: "javbeacon-subs" },
-          React.createElement(SubtitleButton, { sceneId })
-        ),
-        element.props.children
+    React.useLayoutEffect(() => {
+      const groups = Array.from(
+        document.querySelectorAll(".scene-toolbar .scene-toolbar-group")
       );
-    }
+      const actionGroup = groups[groups.length - 1];
+      if (!actionGroup) return undefined;
 
-    if (!element.props?.children) return element;
-    const children = React.Children.map(element.props.children, (child) =>
-      injectButton(child, sceneId, state)
+      const mount = document.createElement("span");
+      mount.className = "javbeacon-subs-action";
+      actionGroup.insertBefore(mount, actionGroup.firstChild);
+      setMountNode(mount);
+
+      return () => {
+        mount.remove();
+      };
+    }, [sceneId]);
+
+    if (!mountNode) return null;
+    return ReactDOM.createPortal(
+      React.createElement(SubtitleButton, { sceneId }),
+      mountNode
     );
-    return React.cloneElement(element, element.props, children);
   }
 
   window.PluginApi.patch.after("ScenePage", function (props, rendered) {
     if (!props?.scene?.id) return rendered;
-    return injectButton(rendered, props.scene.id, { inserted: false });
+    return React.createElement(
+      React.Fragment,
+      null,
+      rendered,
+      React.createElement(SubtitleToolbarPortal, {
+        key: "javbeacon-subs-portal",
+        sceneId: props.scene.id,
+      })
+    );
   });
 })();
