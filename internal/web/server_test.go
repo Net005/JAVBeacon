@@ -555,12 +555,51 @@ func TestDownloadActivityShowsHTTPBeforeTorrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `<div class="subtabs downloadTransportTabs"><button data-download-transport="http">HTTP</button><button class="active" data-download-transport="torrent">Torrent</button></div>`
+	// HTTP is also the default selected transport (see
+	// TestDownloadActivityDefaultsToHTTPTransport in app.js): the markup's
+	// own static "active" class matches that default so the page never
+	// flashes Torrent before JavaScript re-applies the real state from
+	// preferences.
+	want := `<div class="subtabs downloadTransportTabs"><button class="active" data-download-transport="http">HTTP</button><button data-download-transport="torrent">Torrent</button></div>`
 	if !strings.Contains(string(markup), want) {
-		t.Fatal("Download Activity must show HTTP before the plainly named Torrent tab")
+		t.Fatal("Download Activity must show HTTP before the plainly named Torrent tab, active by default")
 	}
 	if !strings.Contains(string(markup), `<option value="250">250</option><option value="500">500</option>`) {
 		t.Fatal("Download Activity page size does not offer 250 and 500 rows")
+	}
+}
+
+// TestDownloadActivityDefaultsToHTTPTransport guards the three places
+// app.js decides which download transport tab (HTTP/Torrent) to show
+// before a user has ever chosen one - the initial module-level variable,
+// the default `prefs` object, and monitoringTab's fallback when a saved
+// preferences blob doesn't have downloadTransport set at all (an existing
+// account created before this preference existed, or one whose value was
+// otherwise cleared). All three used to default to "torrent"; a user who
+// never touched the tab landed on Torrent instead of HTTP and, once that
+// default value got persisted back to their saved preferences (see
+// loadPreferences's defaultStartDate save-once-on-first-load path), it
+// would keep "remembering" Torrent from then on even though the user never
+// chose it. Once a user actually clicks a transport tab, that explicit
+// choice is saved and restored correctly - this test only covers the
+// unset/never-chosen default.
+func TestDownloadActivityDefaultsToHTTPTransport(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(javascript)
+	for _, marker := range []string{
+		`downloadStatus='downloading',downloadTransport='http',`,
+		`downloadTransport:'http',downloadStatus:'downloading',`,
+		`downloadTransport=prefs.downloadTransport==='torrent'?'torrent':'http';`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("download transport does not default to HTTP: missing %q", marker)
+		}
+	}
+	if strings.Contains(src, `downloadTransport='torrent'`) || strings.Contains(src, `downloadTransport:'torrent'`) {
+		t.Fatal("a download transport default still falls back to torrent instead of HTTP")
 	}
 }
 

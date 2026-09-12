@@ -7,6 +7,20 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.160] - 2026-09-12
+
+### Fixed
+
+- Download Activity's HTTP/Torrent tab now defaults to HTTP for anyone who
+  has never explicitly chosen a tab, instead of silently defaulting to
+  Torrent. Previously that Torrent default could also get written back to
+  your saved preferences the first time the app loaded, so it kept
+  "remembering" Torrent even though it was never an actual choice.
+  Explicitly selecting a tab already saved and restored correctly across
+  app/browser restarts - if Download Monitoring still opens on Torrent
+  after updating, click the HTTP tab once and it will be remembered from
+  then on.
+
 ## [1.0.159] - 2026-09-11
 
 ### Changed
