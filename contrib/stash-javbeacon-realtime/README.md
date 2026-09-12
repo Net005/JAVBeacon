@@ -24,8 +24,9 @@ not expose the API token to the scene page.
    - **JAVBeacon-Subs API token** to the bearer token issued by JAVBeacon-Subs.
 5. Reload the Stash page after installing or updating the plugin.
 
-The closed-caption icon appears in the scene action row. Selecting it resolves
-the scene's first full file path from Stash on the server and submits:
+The closed-caption icon appears in the scene action row and at the bottom-right
+of cards on the scene overview. Selecting either button resolves the scene's
+first full file path from Stash on the server and submits:
 
 ```json
 {

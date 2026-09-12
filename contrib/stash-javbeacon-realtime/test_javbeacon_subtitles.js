@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 
-let scenePageAfter;
+const afterPatches = {};
 const React = {
   Fragment: Symbol("Fragment"),
   createElement(type, props, ...children) {
@@ -34,8 +34,7 @@ global.window = {
     },
     patch: {
       after(name, callback) {
-        assert.equal(name, "ScenePage");
-        scenePageAfter = callback;
+        afterPatches[name] = callback;
       },
     },
   },
@@ -45,7 +44,7 @@ require("./javbeacon_subtitles.js");
 
 const renderedScene = React.createElement("main", { id: "scene-page" });
 const legacyContext = {};
-const result = scenePageAfter(
+const result = afterPatches.ScenePage(
   { scene: { id: "39382" } },
   legacyContext,
   renderedScene
@@ -55,4 +54,20 @@ assert.equal(result.props.children[0], renderedScene);
 assert.notEqual(result.props.children[0], legacyContext);
 assert.equal(result.props.children[1].props.sceneId, "39382");
 
-console.log("ScenePage patch preserves the rendered result after legacy context");
+const renderedPopovers = React.createElement("div", {
+  className: "card-popovers",
+});
+const cardResult = afterPatches["SceneCard.Popovers"](
+  { scene: { id: "39382" } },
+  legacyContext,
+  renderedPopovers
+);
+
+assert.equal(cardResult.props.children[0], renderedPopovers);
+assert.equal(
+  cardResult.props.children[1].props.className,
+  "javbeacon-subs-card-action"
+);
+assert.equal(cardResult.props.children[1].props.children.props.sceneId, "39382");
+
+console.log("Scene page and card patches preserve results after legacy context");

@@ -22,7 +22,9 @@
     const [runPluginOperation] = useMutation(REQUEST_SUBTITLES);
     const [loading, setLoading] = React.useState(false);
 
-    const onClick = async () => {
+    const onClick = async (event) => {
+      event?.preventDefault();
+      event?.stopPropagation();
       if (loading) return;
       setLoading(true);
       try {
@@ -53,6 +55,7 @@
         className: "minimal javbeacon-subs-button",
         disabled: loading,
         onClick,
+        onMouseDown: (event) => event.stopPropagation(),
         title: loading
           ? "Sending subtitle request…"
           : "Request subtitles from JAVBeacon-Subs",
@@ -110,6 +113,25 @@
         key: "javbeacon-subs-portal",
         sceneId: props.scene.id,
       })
+    );
+  });
+
+  window.PluginApi.patch.after("SceneCard.Popovers", function (...args) {
+    const props = args[0];
+    const rendered = args[args.length - 1];
+    if (!props?.scene?.id) return rendered;
+    return React.createElement(
+      React.Fragment,
+      null,
+      rendered,
+      React.createElement(
+        "div",
+        {
+          className: "javbeacon-subs-card-action",
+          key: "javbeacon-subs-card-action",
+        },
+        React.createElement(SubtitleButton, { sceneId: props.scene.id })
+      )
     );
   });
 })();

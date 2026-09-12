@@ -22,3 +22,22 @@
 .javbeacon-subs-button[disabled] {
   cursor: wait;
 }
+
+.scene-card .javbeacon-subs-card-action {
+  align-items: center;
+  bottom: 0.4rem;
+  display: inline-flex;
+  justify-content: center;
+  position: absolute;
+  right: 0.55rem;
+  z-index: 3;
+}
+
+.scene-card .javbeacon-subs-card-action .javbeacon-subs-button {
+  padding: 0.35rem 0.45rem;
+}
+
+.scene-card .javbeacon-subs-card-action .javbeacon-subs-icon {
+  height: 1.3rem;
+  width: 1.3rem;
+}
