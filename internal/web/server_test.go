@@ -560,6 +560,8 @@ func TestDownloadActivityRetriesNotAvailableAndEditsPriority(t *testing.T) {
 		`status:downloadStatus`,
 		`promptDownloadPriority(${x.id}`,
 		`['in_progress','queued','failed','not_available'].includes(downloadStatus)`,
+		`Search + download HTTP alternatives`,
+		`querySelector('.downloadBulkRetryAllLabel')`,
 	} {
 		if !strings.Contains(string(javascript), marker) {
 			t.Fatalf("Download Activity retry/priority UI is missing marker %q", marker)

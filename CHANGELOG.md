@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.166] - 2026-09-12
+
+### Fixed
+
+- Fixed the Download Activity bulk retry controls so their retry icons and
+  labels match the surrounding action buttons without overlapping or wrapping.
+- Renamed the HTTP replacement option to "Search + download HTTP alternatives"
+  so it no longer uses torrent-specific best-seeded wording.
+
 ## [1.0.165] - 2026-09-12
 
 ### Fixed
