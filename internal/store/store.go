@@ -1388,14 +1388,31 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		// from) can be used as the search term - the community StashApp
 		// JavLibrary scraper's optional JAVBeacon-backed mode does this to
 		// resolve an already-tagged scene without re-scraping JavLibrary.
-		q += ` AND (` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR ` + d.CaseInsensitiveLike("r.scraper_id") + ` OR ` + d.CaseInsensitiveLike("r.product_url") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE rss.release_id=r.id AND ` + d.CaseInsensitiveLike("ss.title") + `)`
-		v := "%" + f.Search + "%"
-		a = append(a, v, v, v, v, v, v, v, v, v)
-		if reversed := reverseTwoWordName(f.Search); reversed != "" {
-			q += ` OR EXISTS (SELECT 1 FROM release_actresses a2 WHERE a2.release_id=r.id AND ` + d.CaseInsensitiveLike("a2.name") + `)`
-			a = append(a, "%"+reversed+"%")
+		terms := []string{f.Search}
+		if f.SearchWildcards {
+			terms = splitWildcardValues(f.Search)
 		}
-		q += `)`
+		termClauses := make([]string, 0, len(terms))
+		for _, term := range terms {
+			clause := `(` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR ` + d.CaseInsensitiveLike("r.scraper_id") + ` OR ` + d.CaseInsensitiveLike("r.product_url") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE rss.release_id=r.id AND ` + d.CaseInsensitiveLike("ss.title") + `)`
+			v := "%" + term + "%"
+			if f.SearchWildcards {
+				v = genericSearchLikePattern(term)
+			}
+			a = append(a, v, v, v, v, v, v, v, v, v)
+			if reversed := reverseTwoWordName(term); reversed != "" {
+				clause += ` OR EXISTS (SELECT 1 FROM release_actresses a2 WHERE a2.release_id=r.id AND ` + d.CaseInsensitiveLike("a2.name") + `)`
+				if f.SearchWildcards {
+					a = append(a, genericSearchLikePattern(reversed))
+				} else {
+					a = append(a, "%"+reversed+"%")
+				}
+			}
+			termClauses = append(termClauses, clause+`)`)
+		}
+		if len(termClauses) > 0 {
+			q += ` AND (` + strings.Join(termClauses, ` OR `) + `)`
+		}
 	}
 	// VideoID is an exact (case-insensitive) match, distinct from the fuzzy
 	// Search above - see its doc comment on domain.ReleaseFilter.
@@ -1770,6 +1787,12 @@ func metadataLikePattern(value string) string {
 	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(strings.TrimSpace(value))
 	escaped = strings.NewReplacer("*", "%", "?", "_").Replace(escaped)
 	return "%" + escaped + "%"
+}
+
+func genericSearchLikePattern(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.NewReplacer("*", "%", "?", "_").Replace(value)
+	return "%" + value + "%"
 }
 
 // ignoreTitlePattern turns one ignore_titles entry into a LIKE pattern for

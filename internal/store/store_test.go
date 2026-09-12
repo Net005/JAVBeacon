@@ -946,6 +946,44 @@ func TestReleaseSearchIsCaseInsensitiveAcrossFields(t *testing.T) {
 	}
 }
 
+func TestReleaseGenericSearchSupportsCommaSeparatedWildcards(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "generic-wildcard-search.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, _ := s.SaveSite(ctx, domain.Site{Title: "Search Source", Type: "Site", Name: "Search Source", Enabled: true})
+	for _, release := range []domain.Release{
+		{SiteID: site.ID, VideoID: "ALPHA-100", Title: "Midnight feature", Source: "Search Source"},
+		{SiteID: site.ID, VideoID: "BETA-205", Title: "Sunrise feature", Source: "Search Source"},
+		{SiteID: site.ID, VideoID: "COMMA-1", Title: "Foo, Bar", Source: "Search Source"},
+	} {
+		if _, err := s.UpsertRelease(ctx, release); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{Search: "alpha-*, *sunrise", SearchWildcards: true, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("comma-separated wildcard search returned %d rows, want 2: %+v", len(rows), rows)
+	}
+
+	rows, err = s.Releases(ctx, domain.ReleaseFilter{Search: "missing, beta-2??", SearchWildcards: true, Limit: 10})
+	if err != nil || len(rows) != 1 || rows[0].VideoID != "BETA-205" {
+		t.Fatalf("question-mark wildcard search returned %+v: %v", rows, err)
+	}
+
+	// Non-UI callers retain literal substring behavior, including commas.
+	rows, err = s.Releases(ctx, domain.ReleaseFilter{Search: "Foo, Bar", Limit: 10})
+	if err != nil || len(rows) != 1 || rows[0].VideoID != "COMMA-1" {
+		t.Fatalf("literal programmatic search returned %+v: %v", rows, err)
+	}
+}
+
 // TestReleaseConditionsSearchIsCaseInsensitiveForTitleAndDescription guards
 // the TODO-2.0 Task A case-insensitivity audit fix to releaseFilterWhere's
 // Conditions (SearchExpression) builder: the title/description branch used
@@ -1306,6 +1344,10 @@ func TestReleaseFiltersReverseActressNameStructuredSearchAndWatchlist(t *testing
 	rows, err = s.Releases(ctx, domain.ReleaseFilter{Category: "Studio", Entries: "video gr?up", Limit: 10})
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("wildcard studio filter: rows=%d err=%v", len(rows), err)
+	}
+	rows, err = s.Releases(ctx, domain.ReleaseFilter{Category: "Studio", Entries: `["does-not-match*","video gr?up"]`, Limit: 10})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("multiple wildcard studio alternatives: rows=%d err=%v", len(rows), err)
 	}
 	rows, err = s.Releases(ctx, domain.ReleaseFilter{Category: "Actress", Entries: `[]`, Limit: 10})
 	if err != nil || len(rows) != 1 {
