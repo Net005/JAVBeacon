@@ -1309,6 +1309,7 @@ html.releaseOverlayOpen,body.releaseOverlayOpen{overflow:hidden!important;oversc
 .downloadScheduleGrid{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
 .downloadScheduleGrid>.automationPanel{margin:0}
 .downloadActivityBar{display:flex!important}
+.downloadActivityBar>button{white-space:nowrap}
 .downloadActivityBar #downloadBulkPriorityControl{display:flex;align-items:center;gap:6px}.downloadActivityBar #downloadBulkPriorityControl[hidden]{display:none!important}.downloadActivityBar #downloadBulkPriority{width:72px;min-width:0}
 .logToolbar>button{align-self:center;margin-top:14px;min-height:36px;padding:7px 10px;font-size:11px}.logEntry{grid-template-columns:82px 82px minmax(180px,1fr) auto}.logCopy{min-height:28px;padding:4px 7px;font:10px/1.2 Inter,system-ui,sans-serif}@media(max-width:650px){.logToolbar>button{margin-top:8px}.logEntry{grid-template-columns:70px minmax(0,1fr) auto}.logCopy{grid-column:3;grid-row:1}}
 .downloadQuickSort{display:flex;align-items:center;gap:7px;margin-left:auto;color:var(--muted);font-size:11px;white-space:nowrap}
