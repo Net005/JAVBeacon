@@ -1,6 +1,6 @@
 name: JAVBeacon Realtime Sync + Subtitles
 description: Sends changed scenes to JAVBeacon and lets scene pages request subtitles from JAVBeacon-Subs.
-version: 1.2.1
+version: 1.2.2
 ui:
   javascript:
     - javbeacon_subtitles.js
