@@ -797,6 +797,20 @@ func TestStructuredReleaseSearchSupportsInvertedConditions(t *testing.T) {
 	}
 }
 
+func TestStructuredReleaseWildcardAcceptsUniqueCommaSeparatedAlternatives(t *testing.T) {
+	clause, args := releaseConditionGroupClause(SQLiteDialect{}, []releaseFilterCondition{{Field: "title", Value: "  ABC-* , xyz-* , ABC-* ", Wildcard: true}}, "and")
+	if strings.Count(clause, "r.title LIKE") != 2 || !strings.Contains(clause, " OR ") {
+		t.Fatalf("multi-wildcard clause = %q, want two OR alternatives", clause)
+	}
+	if len(args) != 2 || args[0] != "ABC-%" || args[1] != "xyz-%" {
+		t.Fatalf("multi-wildcard args = %#v", args)
+	}
+	inverted, invertedArgs := releaseConditionGroupClause(SQLiteDialect{}, []releaseFilterCondition{{Field: "title", Value: "ABC-*, xyz-*", Wildcard: true, Invert: true}}, "and")
+	if !strings.Contains(inverted, "NOT (") || len(invertedArgs) != 2 {
+		t.Fatalf("inverted multi-wildcard = %q %#v", inverted, invertedArgs)
+	}
+}
+
 func TestDownloadActivityInProgressOrdersCurrentSearchBeforeQueue(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "download-in-progress.db"))

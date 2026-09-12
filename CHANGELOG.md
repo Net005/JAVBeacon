@@ -7,6 +7,36 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.162] - 2026-09-12
+
+### Added
+
+- Added optional one-way StashApp watched-status synchronization to the
+  Jellyfin plugin. It can mark matching items played for selected users,
+  exposes a manual Jellyfin scheduled task, and never clears Jellyfin watch
+  state when StashApp has no play record.
+- Wildcard fields throughout the UI now accept multiple comma-separated
+  patterns, including the Release Library and Notifications entry filters,
+  structured Release Library and Missing Files conditions, saved-filter
+  searches, monitoring-site lookup, and Stash write-back review filters.
+  Persistent filters display unique patterns as removable badges; patterns
+  are matched as alternatives, while inverted structured Release Library
+  conditions exclude releases matching any supplied pattern.
+
+### Changed
+
+- Reduced persistent web UI load by replacing the global Download Activity
+  widget's full-history request with a compact active-queue query. The closed
+  widget now polls less frequently, pauses in background tabs, and only loads
+  a capped detailed queue when opened.
+- Improved Release Library search performance on PostgreSQL by using the
+  normalized actress and tag indexes and adding trigram indexes for scraper
+  IDs and product URLs.
+- Release Library refreshes now keep the existing grid visible beneath a
+  clear loading overlay, and active structured searches and saved filter sets
+  are highlighted consistently in Release Library and Missing Files. Hovering
+  an applied saved-filter icon shows its name and active filter summary.
+
 ## [1.0.161] - 2026-09-12
 
 ### Changed

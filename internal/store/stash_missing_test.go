@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,6 +137,16 @@ func TestStashMissingScenesUpsertLinkAndFilter(t *testing.T) {
 	one, err := s.StashMissingScene(ctx, matchedID)
 	if err != nil || one.ID != matchedID || one.ReleaseID != release.ID {
 		t.Fatalf("StashMissingScene(%d)=%+v err=%v", matchedID, one, err)
+	}
+}
+
+func TestStashMissingWildcardAcceptsUniqueCommaSeparatedAlternatives(t *testing.T) {
+	clause, args := stashMissingConditionGroupClause(SQLiteDialect{}, []stashMissingFilterCondition{{Field: "path", Value: "*/one/*, */two/*, */ONE/*", Wildcard: true}}, "and")
+	if strings.Count(clause, "m.path LIKE") != 2 || !strings.Contains(clause, " OR ") {
+		t.Fatalf("multi-wildcard clause = %q, want two OR alternatives", clause)
+	}
+	if len(args) != 4 || args[0] != "%/one/%" || args[2] != "%/two/%" {
+		t.Fatalf("multi-wildcard args = %#v", args)
 	}
 }
 
