@@ -95,7 +95,9 @@
     );
   }
 
-  window.PluginApi.patch.after("ScenePage", function (props, rendered) {
+  window.PluginApi.patch.after("ScenePage", function (...args) {
+    const props = args[0];
+    const rendered = args[args.length - 1];
     if (!props?.scene?.id) return rendered;
     return React.createElement(
       React.Fragment,
