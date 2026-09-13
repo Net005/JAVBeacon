@@ -324,6 +324,12 @@ CREATE TABLE IF NOT EXISTS notifications (
 	created_at TIMESTAMPTZ NOT NULL,
 	UNIQUE(release_id, type)
 );
+CREATE TABLE IF NOT EXISTS discovery_scores (
+ release_id BIGINT PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE,
+ score DOUBLE PRECISION NOT NULL DEFAULT 0,
+ updated_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_discovery_scores_score ON discovery_scores(score DESC,release_id DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_release_created ON notifications(release_id,created_at DESC);
 
 CREATE TABLE IF NOT EXISTS watchlist_sync (

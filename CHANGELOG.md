@@ -7,6 +7,39 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.179] - 2026-09-13
+
+### Added
+
+- Added a Discoveries settings action for testing the configured OpenAI API
+  key, model, and optional compatible API base URL before running enrichment.
+- Added a **Released + score** Discoveries sort that orders newer releases
+  first and recommendation score highest within each release date.
+
+### Changed
+
+- Recommendation scores are now cached persistently and used for
+  catalog-wide ordering, while the playback-derived taste profile is reused
+  between requests. Existing subtitle fingerprint and AI result caches remain
+  in place.
+- Fine-tuned discovery pools now filter the complete catalog before paging and
+  match partial, case-insensitive keywords against titles, stories, directors,
+  performers, genres/tags, studios, labels, and sites. Duplicate pool keywords
+  are ignored.
+- Renamed the visible recommendation status to **AI-enhanced
+  recommendations**.
+- Compacted the Notifications structured-conditions control into an icon and
+  refined the responsive toolbar layout.
+
+### Fixed
+
+- Fixed recommendation-score sorting becoming unsorted when more Discoveries
+  pages were loaded.
+- Fixed fine-tuned pools returning no matches when relevant releases were not
+  present in the already-loaded page or the keyword occurred in story text.
+- Upgrades now populate an empty recommendation-score cache with one complete
+  pass; subsequent scheduled synchronization remains incremental.
+
 ## [1.0.178] - 2026-09-13
 
 ### Changed
