@@ -42,6 +42,16 @@ func TestJavLibraryListingAndDetail(t *testing.T) {
 	}
 }
 
+func TestParseJavLibraryCurrentDirectorRow(t *testing.T) {
+	doc, err := html.Parse(strings.NewReader(`<div id="video_info"><table><tr><td class="header">Director:</td><td class="text"><span class="director4588"><a href="/en/vl_director.php">Morutsu-kun</a></span></td></tr></table></div>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parseJavLibraryDetail(doc, "https://www.javlibrary.com/en/javme3ri74.html").Director; got != "Morutsu-kun" {
+		t.Fatalf("Director = %q, want Morutsu-kun", got)
+	}
+}
+
 func TestJavLibraryExcludesGIGAStudioReleases(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/list", func(w http.ResponseWriter, r *http.Request) {

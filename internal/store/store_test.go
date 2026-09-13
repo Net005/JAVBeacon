@@ -637,7 +637,7 @@ func TestReleaseFilterOptionsSearchFullMetadataCaseInsensitively(t *testing.T) {
 	}
 	defer s.Close()
 	site, _ := s.SaveSite(ctx, domain.Site{Title: "Moon Label", Type: "Label", Name: "JavLibrary", Enabled: true})
-	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "OPT-1", Title: "Options", Source: "JavLibrary", Actress: "Neo Akari", Studio: "Silver Studio", Label: "Crystal Label", Genres: []string{"Female Investigator"}}); err != nil {
+	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "OPT-1", Title: "Options", Source: "JavLibrary", Actress: "Neo Akari", Director: "Morutsu-kun", Studio: "Silver Studio", Label: "Crystal Label", Genres: []string{"Female Investigator"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -646,11 +646,12 @@ func TestReleaseFilterOptionsSearchFullMetadataCaseInsensitively(t *testing.T) {
 		search   string
 		want     string
 	}{
-		"reverse actress": {"actress", "akari neo", "Neo Akari"},
-		"partial tag":     {"tag", "investigator", "Female Investigator"},
-		"partial studio":  {"studio", "silver", "Silver Studio"},
-		"release label":   {"label", "crystal", "Crystal Label"},
-		"site label":      {"label", "moon", "Moon Label"},
+		"reverse actress":  {"actress", "akari neo", "Neo Akari"},
+		"partial tag":      {"tag", "investigator", "Female Investigator"},
+		"partial studio":   {"studio", "silver", "Silver Studio"},
+		"partial director": {"director", "morutsu", "Morutsu-kun"},
+		"release label":    {"label", "crystal", "Crystal Label"},
+		"site label":       {"label", "moon", "Moon Label"},
 	} {
 		values, err := s.ReleaseFilterOptions(ctx, tc.category, tc.search)
 		if err != nil {
@@ -662,6 +663,17 @@ func TestReleaseFilterOptionsSearchFullMetadataCaseInsensitively(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("%s: options=%q, want %q", name, values, tc.want)
+		}
+	}
+
+	for name, filter := range map[string]domain.ReleaseFilter{
+		"open text director":  {Search: "morutsu", Limit: 10},
+		"category director":   {Category: "Director", Entries: "Morutsu*", Limit: 10},
+		"structured director": {SearchExpression: `{"logic":"and","conditions":[{"field":"director","value":"morutsu*","wildcard":true}]}`, Limit: 10},
+	} {
+		rows, err := s.Releases(ctx, filter)
+		if err != nil || len(rows) != 1 || rows[0].VideoID != "OPT-1" {
+			t.Fatalf("%s: rows=%+v err=%v", name, rows, err)
 		}
 	}
 }
