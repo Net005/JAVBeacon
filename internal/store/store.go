@@ -1166,7 +1166,7 @@ func releaseConditionGroupClause(d Dialect, conditions []releaseFilterCondition,
 	}
 	parts := []string{}
 	var a []any
-	columns := map[string]string{"title": "r.title", "tag": "metadata", "actress": "metadata", "description": "r.story", "studio": "r.studio", "label": "r.label", "stash_file_path": "r.stash_file_path", "monitoring_site": "site_metadata"}
+	columns := map[string]string{"title": "r.title", "tag": "metadata", "actress": "metadata", "description": "r.story", "director": "r.director", "studio": "r.studio", "label": "r.label", "stash_file_path": "r.stash_file_path", "monitoring_site": "site_metadata"}
 	// timestampColumns are the two pre-existing DATETIME/TIMESTAMPTZ columns
 	// (never blank - both are NOT NULL and set on every insert), so their
 	// before/after comparison skips the "<>''" empty-string guard that the
@@ -1395,12 +1395,12 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		}
 		termClauses := make([]string, 0, len(terms))
 		for _, term := range terms {
-			clause := `(` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR ` + d.CaseInsensitiveLike("r.scraper_id") + ` OR ` + d.CaseInsensitiveLike("r.product_url") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE rss.release_id=r.id AND ` + d.CaseInsensitiveLike("ss.title") + `)`
+			clause := `(` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.director") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR ` + d.CaseInsensitiveLike("r.scraper_id") + ` OR ` + d.CaseInsensitiveLike("r.product_url") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE rss.release_id=r.id AND ` + d.CaseInsensitiveLike("ss.title") + `)`
 			v := "%" + term + "%"
 			if f.SearchWildcards {
 				v = genericSearchLikePattern(term)
 			}
-			a = append(a, v, v, v, v, v, v, v, v, v)
+			a = append(a, v, v, v, v, v, v, v, v, v, v)
 			if reversed := reverseTwoWordName(term); reversed != "" {
 				clause += ` OR EXISTS (SELECT 1 FROM release_actresses a2 WHERE a2.release_id=r.id AND ` + d.CaseInsensitiveLike("a2.name") + `)`
 				if f.SearchWildcards {
@@ -1468,7 +1468,7 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 	}
 	if f.Category != "" && f.Entries != "" {
 		entries := parseFilterEntries(f.Entries)
-		column := map[string]string{"actress": "metadata", "maker": "r.studio", "label": "label", "studio": "r.studio", "tag": "metadata"}[strings.ToLower(f.Category)]
+		column := map[string]string{"actress": "metadata", "director": "r.director", "maker": "r.studio", "label": "label", "studio": "r.studio", "tag": "metadata"}[strings.ToLower(f.Category)]
 		if column != "" {
 			filterParts := []string{}
 			filterArgs := []any{}
@@ -1765,6 +1765,9 @@ func (s *SQLite) ReleaseFilterOptions(ctx context.Context, category, search stri
 		args = append(args, pattern)
 	case "studio":
 		query = `SELECT MIN(studio) AS value FROM releases WHERE studio<>'' AND LOWER(studio) LIKE LOWER(?) ESCAPE '\' GROUP BY LOWER(studio) ORDER BY LOWER(studio) LIMIT 250`
+		args = append(args, pattern)
+	case "director":
+		query = `SELECT MIN(director) AS value FROM releases WHERE director<>'' AND LOWER(director) LIKE LOWER(?) ESCAPE '\' GROUP BY LOWER(director) ORDER BY LOWER(director) LIMIT 250`
 		args = append(args, pattern)
 	case "label":
 		query = `SELECT MIN(value) AS value FROM (SELECT label AS value FROM releases WHERE label<>'' AND LOWER(label) LIKE LOWER(?) ESCAPE '\' UNION ALL SELECT s.title AS value FROM sites s JOIN release_sites rs ON rs.site_id=s.id WHERE s.title<>'' AND LOWER(s.title) LIKE LOWER(?) ESCAPE '\') filter_values GROUP BY LOWER(value) ORDER BY LOWER(value) LIMIT 250`

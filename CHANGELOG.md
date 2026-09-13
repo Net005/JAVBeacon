@@ -7,6 +7,27 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.177] - 2026-09-13
+
+### Added
+
+- Added Director to free-text and wildcard searching, metadata dropdowns,
+  autocomplete suggestions, and structured conditions across Release Library,
+  Notifications, Discoveries, and monitored releases.
+
+### Changed
+
+- Release Details now displays the scraped Director as a clickable metadata
+  value that opens the Release Library filtered to that director.
+- Compacted the Discoveries introduction and synchronization status. Sync
+  details can be folded, remember their browser-specific state, and open
+  automatically while discovery, subtitle, or OpenAI work is active.
+
+### Fixed
+
+- Added current-layout regression coverage for Director extraction from both
+  JavLibrary and GIGA/Akiba product pages.
+
 ## [1.0.176] - 2026-09-13
 
 ### Added

@@ -143,6 +143,23 @@ func TestAkibaStoryFallsBackToCollapsedTextWithoutMoreControl(t *testing.T) {
 	}
 }
 
+func TestAkibaDetailCurrentDirectorDefinitionList(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/product/index.php", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<html><div id="works_pic"><h5>SPANDEXER ZERO Part2</h5></div><div id="works_txt"><ul><dl><dt>Director</dt><dd><a href="/search/supervisor.php?supervisor_id=52">Ginta Jinji</a></dd></dl></ul></div></html>`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	got, err := NewAkiba(server.URL, "/search/", 2*time.Second, nil).detail(context.Background(), server.URL+"/product/index.php?product_id=5221")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Director != "Ginta Jinji" {
+		t.Fatalf("Director = %q, want Ginta Jinji", got.Director)
+	}
+}
+
 // TestAkibaScrapeFilteredRetriesTransientDetailFetchFailureOnce mirrors
 // TestScrapeFilteredRetriesTransientDetailFetchFailureOnce in
 // javlibrary_test.go: a.detail already retries internally (fetch ->
