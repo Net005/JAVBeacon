@@ -27,6 +27,8 @@ type Config struct {
 	RefreshEvery         time.Duration `json:"-"`
 	RefreshText          string        `json:"refresh_interval"`
 	RequestTimeout       time.Duration `json:"-"`
+	OllamaURL            string        `json:"ollama_url"`
+	OllamaModel          string        `json:"ollama_model"`
 
 	// DatabaseEngine selects which persistence backend the application
 	// connects to at startup. It must be resolvable before any database
@@ -75,6 +77,8 @@ func Load() (Config, error) {
 		FlareSolverrCooldown: 7.49,
 		RefreshText:          "1h",
 		RequestTimeout:       30 * time.Second,
+		OllamaURL:            "http://127.0.0.1:11434",
+		OllamaModel:          "qwen3:8b",
 		DatabaseEngine:       EngineSQLite,
 		PostgresHost:         "127.0.0.1",
 		PostgresPort:         5432,
@@ -99,6 +103,12 @@ func Load() (Config, error) {
 	}
 	if v := os.Getenv("JAVBEACON_FLARESOLVERR_URL"); v != "" {
 		c.FlareSolverrURL = v
+	}
+	if v := strings.TrimSpace(os.Getenv("JAVBEACON_OLLAMA_URL")); v != "" {
+		c.OllamaURL = v
+	}
+	if v := strings.TrimSpace(os.Getenv("JAVBEACON_OLLAMA_MODEL")); v != "" {
+		c.OllamaModel = v
 	}
 	if v := strings.TrimSpace(os.Getenv("JAVBEACON_DB_ENGINE")); v != "" {
 		c.DatabaseEngine = strings.ToLower(v)

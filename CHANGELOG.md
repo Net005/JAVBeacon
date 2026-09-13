@@ -7,6 +7,32 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.183] - 2026-09-13
+
+### Added
+
+- Added optional AI-assisted Discoveries using Qwen on a remote Ollama server,
+  including configurable server URL, model and separate health/inference
+  timeouts in the existing Discoveries settings area.
+- Added a **Test Ollama** action that checks the currently entered server and
+  model without saving settings, starting discovery work or contacting OpenAI.
+- Added an explicitly opt-in OpenAI fallback for Qwen inference/result
+  failures. The fallback is disabled by default.
+
+### Changed
+
+- AI ranking now checks Ollama availability and model presence before each
+  operation, with brief health caching to avoid repeated LAN requests.
+- The existing durable AI recommendation storage now records results from
+  either Ollama/Qwen or the optional OpenAI fallback.
+
+### Security
+
+- OpenAI is never contacted when Ollama is offline, unreachable, missing its
+  configured model, disabled, or when Qwen completes successfully.
+- Saved OpenAI keys are masked by the Settings API and masked placeholders do
+  not overwrite existing credentials during unrelated settings updates.
+
 ## [1.0.182] - 2026-09-13
 
 ### Added

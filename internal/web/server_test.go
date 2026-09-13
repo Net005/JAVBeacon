@@ -44,6 +44,85 @@ func TestVersionEndpointReturnsApplicationVersion(t *testing.T) {
 	}
 }
 
+func TestSettingsMaskOpenAISecret(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "masked-ai-secret.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(context.Background(), map[string]string{"discoveries_openai_api_key": "sk-do-not-return"}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st}
+	rec := httptest.NewRecorder()
+	s.settings(rec, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "sk-do-not-return") || !strings.Contains(rec.Body.String(), maskedSecret) {
+		t.Fatalf("secret was not masked: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMaskedOpenAISecretIsNotOverwrittenOnSettingsSave(t *testing.T) {
+	settings := map[string]string{
+		"discoveries_openai_api_key": maskedSecret,
+		"discoveries_ollama_model":   "qwen3:8b",
+	}
+	removeMaskedSettingsSecrets(settings)
+	if _, exists := settings["discoveries_openai_api_key"]; exists {
+		t.Fatal("masked API key placeholder was retained as a persisted value")
+	}
+	if settings["discoveries_ollama_model"] != "qwen3:8b" {
+		t.Fatal("unrelated setting was removed")
+	}
+}
+
+func TestAISettingsPersistUsingExistingSettingsStore(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "ai-settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	want := map[string]string{
+		"discoveries_ai_enabled":                     "true",
+		"discoveries_ollama_url":                     "http://192.168.1.50:11434",
+		"discoveries_ollama_model":                   "qwen3:8b",
+		"discoveries_ollama_request_timeout_seconds": "60",
+		"discoveries_ollama_health_timeout_seconds":  "2",
+		"discoveries_openai_fallback_enabled":        "false",
+	}
+	if err := st.SaveSettings(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Settings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Fatalf("%s = %q, want %q", key, got[key], value)
+		}
+	}
+}
+
+func TestOllamaSettingsUIControlsAndLoadingState(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(javascript)
+	for _, required := range []string{
+		`id="testDiscoveryOllama"`,
+		`discoveries_openai_fallback_enabled`,
+		`Testing Ollama…`,
+		`testDiscoveryOllama.disabled=true`,
+		`/discoveries/ollama/test`,
+		`OpenAI is never used for either condition`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("Ollama settings UI is missing %q", required)
+		}
+	}
+}
+
 func TestBrowserSearchEndpointServesApplicationShell(t *testing.T) {
 	s := &Server{mux: http.NewServeMux()}
 	s.routes()

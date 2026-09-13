@@ -87,6 +87,19 @@ func TestLoadRejectsInvalidPostgresPort(t *testing.T) {
 	}
 }
 
+func TestLoadOllamaEnvironmentOverrides(t *testing.T) {
+	clearDBEnv(t)
+	t.Setenv("JAVBEACON_OLLAMA_URL", "http://192.168.1.50:11434")
+	t.Setenv("JAVBEACON_OLLAMA_MODEL", "qwen3:14b")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OllamaURL != "http://192.168.1.50:11434" || cfg.OllamaModel != "qwen3:14b" {
+		t.Fatalf("Ollama overrides not loaded: %+v", cfg)
+	}
+}
+
 func TestRedactedHidesPassword(t *testing.T) {
 	c := Config{DatabaseEngine: EnginePostgres, PostgresPassword: "s3cret"}
 	r := c.Redacted()

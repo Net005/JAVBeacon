@@ -24,6 +24,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/auth"
 	"github.com/Net005/JAVBeacon/internal/backfill"
 	"github.com/Net005/JAVBeacon/internal/covers"
+	aidiscovery "github.com/Net005/JAVBeacon/internal/discovery"
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"github.com/Net005/JAVBeacon/internal/download"
 	jellyfinintegration "github.com/Net005/JAVBeacon/internal/jellyfin"
@@ -39,6 +40,8 @@ import (
 //go:embed static/*
 var assets embed.FS
 
+const maskedSecret = "••••••••••••"
+
 type Server struct {
 	store         store.Store
 	auth          *auth.Service
@@ -46,6 +49,7 @@ type Server struct {
 	historical    *backfill.Service
 	stash         *stash.Service
 	downloads     *download.Service
+	discoveryAI   *aidiscovery.Service
 	jellyfin      *jellyfinintegration.Service
 	covers        *covers.Cache
 	screenshots   *screenshots.Cache
@@ -160,7 +164,7 @@ type screenshotBackfillStatus struct {
 // database" source option (setupMigrationSource) needs to know it even
 // when the app is presently running on PostgreSQL.
 func New(st store.Store, authService *auth.Service, m *monitor.Service, historical *backfill.Service, stashSync *stash.Service, downloadService *download.Service, covers *covers.Cache, key string, dbEngine string, sqlitePath string, l *slog.Logger, logs *logging.RingHandler, screenshotCaches ...*screenshots.Cache) http.Handler {
-	s := &Server{store: st, auth: authService, monitor: m, historical: historical, stash: stashSync, downloads: downloadService, jellyfin: jellyfinintegration.New(st, stashSync, screenshotCaches...), covers: covers, key: key, dbEngine: dbEngine, sqlitePath: sqlitePath, log: l, logs: logs, mux: http.NewServeMux(), clients: map[*websocket.Conn]bool{}, releaseCountCache: map[string]cachedReleaseCount{}, filterOptionCache: map[string]cachedFilterOptions{}}
+	s := &Server{store: st, auth: authService, monitor: m, historical: historical, stash: stashSync, downloads: downloadService, discoveryAI: aidiscovery.New(l), jellyfin: jellyfinintegration.New(st, stashSync, screenshotCaches...), covers: covers, key: key, dbEngine: dbEngine, sqlitePath: sqlitePath, log: l, logs: logs, mux: http.NewServeMux(), clients: map[*websocket.Conn]bool{}, releaseCountCache: map[string]cachedReleaseCount{}, filterOptionCache: map[string]cachedFilterOptions{}}
 	if len(screenshotCaches) > 0 {
 		s.screenshots = screenshotCaches[0]
 	}
@@ -526,6 +530,7 @@ func (s *Server) routes() {
 	})
 	s.mux.HandleFunc("GET /api/stash/history", s.stashHistory)
 	s.mux.HandleFunc("GET /api/discoveries", s.discoveries)
+	s.mux.HandleFunc("POST /api/discoveries/ollama/test", s.testDiscoveryOllama)
 	s.mux.HandleFunc("POST /api/discoveries/openai/test", s.testDiscoveryOpenAI)
 	s.mux.HandleFunc("GET /api/jobs/discoveries", s.discoveryJob)
 	s.mux.HandleFunc("POST /api/jobs/discoveries", s.discoveryJob)
@@ -1833,6 +1838,9 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		for _, key := range []string{"pikpak_session_access_token", "pikpak_session_refresh_token", "pikpak_session_device_id", "pikpak_session_user_id", "pikpak_session_username", "pikpak_reauth_alert_active"} {
 			delete(x, key)
 		}
+		if strings.TrimSpace(x["discoveries_openai_api_key"]) != "" {
+			x["discoveries_openai_api_key"] = maskedSecret
+		}
 		s.json(w, 200, x)
 		return
 	}
@@ -1851,7 +1859,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		"discoveries_enabled", "discoveries_refresh_enabled", "discoveries_rewatch_days", "discoveries_result_limit", "discoveries_exploration_percent",
 		"discoveries_play_weight", "discoveries_orgasm_weight", "discoveries_recency_half_life_days", "discoveries_subtitle_bonus", "discoveries_diversity_percent",
 		"discoveries_excluded_tags",
-		"discoveries_openai_enabled", "discoveries_openai_api_key", "discoveries_openai_base_url", "discoveries_openai_model", "discoveries_openai_embedding_model", "discoveries_openai_candidate_limit", "discoveries_openai_batch_size", "discoveries_openai_max_input_chars", "discoveries_openai_timeout_seconds", "discoveries_openai_retry_attempts", "discoveries_openai_monthly_budget", "discoveries_openai_batch",
+		"discoveries_ai_enabled", "discoveries_ollama_url", "discoveries_ollama_model", "discoveries_ollama_request_timeout_seconds", "discoveries_ollama_health_timeout_seconds", "discoveries_openai_fallback_enabled", "discoveries_openai_enabled", "discoveries_openai_api_key", "discoveries_openai_base_url", "discoveries_openai_model", "discoveries_openai_embedding_model", "discoveries_openai_candidate_limit", "discoveries_openai_batch_size", "discoveries_openai_max_input_chars", "discoveries_openai_timeout_seconds", "discoveries_openai_retry_attempts", "discoveries_openai_monthly_budget", "discoveries_openai_batch",
 		"discoveries_subtitle_analysis_enabled", "discoveries_subtitle_languages", "discoveries_subtitle_max_chars", "discoveries_subtitle_keep_cleaned",
 		"discoveries_stash_unwatched_tag_id", "discoveries_stash_rewatch_tag_id", "discoveries_stash_hidden_tag_id", "discoveries_stash_tag_sync_enabled", "discoveries_refresh_interval", "discoveries_schedule_mode", "discoveries_start_time", "discoveries_weekdays", "discoveries_cron", "discoveries_subtitle_refresh_enabled", "discoveries_subtitle_refresh_interval", "discoveries_subtitle_schedule_mode", "discoveries_subtitle_start_time", "discoveries_subtitle_weekdays", "discoveries_subtitle_cron", "discoveries_subtitle_last_run_at", "discoveries_openai_refresh_enabled", "discoveries_openai_cache_interval", "discoveries_openai_schedule_mode", "discoveries_openai_start_time", "discoveries_openai_weekdays", "discoveries_openai_cron", "discoveries_openai_last_run_at", "discoveries_pools",
 	} {
@@ -1861,6 +1869,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusUnprocessableEntity, "stash_realtime_enabled must be true or false")
 		return
 	}
+	removeMaskedSettingsSecrets(x)
 	for key, minimum := range map[string]int{"stash_realtime_debounce_seconds": 0, "stash_realtime_retry_attempts": 1, "stash_realtime_retry_delay_seconds": 1} {
 		if raw, present := x[key]; present {
 			value, err := strconv.Atoi(strings.TrimSpace(raw))
@@ -2385,6 +2394,12 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		s.log.Info("qBittorrent completed-download cleanup settings updated", "cleanup_rule", action, "minimum_seed_ratio", x["minimum_seed_ratio"], "files_retained", true)
 	}
 	s.json(w, 200, x)
+}
+
+func removeMaskedSettingsSecrets(settings map[string]string) {
+	if settings["discoveries_openai_api_key"] == maskedSecret {
+		delete(settings, "discoveries_openai_api_key")
+	}
 }
 func (s *Server) testQBittorrent(w http.ResponseWriter, r *http.Request) {
 	var config struct {

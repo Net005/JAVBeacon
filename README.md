@@ -451,7 +451,58 @@ go test ./...
 go build -o javbeacon ./cmd/javbeacon
 ```
 
-The web client is embedded from `internal/web/static` into the Go binary.
+The web client is embedded from `internal/web/static` into the Go binary. AI
+provider clients and the explicit provider decision flow live in
+`internal/discovery`; HTTP handlers only translate existing settings and API
+requests into calls to that service.
+
+## AI-assisted Discoveries with remote Ollama
+
+JAVBeacon can use Qwen through an Ollama server on another trusted LAN machine.
+JAVBeacon itself does not need a GPU, CUDA, NVIDIA runtime, or a local Ollama
+container. Configure the URL and model in **Settings → Discoveries → AI
+Discovery**, then use **Test Ollama** before enabling AI-assisted Discovery.
+
+Example initial environment defaults (the database-backed Settings UI becomes
+authoritative after first startup):
+
+```env
+JAVBEACON_OLLAMA_URL=http://192.168.1.50:11434
+JAVBEACON_OLLAMA_MODEL=qwen3:8b
+```
+
+On the GPU workstation, install Ollama, download the selected model manually,
+and bind Ollama to the LAN interface, for example:
+
+```bash
+OLLAMA_HOST=0.0.0.0:11434 ollama serve
+ollama pull qwen3:8b
+```
+
+Recommended network path:
+
+```text
+TrueNAS / JAVBeacon host → trusted LAN TCP 11434 → workstation → Ollama → Qwen → RTX 3080
+```
+
+Do not expose Ollama directly to the public internet. Restrict TCP 11434 at the
+workstation firewall to trusted LAN devices, preferably only the JAVBeacon
+server.
+
+Every AI operation first checks `GET /api/tags` with the configured short
+health timeout. If Ollama is offline, unreachable, returns an invalid health
+response, or does not have the configured model, JAVBeacon skips AI and keeps
+normal deterministic Discoveries working. It never calls OpenAI in those
+states. OpenAI fallback is disabled by default and is eligible only after
+Ollama and the configured model were confirmed available and a Qwen inference
+or structured-result validation attempt then failed.
+
+AI rankings are advisory: Qwen receives bounded release metadata and optional
+cleaned subtitle excerpts, returns validated structured JSON, and JAVBeacon
+combines that with its deterministic database-backed scoring. The model is not
+treated as an authoritative metadata source. Successful results are stored in
+the JAVBeacon database using an input fingerprint and are regenerated only
+when relevant inputs change.
 
 ### Versioning and releases
 

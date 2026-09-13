@@ -1,17 +1,13 @@
 package web
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"math"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	aidiscovery "github.com/Net005/JAVBeacon/internal/discovery"
 	"github.com/Net005/JAVBeacon/internal/domain"
 )
 
@@ -124,43 +121,6 @@ type discoveryAICandidate struct {
 	Subtitle  string   `json:"subtitle_excerpt,omitempty"`
 }
 
-func openAIErrorDetail(status int, data []byte, requestID string) string {
-	message, code := "", ""
-	var envelope struct {
-		Error struct {
-			Message string `json:"message"`
-			Code    any    `json:"code"`
-			Type    string `json:"type"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(data, &envelope) == nil {
-		message = strings.TrimSpace(envelope.Error.Message)
-		if envelope.Error.Code != nil {
-			code = strings.TrimSpace(fmt.Sprint(envelope.Error.Code))
-		}
-		if code == "" {
-			code = strings.TrimSpace(envelope.Error.Type)
-		}
-	}
-	if message == "" {
-		message = strings.TrimSpace(string(data))
-	}
-	if len(message) > 600 {
-		message = message[:600] + "…"
-	}
-	parts := []string{fmt.Sprintf("OpenAI HTTP %d", status)}
-	if code != "" {
-		parts = append(parts, "code "+code)
-	}
-	if message != "" {
-		parts = append(parts, message)
-	}
-	if requestID != "" {
-		parts = append(parts, "request "+requestID)
-	}
-	return strings.Join(parts, " · ")
-}
-
 func (s *Server) testDiscoveryOpenAI(w http.ResponseWriter, r *http.Request) {
 	settings, _ := s.store.Settings(r.Context())
 	var input struct {
@@ -172,60 +132,47 @@ func (s *Server) testDiscoveryOpenAI(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &input) {
 		return
 	}
-	apiKey := strings.TrimSpace(input.APIKey)
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(settings["discoveries_openai_api_key"])
+	if strings.TrimSpace(input.APIKey) != "" && input.APIKey != maskedSecret {
+		settings["discoveries_openai_api_key"] = input.APIKey
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(input.BaseURL), "/")
-	if baseURL == "" {
-		baseURL = strings.TrimRight(strings.TrimSpace(settings["discoveries_openai_base_url"]), "/")
+	if strings.TrimSpace(input.BaseURL) != "" {
+		settings["discoveries_openai_base_url"] = input.BaseURL
 	}
-	if baseURL == "" {
-		baseURL = "https://api.openai.com/v1"
+	if strings.TrimSpace(input.Model) != "" {
+		settings["discoveries_openai_model"] = input.Model
 	}
-	model := strings.TrimSpace(input.Model)
-	if model == "" {
-		model = strings.TrimSpace(settings["discoveries_openai_model"])
+	if input.TimeoutSecond > 0 {
+		settings["discoveries_openai_timeout_seconds"] = strconv.Itoa(input.TimeoutSecond)
 	}
-	if model == "" {
-		model = "gpt-5-mini"
-	}
-	if apiKey == "" {
-		s.problem(w, http.StatusUnprocessableEntity, "OpenAI API key is empty")
-		return
-	}
-	timeoutSeconds := input.TimeoutSecond
-	if timeoutSeconds == 0 {
-		timeoutSeconds = discoveryInt(settings, "discoveries_openai_timeout_seconds", 120)
-	}
-	timeoutSeconds = min(max(timeoutSeconds, 15), 600)
-	body, _ := json.Marshal(map[string]any{"model": model, "input": "Reply with exactly: JAVBeacon discovery test passed", "max_output_tokens": 128, "truncation": "auto", "store": false})
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, baseURL+"/responses", bytes.NewReader(body))
-	if err != nil {
-		s.problem(w, 500, err.Error())
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	started := time.Now()
-	resp, err := (&http.Client{Timeout: time.Duration(timeoutSeconds) * time.Second}).Do(req)
+	elapsed, err := s.discoveryAI.TestOpenAI(r.Context(), discoveryAIConfig(settings))
 	if err != nil {
 		s.problem(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		s.problem(w, http.StatusBadGateway, openAIErrorDetail(resp.StatusCode, data, resp.Header.Get("x-request-id")))
-		return
-	}
-	s.json(w, http.StatusOK, map[string]any{"ok": true, "model": model, "elapsed_ms": time.Since(started).Milliseconds(), "response": strings.TrimSpace(openAIText(jsonObject(data)))})
+	s.json(w, http.StatusOK, map[string]any{"ok": true, "model": settings["discoveries_openai_model"], "elapsed_ms": elapsed.Milliseconds()})
 }
 
-func jsonObject(data []byte) map[string]any {
-	var value map[string]any
-	_ = json.Unmarshal(data, &value)
-	return value
+func (s *Server) testDiscoveryOllama(w http.ResponseWriter, r *http.Request) {
+	settings, _ := s.store.Settings(r.Context())
+	var input struct {
+		URL                  string `json:"url"`
+		Model                string `json:"model"`
+		HealthTimeoutSeconds int    `json:"health_timeout_seconds"`
+	}
+	if !s.decode(w, r, &input) {
+		return
+	}
+	if strings.TrimSpace(input.URL) != "" {
+		settings["discoveries_ollama_url"] = input.URL
+	}
+	if strings.TrimSpace(input.Model) != "" {
+		settings["discoveries_ollama_model"] = input.Model
+	}
+	if input.HealthTimeoutSeconds > 0 {
+		settings["discoveries_ollama_health_timeout_seconds"] = strconv.Itoa(input.HealthTimeoutSeconds)
+	}
+	status := s.discoveryAI.CheckOllama(r.Context(), discoveryAIConfig(settings), true)
+	s.json(w, http.StatusOK, status)
 }
 
 var discoveryRankCache = struct {
@@ -322,21 +269,6 @@ func cleanedSubtitleExcerpt(release domain.Release, maxChars int) string {
 	return out.String()
 }
 
-func openAIText(response map[string]any) string {
-	output, _ := response["output"].([]any)
-	for _, raw := range output {
-		item, _ := raw.(map[string]any)
-		content, _ := item["content"].([]any)
-		for _, partRaw := range content {
-			part, _ := partRaw.(map[string]any)
-			if text, _ := part["text"].(string); text != "" {
-				return text
-			}
-		}
-	}
-	return ""
-}
-
 func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit, batchSize, maxInputChars int) ([][]discoveryAICandidate, [][]byte) {
 	items = items[:min(limit, len(items))]
 	poolsSize := len(settings["discoveries_pools"])
@@ -397,80 +329,8 @@ func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit
 	return batches, payloads
 }
 
-func openAIRankingRequest(settings map[string]string, prompt string, schema map[string]any, candidateCount int) ([]openAIRank, error) {
-	model := strings.TrimSpace(settings["discoveries_openai_model"])
-	if model == "" {
-		model = "gpt-5-mini"
-	}
-	maxOutput := min(max(candidateCount*160, 2048), 32768)
-	body, _ := json.Marshal(map[string]any{"model": model, "input": prompt, "max_output_tokens": maxOutput, "truncation": "auto", "store": false, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "discovery_rankings", "strict": true, "schema": schema}}})
-	baseURL := strings.TrimRight(strings.TrimSpace(settings["discoveries_openai_base_url"]), "/")
-	if baseURL == "" {
-		baseURL = "https://api.openai.com/v1"
-	}
-	timeout := time.Duration(min(max(discoveryInt(settings, "discoveries_openai_timeout_seconds", 120), 15), 600)) * time.Second
-	attempts := min(max(discoveryInt(settings, "discoveries_openai_retry_attempts", 3), 1), 5)
-	var lastErr error
-	for attempt := 1; attempt <= attempts; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/responses", bytes.NewReader(body))
-		if err != nil {
-			cancel()
-			return nil, err
-		}
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(settings["discoveries_openai_api_key"]))
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			cancel()
-			lastErr = err
-			var networkError net.Error
-			if attempt == attempts || (!strings.Contains(strings.ToLower(err.Error()), "timeout") && !errors.As(err, &networkError)) {
-				return nil, err
-			}
-			time.Sleep(time.Duration(attempt) * time.Second)
-			continue
-		}
-		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-		resp.Body.Close()
-		cancel()
-		if readErr != nil {
-			lastErr = readErr
-			if attempt < attempts {
-				time.Sleep(time.Duration(attempt) * time.Second)
-				continue
-			}
-			return nil, readErr
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			lastErr = errors.New(openAIErrorDetail(resp.StatusCode, data, resp.Header.Get("x-request-id")))
-			retryable := resp.StatusCode == 408 || resp.StatusCode == 409 || resp.StatusCode == 429 || resp.StatusCode >= 500
-			if retryable && attempt < attempts {
-				time.Sleep(time.Duration(attempt) * time.Second)
-				continue
-			}
-			return nil, lastErr
-		}
-		var envelope map[string]any
-		if err := json.Unmarshal(data, &envelope); err != nil {
-			return nil, fmt.Errorf("invalid OpenAI response: %w", err)
-		}
-		var ranked struct {
-			Rankings []openAIRank `json:"rankings"`
-		}
-		if err := json.Unmarshal([]byte(openAIText(envelope)), &ranked); err != nil {
-			return nil, fmt.Errorf("invalid OpenAI ranking output: %w", err)
-		}
-		if len(ranked.Rankings) == 0 {
-			return nil, errors.New("OpenAI returned no rankings")
-		}
-		return ranked.Rankings, nil
-	}
-	return nil, lastErr
-}
-
 func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string, items []discoveryItem) ([]discoveryItem, bool) {
-	if settings["discoveries_openai_enabled"] != "true" || strings.TrimSpace(settings["discoveries_openai_api_key"]) == "" || len(items) == 0 {
+	if settings["discoveries_ai_enabled"] != "true" || len(items) == 0 {
 		return items, false
 	}
 	limit := discoveryInt(settings, "discoveries_openai_candidate_limit", 150)
@@ -479,16 +339,17 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 	maxInputChars := min(max(discoveryInt(settings, "discoveries_openai_max_input_chars", 180000), 50000), 500000)
 	batches, payloads := discoveryAIBatches(items, settings, limit, batchSize, maxInputChars)
 	pools := strings.TrimSpace(settings["discoveries_pools"])
-	model := strings.TrimSpace(settings["discoveries_openai_model"])
+	model := strings.TrimSpace(settings["discoveries_ollama_model"])
 	if model == "" {
-		model = "gpt-5-mini"
+		model = "qwen3:8b"
 	}
+	providerFingerprint := strings.Join([]string{settings["discoveries_ollama_url"], model, settings["discoveries_openai_fallback_enabled"], settings["discoveries_openai_model"]}, "\n")
 	fingerprints := make(map[int64]string, limit)
 	releaseIDs := make([]int64, 0, limit)
 	for _, batch := range batches {
 		for _, candidate := range batch {
 			data, _ := json.Marshal(candidate)
-			sum := sha256.Sum256(append([]byte(model+"\n"+pools+"\n"+settings["discoveries_subtitle_analysis_enabled"]+"\n"), data...))
+			sum := sha256.Sum256(append([]byte(providerFingerprint+"\n"+pools+"\n"+settings["discoveries_subtitle_analysis_enabled"]+"\n"), data...))
 			fingerprints[candidate.ID] = fmt.Sprintf("%x", sum)
 			releaseIDs = append(releaseIDs, candidate.ID)
 		}
@@ -507,7 +368,6 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 		persistedIDs[rank.ID] = true
 	}
 	missingBatches := make([][]discoveryAICandidate, 0, len(batches))
-	missingPayloads := make([][]byte, 0, len(batches))
 	for _, batch := range batches {
 		missing := make([]discoveryAICandidate, 0, len(batch))
 		for _, candidate := range batch {
@@ -516,15 +376,14 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 			}
 		}
 		if len(missing) > 0 {
-			payload, _ := json.Marshal(missing)
-			missingBatches, missingPayloads = append(missingBatches, missing), append(missingPayloads, payload)
+			missingBatches = append(missingBatches, missing)
 		}
 	}
 	if len(missingBatches) == 0 {
 		return applyOpenAIRanks(items, persisted), len(persisted) > 0
 	}
 	hasher := sha256.New()
-	hasher.Write([]byte(strings.Join([]string{settings["discoveries_openai_model"], pools, settings["discoveries_subtitle_analysis_enabled"], strconv.Itoa(batchSize), strconv.Itoa(maxInputChars)}, "\n")))
+	hasher.Write([]byte(strings.Join([]string{providerFingerprint, pools, settings["discoveries_subtitle_analysis_enabled"], strconv.Itoa(batchSize), strconv.Itoa(maxInputChars)}, "\n")))
 	for _, payload := range payloads {
 		hasher.Write(payload)
 	}
@@ -538,7 +397,7 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 		if len(cached.ranks) > 0 && age < discoveryDuration(settings, "discoveries_openai_cache_interval", 6*time.Hour) {
 			return applyOpenAIRanks(items, cached.ranks), true
 		}
-		if len(cached.ranks) == 0 && age < 2*time.Minute {
+		if len(cached.ranks) == 0 && age < 10*time.Second {
 			return applyOpenAIRanks(items, persisted), len(persisted) > 0
 		}
 	}
@@ -555,22 +414,28 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 		discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error = true, len(persisted), limit, ""
 		discoveryAIStatus.Unlock()
 		defer func() { discoveryAIStatus.Lock(); discoveryAIStatus.Running = false; discoveryAIStatus.Unlock() }()
-		schema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"rankings": map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"id": map[string]any{"type": "integer"}, "score": map[string]any{"type": "number"}, "reason": map[string]any{"type": "string"}, "pools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "required": []string{"id", "score", "reason", "pools"}}}}, "required": []string{"rankings"}}
 		combined := slices.Clone(persisted)
 		completed := len(persisted)
 		for index, batch := range missingBatches {
-			prompt := fmt.Sprintf("Rerank these adult-media releases for this user's taste. Orgasm count is a stronger positive signal than play count. Score every candidate from 0 to 100. Use titles, stories, genres and subtitle dialogue to infer themes, but avoid inventing facts. Preserve variety and include occasional exploration. Custom pools:\n%s\nCandidates:\n%s", pools, missingPayloads[index])
-			ranks, err := openAIRankingRequest(settingsCopy, prompt, schema, len(batch))
-			if err != nil {
+			aiCandidates := make([]aidiscovery.Candidate, 0, len(batch))
+			for _, candidate := range batch {
+				aiCandidates = append(aiCandidates, aidiscovery.Candidate{ID: candidate.ID, VideoID: candidate.VideoID, Title: candidate.Title, Story: candidate.Story, Actresses: candidate.Actresses, Genres: candidate.Genres, Studio: candidate.Studio, Local: candidate.Local, Played: candidate.Played, Orgasms: candidate.Orgasms, Subtitle: candidate.Subtitle})
+			}
+			result := s.discoveryAI.Rank(context.Background(), discoveryAIConfig(settingsCopy), aiCandidates, pools)
+			if result.Skipped || len(result.Ranks) == 0 {
 				discoveryAIStatus.Lock()
-				discoveryAIStatus.Error = fmt.Sprintf("Batch %d/%d: %v", index+1, len(missingBatches), err)
+				discoveryAIStatus.Error = fmt.Sprintf("Batch %d/%d: %s", index+1, len(missingBatches), result.Status)
 				discoveryAIStatus.Unlock()
 				return
+			}
+			ranks := make([]openAIRank, 0, len(result.Ranks))
+			for _, rank := range result.Ranks {
+				ranks = append(ranks, openAIRank{ID: rank.ID, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools})
 			}
 			now := time.Now().UTC()
 			durable := make([]domain.DiscoveryAIRank, 0, len(ranks))
 			for _, rank := range ranks {
-				durable = append(durable, domain.DiscoveryAIRank{ReleaseID: rank.ID, Fingerprint: fingerprints[rank.ID], Model: model, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools, GeneratedAt: now})
+				durable = append(durable, domain.DiscoveryAIRank{ReleaseID: rank.ID, Fingerprint: fingerprints[rank.ID], Model: result.Provider + ":" + model, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools, GeneratedAt: now})
 			}
 			if err := s.store.SaveDiscoveryAIRanks(context.Background(), durable); err != nil {
 				discoveryAIStatus.Lock()
@@ -599,6 +464,21 @@ func discoveryFloat(settings map[string]string, key string, fallback float64) fl
 		return fallback
 	}
 	return v
+}
+
+func discoveryAIConfig(settings map[string]string) aidiscovery.Config {
+	return aidiscovery.Config{
+		Enabled:               settings["discoveries_ai_enabled"] == "true",
+		OllamaURL:             strings.TrimSpace(settings["discoveries_ollama_url"]),
+		OllamaModel:           strings.TrimSpace(settings["discoveries_ollama_model"]),
+		RequestTimeout:        time.Duration(min(max(discoveryInt(settings, "discoveries_ollama_request_timeout_seconds", 60), 5), 1800)) * time.Second,
+		HealthTimeout:         time.Duration(min(max(discoveryInt(settings, "discoveries_ollama_health_timeout_seconds", 2), 1), 30)) * time.Second,
+		OpenAIFallbackEnabled: settings["discoveries_openai_fallback_enabled"] == "true",
+		OpenAIAPIKey:          strings.TrimSpace(settings["discoveries_openai_api_key"]),
+		OpenAIBaseURL:         strings.TrimSpace(settings["discoveries_openai_base_url"]),
+		OpenAIModel:           strings.TrimSpace(settings["discoveries_openai_model"]),
+		OpenAITimeout:         time.Duration(min(max(discoveryInt(settings, "discoveries_openai_timeout_seconds", 120), 15), 600)) * time.Second,
+	}
 }
 
 func (s *Server) cachedDiscoveryAffinity(ctx context.Context, settings map[string]string, now time.Time) (affinityProfile, error) {
@@ -1093,7 +973,7 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		discoveryAIStatus.RLock()
 		aiRunning, aiCompleted, aiTotal, aiError := discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error
 		discoveryAIStatus.RUnlock()
-		s.json(w, http.StatusOK, map[string]any{"items": page, "total": total, "offset": offset, "has_more": offset+len(page) < total, "generated_at": discoveryResultCache.created, "mode": cachedMode, "pools": cachedPools, "openai": map[string]any{"enabled": settings["discoveries_openai_enabled"] == "true", "running": aiRunning, "completed": aiCompleted, "total": aiTotal, "error": aiError}})
+		s.json(w, http.StatusOK, map[string]any{"items": page, "total": total, "offset": offset, "has_more": offset+len(page) < total, "generated_at": discoveryResultCache.created, "mode": cachedMode, "pools": cachedPools, "openai": map[string]any{"enabled": settings["discoveries_ai_enabled"] == "true", "running": aiRunning, "completed": aiCompleted, "total": aiTotal, "error": aiError}})
 		return
 	}
 	// Filter/order/page in the database before the expensive recommendation
@@ -1217,5 +1097,5 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	aiRunning, aiCompleted, aiTotal, aiError := discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error
 	discoveryAIStatus.RUnlock()
 	nextOffset := offset + len(releases)
-	s.json(w, http.StatusOK, map[string]any{"items": items, "total": total, "offset": offset, "next_offset": nextOffset, "has_more": nextOffset < total, "generated_at": now, "mode": mode, "pools": poolNames, "selected_pool": pool, "pool_keywords": pools[pool], "openai": map[string]any{"enabled": settings["discoveries_openai_enabled"] == "true", "running": aiRunning, "completed": aiCompleted, "total": aiTotal, "error": aiError}})
+	s.json(w, http.StatusOK, map[string]any{"items": items, "total": total, "offset": offset, "next_offset": nextOffset, "has_more": nextOffset < total, "generated_at": now, "mode": mode, "pools": poolNames, "selected_pool": pool, "pool_keywords": pools[pool], "openai": map[string]any{"enabled": settings["discoveries_ai_enabled"] == "true", "running": aiRunning, "completed": aiCompleted, "total": aiTotal, "error": aiError}})
 }
