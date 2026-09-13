@@ -499,7 +499,8 @@ func (s *Server) discoveryReleasePage(ctx context.Context, filter domain.Release
 		capacity = 1000
 	}
 	releases := make([]domain.Release, 0, capacity)
-	for offset := 0; maximum <= 0 || len(releases) < maximum; offset += 500 {
+	startOffset := filter.Offset
+	for offset := startOffset; maximum <= 0 || len(releases) < maximum; offset += 500 {
 		filter.Limit = 500
 		if maximum > 0 {
 			filter.Limit = min(500, maximum-len(releases))
@@ -667,17 +668,15 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	for key, values := range q {
 		cacheQuery[key] = append([]string(nil), values...)
 	}
-	cacheQuery.Del("offset")
 	cacheQuery.Del("limit")
 	settingsJSON, _ := json.Marshal(settings)
 	cacheKey := sha256.Sum256(append([]byte(cacheQuery.Encode()+"\n"), settingsJSON...))
 	discoveryResultCache.RLock()
 	cachedItems, cachedMode, cachedPools := discoveryResultCache.items, discoveryResultCache.mode, discoveryResultCache.pools
-	cacheTTL := 5 * time.Minute
-	if settings["discoveries_openai_enabled"] == "true" && cachedMode != "openai" {
-		cacheTTL = 2 * time.Second
-	}
-	cacheHit := discoveryResultCache.key == cacheKey && time.Since(discoveryResultCache.created) < cacheTTL
+	// Page responses are deliberately not reused as if they represented the
+	// complete result set. Affinity, subtitle and OpenAI work have their own
+	// caches below; the database page itself is cheap and always current.
+	cacheHit := false
 	discoveryResultCache.RUnlock()
 	if cacheHit {
 		total := len(cachedItems)
@@ -691,10 +690,10 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		s.json(w, http.StatusOK, map[string]any{"items": page, "total": total, "offset": offset, "has_more": offset+len(page) < total, "generated_at": discoveryResultCache.created, "mode": cachedMode, "pools": cachedPools, "openai": map[string]any{"enabled": settings["discoveries_openai_enabled"] == "true", "running": aiRunning, "completed": aiCompleted, "total": aiTotal, "error": aiError}})
 		return
 	}
-	// Score and sort the complete matching set, then paginate the response.
-	// This removes the old 1,000/5,000 ceiling which produced incorrect totals
-	// and global sorting.
-	candidateLimit := 0 // zero means every matching release
+	// Filter/order/page in the database before the expensive recommendation
+	// enrichment. Every catalog row remains reachable without blocking the UI
+	// on a full-library scoring pass.
+	candidateLimit := requestedLimit
 	filter := domain.ReleaseFilter{Search: q.Get("search"), SearchWildcards: q.Get("search_wildcards") == "true", Category: q.Get("filter_category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Sort: q.Get("sort"), Direction: q.Get("direction")}
 	if filter.Sort == "" || filter.Sort == "score" {
 		filter.Sort, filter.Direction = "release", "desc"
@@ -708,6 +707,12 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		filter.IgnoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
 		filter.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
 		filter.UsePreferred = len(filter.IgnoreTags) > 0 || len(filter.IgnoreTitles) > 0
+	}
+	filter.Offset = offset
+	fullTotal, err := s.store.ReleasesCount(r.Context(), filter)
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	releases, err := s.discoveryReleasePage(r.Context(), filter, candidateLimit)
 	if err != nil {
@@ -841,15 +846,8 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		})
 		items = diversifyDiscoveries(items, discoveryFloat(settings, "discoveries_diversity_percent", 25))
 	}
-	total := len(items)
+	total := fullTotal
 	allItems := items
-	limit := requestedLimit
-	if offset >= len(items) {
-		items = []discoveryItem{}
-	} else {
-		end := min(offset+limit, len(items))
-		items = items[offset:end]
-	}
 	mode := "deterministic"
 	if enhanced {
 		mode = "openai"
@@ -865,5 +863,6 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	discoveryAIStatus.RLock()
 	aiRunning, aiCompleted, aiTotal, aiError := discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error
 	discoveryAIStatus.RUnlock()
-	s.json(w, http.StatusOK, map[string]any{"items": items, "total": total, "offset": offset, "has_more": offset+len(items) < total, "generated_at": now, "mode": mode, "pools": poolNames, "openai": map[string]any{"enabled": settings["discoveries_openai_enabled"] == "true", "running": aiRunning, "completed": aiCompleted, "total": aiTotal, "error": aiError}})
+	nextOffset := offset + len(releases)
+	s.json(w, http.StatusOK, map[string]any{"items": items, "total": total, "offset": offset, "next_offset": nextOffset, "has_more": nextOffset < total, "generated_at": now, "mode": mode, "pools": poolNames, "openai": map[string]any{"enabled": settings["discoveries_openai_enabled"] == "true", "running": aiRunning, "completed": aiCompleted, "total": aiTotal, "error": aiError}})
 }

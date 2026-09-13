@@ -99,6 +99,7 @@ type Store interface {
 	SavePipelineLog(context.Context, domain.PipelineLog) (domain.PipelineLog, error)
 	PipelineLogs(context.Context, int64) ([]domain.PipelineLog, error)
 	Notifications(context.Context, string) ([]domain.Notification, error)
+	NotificationsPage(context.Context, string, domain.ReleaseFilter, bool, string, string, int, int) (domain.NotificationPage, error)
 	DeleteNotifications(context.Context, string, []int64) (int64, error)
 	CreateNotification(context.Context, int64, string, string) (bool, error)
 	WatchlistSynced(context.Context, int64, string, string) (bool, error)
@@ -3666,6 +3667,85 @@ func (s *SQLite) Notifications(ctx context.Context, kind string) ([]domain.Notif
 		}
 	}
 	return out, nil
+}
+
+func (s *SQLite) NotificationsPage(ctx context.Context, kind string, filter domain.ReleaseFilter, hideMonitored bool, sortField, direction string, limit, offset int) (domain.NotificationPage, error) {
+	limit = min(max(limit, 1), 500)
+	offset = max(offset, 0)
+	where, args := releaseFilterWhere(s.dialect, filter)
+	if kind != "" {
+		where += ` AND n.type=?`
+		args = append(args, kind)
+	}
+	if hideMonitored {
+		where += ` AND r.monitor_download=FALSE`
+	}
+	from := ` FROM notifications n JOIN releases r ON r.id=n.release_id JOIN sites s ON s.id=r.site_id`
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*)`+from+where, args...).Scan(&total); err != nil {
+		return domain.NotificationPage{}, err
+	}
+	order := `n.created_at`
+	switch strings.ToLower(strings.TrimSpace(sortField)) {
+	case "release":
+		order = `r.release_date`
+	case "name":
+		order = `LOWER(r.title)`
+	case "id":
+		order = `LOWER(r.video_id)`
+	}
+	dir := `DESC`
+	if strings.EqualFold(direction, "asc") {
+		dir = `ASC`
+	}
+	pageArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT n.id,n.release_id,n.type,n.message,n.created_at`+from+where+` ORDER BY `+order+` `+dir+`,n.created_at `+dir+` LIMIT ? OFFSET ?`, pageArgs...)
+	if err != nil {
+		return domain.NotificationPage{}, err
+	}
+	defer rows.Close()
+	items := make([]domain.Notification, 0, min(limit, total))
+	releaseIDs := make([]int64, 0, min(limit, total))
+	for rows.Next() {
+		var item domain.Notification
+		if err := rows.Scan(&item.ID, &item.ReleaseID, &item.Type, &item.Message, &item.CreatedAt); err != nil {
+			return domain.NotificationPage{}, err
+		}
+		items = append(items, item)
+		releaseIDs = append(releaseIDs, item.ReleaseID)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.NotificationPage{}, err
+	}
+	if len(releaseIDs) > 0 {
+		placeholders, releaseArgs := make([]string, len(releaseIDs)), make([]any, len(releaseIDs))
+		for i, releaseID := range releaseIDs {
+			placeholders[i], releaseArgs[i] = "?", releaseID
+		}
+		releaseRows, err := s.db.QueryContext(ctx, releaseSelect(s.dialect)+` WHERE r.id IN (`+strings.Join(placeholders, ",")+`)`, releaseArgs...)
+		if err != nil {
+			return domain.NotificationPage{}, err
+		}
+		releases := make(map[int64]domain.Release, len(releaseIDs))
+		for releaseRows.Next() {
+			release, err := scanRelease(releaseRows)
+			if err != nil {
+				releaseRows.Close()
+				return domain.NotificationPage{}, err
+			}
+			releases[release.ID] = release
+		}
+		if err := releaseRows.Close(); err != nil {
+			return domain.NotificationPage{}, err
+		}
+		for i := range items {
+			if release, ok := releases[items[i].ReleaseID]; ok {
+				copy := release
+				items[i].Release = &copy
+			}
+		}
+	}
+	return domain.NotificationPage{Items: items, Total: total}, nil
 }
 func (s *SQLite) DeleteNotifications(ctx context.Context, kind string, ids []int64) (int64, error) {
 	if strings.TrimSpace(kind) == "" {

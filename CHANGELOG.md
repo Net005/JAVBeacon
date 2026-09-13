@@ -7,6 +7,27 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.178] - 2026-09-13
+
+### Changed
+
+- Notifications now use database-backed filtering, sorting, totals, and
+  pagination, avoiding multi-megabyte full-notification downloads while
+  preserving access to every matching notification.
+- Discoveries now filter and page the complete release catalog in the database
+  before applying recommendation, subtitle, and OpenAI enrichment to the
+  visible window, so the page becomes usable without first scoring the entire
+  library.
+- Notification metadata suggestions continue to search the complete release
+  library instead of being limited to values on the current page.
+
+### Fixed
+
+- Reworked the Notifications filter toolbar into responsive rows so controls
+  remain inside the viewport on desktop, iPad, and smaller screens.
+- Fixed the Discoveries loading state appearing stuck for large libraries by
+  removing the synchronous full-catalog scoring pass from page requests.
+
 ## [1.0.177] - 2026-09-13
 
 ### Added
