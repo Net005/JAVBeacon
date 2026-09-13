@@ -54,6 +54,7 @@ var discoverySubtitleCache = struct {
 	sync.RWMutex
 	created      time.Time
 	availability map[int64]bool
+	checked      map[int64]bool
 }{}
 
 type discoveryRankCacheEntry struct {
@@ -340,17 +341,53 @@ func subtitleAvailabilityWithProgress(releases []domain.Release, progress func(i
 
 func cachedSubtitleAvailability(releases []domain.Release, ttl time.Duration) map[int64]bool {
 	discoverySubtitleCache.RLock()
-	created, cached := discoverySubtitleCache.created, discoverySubtitleCache.availability
+	created, cached, checked := discoverySubtitleCache.created, maps.Clone(discoverySubtitleCache.availability), maps.Clone(discoverySubtitleCache.checked)
 	discoverySubtitleCache.RUnlock()
-	if cached != nil && time.Since(created) < ttl {
+	if cached == nil || time.Since(created) >= ttl {
+		cached = map[int64]bool{}
+		checked = map[int64]bool{}
+	}
+	missing := make([]domain.Release, 0, len(releases))
+	for _, release := range releases {
+		if !checked[release.ID] {
+			missing = append(missing, release)
+		}
+	}
+	if len(missing) == 0 {
 		return cached
 	}
-	availability := subtitleAvailability(releases)
+	for releaseID, present := range subtitleAvailability(missing) {
+		cached[releaseID] = present
+	}
+	for _, release := range missing {
+		checked[release.ID] = true
+	}
 	discoverySubtitleCache.Lock()
 	discoverySubtitleCache.created = time.Now()
-	discoverySubtitleCache.availability = availability
+	discoverySubtitleCache.availability = cached
+	discoverySubtitleCache.checked = checked
 	discoverySubtitleCache.Unlock()
-	return availability
+	return cached
+}
+
+func (s *Server) discoveryReleasePage(ctx context.Context, filter domain.ReleaseFilter, maximum int) ([]domain.Release, error) {
+	if maximum <= 0 {
+		return nil, nil
+	}
+	releases := make([]domain.Release, 0, maximum)
+	for offset := 0; len(releases) < maximum; offset += 500 {
+		filter.Limit = min(500, maximum-len(releases))
+		filter.Offset = offset
+		page, err := s.store.Releases(ctx, filter)
+		if err != nil {
+			return nil, err
+		}
+		releases = append(releases, page...)
+		if len(page) < filter.Limit {
+			break
+		}
+	}
+	return releases, nil
 }
 
 func subtitleFiles(release domain.Release) []string {
@@ -447,38 +484,44 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		s.json(w, http.StatusOK, map[string]any{"items": []discoveryItem{}, "total": 0, "disabled": true})
 		return
 	}
-	releases := make([]domain.Release, 0, 1000)
 	q := r.URL.Query()
-	for offset := 0; ; offset += 500 {
-		filter := domain.ReleaseFilter{Search: q.Get("search"), SearchWildcards: q.Get("search_wildcards") == "true", Category: q.Get("filter_category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Sort: q.Get("sort"), Direction: q.Get("direction"), Limit: 500, Offset: offset}
-		if filter.Sort == "" || filter.Sort == "score" {
-			filter.Sort = "release"
-			filter.Direction = "desc"
-		}
-		if !filter.ShowNonPreferred {
-			filter.IgnoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
-			filter.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
-			filter.UsePreferred = len(filter.IgnoreTags) > 0 || len(filter.IgnoreTitles) > 0
-		}
-		page, err := s.store.Releases(r.Context(), filter)
-		if err != nil {
-			s.problem(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		releases = append(releases, page...)
-		if len(page) < 500 {
-			break
-		}
+	category := strings.TrimSpace(q.Get("category"))
+	requestedLimit := discoveryInt(map[string]string{"limit": q.Get("limit")}, "limit", discoveryInt(settings, "discoveries_result_limit", 100))
+	requestedLimit = min(max(requestedLimit, 1), 500)
+	offset := max(discoveryInt(map[string]string{"offset": q.Get("offset")}, "offset", 0), 0)
+	candidateLimit := min(max(requestedLimit*20, 1000), 5000)
+	filter := domain.ReleaseFilter{Search: q.Get("search"), SearchWildcards: q.Get("search_wildcards") == "true", Category: q.Get("filter_category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Sort: q.Get("sort"), Direction: q.Get("direction")}
+	if filter.Sort == "" || filter.Sort == "score" {
+		filter.Sort, filter.Direction = "release", "desc"
+	}
+	if category == "new" {
+		filter.HideLocal = true
+	} else if category == "ready" || category == "unwatched" || category == "rewatch" || category == "needs_subtitles" {
+		filter.Status = "local"
+	}
+	if !filter.ShowNonPreferred {
+		filter.IgnoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
+		filter.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
+		filter.UsePreferred = len(filter.IgnoreTags) > 0 || len(filter.IgnoreTitles) > 0
+	}
+	releases, err := s.discoveryReleasePage(r.Context(), filter, candidateLimit)
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	now := time.Now().UTC()
 	libraryOrder := make(map[int64]int, len(releases))
 	for index, release := range releases {
 		libraryOrder[release.ID] = index
 	}
-	profile := buildAffinity(releases, settings, now)
+	profileReleases, err := s.discoveryReleasePage(r.Context(), domain.ReleaseFilter{StashWatched: true, Sort: "updated", Direction: "desc", ShowNonPreferred: true}, 5000)
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	profile := buildAffinity(profileReleases, settings, now)
 	subtitlesByRelease := cachedSubtitleAvailability(releases, discoveryDuration(settings, "discoveries_subtitle_refresh_interval", 6*time.Hour))
 	rewatchDays := discoveryInt(settings, "discoveries_rewatch_days", 90)
-	category := strings.TrimSpace(r.URL.Query().Get("category"))
 	pool := strings.TrimSpace(r.URL.Query().Get("pool"))
 	pools := discoveryPools(settings["discoveries_pools"])
 	subtitles := strings.TrimSpace(r.URL.Query().Get("subtitles"))
@@ -547,7 +590,9 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	if requestedSort != "" && requestedSort != "score" && category != "random" {
 		sort.SliceStable(items, func(i, j int) bool { return libraryOrder[items[i].ID] < libraryOrder[items[j].ID] })
 	} else if category == "random" {
-		rng := rand.New(rand.NewSource(now.UnixNano()))
+		// Keep the daily surprise order stable across progressive page requests;
+		// a fresh seed per request would duplicate or skip cards while scrolling.
+		rng := rand.New(rand.NewSource(now.Truncate(24 * time.Hour).Unix()))
 		rng.Shuffle(len(items), func(i, j int) { items[i], items[j] = items[j], items[i] })
 	} else if category == "new" {
 		sort.SliceStable(items, func(i, j int) bool { return items[i].ReleaseDate > items[j].ReleaseDate })
@@ -561,15 +606,12 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		items = diversifyDiscoveries(items, discoveryFloat(settings, "discoveries_diversity_percent", 25))
 	}
 	total := len(items)
-	limit := discoveryInt(settings, "discoveries_result_limit", 100)
-	if requested := discoveryInt(map[string]string{"limit": r.URL.Query().Get("limit")}, "limit", limit); requested > 0 {
-		limit = requested
-	}
-	if limit > 500 {
-		limit = 500
-	}
-	if len(items) > limit {
-		items = items[:limit]
+	limit := requestedLimit
+	if offset >= len(items) {
+		items = []discoveryItem{}
+	} else {
+		end := min(offset+limit, len(items))
+		items = items[offset:end]
 	}
 	mode := "deterministic"
 	if enhanced {
@@ -580,5 +622,5 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		poolNames = append(poolNames, name)
 	}
 	sort.Strings(poolNames)
-	s.json(w, http.StatusOK, map[string]any{"items": items, "total": total, "generated_at": now, "mode": mode, "pools": poolNames})
+	s.json(w, http.StatusOK, map[string]any{"items": items, "total": total, "offset": offset, "has_more": offset+len(items) < total && offset+len(items) < candidateLimit, "generated_at": now, "mode": mode, "pools": poolNames})
 }
