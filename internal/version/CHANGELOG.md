@@ -7,6 +7,29 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.172] - 2026-09-13
+
+### Added
+
+- Added background Discoveries synchronization with confirmation before a
+  manual refresh, live stage and progress reporting, persistent last-sync and
+  next-scheduled-sync times, and independently configurable recommendation,
+  subtitle-index, and OpenAI-cache timing.
+- Added Release Library-style filtering to Discoveries, including wildcard
+  search, metadata entries, structured conditions, hide-local and ignored-item
+  toggles, and configurable sorting with persistent filter state.
+- Added Release Library-style structured conditions to Notifications, plus
+  per-tab Hide local and Hide monitored controls. Notification tab, filters,
+  page size, sorting, and sort direction now persist across browser and app
+  restarts.
+
+### Changed
+
+- Discoveries now returns local recommendations immediately while optional
+  OpenAI enrichment runs in the background, and inventories each media folder
+  only once when refreshing subtitle availability.
+- Removed the bulk Open JAVLibrary + Sukebei action from Notifications.
+
 ## [1.0.171] - 2026-09-13
 
 ### Added

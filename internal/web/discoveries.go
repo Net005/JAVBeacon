@@ -2,10 +2,12 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"math/rand"
 	"net/http"
@@ -47,6 +49,12 @@ var discoveryRankCache = struct {
 	sync.Mutex
 	entries map[[32]byte]discoveryRankCacheEntry
 }{entries: map[[32]byte]discoveryRankCacheEntry{}}
+
+var discoverySubtitleCache = struct {
+	sync.RWMutex
+	created      time.Time
+	availability map[int64]bool
+}{}
 
 type discoveryRankCacheEntry struct {
 	created time.Time
@@ -119,7 +127,7 @@ func openAIText(response map[string]any) string {
 	return ""
 }
 
-func enhanceDiscoveries(r *http.Request, settings map[string]string, items []discoveryItem) ([]discoveryItem, bool) {
+func enhanceDiscoveries(_ *http.Request, settings map[string]string, items []discoveryItem) ([]discoveryItem, bool) {
 	if settings["discoveries_openai_enabled"] != "true" || strings.TrimSpace(settings["discoveries_openai_api_key"]) == "" || len(items) == 0 {
 		return items, false
 	}
@@ -158,49 +166,65 @@ func enhanceDiscoveries(r *http.Request, settings map[string]string, items []dis
 	discoveryRankCache.Lock()
 	cached, cacheHit := discoveryRankCache.entries[cacheKey]
 	discoveryRankCache.Unlock()
-	if cacheHit && time.Since(cached.created) < 6*time.Hour {
-		return applyOpenAIRanks(items, cached.ranks), true
+	if cacheHit {
+		age := time.Since(cached.created)
+		if len(cached.ranks) > 0 && age < discoveryDuration(settings, "discoveries_openai_cache_interval", 6*time.Hour) {
+			return applyOpenAIRanks(items, cached.ranks), true
+		}
+		if len(cached.ranks) == 0 && age < 2*time.Minute {
+			return items, false
+		}
 	}
+	// An enrichment cache miss must never hold the Discoveries page open on an
+	// external API. Return deterministic results immediately and populate the
+	// cache in the background; a later refresh automatically uses the enhanced
+	// ranking.
 	prompt := fmt.Sprintf("Rerank these adult-media releases for this user's taste. Orgasm count is a stronger positive signal than play count. Use titles, stories, genres and subtitle dialogue to infer themes, but avoid inventing facts. Preserve variety and include occasional exploration. Custom pools:\n%s\nCandidates:\n%s", pools, candidateJSON)
-	schema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"rankings": map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"id": map[string]any{"type": "integer"}, "score": map[string]any{"type": "number"}, "reason": map[string]any{"type": "string"}, "pools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "required": []string{"id", "score", "reason", "pools"}}}}, "required": []string{"rankings"}}
-	model := strings.TrimSpace(settings["discoveries_openai_model"])
-	if model == "" {
-		model = "gpt-5-mini"
-	}
-	body, _ := json.Marshal(map[string]any{"model": model, "input": prompt, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "discovery_rankings", "strict": true, "schema": schema}}})
-	baseURL := strings.TrimRight(strings.TrimSpace(settings["discoveries_openai_base_url"]), "/")
-	if baseURL == "" {
-		baseURL = "https://api.openai.com/v1"
-	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, baseURL+"/responses", bytes.NewReader(body))
-	if err != nil {
-		return items, false
-	}
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(settings["discoveries_openai_api_key"]))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 45 * time.Second}).Do(req)
-	if err != nil {
-		return items, false
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return items, false
-	}
-	var envelope map[string]any
-	if json.Unmarshal(data, &envelope) != nil {
-		return items, false
-	}
-	var ranked struct {
-		Rankings []openAIRank `json:"rankings"`
-	}
-	if json.Unmarshal([]byte(openAIText(envelope)), &ranked) != nil || len(ranked.Rankings) == 0 {
-		return items, false
-	}
+	settingsCopy := maps.Clone(settings)
 	discoveryRankCache.Lock()
-	discoveryRankCache.entries[cacheKey] = discoveryRankCacheEntry{created: time.Now(), ranks: ranked.Rankings}
+	discoveryRankCache.entries[cacheKey] = discoveryRankCacheEntry{created: time.Now()}
 	discoveryRankCache.Unlock()
-	return applyOpenAIRanks(items, ranked.Rankings), true
+	go func() {
+		schema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"rankings": map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"id": map[string]any{"type": "integer"}, "score": map[string]any{"type": "number"}, "reason": map[string]any{"type": "string"}, "pools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "required": []string{"id", "score", "reason", "pools"}}}}, "required": []string{"rankings"}}
+		model := strings.TrimSpace(settingsCopy["discoveries_openai_model"])
+		if model == "" {
+			model = "gpt-5-mini"
+		}
+		body, _ := json.Marshal(map[string]any{"model": model, "input": prompt, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "discovery_rankings", "strict": true, "schema": schema}}})
+		baseURL := strings.TrimRight(strings.TrimSpace(settingsCopy["discoveries_openai_base_url"]), "/")
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/responses", bytes.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(settingsCopy["discoveries_openai_api_key"]))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := (&http.Client{Timeout: 45 * time.Second}).Do(req)
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return
+		}
+		var envelope map[string]any
+		if json.Unmarshal(data, &envelope) != nil {
+			return
+		}
+		var ranked struct {
+			Rankings []openAIRank `json:"rankings"`
+		}
+		if json.Unmarshal([]byte(openAIText(envelope)), &ranked) != nil || len(ranked.Rankings) == 0 {
+			return
+		}
+		discoveryRankCache.Lock()
+		discoveryRankCache.entries[cacheKey] = discoveryRankCacheEntry{created: time.Now(), ranks: ranked.Rankings}
+		discoveryRankCache.Unlock()
+	}()
+	return items, false
 }
 
 func discoveryFloat(settings map[string]string, key string, fallback float64) float64 {
@@ -217,6 +241,14 @@ func discoveryInt(settings map[string]string, key string, fallback int) int {
 		return fallback
 	}
 	return v
+}
+
+func discoveryDuration(settings map[string]string, key string, fallback time.Duration) time.Duration {
+	duration, err := domain.ParseScheduleDuration(settings[key])
+	if err != nil || duration < time.Minute {
+		return fallback
+	}
+	return duration
 }
 
 func addAffinity(values []string, weight float64, target map[string]float64) {
@@ -263,6 +295,62 @@ func affinityScore(values []string, weights map[string]float64) (float64, string
 
 func hasSubtitleFile(release domain.Release) bool {
 	return len(subtitleFiles(release)) > 0
+}
+
+// subtitleAvailability inventories each media directory once per Discoveries
+// request. A large Stash library commonly keeps hundreds or thousands of
+// scenes in one folder; calling os.ReadDir separately for every release made
+// the initial page request appear to hang on network-backed libraries.
+func subtitleAvailability(releases []domain.Release) map[int64]bool {
+	return subtitleAvailabilityWithProgress(releases, nil)
+}
+
+func subtitleAvailabilityWithProgress(releases []domain.Release, progress func(int)) map[int64]bool {
+	directories := map[string][]os.DirEntry{}
+	out := make(map[int64]bool, len(releases))
+	for index, release := range releases {
+		path := strings.TrimSpace(release.StashFilePath)
+		if path == "" {
+			if progress != nil && (index%25 == 0 || index == len(releases)-1) {
+				progress(index + 1)
+			}
+			continue
+		}
+		base := strings.TrimSuffix(path, filepath.Ext(path))
+		directory := filepath.Dir(base)
+		entries, loaded := directories[directory]
+		if !loaded {
+			entries, _ = os.ReadDir(directory)
+			directories[directory] = entries
+		}
+		prefix := filepath.Base(base)
+		for _, entry := range entries {
+			ext := strings.ToLower(filepath.Ext(entry.Name()))
+			if !entry.IsDir() && strings.HasPrefix(entry.Name(), prefix) && (ext == ".srt" || ext == ".ass" || ext == ".ssa" || ext == ".vtt") {
+				out[release.ID] = true
+				break
+			}
+		}
+		if progress != nil && (index%25 == 0 || index == len(releases)-1) {
+			progress(index + 1)
+		}
+	}
+	return out
+}
+
+func cachedSubtitleAvailability(releases []domain.Release, ttl time.Duration) map[int64]bool {
+	discoverySubtitleCache.RLock()
+	created, cached := discoverySubtitleCache.created, discoverySubtitleCache.availability
+	discoverySubtitleCache.RUnlock()
+	if cached != nil && time.Since(created) < ttl {
+		return cached
+	}
+	availability := subtitleAvailability(releases)
+	discoverySubtitleCache.Lock()
+	discoverySubtitleCache.created = time.Now()
+	discoverySubtitleCache.availability = availability
+	discoverySubtitleCache.Unlock()
+	return availability
 }
 
 func subtitleFiles(release domain.Release) []string {
@@ -360,11 +448,18 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	releases := make([]domain.Release, 0, 1000)
+	q := r.URL.Query()
 	for offset := 0; ; offset += 500 {
-		filter := domain.ReleaseFilter{Sort: "release", Direction: "desc", Limit: 500, Offset: offset}
-		filter.IgnoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
-		filter.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
-		filter.UsePreferred = len(filter.IgnoreTags) > 0 || len(filter.IgnoreTitles) > 0
+		filter := domain.ReleaseFilter{Search: q.Get("search"), SearchWildcards: q.Get("search_wildcards") == "true", Category: q.Get("filter_category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Sort: q.Get("sort"), Direction: q.Get("direction"), Limit: 500, Offset: offset}
+		if filter.Sort == "" || filter.Sort == "score" {
+			filter.Sort = "release"
+			filter.Direction = "desc"
+		}
+		if !filter.ShowNonPreferred {
+			filter.IgnoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
+			filter.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
+			filter.UsePreferred = len(filter.IgnoreTags) > 0 || len(filter.IgnoreTitles) > 0
+		}
 		page, err := s.store.Releases(r.Context(), filter)
 		if err != nil {
 			s.problem(w, http.StatusInternalServerError, err.Error())
@@ -376,10 +471,14 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	now := time.Now().UTC()
+	libraryOrder := make(map[int64]int, len(releases))
+	for index, release := range releases {
+		libraryOrder[release.ID] = index
+	}
 	profile := buildAffinity(releases, settings, now)
+	subtitlesByRelease := cachedSubtitleAvailability(releases, discoveryDuration(settings, "discoveries_subtitle_refresh_interval", 6*time.Hour))
 	rewatchDays := discoveryInt(settings, "discoveries_rewatch_days", 90)
 	category := strings.TrimSpace(r.URL.Query().Get("category"))
-	query := r.URL.Query().Get("q")
 	pool := strings.TrimSpace(r.URL.Query().Get("pool"))
 	pools := discoveryPools(settings["discoveries_pools"])
 	subtitles := strings.TrimSpace(r.URL.Query().Get("subtitles"))
@@ -387,9 +486,6 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	for _, release := range releases {
 		itemCategory := discoveryCategory(release, rewatchDays, now)
 		if category != "" && category != "all" && category != "for_you" && category != "random" && category != itemCategory && !(category == "ready" && itemCategory == "unwatched") && !(category == "needs_subtitles" && release.Local) {
-			continue
-		}
-		if !discoveryTextMatches(release, query) {
 			continue
 		}
 		if keywords := pools[pool]; pool != "" {
@@ -404,7 +500,7 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		hasSubtitle := hasSubtitleFile(release)
+		hasSubtitle := subtitlesByRelease[release.ID]
 		if subtitles == "yes" && !hasSubtitle || subtitles == "no" && hasSubtitle || category == "ready" && !hasSubtitle || category == "needs_subtitles" && hasSubtitle {
 			continue
 		}
@@ -447,7 +543,10 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	if category != "random" && category != "new" {
 		items, enhanced = enhanceDiscoveries(r, settings, items)
 	}
-	if category == "random" {
+	requestedSort := strings.TrimSpace(q.Get("sort"))
+	if requestedSort != "" && requestedSort != "score" && category != "random" {
+		sort.SliceStable(items, func(i, j int) bool { return libraryOrder[items[i].ID] < libraryOrder[items[j].ID] })
+	} else if category == "random" {
 		rng := rand.New(rand.NewSource(now.UnixNano()))
 		rng.Shuffle(len(items), func(i, j int) { items[i], items[j] = items[j], items[i] })
 	} else if category == "new" {
