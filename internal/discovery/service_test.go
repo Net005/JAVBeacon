@@ -139,6 +139,58 @@ func TestQwenInvalidJSONFallbackDisabled(t *testing.T) {
 	}
 }
 
+func TestInvalidQwenResponseIsNeverPersisted(t *testing.T) {
+	var openAICalls atomic.Int32
+	ollama := ollamaServer(t, []string{"qwen3:8b"}, http.StatusOK, `{"rankings":[{"id":7,"score":40,"reason":"Please provide more context so I can help you.","pools":[]}]}`, 0)
+	defer ollama.Close()
+	openAI := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { openAICalls.Add(1) }))
+	defer openAI.Close()
+	cfg := baseConfig(ollama.URL)
+	cfg.OpenAIBaseURL = openAI.URL
+	result := New(nil).Rank(context.Background(), cfg, testCandidates(), "")
+	if !result.Skipped || len(result.Ranks) != 0 || openAICalls.Load() != 0 {
+		t.Fatalf("invalid Qwen output escaped validation: %+v calls=%d", result, openAICalls.Load())
+	}
+}
+
+func TestInvalidQwenResponseMayFallbackOnlyWhenOllamaWasReachable(t *testing.T) {
+	ollama := ollamaServer(t, []string{"qwen3:8b"}, http.StatusOK, `{"rankings":[{"id":7,"score":40,"reason":"I cannot determine what this means.","pools":[]}]}`, 0)
+	defer ollama.Close()
+	var openAICalls atomic.Int32
+	openAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		openAICalls.Add(1)
+		content := `{"rankings":[{"id":7,"score":86,"reason":"Strong story match with preferred studio signals.","pools":[]}]}`
+		_ = json.NewEncoder(w).Encode(map[string]any{"output": []any{map[string]any{"content": []any{map[string]any{"text": content}}}}})
+	}))
+	defer openAI.Close()
+	cfg := baseConfig(ollama.URL)
+	cfg.OpenAIFallbackEnabled = true
+	cfg.OpenAIAPIKey = "secret"
+	cfg.OpenAIBaseURL = openAI.URL
+	result := New(nil).Rank(context.Background(), cfg, testCandidates(), "")
+	if result.Provider != "openai" || len(result.Ranks) != 1 || openAICalls.Load() != 1 {
+		t.Fatalf("eligible fallback failed: %+v calls=%d", result, openAICalls.Load())
+	}
+}
+
+func TestInvalidOpenAIFallbackResponseIsRejected(t *testing.T) {
+	ollama := ollamaServer(t, []string{"qwen3:8b"}, http.StatusOK, `not json`, 0)
+	defer ollama.Close()
+	openAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		content := `{"rankings":[{"id":7,"score":50,"reason":"The content you provided appears corrupted. Please clarify your request.","pools":[]}]}`
+		_ = json.NewEncoder(w).Encode(map[string]any{"output": []any{map[string]any{"content": []any{map[string]any{"text": content}}}}})
+	}))
+	defer openAI.Close()
+	cfg := baseConfig(ollama.URL)
+	cfg.OpenAIFallbackEnabled = true
+	cfg.OpenAIAPIKey = "secret"
+	cfg.OpenAIBaseURL = openAI.URL
+	result := New(nil).Rank(context.Background(), cfg, testCandidates(), "")
+	if !result.Skipped || len(result.Ranks) != 0 {
+		t.Fatalf("invalid OpenAI output escaped validation: %+v", result)
+	}
+}
+
 func TestQwenEmptyResultFallbackDisabled(t *testing.T) {
 	ollama := ollamaServer(t, []string{"qwen3:8b"}, http.StatusOK, `{"rankings":[]}`, 0)
 	defer ollama.Close()

@@ -504,6 +504,14 @@ treated as an authoritative metadata source. Successful results are stored in
 the JAVBeacon database using an input fingerprint and are regenerated only
 when relevant inputs change.
 
+AI output is decoded with a strict schema and recommendation reasons are
+checked for concise, ranking-specific language before they can be displayed or
+stored. On the first startup for each AI validation-schema version, JAVBeacon
+repairs the AI-rank table by removing malformed rows only. The deleted rows no
+longer have a successful fingerprint and are automatically eligible for the
+next enrichment run; release metadata and deterministic discovery scores are
+not modified.
+
 ### Versioning and releases
 
 JAVBeacon uses semantic versions. `internal/version/VERSION` is the source of

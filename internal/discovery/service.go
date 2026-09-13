@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -63,7 +64,12 @@ func (s *Service) Rank(ctx context.Context, cfg Config, candidates []Candidate, 
 		s.log.Info("Qwen Discovery completed", "candidate_count", len(candidates))
 		return Result{Ranks: ranks, Provider: "ollama", Status: "Qwen Discovery completed"}
 	}
-	s.log.Warn("Qwen inference failed", "error", err)
+	var invalid validationError
+	if errors.As(err, &invalid) {
+		s.log.Warn("AI Discovery: Qwen result rejected", "reason", invalid.kind)
+	} else {
+		s.log.Warn("Qwen inference failed", "error", err)
+	}
 	if !cfg.OpenAIFallbackEnabled {
 		return Result{Skipped: true, Status: "Qwen inference failed; OpenAI fallback disabled"}
 	}

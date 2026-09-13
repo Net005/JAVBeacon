@@ -7,6 +7,29 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.184] - 2026-09-13
+
+### Changed
+
+- Hardened the Qwen/Ollama prompt to operate strictly as an internal ranking
+  component, use subtitle excerpts only as weak supporting evidence, and avoid
+  chatbot replies, clarification requests, subtitle-quality commentary, or
+  prose outside the required JSON.
+- AI rank fingerprints now include validation schema version 2, making older
+  results eligible for regeneration under the safer prompt and validator.
+- Subtitle excerpts sent for AI enrichment now remove duplicate, extremely
+  short, URL, and common credit lines and are truncated on UTF-8 boundaries.
+
+### Fixed
+
+- Strict structured decoding and semantic validation now prevent generic
+  assistant responses, malformed pools, unknown/duplicate candidate IDs,
+  invalid scores, Markdown, and empty or overly long reasons from being shown
+  or persisted as recommendation explanations.
+- Added a one-time, idempotent startup repair that removes malformed persisted
+  AI rankings without changing releases, deterministic discovery data,
+  playback history, orgasm history, tags, or StashApp state.
+
 ## [1.0.183] - 2026-09-13
 
 ### Added

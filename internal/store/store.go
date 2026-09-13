@@ -103,7 +103,9 @@ type Store interface {
 	SaveDiscoveryScores(context.Context, map[int64]float64) error
 	DiscoveryScoreCount(context.Context) (int, error)
 	DiscoveryAIRanks(context.Context, []int64) (map[int64]domain.DiscoveryAIRank, error)
+	AllDiscoveryAIRanks(context.Context) ([]domain.DiscoveryAIRank, error)
 	SaveDiscoveryAIRanks(context.Context, []domain.DiscoveryAIRank) error
+	DeleteDiscoveryAIRanks(context.Context, []int64) (int64, error)
 	DeleteNotifications(context.Context, string, []int64) (int64, error)
 	CreateNotification(context.Context, int64, string, string) (bool, error)
 	WatchlistSynced(context.Context, int64, string, string) (bool, error)
@@ -3819,6 +3821,30 @@ func (s *SQLite) DiscoveryAIRanks(ctx context.Context, releaseIDs []int64) (map[
 	return result, rows.Err()
 }
 
+func (s *SQLite) AllDiscoveryAIRanks(ctx context.Context) ([]domain.DiscoveryAIRank, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT release_id,fingerprint,model,score,reason,pools,generated_at FROM discovery_ai_ranks ORDER BY release_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.DiscoveryAIRank{}
+	for rows.Next() {
+		var rank domain.DiscoveryAIRank
+		var pools string
+		if err := rows.Scan(&rank.ReleaseID, &rank.Fingerprint, &rank.Model, &rank.Score, &rank.Reason, &pools, &rank.GeneratedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(pools), &rank.Pools); err != nil {
+			// Preserve the row for the repair validator, which will reject this
+			// sentinel as structurally invalid rather than silently accepting a
+			// malformed stored pool payload as an empty list.
+			rank.Pools = []string{"\ninvalid stored pool JSON"}
+		}
+		result = append(result, rank)
+	}
+	return result, rows.Err()
+}
+
 func (s *SQLite) SaveDiscoveryAIRanks(ctx context.Context, ranks []domain.DiscoveryAIRank) error {
 	if len(ranks) == 0 {
 		return nil
@@ -3839,6 +3865,27 @@ func (s *SQLite) SaveDiscoveryAIRanks(ctx context.Context, ranks []domain.Discov
 		}
 	}
 	return tx.Commit()
+}
+
+func (s *SQLite) DeleteDiscoveryAIRanks(ctx context.Context, releaseIDs []int64) (int64, error) {
+	if len(releaseIDs) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, 0, len(releaseIDs))
+	args := make([]any, 0, len(releaseIDs))
+	for _, id := range releaseIDs {
+		if id > 0 {
+			placeholders, args = append(placeholders, "?"), append(args, id)
+		}
+	}
+	if len(placeholders) == 0 {
+		return 0, nil
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM discovery_ai_ranks WHERE release_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 func (s *SQLite) DeleteNotifications(ctx context.Context, kind string, ids []int64) (int64, error) {
 	if strings.TrimSpace(kind) == "" {
