@@ -7,6 +7,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.175] - 2026-09-13
+
+### Fixed
+
+- Fixed Discoveries remaining stuck on “Building your recommendations” after
+  synchronization in very large libraries. Recommendation requests now build
+  the taste profile from watched local scenes and score a bounded,
+  filter-aware candidate pool instead of loading every release before
+  returning the first page. Results then load progressively as the user
+  scrolls, matching the Release Library experience.
+
 ## [1.0.174] - 2026-09-13
 
 ### Changed

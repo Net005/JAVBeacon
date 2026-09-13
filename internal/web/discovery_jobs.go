@@ -165,6 +165,7 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 		}
 		discoverySubtitleCache.RLock()
 		availability := maps.Clone(discoverySubtitleCache.availability)
+		checked := maps.Clone(discoverySubtitleCache.checked)
 		discoverySubtitleCache.RUnlock()
 		subtitleDue := fullRefresh || (availability != nil && len(releases) > 0)
 		if subtitleDue {
@@ -180,6 +181,7 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 			})
 			if fullRefresh {
 				availability = changedAvailability
+				checked = make(map[int64]bool, len(releases))
 			} else {
 				for _, release := range releases {
 					delete(availability, release.ID)
@@ -188,9 +190,13 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 					availability[releaseID] = present
 				}
 			}
+			for _, release := range releases {
+				checked[release.ID] = true
+			}
 			discoverySubtitleCache.Lock()
 			discoverySubtitleCache.created = time.Now()
 			discoverySubtitleCache.availability = availability
+			discoverySubtitleCache.checked = checked
 			discoverySubtitleCache.Unlock()
 		} else if availability != nil {
 			discoveryJobs.Lock()
