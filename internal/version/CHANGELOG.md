@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.174] - 2026-09-13
+
+### Changed
+
+- Scheduled Discoveries synchronization now uses a durable change cursor and
+  processes only releases added or updated since its previous successful run.
+  Manual refresh remains an explicit full rebuild, while OpenAI enrichment
+  stays lazy and cache-driven rather than running as part of the schedule.
+
 ## [1.0.173] - 2026-09-13
 
 ### Added

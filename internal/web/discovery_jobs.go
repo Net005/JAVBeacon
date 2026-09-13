@@ -94,16 +94,29 @@ func discoveryJobSnapshot(settings map[string]string) discoveryJobStatus {
 }
 
 func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mode string) error {
+	jobStartedAt := time.Now().UTC()
 	discoveryJobs.Lock()
 	if discoveryJobs.status.Running {
 		discoveryJobs.Unlock()
 		return errors.New("a Discoveries refresh is already running")
 	}
-	discoveryJobs.status = discoveryJobStatus{Running: true, Mode: mode, Stage: "Loading releases", StartedAt: time.Now().UTC()}
+	discoveryJobs.status = discoveryJobStatus{Running: true, Mode: mode, Stage: "Loading changed releases", StartedAt: jobStartedAt}
 	discoveryJobs.Unlock()
 	go func() {
 		jobContext := context.WithoutCancel(ctx)
 		settings, _ := st.Settings(jobContext)
+		cursor, _ := time.Parse(time.RFC3339Nano, settings["discoveries_incremental_cursor_at"])
+		if cursor.IsZero() {
+			// A successful synchronization from versions before the dedicated
+			// cursor was introduced is already a valid incremental baseline.
+			cursor, _ = time.Parse(time.RFC3339Nano, settings["discoveries_last_synced_at"])
+		}
+		fullRefresh := mode == "manual" || cursor.IsZero()
+		if fullRefresh {
+			discoveryJobs.Lock()
+			discoveryJobs.status.Stage = "Loading releases"
+			discoveryJobs.Unlock()
+		}
 		finish := func(err error) {
 			var synchronizedAt time.Time
 			discoveryJobs.Lock()
@@ -119,7 +132,7 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 			}
 			discoveryJobs.Unlock()
 			if !synchronizedAt.IsZero() {
-				if saveErr := st.SaveSettings(jobContext, map[string]string{"discoveries_last_synced_at": synchronizedAt.Format(time.RFC3339Nano)}); saveErr != nil && log != nil {
+				if saveErr := st.SaveSettings(jobContext, map[string]string{"discoveries_last_synced_at": synchronizedAt.Format(time.RFC3339Nano), "discoveries_incremental_cursor_at": jobStartedAt.Format(time.RFC3339Nano)}); saveErr != nil && log != nil {
 					log.Warn("Could not persist Discoveries synchronization time", "error", saveErr)
 				}
 			}
@@ -129,7 +142,11 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 		}
 		releases := make([]domain.Release, 0, 1000)
 		for offset := 0; ; offset += 500 {
-			page, err := st.Releases(jobContext, domain.ReleaseFilter{Sort: "release", Direction: "desc", Limit: 500, Offset: offset, ShowNonPreferred: true})
+			filter := domain.ReleaseFilter{Sort: "updated", Direction: "desc", Limit: 500, Offset: offset, ShowNonPreferred: true}
+			if !fullRefresh {
+				filter.UpdatedAfter = cursor
+			}
+			page, err := st.Releases(jobContext, filter)
 			if err != nil {
 				finish(err)
 				return
@@ -148,27 +165,42 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 		}
 		discoverySubtitleCache.RLock()
 		availability := maps.Clone(discoverySubtitleCache.availability)
-		subtitleCreated := discoverySubtitleCache.created
 		discoverySubtitleCache.RUnlock()
-		subtitleDue := mode == "manual" || availability == nil || time.Since(subtitleCreated) >= discoveryDuration(settings, "discoveries_subtitle_refresh_interval", 6*time.Hour)
+		subtitleDue := fullRefresh || (availability != nil && len(releases) > 0)
 		if subtitleDue {
 			discoveryJobs.Lock()
 			discoveryJobs.status.Stage = "Indexing subtitle availability"
 			discoveryJobs.status.Completed = 0
 			discoveryJobs.status.Total = len(releases)
 			discoveryJobs.Unlock()
-			availability = subtitleAvailabilityWithProgress(releases, func(completed int) {
+			changedAvailability := subtitleAvailabilityWithProgress(releases, func(completed int) {
 				discoveryJobs.Lock()
 				discoveryJobs.status.Completed = completed
 				discoveryJobs.Unlock()
 			})
+			if fullRefresh {
+				availability = changedAvailability
+			} else {
+				for _, release := range releases {
+					delete(availability, release.ID)
+				}
+				for releaseID, present := range changedAvailability {
+					availability[releaseID] = present
+				}
+			}
 			discoverySubtitleCache.Lock()
 			discoverySubtitleCache.created = time.Now()
 			discoverySubtitleCache.availability = availability
 			discoverySubtitleCache.Unlock()
-		} else {
+		} else if availability != nil {
 			discoveryJobs.Lock()
 			discoveryJobs.status.Stage = "Using current subtitle index"
+			discoveryJobs.status.Completed = len(releases)
+			discoveryJobs.status.Total = len(releases)
+			discoveryJobs.Unlock()
+		} else {
+			discoveryJobs.Lock()
+			discoveryJobs.status.Stage = "Changed releases synchronized"
 			discoveryJobs.status.Completed = len(releases)
 			discoveryJobs.status.Total = len(releases)
 			discoveryJobs.Unlock()

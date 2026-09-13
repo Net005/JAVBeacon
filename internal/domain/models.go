@@ -324,6 +324,9 @@ type ReleaseFilter struct {
 	// entire catalog in Go.
 	StashWatched  bool
 	Limit, Offset int
+	// UpdatedAfter restricts results to releases whose metadata or synchronized
+	// Stash state changed strictly after this instant.
+	UpdatedAfter time.Time
 	// ShowNonPreferred, when false (the default), tells Releases/ReleasesCount
 	// to exclude any release matching an ignore rule (see IgnoreTags and
 	// IgnoreTitles) - the Release Library's "hide ignored releases" behavior.

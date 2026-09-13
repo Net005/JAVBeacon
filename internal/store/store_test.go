@@ -46,6 +46,38 @@ func TestSQLiteReleaseLifecycle(t *testing.T) {
 	}
 }
 
+func TestReleasesUpdatedAfterFiltersIncrementalChanges(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "incremental.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "Incremental", Type: "Site", Name: "Incremental", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, videoID := range []string{"OLD-1", "NEW-1"} {
+		if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: videoID, Source: "Incremental"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cursor := time.Date(2026, time.September, 13, 12, 0, 0, 0, time.UTC)
+	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET updated_at=? WHERE video_id=?`, cursor.Add(-time.Hour), "OLD-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET updated_at=? WHERE video_id=?`, cursor.Add(time.Hour), "NEW-1"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{UpdatedAfter: cursor, Sort: "updated", Direction: "desc", Limit: 10, ShowNonPreferred: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].VideoID != "NEW-1" {
+		t.Fatalf("incremental releases = %+v, want NEW-1 only", rows)
+	}
+}
+
 func TestSQLiteRemovesAndRejectsJavLibraryGIGAReleases(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "javlibrary-giga.db"))
