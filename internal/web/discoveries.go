@@ -5,15 +5,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"math"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,6 +34,7 @@ type discoveryItem struct {
 	Pools       []string `json:"discovery_pools,omitempty"`
 	HasSubtitle bool     `json:"has_subtitle"`
 	AIEnhanced  bool     `json:"ai_enhanced"`
+	AIText      string   `json:"ai_text,omitempty"`
 }
 
 type affinityProfile struct {
@@ -106,12 +110,64 @@ type openAIRank struct {
 	Pools  []string `json:"pools"`
 }
 
+type discoveryAICandidate struct {
+	ID        int64    `json:"id"`
+	VideoID   string   `json:"video_id"`
+	Title     string   `json:"title"`
+	Story     string   `json:"story"`
+	Actresses []string `json:"actresses"`
+	Genres    []string `json:"genres"`
+	Studio    string   `json:"studio"`
+	Local     bool     `json:"local"`
+	Played    int      `json:"play_count"`
+	Orgasms   int      `json:"orgasm_count"`
+	Subtitle  string   `json:"subtitle_excerpt,omitempty"`
+}
+
+func openAIErrorDetail(status int, data []byte, requestID string) string {
+	message, code := "", ""
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+			Code    any    `json:"code"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(data, &envelope) == nil {
+		message = strings.TrimSpace(envelope.Error.Message)
+		if envelope.Error.Code != nil {
+			code = strings.TrimSpace(fmt.Sprint(envelope.Error.Code))
+		}
+		if code == "" {
+			code = strings.TrimSpace(envelope.Error.Type)
+		}
+	}
+	if message == "" {
+		message = strings.TrimSpace(string(data))
+	}
+	if len(message) > 600 {
+		message = message[:600] + "…"
+	}
+	parts := []string{fmt.Sprintf("OpenAI HTTP %d", status)}
+	if code != "" {
+		parts = append(parts, "code "+code)
+	}
+	if message != "" {
+		parts = append(parts, message)
+	}
+	if requestID != "" {
+		parts = append(parts, "request "+requestID)
+	}
+	return strings.Join(parts, " · ")
+}
+
 func (s *Server) testDiscoveryOpenAI(w http.ResponseWriter, r *http.Request) {
 	settings, _ := s.store.Settings(r.Context())
 	var input struct {
-		APIKey  string `json:"api_key"`
-		BaseURL string `json:"base_url"`
-		Model   string `json:"model"`
+		APIKey        string `json:"api_key"`
+		BaseURL       string `json:"base_url"`
+		Model         string `json:"model"`
+		TimeoutSecond int    `json:"timeout_seconds"`
 	}
 	if !s.decode(w, r, &input) {
 		return
@@ -138,7 +194,12 @@ func (s *Server) testDiscoveryOpenAI(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusUnprocessableEntity, "OpenAI API key is empty")
 		return
 	}
-	body, _ := json.Marshal(map[string]any{"model": model, "input": "Reply with exactly: JAVBeacon discovery test passed", "max_output_tokens": 32})
+	timeoutSeconds := input.TimeoutSecond
+	if timeoutSeconds == 0 {
+		timeoutSeconds = discoveryInt(settings, "discoveries_openai_timeout_seconds", 120)
+	}
+	timeoutSeconds = min(max(timeoutSeconds, 15), 600)
+	body, _ := json.Marshal(map[string]any{"model": model, "input": "Reply with exactly: JAVBeacon discovery test passed", "max_output_tokens": 128, "truncation": "auto", "store": false})
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, baseURL+"/responses", bytes.NewReader(body))
 	if err != nil {
 		s.problem(w, 500, err.Error())
@@ -147,7 +208,7 @@ func (s *Server) testDiscoveryOpenAI(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	started := time.Now()
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: time.Duration(timeoutSeconds) * time.Second}).Do(req)
 	if err != nil {
 		s.problem(w, http.StatusBadGateway, err.Error())
 		return
@@ -155,7 +216,7 @@ func (s *Server) testDiscoveryOpenAI(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		s.problem(w, http.StatusBadGateway, fmt.Sprintf("OpenAI returned HTTP %d", resp.StatusCode))
+		s.problem(w, http.StatusBadGateway, openAIErrorDetail(resp.StatusCode, data, resp.Header.Get("x-request-id")))
 		return
 	}
 	s.json(w, http.StatusOK, map[string]any{"ok": true, "model": model, "elapsed_ms": time.Since(started).Milliseconds(), "response": strings.TrimSpace(openAIText(jsonObject(data)))})
@@ -216,6 +277,7 @@ func applyOpenAIRanks(items []discoveryItem, ranks []openAIRank) []discoveryItem
 	for i := range items {
 		if rank, ok := byID[items[i].ID]; ok {
 			items[i].AIEnhanced = true
+			items[i].AIText = strings.TrimSpace(rank.Reason)
 			items[i].Score = math.Round((items[i].Score*.35+rank.Score*.65)*10) / 10
 			items[i].Pools = append(items[i].Pools, rank.Pools...)
 			if strings.TrimSpace(rank.Reason) != "" {
@@ -275,43 +337,199 @@ func openAIText(response map[string]any) string {
 	return ""
 }
 
-func enhanceDiscoveries(_ *http.Request, settings map[string]string, items []discoveryItem) ([]discoveryItem, bool) {
+func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit, batchSize, maxInputChars int) ([][]discoveryAICandidate, [][]byte) {
+	items = items[:min(limit, len(items))]
+	poolsSize := len(settings["discoveries_pools"])
+	subtitleEnabled := settings["discoveries_subtitle_analysis_enabled"] == "true"
+	configuredSubtitleChars := min(max(discoveryInt(settings, "discoveries_subtitle_max_chars", 16000), 0), 100000)
+	batches, payloads := make([][]discoveryAICandidate, 0, (len(items)+batchSize-1)/batchSize), make([][]byte, 0, (len(items)+batchSize-1)/batchSize)
+	for start := 0; start < len(items); start += batchSize {
+		end := min(start+batchSize, len(items))
+		batch := make([]discoveryAICandidate, 0, end-start)
+		eligible := 0
+		for _, item := range items[start:end] {
+			story := item.Story
+			if len(story) > 1200 {
+				story = story[:1200]
+			}
+			batch = append(batch, discoveryAICandidate{ID: item.ID, VideoID: item.VideoID, Title: item.Title, Story: story, Actresses: item.Actresses, Genres: item.Genres, Studio: item.Studio, Local: item.Local, Played: item.PlayCount, Orgasms: item.OCounter})
+			if subtitleEnabled && item.HasSubtitle {
+				eligible++
+			}
+		}
+		base, _ := json.Marshal(batch)
+		// Reserve room for the instructions, custom pools, JSON framing, and
+		// character escaping. Subtitle excerpts share whatever remains.
+		perSubtitle := 0
+		if eligible > 0 {
+			remaining := maxInputChars - len(base) - poolsSize - 12000
+			perSubtitle = min(configuredSubtitleChars, max(remaining/eligible, 0))
+		}
+		if perSubtitle > 0 {
+			for i, item := range items[start:end] {
+				if !subtitleEnabled || !item.HasSubtitle {
+					continue
+				}
+				mapped := discoveryRemapReleases([]domain.Release{item.Release}, settings["stash_missing_path_remaps"])
+				batch[i].Subtitle = cleanedSubtitleExcerpt(mapped[0], perSubtitle)
+			}
+		}
+		payload, _ := json.Marshal(batch)
+		target := max(maxInputChars-poolsSize-12000, 1000)
+		for len(payload) > target {
+			changed := false
+			for i := range batch {
+				if len(batch[i].Subtitle) > 0 {
+					batch[i].Subtitle = batch[i].Subtitle[:len(batch[i].Subtitle)/2]
+					changed = true
+				} else if len(batch[i].Story) > 160 {
+					batch[i].Story = batch[i].Story[:len(batch[i].Story)/2]
+					changed = true
+				}
+			}
+			if !changed {
+				break
+			}
+			payload, _ = json.Marshal(batch)
+		}
+		batches, payloads = append(batches, batch), append(payloads, payload)
+	}
+	return batches, payloads
+}
+
+func openAIRankingRequest(settings map[string]string, prompt string, schema map[string]any, candidateCount int) ([]openAIRank, error) {
+	model := strings.TrimSpace(settings["discoveries_openai_model"])
+	if model == "" {
+		model = "gpt-5-mini"
+	}
+	maxOutput := min(max(candidateCount*160, 2048), 32768)
+	body, _ := json.Marshal(map[string]any{"model": model, "input": prompt, "max_output_tokens": maxOutput, "truncation": "auto", "store": false, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "discovery_rankings", "strict": true, "schema": schema}}})
+	baseURL := strings.TrimRight(strings.TrimSpace(settings["discoveries_openai_base_url"]), "/")
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+	timeout := time.Duration(min(max(discoveryInt(settings, "discoveries_openai_timeout_seconds", 120), 15), 600)) * time.Second
+	attempts := min(max(discoveryInt(settings, "discoveries_openai_retry_attempts", 3), 1), 5)
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/responses", bytes.NewReader(body))
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(settings["discoveries_openai_api_key"]))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			cancel()
+			lastErr = err
+			var networkError net.Error
+			if attempt == attempts || (!strings.Contains(strings.ToLower(err.Error()), "timeout") && !errors.As(err, &networkError)) {
+				return nil, err
+			}
+			time.Sleep(time.Duration(attempt) * time.Second)
+			continue
+		}
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+		cancel()
+		if readErr != nil {
+			lastErr = readErr
+			if attempt < attempts {
+				time.Sleep(time.Duration(attempt) * time.Second)
+				continue
+			}
+			return nil, readErr
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			lastErr = errors.New(openAIErrorDetail(resp.StatusCode, data, resp.Header.Get("x-request-id")))
+			retryable := resp.StatusCode == 408 || resp.StatusCode == 409 || resp.StatusCode == 429 || resp.StatusCode >= 500
+			if retryable && attempt < attempts {
+				time.Sleep(time.Duration(attempt) * time.Second)
+				continue
+			}
+			return nil, lastErr
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			return nil, fmt.Errorf("invalid OpenAI response: %w", err)
+		}
+		var ranked struct {
+			Rankings []openAIRank `json:"rankings"`
+		}
+		if err := json.Unmarshal([]byte(openAIText(envelope)), &ranked); err != nil {
+			return nil, fmt.Errorf("invalid OpenAI ranking output: %w", err)
+		}
+		if len(ranked.Rankings) == 0 {
+			return nil, errors.New("OpenAI returned no rankings")
+		}
+		return ranked.Rankings, nil
+	}
+	return nil, lastErr
+}
+
+func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string, items []discoveryItem) ([]discoveryItem, bool) {
 	if settings["discoveries_openai_enabled"] != "true" || strings.TrimSpace(settings["discoveries_openai_api_key"]) == "" || len(items) == 0 {
 		return items, false
 	}
 	limit := discoveryInt(settings, "discoveries_openai_candidate_limit", 150)
 	limit = min(max(limit, 10), min(len(items), 1000))
-	subtitleEnabled := settings["discoveries_subtitle_analysis_enabled"] == "true"
-	subtitleChars := min(discoveryInt(settings, "discoveries_subtitle_max_chars", 16000), 16000)
-	type candidate struct {
-		ID        int64    `json:"id"`
-		VideoID   string   `json:"video_id"`
-		Title     string   `json:"title"`
-		Story     string   `json:"story"`
-		Actresses []string `json:"actresses"`
-		Genres    []string `json:"genres"`
-		Studio    string   `json:"studio"`
-		Local     bool     `json:"local"`
-		Played    int      `json:"play_count"`
-		Orgasms   int      `json:"orgasm_count"`
-		Subtitle  string   `json:"subtitle_excerpt,omitempty"`
-	}
-	candidates := make([]candidate, 0, limit)
-	for _, item := range items[:limit] {
-		story := item.Story
-		if len(story) > 1200 {
-			story = story[:1200]
-		}
-		c := candidate{item.ID, item.VideoID, item.Title, story, item.Actresses, item.Genres, item.Studio, item.Local, item.PlayCount, item.OCounter, ""}
-		if subtitleEnabled && item.HasSubtitle {
-			mapped := discoveryRemapReleases([]domain.Release{item.Release}, settings["stash_missing_path_remaps"])
-			c.Subtitle = cleanedSubtitleExcerpt(mapped[0], subtitleChars)
-		}
-		candidates = append(candidates, c)
-	}
-	candidateJSON, _ := json.Marshal(candidates)
+	batchSize := min(max(discoveryInt(settings, "discoveries_openai_batch_size", 20), 5), 50)
+	maxInputChars := min(max(discoveryInt(settings, "discoveries_openai_max_input_chars", 180000), 50000), 500000)
+	batches, payloads := discoveryAIBatches(items, settings, limit, batchSize, maxInputChars)
 	pools := strings.TrimSpace(settings["discoveries_pools"])
-	cacheKey := sha256.Sum256(append(append([]byte(strings.TrimSpace(settings["discoveries_openai_model"])+"\n"+pools+"\n"), candidateJSON...), []byte("\n"+settings["discoveries_subtitle_analysis_enabled"])...))
+	model := strings.TrimSpace(settings["discoveries_openai_model"])
+	if model == "" {
+		model = "gpt-5-mini"
+	}
+	fingerprints := make(map[int64]string, limit)
+	releaseIDs := make([]int64, 0, limit)
+	for _, batch := range batches {
+		for _, candidate := range batch {
+			data, _ := json.Marshal(candidate)
+			sum := sha256.Sum256(append([]byte(model+"\n"+pools+"\n"+settings["discoveries_subtitle_analysis_enabled"]+"\n"), data...))
+			fingerprints[candidate.ID] = fmt.Sprintf("%x", sum)
+			releaseIDs = append(releaseIDs, candidate.ID)
+		}
+	}
+	persisted := make([]openAIRank, 0, limit)
+	stored, err := s.store.DiscoveryAIRanks(r.Context(), releaseIDs)
+	if err == nil {
+		for _, id := range releaseIDs {
+			if rank, ok := stored[id]; ok && rank.Fingerprint == fingerprints[id] {
+				persisted = append(persisted, openAIRank{ID: id, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools})
+			}
+		}
+	}
+	persistedIDs := make(map[int64]bool, len(persisted))
+	for _, rank := range persisted {
+		persistedIDs[rank.ID] = true
+	}
+	missingBatches := make([][]discoveryAICandidate, 0, len(batches))
+	missingPayloads := make([][]byte, 0, len(batches))
+	for _, batch := range batches {
+		missing := make([]discoveryAICandidate, 0, len(batch))
+		for _, candidate := range batch {
+			if !persistedIDs[candidate.ID] {
+				missing = append(missing, candidate)
+			}
+		}
+		if len(missing) > 0 {
+			payload, _ := json.Marshal(missing)
+			missingBatches, missingPayloads = append(missingBatches, missing), append(missingPayloads, payload)
+		}
+	}
+	if len(missingBatches) == 0 {
+		return applyOpenAIRanks(items, persisted), len(persisted) > 0
+	}
+	hasher := sha256.New()
+	hasher.Write([]byte(strings.Join([]string{settings["discoveries_openai_model"], pools, settings["discoveries_subtitle_analysis_enabled"], strconv.Itoa(batchSize), strconv.Itoa(maxInputChars)}, "\n")))
+	for _, payload := range payloads {
+		hasher.Write(payload)
+	}
+	var cacheKey [32]byte
+	copy(cacheKey[:], hasher.Sum(nil))
 	discoveryRankCache.Lock()
 	cached, cacheHit := discoveryRankCache.entries[cacheKey]
 	discoveryRankCache.Unlock()
@@ -321,72 +539,58 @@ func enhanceDiscoveries(_ *http.Request, settings map[string]string, items []dis
 			return applyOpenAIRanks(items, cached.ranks), true
 		}
 		if len(cached.ranks) == 0 && age < 2*time.Minute {
-			return items, false
+			return applyOpenAIRanks(items, persisted), len(persisted) > 0
 		}
 	}
 	// An enrichment cache miss must never hold the Discoveries page open on an
 	// external API. Return deterministic results immediately and populate the
 	// cache in the background; a later refresh automatically uses the enhanced
 	// ranking.
-	prompt := fmt.Sprintf("Rerank these adult-media releases for this user's taste. Orgasm count is a stronger positive signal than play count. Use titles, stories, genres and subtitle dialogue to infer themes, but avoid inventing facts. Preserve variety and include occasional exploration. Custom pools:\n%s\nCandidates:\n%s", pools, candidateJSON)
 	settingsCopy := maps.Clone(settings)
 	discoveryRankCache.Lock()
-	discoveryRankCache.entries[cacheKey] = discoveryRankCacheEntry{created: time.Now()}
+	discoveryRankCache.entries[cacheKey] = discoveryRankCacheEntry{created: time.Now(), ranks: slices.Clone(persisted)}
 	discoveryRankCache.Unlock()
 	go func() {
 		discoveryAIStatus.Lock()
-		discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error = true, 0, len(candidates), ""
+		discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error = true, len(persisted), limit, ""
 		discoveryAIStatus.Unlock()
 		defer func() { discoveryAIStatus.Lock(); discoveryAIStatus.Running = false; discoveryAIStatus.Unlock() }()
 		schema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"rankings": map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"id": map[string]any{"type": "integer"}, "score": map[string]any{"type": "number"}, "reason": map[string]any{"type": "string"}, "pools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "required": []string{"id", "score", "reason", "pools"}}}}, "required": []string{"rankings"}}
-		model := strings.TrimSpace(settingsCopy["discoveries_openai_model"])
-		if model == "" {
-			model = "gpt-5-mini"
-		}
-		body, _ := json.Marshal(map[string]any{"model": model, "input": prompt, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "discovery_rankings", "strict": true, "schema": schema}}})
-		baseURL := strings.TrimRight(strings.TrimSpace(settingsCopy["discoveries_openai_base_url"]), "/")
-		if baseURL == "" {
-			baseURL = "https://api.openai.com/v1"
-		}
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/responses", bytes.NewReader(body))
-		if err != nil {
-			return
-		}
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(settingsCopy["discoveries_openai_api_key"]))
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := (&http.Client{Timeout: 45 * time.Second}).Do(req)
-		if err != nil {
+		combined := slices.Clone(persisted)
+		completed := len(persisted)
+		for index, batch := range missingBatches {
+			prompt := fmt.Sprintf("Rerank these adult-media releases for this user's taste. Orgasm count is a stronger positive signal than play count. Score every candidate from 0 to 100. Use titles, stories, genres and subtitle dialogue to infer themes, but avoid inventing facts. Preserve variety and include occasional exploration. Custom pools:\n%s\nCandidates:\n%s", pools, missingPayloads[index])
+			ranks, err := openAIRankingRequest(settingsCopy, prompt, schema, len(batch))
+			if err != nil {
+				discoveryAIStatus.Lock()
+				discoveryAIStatus.Error = fmt.Sprintf("Batch %d/%d: %v", index+1, len(missingBatches), err)
+				discoveryAIStatus.Unlock()
+				return
+			}
+			now := time.Now().UTC()
+			durable := make([]domain.DiscoveryAIRank, 0, len(ranks))
+			for _, rank := range ranks {
+				durable = append(durable, domain.DiscoveryAIRank{ReleaseID: rank.ID, Fingerprint: fingerprints[rank.ID], Model: model, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools, GeneratedAt: now})
+			}
+			if err := s.store.SaveDiscoveryAIRanks(context.Background(), durable); err != nil {
+				discoveryAIStatus.Lock()
+				discoveryAIStatus.Error = fmt.Sprintf("Batch %d/%d database save: %v", index+1, len(missingBatches), err)
+				discoveryAIStatus.Unlock()
+				return
+			}
+			combined = append(combined, ranks...)
+			completed += len(batch)
+			// Publish each completed batch so the page can progressively use and
+			// cache successful work even if a later request fails.
+			discoveryRankCache.Lock()
+			discoveryRankCache.entries[cacheKey] = discoveryRankCacheEntry{created: time.Now(), ranks: slices.Clone(combined)}
+			discoveryRankCache.Unlock()
 			discoveryAIStatus.Lock()
-			discoveryAIStatus.Error = err.Error()
+			discoveryAIStatus.Completed = min(completed, limit)
 			discoveryAIStatus.Unlock()
-			return
 		}
-		defer resp.Body.Close()
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			discoveryAIStatus.Lock()
-			discoveryAIStatus.Error = fmt.Sprintf("OpenAI returned HTTP %d", resp.StatusCode)
-			discoveryAIStatus.Unlock()
-			return
-		}
-		var envelope map[string]any
-		if json.Unmarshal(data, &envelope) != nil {
-			return
-		}
-		var ranked struct {
-			Rankings []openAIRank `json:"rankings"`
-		}
-		if json.Unmarshal([]byte(openAIText(envelope)), &ranked) != nil || len(ranked.Rankings) == 0 {
-			return
-		}
-		discoveryRankCache.Lock()
-		discoveryRankCache.entries[cacheKey] = discoveryRankCacheEntry{created: time.Now(), ranks: ranked.Rankings}
-		discoveryRankCache.Unlock()
-		discoveryAIStatus.Lock()
-		discoveryAIStatus.Completed = len(ranked.Rankings)
-		discoveryAIStatus.Unlock()
 	}()
-	return items, false
+	return applyOpenAIRanks(items, persisted), len(persisted) > 0
 }
 
 func discoveryFloat(settings map[string]string, key string, fallback float64) float64 {
@@ -798,6 +1002,11 @@ func discoveryFilterFromQuery(q url.Values, settings map[string]string, category
 	pools := discoveryPools(settings["discoveries_pools"])
 	pool := strings.TrimSpace(q.Get("pool"))
 	filter := domain.ReleaseFilter{Search: q.Get("search"), SearchWildcards: q.Get("search_wildcards") == "true", Category: q.Get("filter_category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Sort: q.Get("sort"), Direction: q.Get("direction")}
+	// AI text is produced after the database query, so it must be filtered
+	// after enrichment rather than being mistaken for a release column.
+	if strings.EqualFold(strings.TrimSpace(filter.Category), "AI text") {
+		filter.Category, filter.Entries = "", ""
+	}
 	if keywords := pools[pool]; pool != "" {
 		filter.PoolSearch = strings.Join(keywords, ",")
 	}
@@ -817,6 +1026,26 @@ func discoveryFilterFromQuery(q url.Values, settings map[string]string, category
 		filter.UsePreferred = len(filter.IgnoreTags) > 0 || len(filter.IgnoreTitles) > 0
 	}
 	return filter, pools, pool
+}
+
+func discoveryAITextMatches(text, rawEntries string) bool {
+	if strings.TrimSpace(rawEntries) == "" {
+		return true
+	}
+	var entries []string
+	if strings.HasPrefix(strings.TrimSpace(rawEntries), "[") {
+		_ = json.Unmarshal([]byte(rawEntries), &entries)
+	} else {
+		entries = strings.Split(rawEntries, ",")
+	}
+	text = strings.ToLower(text)
+	for _, entry := range entries {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry != "" && strings.Contains(text, entry) {
+			return true
+		}
+	}
+	return false
 }
 
 func discoveryReleaseMatches(release domain.Release, category, subtitles string, hasSubtitle bool, excluded map[string]bool, rewatchDays int, now time.Time) bool {
@@ -922,7 +1151,25 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	}
 	enhanced := false
 	if category != "random" && category != "new" {
-		items, enhanced = enhanceDiscoveries(r, settings, items)
+		items, enhanced = s.enhanceDiscoveries(r, settings, items)
+	}
+	aiOnly := q.Get("ai_only") == "true"
+	aiTextEntries := ""
+	if strings.EqualFold(strings.TrimSpace(q.Get("filter_category")), "AI text") {
+		aiTextEntries = q.Get("entries")
+	}
+	if aiOnly || aiTextEntries != "" {
+		filtered := items[:0]
+		for _, item := range items {
+			if aiOnly && !item.AIEnhanced {
+				continue
+			}
+			if aiTextEntries != "" && (!item.AIEnhanced || !discoveryAITextMatches(item.AIText, aiTextEntries)) {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		items = filtered
 	}
 	requestedSort := strings.TrimSpace(q.Get("sort"))
 	if requestedSort == "score" && category != "random" {

@@ -2,8 +2,13 @@ package web
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,5 +126,70 @@ func TestDiscoverySubtitlePathRemap(t *testing.T) {
 	releases := discoveryRemapReleases([]domain.Release{{ID: 57, StashFilePath: "/collections/jav/SAME-057.mp4"}}, `[{"from":"/collections/jav","to":"`+dir+`"}]`)
 	if !subtitleAvailability(releases)[57] {
 		t.Fatal("subtitle was not found after Stash path remap")
+	}
+}
+
+func TestDiscoveryAIBatchesBoundInputAndAdaptSubtitleExcerpt(t *testing.T) {
+	dir := t.TempDir()
+	items := make([]discoveryItem, 12)
+	for i := range items {
+		path := filepath.Join(dir, "SCENE-"+strconv.Itoa(i)+".mp4")
+		if err := os.WriteFile(strings.TrimSuffix(path, ".mp4")+".en.srt", []byte(strings.Repeat("dialogue line\n", 5000)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		items[i] = discoveryItem{Release: domain.Release{ID: int64(i + 1), VideoID: "SCENE", Title: "Title", Story: strings.Repeat("story ", 300), StashFilePath: path}, HasSubtitle: true}
+	}
+	settings := map[string]string{"discoveries_subtitle_analysis_enabled": "true", "discoveries_subtitle_max_chars": "16000"}
+	batches, payloads := discoveryAIBatches(items, settings, len(items), 5, 50000)
+	if len(batches) != 3 || len(batches[0]) != 5 || len(batches[2]) != 2 {
+		t.Fatalf("unexpected batches: %#v", []int{len(batches), len(batches[0]), len(batches[2])})
+	}
+	for i, payload := range payloads {
+		if len(payload)+12000 > 50000 {
+			t.Fatalf("batch %d exceeds character budget: %d", i+1, len(payload))
+		}
+	}
+	if len(batches[0][0].Subtitle) == 0 || len(batches[0][0].Subtitle) >= 16000 {
+		t.Fatalf("subtitle excerpt was not adaptively reduced: %d", len(batches[0][0].Subtitle))
+	}
+}
+
+func TestOpenAIRankingRequestReportsProviderErrorAndDoesNotRetry400(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("x-request-id", "req_test_123")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "input is too large", "code": "context_length_exceeded"}})
+	}))
+	defer server.Close()
+	_, err := openAIRankingRequest(map[string]string{"discoveries_openai_api_key": "test", "discoveries_openai_base_url": server.URL, "discoveries_openai_retry_attempts": "3"}, "test", map[string]any{"type": "object"}, 1)
+	if err == nil || !strings.Contains(err.Error(), "context_length_exceeded") || !strings.Contains(err.Error(), "req_test_123") {
+		t.Fatalf("provider error details missing: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("HTTP 400 was retried %d times", calls)
+	}
+}
+
+func TestDiscoveryAITextFilteringIsPartialAndCaseInsensitive(t *testing.T) {
+	for _, tt := range []struct {
+		text, entries string
+		want          bool
+	}{
+		{"Strong match for psychological control themes", `["CONTROL"]`, true},
+		{"Investigator story with an undercover reporter", "cover rep", true},
+		{"Sci-fi heroine", `["brainwashing","drugs"]`, false},
+	} {
+		if got := discoveryAITextMatches(tt.text, tt.entries); got != tt.want {
+			t.Fatalf("discoveryAITextMatches(%q, %q) = %v, want %v", tt.text, tt.entries, got, tt.want)
+		}
+	}
+}
+
+func TestApplyOpenAIRanksRetainsGeneratedTextForFiltering(t *testing.T) {
+	items := applyOpenAIRanks([]discoveryItem{{Release: domain.Release{ID: 42}}}, []openAIRank{{ID: 42, Score: 91, Reason: "Matches the title and story"}})
+	if len(items) != 1 || !items[0].AIEnhanced || items[0].AIText != "Matches the title and story" {
+		t.Fatalf("AI enrichment was not retained: %#v", items)
 	}
 }

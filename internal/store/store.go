@@ -102,6 +102,8 @@ type Store interface {
 	NotificationsPage(context.Context, string, domain.ReleaseFilter, bool, string, string, int, int) (domain.NotificationPage, error)
 	SaveDiscoveryScores(context.Context, map[int64]float64) error
 	DiscoveryScoreCount(context.Context) (int, error)
+	DiscoveryAIRanks(context.Context, []int64) (map[int64]domain.DiscoveryAIRank, error)
+	SaveDiscoveryAIRanks(context.Context, []domain.DiscoveryAIRank) error
 	DeleteNotifications(context.Context, string, []int64) (int64, error)
 	CreateNotification(context.Context, int64, string, string) (bool, error)
 	WatchlistSynced(context.Context, int64, string, string) (bool, error)
@@ -203,6 +205,8 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_logs_download ON pipeline_logs(download_
 CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY, release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE, type TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL, UNIQUE(release_id,type));
 CREATE TABLE IF NOT EXISTS discovery_scores (release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE, score REAL NOT NULL DEFAULT 0, updated_at DATETIME NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_discovery_scores_score ON discovery_scores(score DESC,release_id DESC);
+CREATE TABLE IF NOT EXISTS discovery_ai_ranks (release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE, fingerprint TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', score REAL NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '', pools TEXT NOT NULL DEFAULT '[]', generated_at DATETIME NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_discovery_ai_ranks_fingerprint ON discovery_ai_ranks(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_notifications_release_created ON notifications(release_id,created_at DESC);
 CREATE TABLE IF NOT EXISTS watchlist_sync (release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE, stash_scene_id TEXT NOT NULL, tag_id TEXT NOT NULL, synced_at DATETIME NOT NULL, result TEXT NOT NULL DEFAULT '');`)
 	}
@@ -3786,6 +3790,55 @@ func (s *SQLite) DiscoveryScoreCount(ctx context.Context) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM discovery_scores`).Scan(&count)
 	return count, err
+}
+
+func (s *SQLite) DiscoveryAIRanks(ctx context.Context, releaseIDs []int64) (map[int64]domain.DiscoveryAIRank, error) {
+	result := make(map[int64]domain.DiscoveryAIRank, len(releaseIDs))
+	if len(releaseIDs) == 0 {
+		return result, nil
+	}
+	placeholders := make([]string, len(releaseIDs))
+	args := make([]any, len(releaseIDs))
+	for i, id := range releaseIDs {
+		placeholders[i], args[i] = "?", id
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT release_id,fingerprint,model,score,reason,pools,generated_at FROM discovery_ai_ranks WHERE release_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rank domain.DiscoveryAIRank
+		var pools string
+		if err := rows.Scan(&rank.ReleaseID, &rank.Fingerprint, &rank.Model, &rank.Score, &rank.Reason, &pools, &rank.GeneratedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(pools), &rank.Pools)
+		result[rank.ReleaseID] = rank
+	}
+	return result, rows.Err()
+}
+
+func (s *SQLite) SaveDiscoveryAIRanks(ctx context.Context, ranks []domain.DiscoveryAIRank) error {
+	if len(ranks) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, rank := range ranks {
+		pools, _ := json.Marshal(rank.Pools)
+		generatedAt := rank.GeneratedAt
+		if generatedAt.IsZero() {
+			generatedAt = time.Now().UTC()
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO discovery_ai_ranks(release_id,fingerprint,model,score,reason,pools,generated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(release_id) DO UPDATE SET fingerprint=excluded.fingerprint,model=excluded.model,score=excluded.score,reason=excluded.reason,pools=excluded.pools,generated_at=excluded.generated_at`, rank.ReleaseID, rank.Fingerprint, rank.Model, rank.Score, rank.Reason, string(pools), generatedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 func (s *SQLite) DeleteNotifications(ctx context.Context, kind string, ids []int64) (int64, error) {
 	if strings.TrimSpace(kind) == "" {

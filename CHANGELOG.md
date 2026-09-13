@@ -7,6 +7,40 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.182] - 2026-09-13
+
+### Added
+
+- Added an **AI only** Discoveries toggle that is retained across browser and
+  app restarts, plus an **AI text** wildcard field for case-insensitive partial
+  matching against generated recommendation explanations.
+- Added configurable OpenAI candidates-per-request, input-character budget,
+  request timeout, and retry-attempt controls to Discoveries settings.
+- OpenAI recommendation scores, explanations, assigned pools, model,
+  fingerprints, and generation timestamps are now stored permanently in both
+  SQLite and PostgreSQL.
+
+### Changed
+
+- OpenAI enrichment now uses bounded requests with adaptive subtitle/story
+  excerpts instead of sending every candidate and full excerpt in one large
+  request.
+- Successful OpenAI batches are published and cached progressively. Durable
+  results have no time-based expiry and are regenerated only when their model,
+  metadata, playback activity, discovery pools, or subtitle inputs change.
+- Transient OpenAI failures are retried with backoff, while invalid HTTP 400
+  requests fail immediately. Responses use automatic truncation and explicit
+  output limits.
+
+### Fixed
+
+- Fixed OpenAI enrichment intermittently timing out or returning HTTP 400 when
+  a large number of subtitle-backed candidates exceeded the model context.
+- OpenAI failures now expose the provider message, error code, request ID, and
+  failing batch instead of only reporting a generic HTTP status.
+- Discoveries pagination now advances by the server-provided source offset
+  when AI filtering removes cards from a fetched page.
+
 ## [1.0.181] - 2026-09-13
 
 ### Added
