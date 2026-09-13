@@ -260,6 +260,7 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		"discoveries_recency_half_life_days":    "180",
 		"discoveries_subtitle_bonus":            "10",
 		"discoveries_diversity_percent":         "25",
+		"discoveries_excluded_tags":             "",
 		"discoveries_openai_enabled":            "false",
 		"discoveries_openai_model":              "gpt-5-mini",
 		"discoveries_openai_embedding_model":    "text-embedding-3-small",
@@ -273,7 +274,17 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		"discoveries_stash_tag_sync_enabled":    "false",
 		"discoveries_refresh_interval":          "24h",
 		"discoveries_subtitle_refresh_interval": "6h",
+		"discoveries_subtitle_refresh_enabled":  "true",
+		"discoveries_subtitle_schedule_mode":    "basic",
+		"discoveries_subtitle_start_time":       "",
+		"discoveries_subtitle_weekdays":         "",
+		"discoveries_subtitle_cron":             "",
 		"discoveries_openai_cache_interval":     "6h",
+		"discoveries_openai_refresh_enabled":    "true",
+		"discoveries_openai_schedule_mode":      "basic",
+		"discoveries_openai_start_time":         "",
+		"discoveries_openai_weekdays":           "",
+		"discoveries_openai_cron":               "",
 	} {
 		if settings[k] == "" {
 			missing[k] = v

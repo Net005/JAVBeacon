@@ -11,6 +11,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,6 +30,7 @@ type discoveryItem struct {
 	Reasons     []string `json:"discovery_reasons"`
 	Pools       []string `json:"discovery_pools,omitempty"`
 	HasSubtitle bool     `json:"has_subtitle"`
+	AIEnhanced  bool     `json:"ai_enhanced"`
 }
 
 type affinityProfile struct {
@@ -36,6 +38,65 @@ type affinityProfile struct {
 	genre   map[string]float64
 	studio  map[string]float64
 	label   map[string]float64
+}
+
+// archivedAffinityReleases overlays the durable "Your playback archive"
+// counters and event timestamps onto release metadata. Release-row playback
+// fields remain a fallback for installations which have not built an archive.
+func archivedAffinityReleases(ctx context.Context, st any, releases []domain.Release) ([]domain.Release, error) {
+	reader, ok := st.(interface {
+		StashHistoryExport(context.Context) (domain.StashHistoryExport, error)
+	})
+	if !ok {
+		return releases, nil
+	}
+	archive, err := reader.StashHistoryExport(ctx)
+	if err != nil {
+		return nil, err
+	}
+	type activity struct {
+		plays, orgasms       int
+		lastPlay, lastOrgasm time.Time
+	}
+	byRelease := map[int64]*activity{}
+	sceneRelease := make(map[string]int64, len(archive.Scenes))
+	for _, scene := range archive.Scenes {
+		if scene.ReleaseID <= 0 {
+			continue
+		}
+		sceneRelease[scene.StashSceneID] = scene.ReleaseID
+		a := byRelease[scene.ReleaseID]
+		if a == nil {
+			a = &activity{}
+			byRelease[scene.ReleaseID] = a
+		}
+		a.plays += scene.PlayCount
+		a.orgasms += scene.OrgasmCount
+	}
+	for _, event := range archive.Events {
+		a := byRelease[sceneRelease[event.StashSceneID]]
+		if a == nil {
+			continue
+		}
+		if event.Type == "play" && event.OccurredAt.After(a.lastPlay) {
+			a.lastPlay = event.OccurredAt
+		}
+		if event.Type == "orgasm" && event.OccurredAt.After(a.lastOrgasm) {
+			a.lastOrgasm = event.OccurredAt
+		}
+	}
+	for i := range releases {
+		if a := byRelease[releases[i].ID]; a != nil {
+			releases[i].PlayCount, releases[i].OCounter = a.plays, a.orgasms
+			if !a.lastPlay.IsZero() {
+				releases[i].LastPlayedAt = a.lastPlay.UTC().Format(time.RFC3339)
+			}
+			if !a.lastOrgasm.IsZero() {
+				releases[i].LastOCountAt = a.lastOrgasm.UTC().Format(time.RFC3339)
+			}
+		}
+	}
+	return releases, nil
 }
 
 type openAIRank struct {
@@ -49,6 +110,23 @@ var discoveryRankCache = struct {
 	sync.Mutex
 	entries map[[32]byte]discoveryRankCacheEntry
 }{entries: map[[32]byte]discoveryRankCacheEntry{}}
+
+var discoveryAIStatus = struct {
+	sync.RWMutex
+	Running   bool
+	Completed int
+	Total     int
+	Error     string
+}{}
+
+var discoveryResultCache = struct {
+	sync.RWMutex
+	key     [32]byte
+	created time.Time
+	items   []discoveryItem
+	mode    string
+	pools   []string
+}{}
 
 var discoverySubtitleCache = struct {
 	sync.RWMutex
@@ -69,6 +147,7 @@ func applyOpenAIRanks(items []discoveryItem, ranks []openAIRank) []discoveryItem
 	}
 	for i := range items {
 		if rank, ok := byID[items[i].ID]; ok {
+			items[i].AIEnhanced = true
 			items[i].Score = math.Round((items[i].Score*.35+rank.Score*.65)*10) / 10
 			items[i].Pools = append(items[i].Pools, rank.Pools...)
 			if strings.TrimSpace(rank.Reason) != "" {
@@ -133,7 +212,7 @@ func enhanceDiscoveries(_ *http.Request, settings map[string]string, items []dis
 		return items, false
 	}
 	limit := discoveryInt(settings, "discoveries_openai_candidate_limit", 150)
-	limit = min(max(limit, 10), min(len(items), 250))
+	limit = min(max(limit, 10), min(len(items), 1000))
 	subtitleEnabled := settings["discoveries_subtitle_analysis_enabled"] == "true"
 	subtitleChars := min(discoveryInt(settings, "discoveries_subtitle_max_chars", 16000), 16000)
 	type candidate struct {
@@ -157,7 +236,8 @@ func enhanceDiscoveries(_ *http.Request, settings map[string]string, items []dis
 		}
 		c := candidate{item.ID, item.VideoID, item.Title, story, item.Actresses, item.Genres, item.Studio, item.Local, item.PlayCount, item.OCounter, ""}
 		if subtitleEnabled && item.HasSubtitle {
-			c.Subtitle = cleanedSubtitleExcerpt(item.Release, subtitleChars)
+			mapped := discoveryRemapReleases([]domain.Release{item.Release}, settings["stash_missing_path_remaps"])
+			c.Subtitle = cleanedSubtitleExcerpt(mapped[0], subtitleChars)
 		}
 		candidates = append(candidates, c)
 	}
@@ -186,6 +266,10 @@ func enhanceDiscoveries(_ *http.Request, settings map[string]string, items []dis
 	discoveryRankCache.entries[cacheKey] = discoveryRankCacheEntry{created: time.Now()}
 	discoveryRankCache.Unlock()
 	go func() {
+		discoveryAIStatus.Lock()
+		discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error = true, 0, len(candidates), ""
+		discoveryAIStatus.Unlock()
+		defer func() { discoveryAIStatus.Lock(); discoveryAIStatus.Running = false; discoveryAIStatus.Unlock() }()
 		schema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"rankings": map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"id": map[string]any{"type": "integer"}, "score": map[string]any{"type": "number"}, "reason": map[string]any{"type": "string"}, "pools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "required": []string{"id", "score", "reason", "pools"}}}}, "required": []string{"rankings"}}
 		model := strings.TrimSpace(settingsCopy["discoveries_openai_model"])
 		if model == "" {
@@ -204,11 +288,17 @@ func enhanceDiscoveries(_ *http.Request, settings map[string]string, items []dis
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := (&http.Client{Timeout: 45 * time.Second}).Do(req)
 		if err != nil {
+			discoveryAIStatus.Lock()
+			discoveryAIStatus.Error = err.Error()
+			discoveryAIStatus.Unlock()
 			return
 		}
 		defer resp.Body.Close()
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			discoveryAIStatus.Lock()
+			discoveryAIStatus.Error = fmt.Sprintf("OpenAI returned HTTP %d", resp.StatusCode)
+			discoveryAIStatus.Unlock()
 			return
 		}
 		var envelope map[string]any
@@ -224,6 +314,9 @@ func enhanceDiscoveries(_ *http.Request, settings map[string]string, items []dis
 		discoveryRankCache.Lock()
 		discoveryRankCache.entries[cacheKey] = discoveryRankCacheEntry{created: time.Now(), ranks: ranked.Rankings}
 		discoveryRankCache.Unlock()
+		discoveryAIStatus.Lock()
+		discoveryAIStatus.Completed = len(ranked.Rankings)
+		discoveryAIStatus.Unlock()
 	}()
 	return items, false
 }
@@ -271,7 +364,13 @@ func buildAffinity(releases []domain.Release, settings map[string]string, now ti
 			continue
 		}
 		age := 0.0
-		if parsed, err := time.Parse(time.RFC3339, release.LastPlayedAt); err == nil {
+		latest := release.LastPlayedAt
+		if orgasmAt, err := time.Parse(time.RFC3339, release.LastOCountAt); err == nil {
+			if playedAt, playErr := time.Parse(time.RFC3339, latest); playErr != nil || orgasmAt.After(playedAt) {
+				latest = orgasmAt.Format(time.RFC3339)
+			}
+		}
+		if parsed, err := time.Parse(time.RFC3339, latest); err == nil {
 			age = math.Max(0, now.Sub(parsed).Hours()/24)
 		}
 		decay := math.Pow(.5, age/halfLife)
@@ -292,6 +391,30 @@ func affinityScore(values []string, weights map[string]float64) (float64, string
 		}
 	}
 	return best, reason
+}
+
+// textAffinity turns meaningful phrases learned from watch history into a
+// deterministic title/story signal. Longer phrases win over incidental short
+// words, and the returned field is included in the user-facing explanation.
+func textAffinity(release domain.Release, weights map[string]float64) (float64, string, string) {
+	title, story := strings.ToLower(release.Title), strings.ToLower(release.Story)
+	best, phrase, field := 0.0, "", ""
+	for candidate, weight := range weights {
+		candidate = strings.TrimSpace(candidate)
+		if len([]rune(candidate)) < 3 || weight <= best {
+			continue
+		}
+		matchedField := ""
+		if strings.Contains(title, candidate) {
+			matchedField = "Title"
+		} else if strings.Contains(story, candidate) {
+			matchedField = "Story"
+		}
+		if matchedField != "" {
+			best, phrase, field = weight, candidate, matchedField
+		}
+	}
+	return best, phrase, field
 }
 
 func hasSubtitleFile(release domain.Release) bool {
@@ -371,12 +494,16 @@ func cachedSubtitleAvailability(releases []domain.Release, ttl time.Duration) ma
 }
 
 func (s *Server) discoveryReleasePage(ctx context.Context, filter domain.ReleaseFilter, maximum int) ([]domain.Release, error) {
-	if maximum <= 0 {
-		return nil, nil
+	capacity := maximum
+	if capacity <= 0 {
+		capacity = 1000
 	}
-	releases := make([]domain.Release, 0, maximum)
-	for offset := 0; len(releases) < maximum; offset += 500 {
-		filter.Limit = min(500, maximum-len(releases))
+	releases := make([]domain.Release, 0, capacity)
+	for offset := 0; maximum <= 0 || len(releases) < maximum; offset += 500 {
+		filter.Limit = 500
+		if maximum > 0 {
+			filter.Limit = min(500, maximum-len(releases))
+		}
 		filter.Offset = offset
 		page, err := s.store.Releases(ctx, filter)
 		if err != nil {
@@ -443,7 +570,12 @@ func discoveryPools(raw string) map[string][]string {
 	out := map[string][]string{}
 	for _, line := range strings.Split(raw, "\n") {
 		parts := strings.SplitN(line, "|", 2)
-		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+		if strings.TrimSpace(parts[0]) == "" {
+			continue
+		}
+		if len(parts) == 1 {
+			name := strings.TrimSpace(parts[0])
+			out[name] = []string{name}
 			continue
 		}
 		for _, keyword := range strings.Split(parts[1], ",") {
@@ -453,6 +585,48 @@ func discoveryPools(raw string) map[string][]string {
 		}
 	}
 	return out
+}
+
+func discoveryExcludedTags(raw string) map[string]bool {
+	out := map[string]bool{}
+	for _, value := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '\n' || r == ';' }) {
+		if value = strings.ToLower(strings.TrimSpace(value)); value != "" {
+			out[value] = true
+		}
+	}
+	return out
+}
+
+func discoveryHasExcludedTag(release domain.Release, excluded map[string]bool) bool {
+	for _, tag := range release.Genres {
+		if excluded[strings.ToLower(strings.TrimSpace(tag))] {
+			return true
+		}
+	}
+	return false
+}
+
+type discoveryPathRemap struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+func discoveryRemapReleases(releases []domain.Release, raw string) []domain.Release {
+	var remaps []discoveryPathRemap
+	if json.Unmarshal([]byte(raw), &remaps) != nil {
+		return releases
+	}
+	for i := range releases {
+		path := releases[i].StashFilePath
+		for _, remap := range remaps {
+			from := strings.TrimRight(strings.TrimSpace(remap.From), "/\\")
+			if from != "" && (path == from || strings.HasPrefix(path, from+string(filepath.Separator)) || strings.HasPrefix(path, from+"/")) {
+				releases[i].StashFilePath = filepath.Join(strings.TrimSpace(remap.To), strings.TrimLeft(path[len(from):], "/\\"))
+				break
+			}
+		}
+	}
+	return releases
 }
 
 func diversifyDiscoveries(items []discoveryItem, strength float64) []discoveryItem {
@@ -489,7 +663,38 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	requestedLimit := discoveryInt(map[string]string{"limit": q.Get("limit")}, "limit", discoveryInt(settings, "discoveries_result_limit", 100))
 	requestedLimit = min(max(requestedLimit, 1), 500)
 	offset := max(discoveryInt(map[string]string{"offset": q.Get("offset")}, "offset", 0), 0)
-	candidateLimit := min(max(requestedLimit*20, 1000), 5000)
+	cacheQuery := make(url.Values, len(q))
+	for key, values := range q {
+		cacheQuery[key] = append([]string(nil), values...)
+	}
+	cacheQuery.Del("offset")
+	cacheQuery.Del("limit")
+	settingsJSON, _ := json.Marshal(settings)
+	cacheKey := sha256.Sum256(append([]byte(cacheQuery.Encode()+"\n"), settingsJSON...))
+	discoveryResultCache.RLock()
+	cachedItems, cachedMode, cachedPools := discoveryResultCache.items, discoveryResultCache.mode, discoveryResultCache.pools
+	cacheTTL := 5 * time.Minute
+	if settings["discoveries_openai_enabled"] == "true" && cachedMode != "openai" {
+		cacheTTL = 2 * time.Second
+	}
+	cacheHit := discoveryResultCache.key == cacheKey && time.Since(discoveryResultCache.created) < cacheTTL
+	discoveryResultCache.RUnlock()
+	if cacheHit {
+		total := len(cachedItems)
+		page := []discoveryItem{}
+		if offset < total {
+			page = cachedItems[offset:min(offset+requestedLimit, total)]
+		}
+		discoveryAIStatus.RLock()
+		aiRunning, aiCompleted, aiTotal, aiError := discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error
+		discoveryAIStatus.RUnlock()
+		s.json(w, http.StatusOK, map[string]any{"items": page, "total": total, "offset": offset, "has_more": offset+len(page) < total, "generated_at": discoveryResultCache.created, "mode": cachedMode, "pools": cachedPools, "openai": map[string]any{"enabled": settings["discoveries_openai_enabled"] == "true", "running": aiRunning, "completed": aiCompleted, "total": aiTotal, "error": aiError}})
+		return
+	}
+	// Score and sort the complete matching set, then paginate the response.
+	// This removes the old 1,000/5,000 ceiling which produced incorrect totals
+	// and global sorting.
+	candidateLimit := 0 // zero means every matching release
 	filter := domain.ReleaseFilter{Search: q.Get("search"), SearchWildcards: q.Get("search_wildcards") == "true", Category: q.Get("filter_category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Sort: q.Get("sort"), Direction: q.Get("direction")}
 	if filter.Sort == "" || filter.Sort == "score" {
 		filter.Sort, filter.Direction = "release", "desc"
@@ -514,19 +719,38 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	for index, release := range releases {
 		libraryOrder[release.ID] = index
 	}
-	profileReleases, err := s.discoveryReleasePage(r.Context(), domain.ReleaseFilter{StashWatched: true, Sort: "updated", Direction: "desc", ShowNonPreferred: true}, 5000)
+	// Load the complete local set rather than filtering on the mirrored release
+	// counters: an archived play can legitimately exist while those mirrors are
+	// stale or have been reset after rebuilding StashApp.
+	profileReleases, err := s.discoveryReleasePage(r.Context(), domain.ReleaseFilter{Status: "local", Sort: "updated", Direction: "desc", ShowNonPreferred: true}, 0)
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	profile := buildAffinity(profileReleases, settings, now)
-	subtitlesByRelease := cachedSubtitleAvailability(releases, discoveryDuration(settings, "discoveries_subtitle_refresh_interval", 6*time.Hour))
+	profileReleases, err = archivedAffinityReleases(r.Context(), s.store, profileReleases)
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, "load playback archive: "+err.Error())
+		return
+	}
+	excluded := discoveryExcludedTags(settings["discoveries_excluded_tags"])
+	profileEligible := profileReleases[:0]
+	for _, release := range profileReleases {
+		if !discoveryHasExcludedTag(release, excluded) {
+			profileEligible = append(profileEligible, release)
+		}
+	}
+	profile := buildAffinity(profileEligible, settings, now)
+	remapped := discoveryRemapReleases(releases, settings["stash_missing_path_remaps"])
+	subtitlesByRelease := cachedSubtitleAvailability(remapped, discoveryDuration(settings, "discoveries_subtitle_refresh_interval", 6*time.Hour))
 	rewatchDays := discoveryInt(settings, "discoveries_rewatch_days", 90)
 	pool := strings.TrimSpace(r.URL.Query().Get("pool"))
 	pools := discoveryPools(settings["discoveries_pools"])
 	subtitles := strings.TrimSpace(r.URL.Query().Get("subtitles"))
 	items := make([]discoveryItem, 0, len(releases))
 	for _, release := range releases {
+		if discoveryHasExcludedTag(release, excluded) {
+			continue
+		}
 		itemCategory := discoveryCategory(release, rewatchDays, now)
 		if category != "" && category != "all" && category != "for_you" && category != "random" && category != itemCategory && !(category == "ready" && itemCategory == "unwatched") && !(category == "needs_subtitles" && release.Local) {
 			continue
@@ -551,7 +775,8 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		g, genre := affinityScore(release.Genres, profile.genre)
 		st, studio := affinityScore([]string{release.Studio}, profile.studio)
 		l, label := affinityScore([]string{release.Label}, profile.label)
-		score := a*.30 + g*.25 + st*.12 + l*.08
+		textScore, textTheme, textField := textAffinity(release, profile.genre)
+		score := a*.30 + g*.25 + st*.12 + l*.08 + textScore*.12
 		if release.PlayCount == 0 {
 			score += 8
 		}
@@ -572,6 +797,17 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 			reasons = append(reasons, "Studio preference: "+studio)
 		} else if label != "" {
 			reasons = append(reasons, "Label preference: "+label)
+		}
+		if textTheme != "" {
+			reasons = append(reasons, textField+" matches a watched theme: "+textTheme)
+		}
+		if keywords := pools[pool]; pool != "" {
+			for _, keyword := range keywords {
+				if discoveryTextMatches(release, keyword) {
+					reasons = append(reasons, "Discovery pool match: "+pool+" · "+keyword)
+					break
+				}
+			}
 		}
 		if len(reasons) == 0 {
 			reasons = append(reasons, "A fresh release outside your usual history")
@@ -606,6 +842,7 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		items = diversifyDiscoveries(items, discoveryFloat(settings, "discoveries_diversity_percent", 25))
 	}
 	total := len(items)
+	allItems := items
 	limit := requestedLimit
 	if offset >= len(items) {
 		items = []discoveryItem{}
@@ -622,5 +859,11 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		poolNames = append(poolNames, name)
 	}
 	sort.Strings(poolNames)
-	s.json(w, http.StatusOK, map[string]any{"items": items, "total": total, "offset": offset, "has_more": offset+len(items) < total && offset+len(items) < candidateLimit, "generated_at": now, "mode": mode, "pools": poolNames})
+	discoveryResultCache.Lock()
+	discoveryResultCache.key, discoveryResultCache.created, discoveryResultCache.items, discoveryResultCache.mode, discoveryResultCache.pools = cacheKey, now, allItems, mode, poolNames
+	discoveryResultCache.Unlock()
+	discoveryAIStatus.RLock()
+	aiRunning, aiCompleted, aiTotal, aiError := discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error
+	discoveryAIStatus.RUnlock()
+	s.json(w, http.StatusOK, map[string]any{"items": items, "total": total, "offset": offset, "has_more": offset+len(items) < total, "generated_at": now, "mode": mode, "pools": poolNames, "openai": map[string]any{"enabled": settings["discoveries_openai_enabled"] == "true", "running": aiRunning, "completed": aiCompleted, "total": aiTotal, "error": aiError}})
 }
