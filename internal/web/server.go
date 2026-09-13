@@ -3010,13 +3010,14 @@ func (s *Server) runBulkReleaseJobs() {
 }
 func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 	var p struct {
-		SiteID    int64  `json:"site_id"`
-		ReleaseID int64  `json:"release_id"`
-		Mode      string `json:"mode"`
-		Pages     int    `json:"pages"`
-		AllPages  bool   `json:"all_pages"`
-		Kind      string `json:"kind"`
-		Priority  int    `json:"priority"`
+		SiteID      int64  `json:"site_id"`
+		StartSiteID int64  `json:"start_site_id"`
+		ReleaseID   int64  `json:"release_id"`
+		Mode        string `json:"mode"`
+		Pages       int    `json:"pages"`
+		AllPages    bool   `json:"all_pages"`
+		Kind        string `json:"kind"`
+		Priority    int    `json:"priority"`
 	}
 	if !s.decode(w, r, &p) {
 		return
@@ -3042,7 +3043,7 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 		s.json(w, 202, s.monitor.StatusForRelease(p.ReleaseID))
 		return
 	}
-	if e := s.monitor.StartOptions(r.Context(), monitor.RefreshOptions{SiteID: p.SiteID, Mode: p.Mode, Pages: p.Pages, AllPages: p.AllPages, Kind: p.Kind, Priority: p.Priority}); e != nil {
+	if e := s.monitor.StartOptions(r.Context(), monitor.RefreshOptions{SiteID: p.SiteID, StartSiteID: p.StartSiteID, Mode: p.Mode, Pages: p.Pages, AllPages: p.AllPages, Kind: p.Kind, Priority: p.Priority}); e != nil {
 		s.problem(w, 409, e.Error())
 		return
 	}
