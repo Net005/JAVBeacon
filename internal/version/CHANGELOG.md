@@ -7,6 +7,29 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.170] - 2026-09-13
+
+### Added
+
+- Added a first-class Discoveries area with personalized For You, new release,
+  ready-to-watch, unwatched, rewatch, needs-subtitles, and randomized discovery
+  pools. Discovery results reuse the complete Release Library card, selection,
+  screenshot-preview, detail-navigation, monitoring, and download experience.
+- Added a dedicated Discoveries settings area for history weighting, recency,
+  diversity, custom genre/theme pools, subtitle analysis, Stash recommendation
+  tags, and optional server-side OpenAI enrichment.
+- Added recommendation scoring from Stash play and orgasm history, with title,
+  story, performer, genre, studio, label, recency, local availability, and
+  subtitle availability signals. Optional OpenAI reranking can also analyze
+  cleaned subtitle dialogue and caches results to avoid repeated API calls.
+
+### Changed
+
+- Reordered the main navigation to Releases, Monitoring, Notifications,
+  Discoveries, History, Jobs, Sites, Missing Files, Logs, and Settings.
+- Reduced Stash scene-card overhead by deferring subtitle checks until hover
+  and caching the result for the browser session.
+
 ## [1.0.169] - 2026-09-12
 
 ### Added

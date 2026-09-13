@@ -245,6 +245,33 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 			missing[k] = v
 		}
 	}
+	for k, v := range map[string]string{
+		"discoveries_enabled":                   "true",
+		"discoveries_rewatch_days":              "90",
+		"discoveries_result_limit":              "100",
+		"discoveries_exploration_percent":       "15",
+		"discoveries_play_weight":               "1",
+		"discoveries_orgasm_weight":             "3",
+		"discoveries_recency_half_life_days":    "180",
+		"discoveries_subtitle_bonus":            "10",
+		"discoveries_diversity_percent":         "25",
+		"discoveries_openai_enabled":            "false",
+		"discoveries_openai_model":              "gpt-5-mini",
+		"discoveries_openai_embedding_model":    "text-embedding-3-small",
+		"discoveries_openai_candidate_limit":    "150",
+		"discoveries_openai_monthly_budget":     "5",
+		"discoveries_openai_batch":              "true",
+		"discoveries_subtitle_analysis_enabled": "false",
+		"discoveries_subtitle_languages":        "en, ja",
+		"discoveries_subtitle_max_chars":        "16000",
+		"discoveries_subtitle_keep_cleaned":     "false",
+		"discoveries_stash_tag_sync_enabled":    "false",
+		"discoveries_refresh_interval":          "24h",
+	} {
+		if settings[k] == "" {
+			missing[k] = v
+		}
+	}
 	for k, v := range map[string]string{"stash_realtime_enabled": "false", "stash_realtime_debounce_seconds": "3", "stash_realtime_retry_attempts": "3", "stash_realtime_retry_delay_seconds": "2"} {
 		if settings[k] == "" {
 			missing[k] = v
