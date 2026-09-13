@@ -521,6 +521,8 @@ func (s *Server) routes() {
 	})
 	s.mux.HandleFunc("GET /api/stash/history", s.stashHistory)
 	s.mux.HandleFunc("GET /api/discoveries", s.discoveries)
+	s.mux.HandleFunc("GET /api/jobs/discoveries", s.discoveryJob)
+	s.mux.HandleFunc("POST /api/jobs/discoveries", s.discoveryJob)
 	s.mux.HandleFunc("GET /api/stash/history/export", s.exportStashHistory)
 	s.mux.HandleFunc("POST /api/stash/history/sync", s.syncStashHistory)
 	s.mux.HandleFunc("POST /api/stash/history/writeback/review", s.reviewStashHistoryWriteback)
@@ -1406,6 +1408,32 @@ func (s *Server) notifications(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, 500, e.Error())
 		return
 	}
+	q := r.URL.Query()
+	if q.Get("search_expression") != "" || q.Get("hide_local") == "true" || q.Get("hide_monitored") == "true" {
+		allowed := make(map[int64]bool)
+		for offset := 0; ; offset += 500 {
+			filter := domain.ReleaseFilter{SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: true, Sort: "release", Direction: "desc", Limit: 500, Offset: offset}
+			page, err := s.store.Releases(r.Context(), filter)
+			if err != nil {
+				s.problem(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			for _, release := range page {
+				allowed[release.ID] = true
+			}
+			if len(page) < 500 {
+				break
+			}
+		}
+		filtered := x[:0]
+		for _, notification := range x {
+			if !allowed[notification.ReleaseID] || q.Get("hide_monitored") == "true" && notification.Release != nil && notification.Release.MonitorDownload {
+				continue
+			}
+			filtered = append(filtered, notification)
+		}
+		x = filtered
+	}
 	s.json(w, 200, x)
 }
 func (s *Server) clearNotifications(w http.ResponseWriter, r *http.Request) {
@@ -1797,11 +1825,11 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		allowed[key] = true
 	}
 	for _, key := range []string{
-		"discoveries_enabled", "discoveries_rewatch_days", "discoveries_result_limit", "discoveries_exploration_percent",
+		"discoveries_enabled", "discoveries_refresh_enabled", "discoveries_rewatch_days", "discoveries_result_limit", "discoveries_exploration_percent",
 		"discoveries_play_weight", "discoveries_orgasm_weight", "discoveries_recency_half_life_days", "discoveries_subtitle_bonus", "discoveries_diversity_percent",
 		"discoveries_openai_enabled", "discoveries_openai_api_key", "discoveries_openai_base_url", "discoveries_openai_model", "discoveries_openai_embedding_model", "discoveries_openai_candidate_limit", "discoveries_openai_monthly_budget", "discoveries_openai_batch",
 		"discoveries_subtitle_analysis_enabled", "discoveries_subtitle_languages", "discoveries_subtitle_max_chars", "discoveries_subtitle_keep_cleaned",
-		"discoveries_stash_unwatched_tag_id", "discoveries_stash_rewatch_tag_id", "discoveries_stash_hidden_tag_id", "discoveries_stash_tag_sync_enabled", "discoveries_refresh_interval", "discoveries_pools",
+		"discoveries_stash_unwatched_tag_id", "discoveries_stash_rewatch_tag_id", "discoveries_stash_hidden_tag_id", "discoveries_stash_tag_sync_enabled", "discoveries_refresh_interval", "discoveries_subtitle_refresh_interval", "discoveries_openai_cache_interval", "discoveries_pools",
 	} {
 		allowed[key] = true
 	}
@@ -2009,7 +2037,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// up front instead of silently falling back to that schedule's default
 	// interval downstream, which used to look exactly like the schedule
 	// hadn't picked up the change at all.
-	for _, key := range []string{"download_search_interval", "download_search_older_interval", "stash_sync_interval", "stash_watchlist_sync_interval", "stash_history_writeback_interval"} {
+	for _, key := range []string{"download_search_interval", "download_search_older_interval", "stash_sync_interval", "stash_watchlist_sync_interval", "stash_history_writeback_interval", "discoveries_refresh_interval", "discoveries_subtitle_refresh_interval", "discoveries_openai_cache_interval"} {
 		if raw, ok := x[key]; ok && strings.TrimSpace(raw) != "" {
 			if parsed, err := domain.ParseScheduleDuration(strings.TrimSpace(raw)); err != nil || parsed < time.Minute {
 				s.problem(w, http.StatusUnprocessableEntity, key+": schedule must be a valid duration of at least 1 minute (e.g. \"1h\", \"30m\", \"7d\")")

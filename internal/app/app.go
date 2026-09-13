@@ -247,6 +247,7 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 	}
 	for k, v := range map[string]string{
 		"discoveries_enabled":                   "true",
+		"discoveries_refresh_enabled":           "true",
 		"discoveries_rewatch_days":              "90",
 		"discoveries_result_limit":              "100",
 		"discoveries_exploration_percent":       "15",
@@ -267,6 +268,8 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		"discoveries_subtitle_keep_cleaned":     "false",
 		"discoveries_stash_tag_sync_enabled":    "false",
 		"discoveries_refresh_interval":          "24h",
+		"discoveries_subtitle_refresh_interval": "6h",
+		"discoveries_openai_cache_interval":     "6h",
 	} {
 		if settings[k] == "" {
 			missing[k] = v
@@ -512,6 +515,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.downloads.PikPakAccountSchedule(ctx)
 	go a.downloads.OperationalHealthSchedule(ctx)
 	go a.downloads.ReleaseUpgradeSchedule(ctx)
+	go webapp.ScheduleDiscoveries(ctx, a.store, a.log)
 	errs := make(chan error, 1)
 	go func() {
 		a.log.Info("JAVBeacon web server started", "address", a.cfg.ListenAddress, "database", databaseDescription(a.cfg))
