@@ -17,6 +17,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/backfill"
 	"github.com/Net005/JAVBeacon/internal/config"
 	"github.com/Net005/JAVBeacon/internal/covers"
+	aidiscovery "github.com/Net005/JAVBeacon/internal/discovery"
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"github.com/Net005/JAVBeacon/internal/download"
 	"github.com/Net005/JAVBeacon/internal/logging"
@@ -313,6 +314,18 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 	}
 	if len(missing) > 0 {
 		_ = st.SaveSettings(context.Background(), missing)
+		for key, value := range missing {
+			settings[key] = value
+		}
+	}
+	if settings["discoveries_ai_repair_version"] != aidiscovery.SchemaVersion {
+		_, repairErr := aidiscovery.RepairStoredRanks(context.Background(), st, settings["discoveries_pools"], log)
+		if repairErr != nil {
+			log.Warn("AI Discovery repair failed", "error", repairErr)
+		} else {
+			_ = st.SaveSettings(context.Background(), map[string]string{"discoveries_ai_repair_version": aidiscovery.SchemaVersion})
+			settings["discoveries_ai_repair_version"] = aidiscovery.SchemaVersion
+		}
 	}
 	if settings["flaresolverr_url"] == "" {
 		_ = st.SaveSettings(context.Background(), map[string]string{"flaresolverr_url": cfg.FlareSolverrURL, "flaresolverr_cooldown": fmt.Sprint(cfg.FlareSolverrCooldown)})

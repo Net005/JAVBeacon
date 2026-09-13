@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	aidiscovery "github.com/Net005/JAVBeacon/internal/discovery"
 	"github.com/Net005/JAVBeacon/internal/domain"
@@ -241,6 +242,8 @@ func cleanedSubtitleExcerpt(release domain.Release, maxChars int) string {
 		return ""
 	}
 	var out strings.Builder
+	written := 0
+	seen := map[string]bool{}
 	for _, path := range subtitleFiles(release) {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -255,15 +258,23 @@ func cleanedSubtitleExcerpt(release domain.Release, maxChars int) string {
 				continue
 			}
 			line = strings.NewReplacer("<i>", "", "</i>", "", "<b>", "", "</b>", "", "{\\i1}", "", "{\\i0}", "").Replace(line)
-			if out.Len()+len(line)+1 > maxChars {
-				remaining := maxChars - out.Len()
+			line = strings.TrimSpace(line)
+			key := strings.ToLower(line)
+			if !aidiscovery.MeaningfulSubtitleLine(line) || seen[key] {
+				continue
+			}
+			seen[key] = true
+			lineRunes := utf8.RuneCountInString(line)
+			if written+lineRunes+1 > maxChars {
+				remaining := maxChars - written
 				if remaining > 0 {
-					out.WriteString(line[:min(remaining, len(line))])
+					out.WriteString(aidiscovery.TruncateUTF8(line, remaining))
 				}
 				return out.String()
 			}
 			out.WriteString(line)
 			out.WriteByte('\n')
+			written += lineRunes + 1
 		}
 	}
 	return out.String()
@@ -281,9 +292,7 @@ func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit
 		eligible := 0
 		for _, item := range items[start:end] {
 			story := item.Story
-			if len(story) > 1200 {
-				story = story[:1200]
-			}
+			story = aidiscovery.TruncateUTF8(story, 1200)
 			batch = append(batch, discoveryAICandidate{ID: item.ID, VideoID: item.VideoID, Title: item.Title, Story: story, Actresses: item.Actresses, Genres: item.Genres, Studio: item.Studio, Local: item.Local, Played: item.PlayCount, Orgasms: item.OCounter})
 			if subtitleEnabled && item.HasSubtitle {
 				eligible++
@@ -312,10 +321,10 @@ func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit
 			changed := false
 			for i := range batch {
 				if len(batch[i].Subtitle) > 0 {
-					batch[i].Subtitle = batch[i].Subtitle[:len(batch[i].Subtitle)/2]
+					batch[i].Subtitle = aidiscovery.TruncateUTF8(batch[i].Subtitle, max(utf8.RuneCountInString(batch[i].Subtitle)/2, 1))
 					changed = true
-				} else if len(batch[i].Story) > 160 {
-					batch[i].Story = batch[i].Story[:len(batch[i].Story)/2]
+				} else if utf8.RuneCountInString(batch[i].Story) > 160 {
+					batch[i].Story = aidiscovery.TruncateUTF8(batch[i].Story, utf8.RuneCountInString(batch[i].Story)/2)
 					changed = true
 				}
 			}
@@ -343,7 +352,7 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 	if model == "" {
 		model = "qwen3:8b"
 	}
-	providerFingerprint := strings.Join([]string{settings["discoveries_ollama_url"], model, settings["discoveries_openai_fallback_enabled"], settings["discoveries_openai_model"]}, "\n")
+	providerFingerprint := discoveryProviderFingerprint(settings, model)
 	fingerprints := make(map[int64]string, limit)
 	releaseIDs := make([]int64, 0, limit)
 	for _, batch := range batches {
@@ -358,7 +367,7 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 	stored, err := s.store.DiscoveryAIRanks(r.Context(), releaseIDs)
 	if err == nil {
 		for _, id := range releaseIDs {
-			if rank, ok := stored[id]; ok && rank.Fingerprint == fingerprints[id] {
+			if rank, ok := stored[id]; ok && rank.Fingerprint == fingerprints[id] && aidiscovery.ValidateStoredRank(rank, pools) == nil {
 				persisted = append(persisted, openAIRank{ID: id, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools})
 			}
 		}
@@ -437,7 +446,7 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 			for _, rank := range ranks {
 				durable = append(durable, domain.DiscoveryAIRank{ReleaseID: rank.ID, Fingerprint: fingerprints[rank.ID], Model: result.Provider + ":" + model, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools, GeneratedAt: now})
 			}
-			if err := s.store.SaveDiscoveryAIRanks(context.Background(), durable); err != nil {
+			if err := saveValidatedDiscoveryAIRanks(context.Background(), s.store, durable, pools); err != nil {
 				discoveryAIStatus.Lock()
 				discoveryAIStatus.Error = fmt.Sprintf("Batch %d/%d database save: %v", index+1, len(missingBatches), err)
 				discoveryAIStatus.Unlock()
@@ -456,6 +465,23 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 		}
 	}()
 	return applyOpenAIRanks(items, persisted), len(persisted) > 0
+}
+
+func discoveryProviderFingerprint(settings map[string]string, model string) string {
+	return strings.Join([]string{"ai-discovery-schema:" + aidiscovery.SchemaVersion, settings["discoveries_ollama_url"], model, settings["discoveries_openai_fallback_enabled"], settings["discoveries_openai_model"]}, "\n")
+}
+
+type discoveryAIRankSaver interface {
+	SaveDiscoveryAIRanks(context.Context, []domain.DiscoveryAIRank) error
+}
+
+func saveValidatedDiscoveryAIRanks(ctx context.Context, saver discoveryAIRankSaver, ranks []domain.DiscoveryAIRank, pools string) error {
+	for _, rank := range ranks {
+		if err := aidiscovery.ValidateStoredRank(rank, pools); err != nil {
+			return fmt.Errorf("refusing to persist invalid AI ranking: %w", err)
+		}
+	}
+	return saver.SaveDiscoveryAIRanks(ctx, ranks)
 }
 
 func discoveryFloat(settings map[string]string, key string, fallback float64) float64 {

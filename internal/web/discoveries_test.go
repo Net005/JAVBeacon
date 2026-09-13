@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	aidiscovery "github.com/Net005/JAVBeacon/internal/discovery"
 	"github.com/Net005/JAVBeacon/internal/domain"
@@ -69,6 +70,20 @@ func TestSubtitleSidecarAndCleanExcerpt(t *testing.T) {
 	}
 	if got := cleanedSubtitleExcerpt(release, 100); got != "Hello there\n" {
 		t.Fatalf("cleaned excerpt = %q", got)
+	}
+}
+
+func TestSubtitleExcerptRemovesNoiseDuplicatesAndPreservesUTF8(t *testing.T) {
+	dir := t.TempDir()
+	video := filepath.Join(dir, "UTF-001.mp4")
+	subtitle := filepath.Join(dir, "UTF-001.en.srt")
+	content := "1\n00:00:01,000 --> 00:00:03,000\nTranslated by Example\nhttps://example.test\nあいうえお\nあいうえお\nMeaningful dialogue line\n"
+	if err := os.WriteFile(subtitle, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := cleanedSubtitleExcerpt(domain.Release{StashFilePath: video}, 12)
+	if !utf8.ValidString(got) || strings.Contains(got, "Translated") || strings.Contains(got, "http") || strings.Count(got, "あいうえお") != 1 {
+		t.Fatalf("subtitle cleanup failed: %q", got)
 	}
 }
 
@@ -176,6 +191,86 @@ func TestApplyOpenAIRanksRetainsGeneratedTextForFiltering(t *testing.T) {
 	items := applyOpenAIRanks([]discoveryItem{{Release: domain.Release{ID: 42}}}, []openAIRank{{ID: 42, Score: 91, Reason: "Matches the title and story"}})
 	if len(items) != 1 || !items[0].AIEnhanced || items[0].AIText != "Matches the title and story" {
 		t.Fatalf("AI enrichment was not retained: %#v", items)
+	}
+}
+
+type recordingAIRankSaver struct{ saved []domain.DiscoveryAIRank }
+
+func (s *recordingAIRankSaver) SaveDiscoveryAIRanks(_ context.Context, ranks []domain.DiscoveryAIRank) error {
+	s.saved = append(s.saved, ranks...)
+	return nil
+}
+
+func TestValidatedAIRankingPersistenceGuard(t *testing.T) {
+	saver := &recordingAIRankSaver{}
+	valid := domain.DiscoveryAIRank{ReleaseID: 7, Fingerprint: "v2", Model: "ollama:qwen3:8b", Score: 84, Reason: "Strong story and preferred studio match."}
+	if err := saveValidatedDiscoveryAIRanks(context.Background(), saver, []domain.DiscoveryAIRank{valid}, ""); err != nil || len(saver.saved) != 1 {
+		t.Fatalf("valid result was not persisted: saved=%d err=%v", len(saver.saved), err)
+	}
+	invalid := valid
+	invalid.Reason = "Please provide more context so I can assist you."
+	if err := saveValidatedDiscoveryAIRanks(context.Background(), saver, []domain.DiscoveryAIRank{invalid}, ""); err == nil {
+		t.Fatal("invalid result was persisted")
+	}
+	if len(saver.saved) != 1 {
+		t.Fatalf("invalid persistence changed saved rows: %d", len(saver.saved))
+	}
+}
+
+func TestInvalidQwenResponseLeavesDeterministicRecommendationUntouched(t *testing.T) {
+	items := []discoveryItem{{Release: domain.Release{ID: 7}, Score: 64, Reasons: []string{"Preferred studio history"}}}
+	result := applyOpenAIRanks(items, nil)
+	if len(result) != 1 || result[0].AIEnhanced || result[0].Score != 64 || result[0].Reasons[0] != "Preferred studio history" {
+		t.Fatalf("deterministic recommendation changed: %#v", result)
+	}
+}
+
+func TestDiscoveryFingerprintIncludesPromptSchemaVersion(t *testing.T) {
+	fingerprint := discoveryProviderFingerprint(map[string]string{"discoveries_ollama_url": "http://ollama:11434"}, "qwen3:8b")
+	if !strings.Contains(fingerprint, "ai-discovery-schema:"+aidiscovery.SchemaVersion) {
+		t.Fatalf("schema version missing from provider fingerprint: %q", fingerprint)
+	}
+}
+
+func TestExistingInvalidAIRankingRepairAgainstSQLite(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "ai-repair.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Repair", Name: "Repair", Type: "Site", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, release := range []domain.Release{{SiteID: site.ID, VideoID: "GOOD-001", Title: "Good"}, {SiteID: site.ID, VideoID: "BAD-001", Title: "Bad"}} {
+		if _, err := st.UpsertRelease(ctx, release); err != nil {
+			t.Fatal(err)
+		}
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Limit: 10, ShowNonPreferred: true})
+	if err != nil || len(releases) != 2 {
+		t.Fatalf("load releases: %v count=%d", err, len(releases))
+	}
+	var goodID, badID int64
+	for _, release := range releases {
+		if release.VideoID == "GOOD-001" {
+			goodID = release.ID
+		} else {
+			badID = release.ID
+		}
+	}
+	badReason := "The content you provided appears to be a mix of unrelated text. There is no clear narrative. Please provide more context."
+	if err := st.SaveDiscoveryAIRanks(ctx, []domain.DiscoveryAIRank{{ReleaseID: goodID, Score: 90, Reason: "Strong preferred studio and story match.", Fingerprint: "good"}, {ReleaseID: badID, Score: 50, Reason: badReason, Fingerprint: "bad"}}); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := aidiscovery.RepairStoredRanks(ctx, st, "", nil)
+	if err != nil || removed != 1 {
+		t.Fatalf("repair removed=%d err=%v", removed, err)
+	}
+	remaining, err := st.AllDiscoveryAIRanks(ctx)
+	if err != nil || len(remaining) != 1 || remaining[0].ReleaseID != goodID {
+		t.Fatalf("valid/invalid repair result: %#v err=%v", remaining, err)
 	}
 }
 

@@ -352,7 +352,7 @@ type ReleaseFilter struct {
 	MinReleaseDate, MaxReleaseDate string
 }
 
-// DiscoveryAIRank is a durable OpenAI enrichment for one release. Fingerprint
+// DiscoveryAIRank is a durable AI enrichment for one release. Fingerprint
 // identifies the exact model, taste/pool configuration, metadata and subtitle
 // excerpt used to create it; a mismatch makes the row stale without deleting
 // useful history eagerly.

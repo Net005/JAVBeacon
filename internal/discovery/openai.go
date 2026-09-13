@@ -64,7 +64,7 @@ func (s *Service) openAIRank(ctx context.Context, cfg Config, candidates []Candi
 	if json.Unmarshal(data, &envelope) != nil {
 		return nil, errors.New("OpenAI fallback returned an invalid response")
 	}
-	return parseRankingJSON(responseText(envelope), candidates)
+	return parseRankingJSON(responseText(envelope), candidates, pools)
 }
 
 func (s *Service) TestOpenAI(ctx context.Context, cfg Config) (time.Duration, error) {
