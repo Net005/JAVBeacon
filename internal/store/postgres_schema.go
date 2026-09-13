@@ -330,6 +330,16 @@ CREATE TABLE IF NOT EXISTS discovery_scores (
  updated_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_discovery_scores_score ON discovery_scores(score DESC,release_id DESC);
+CREATE TABLE IF NOT EXISTS discovery_ai_ranks (
+ release_id BIGINT PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE,
+ fingerprint TEXT NOT NULL,
+ model TEXT NOT NULL DEFAULT '',
+ score DOUBLE PRECISION NOT NULL DEFAULT 0,
+ reason TEXT NOT NULL DEFAULT '',
+ pools TEXT NOT NULL DEFAULT '[]',
+ generated_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_discovery_ai_ranks_fingerprint ON discovery_ai_ranks(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_notifications_release_created ON notifications(release_id,created_at DESC);
 
 CREATE TABLE IF NOT EXISTS watchlist_sync (

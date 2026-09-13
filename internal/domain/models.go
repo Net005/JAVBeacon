@@ -352,6 +352,20 @@ type ReleaseFilter struct {
 	MinReleaseDate, MaxReleaseDate string
 }
 
+// DiscoveryAIRank is a durable OpenAI enrichment for one release. Fingerprint
+// identifies the exact model, taste/pool configuration, metadata and subtitle
+// excerpt used to create it; a mismatch makes the row stale without deleting
+// useful history eagerly.
+type DiscoveryAIRank struct {
+	ReleaseID   int64
+	Fingerprint string
+	Model       string
+	Score       float64
+	Reason      string
+	Pools       []string
+	GeneratedAt time.Time
+}
+
 type NotificationPage struct {
 	Items []Notification `json:"items"`
 	Total int            `json:"total"`

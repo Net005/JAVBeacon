@@ -127,6 +127,53 @@ func TestDiscoveryPoolSearchAndGlobalScoreOrdering(t *testing.T) {
 	}
 }
 
+func TestDiscoveryAIRanksPersistAndUpdateByRelease(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "discovery-ai.db")
+	s, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := s.SaveSite(ctx, domain.Site{Title: "AI", Type: "Site", Name: "AI", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "AI-1", Title: "Persistent", Source: "AI"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := s.Releases(ctx, domain.ReleaseFilter{Limit: 1, ShowNonPreferred: true})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release lookup: %v (%d rows)", err, len(releases))
+	}
+	id := releases[0].ID
+	generated := time.Date(2026, 9, 13, 15, 0, 0, 0, time.UTC)
+	if err := s.SaveDiscoveryAIRanks(ctx, []domain.DiscoveryAIRank{{ReleaseID: id, Fingerprint: "first", Model: "gpt-5-mini", Score: 81, Reason: "Story match", Pools: []string{"Sci-Fi"}, GeneratedAt: generated}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got, err := s.DiscoveryAIRanks(ctx, []int64{id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[id].Fingerprint != "first" || got[id].Score != 81 || got[id].Reason != "Story match" || len(got[id].Pools) != 1 || got[id].Pools[0] != "Sci-Fi" || !got[id].GeneratedAt.Equal(generated) {
+		t.Fatalf("rank did not survive restart: %#v", got[id])
+	}
+	if err := s.SaveDiscoveryAIRanks(ctx, []domain.DiscoveryAIRank{{ReleaseID: id, Fingerprint: "changed", Model: "gpt-5-mini", Score: 92, Reason: "Updated match"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.DiscoveryAIRanks(ctx, []int64{id})
+	if err != nil || got[id].Fingerprint != "changed" || got[id].Score != 92 {
+		t.Fatalf("rank update failed: %#v, %v", got[id], err)
+	}
+}
+
 func TestSQLiteRemovesAndRejectsJavLibraryGIGAReleases(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "javlibrary-giga.db"))
