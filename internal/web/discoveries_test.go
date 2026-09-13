@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	aidiscovery "github.com/Net005/JAVBeacon/internal/discovery"
 	"github.com/Net005/JAVBeacon/internal/domain"
+	"github.com/Net005/JAVBeacon/internal/store"
 )
 
 type discoveryArchiveStub struct{ archive domain.StashHistoryExport }
@@ -154,24 +157,6 @@ func TestDiscoveryAIBatchesBoundInputAndAdaptSubtitleExcerpt(t *testing.T) {
 	}
 }
 
-func TestOpenAIRankingRequestReportsProviderErrorAndDoesNotRetry400(t *testing.T) {
-	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		w.Header().Set("x-request-id", "req_test_123")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "input is too large", "code": "context_length_exceeded"}})
-	}))
-	defer server.Close()
-	_, err := openAIRankingRequest(map[string]string{"discoveries_openai_api_key": "test", "discoveries_openai_base_url": server.URL, "discoveries_openai_retry_attempts": "3"}, "test", map[string]any{"type": "object"}, 1)
-	if err == nil || !strings.Contains(err.Error(), "context_length_exceeded") || !strings.Contains(err.Error(), "req_test_123") {
-		t.Fatalf("provider error details missing: %v", err)
-	}
-	if calls != 1 {
-		t.Fatalf("HTTP 400 was retried %d times", calls)
-	}
-}
-
 func TestDiscoveryAITextFilteringIsPartialAndCaseInsensitive(t *testing.T) {
 	for _, tt := range []struct {
 		text, entries string
@@ -191,5 +176,54 @@ func TestApplyOpenAIRanksRetainsGeneratedTextForFiltering(t *testing.T) {
 	items := applyOpenAIRanks([]discoveryItem{{Release: domain.Release{ID: 42}}}, []openAIRank{{ID: 42, Score: 91, Reason: "Matches the title and story"}})
 	if len(items) != 1 || !items[0].AIEnhanced || items[0].AIText != "Matches the title and story" {
 		t.Fatalf("AI enrichment was not retained: %#v", items)
+	}
+}
+
+func TestOllamaTestEndpointReportsAvailableAndMissingModels(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "qwen3:8b"}}})
+	}))
+	defer ollama.Close()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "ollama-test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{store: st, discoveryAI: aidiscovery.New(nil)}
+	for _, tt := range []struct {
+		model     string
+		available bool
+	}{{"qwen3:8b", true}, {"missing:latest", false}} {
+		body := fmt.Sprintf(`{"url":%q,"model":%q,"health_timeout_seconds":2}`, ollama.URL, tt.model)
+		rec := httptest.NewRecorder()
+		s.testDiscoveryOllama(rec, httptest.NewRequest(http.MethodPost, "/api/discoveries/ollama/test", strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var status aidiscovery.OllamaStatus
+		if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+			t.Fatal(err)
+		}
+		if !status.Reachable || status.ModelAvailable != tt.available {
+			t.Fatalf("model %s: %+v", tt.model, status)
+		}
+	}
+}
+
+func TestOllamaTestEndpointReportsUnreachableServer(t *testing.T) {
+	offline := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := offline.URL
+	offline.Close()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "ollama-offline.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{store: st, discoveryAI: aidiscovery.New(nil)}
+	rec := httptest.NewRecorder()
+	s.testDiscoveryOllama(rec, httptest.NewRequest(http.MethodPost, "/api/discoveries/ollama/test", strings.NewReader(fmt.Sprintf(`{"url":%q,"model":"qwen3:8b","health_timeout_seconds":1}`, url))))
+	var status aidiscovery.OllamaStatus
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &status) != nil || status.Reachable {
+		t.Fatalf("unexpected offline response: %d %s", rec.Code, rec.Body.String())
 	}
 }

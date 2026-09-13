@@ -33,6 +33,11 @@ services:
       # The setting keeps its historical FlareSolverr name, but Byparr is the
       # included and recommended compatible solver.
       JAVBEACON_FLARESOLVERR_URL: "${JAVBEACON_FLARESOLVERR_URL:-http://byparr:8191/v1}"
+      # Optional remote Ollama defaults. Ollama is deliberately not a Compose
+      # dependency: JAVBeacon remains fully usable while the GPU workstation
+      # is offline.
+      JAVBEACON_OLLAMA_URL: "${JAVBEACON_OLLAMA_URL:-http://127.0.0.1:11434}"
+      JAVBEACON_OLLAMA_MODEL: "${JAVBEACON_OLLAMA_MODEL:-qwen3:8b}"
     depends_on:
       postgres:
         condition: service_healthy
