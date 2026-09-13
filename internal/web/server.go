@@ -1404,12 +1404,28 @@ func (s *Server) testPipelineStep(w http.ResponseWriter, r *http.Request) {
 	s.json(w, 200, map[string]any{"passed": true, "output": output})
 }
 func (s *Server) notifications(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if q.Get("paged") == "true" {
+		settings, _ := s.store.Settings(r.Context())
+		filter := releaseFilterFromQuery(q, settings)
+		limit, _ := strconv.Atoi(q.Get("limit"))
+		if limit <= 0 {
+			limit = 25
+		}
+		offset, _ := strconv.Atoi(q.Get("offset"))
+		page, err := s.store.NotificationsPage(r.Context(), q.Get("type"), filter, q.Get("hide_monitored") == "true", q.Get("notification_sort"), q.Get("direction"), limit, offset)
+		if err != nil {
+			s.problem(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.json(w, http.StatusOK, map[string]any{"items": page.Items, "total": page.Total, "offset": max(offset, 0), "has_more": max(offset, 0)+len(page.Items) < page.Total})
+		return
+	}
 	x, e := s.store.Notifications(r.Context(), r.URL.Query().Get("type"))
 	if e != nil {
 		s.problem(w, 500, e.Error())
 		return
 	}
-	q := r.URL.Query()
 	if q.Get("search_expression") != "" || q.Get("hide_local") == "true" || q.Get("hide_monitored") == "true" {
 		allowed := make(map[int64]bool)
 		for offset := 0; ; offset += 500 {

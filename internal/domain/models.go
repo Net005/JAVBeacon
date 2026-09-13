@@ -352,6 +352,11 @@ type ReleaseFilter struct {
 	MinReleaseDate, MaxReleaseDate string
 }
 
+type NotificationPage struct {
+	Items []Notification `json:"items"`
+	Total int            `json:"total"`
+}
+
 // ReleasePage is the cursor-paginated, lightweight result used by the
 // Release Library cover grid. Other release consumers keep using Releases,
 // which returns full rows and offset pagination for backwards compatibility.
