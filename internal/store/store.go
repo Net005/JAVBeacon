@@ -1555,6 +1555,10 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		q += ` AND r.release_date<=?`
 		a = append(a, f.MaxReleaseDate)
 	}
+	if !f.UpdatedAfter.IsZero() {
+		q += ` AND r.updated_at>?`
+		a = append(a, f.UpdatedAfter.UTC())
+	}
 	return q, a
 }
 
