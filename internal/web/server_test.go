@@ -202,7 +202,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`function wireTouchSwipe(`,
 		`el.addEventListener('pointermove'`,
 		`lockReleaseBackgroundScroll()`,
-		`releaseDialog.addEventListener('close',()=>{releaseOpenRequest++;unlockReleaseBackgroundScroll();stopDetailScreenshots();`,
+		`releaseDialog.addEventListener('close',()=>{const returnDiscoveryID=releaseNavSource==='discoveries'&&!discoveriesView.hidden?activeReleaseID:0;releaseOpenRequest++;unlockReleaseBackgroundScroll();stopDetailScreenshots();`,
 		`const interactive=e=>e.target.closest?.('button,a,input,select,textarea,.detailScreenshotRail,.screenshotLightboxStrip')`,
 		`if(dx<0)next?.();else previous?.()`,
 		`function edgeTapDirection(x,width){return x<=width*.2?-1:x>=width*.8?1:0}`,
@@ -2386,6 +2386,42 @@ func TestNotificationAdvancedSearchIsInitializedBeforeUse(t *testing.T) {
 	use := strings.Index(script, "notificationAdvancedSearch.classList.add('conditionButton','toolbarIcon')")
 	if declaration < 0 || use < 0 || use < declaration {
 		t.Fatalf("notificationAdvancedSearch initialization order is unsafe: declaration=%d use=%d", declaration, use)
+	}
+}
+
+func TestDiscoveriesPreserveScrollDuringPagingAndDetailReturn(t *testing.T) {
+	raw, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	for _, marker := range []string{
+		"const preserveScroll=discoveryRows.length>0&&!discoveriesView.hidden,scrollY=window.scrollY",
+		"if(preserveScroll)requestAnimationFrame(()=>window.scrollTo({top:scrollY,left:0,behavior:'auto'}))",
+		"if(prefs.activeMenu!==view||currentView?.hidden)switchView(view,false,false)",
+		"returnDiscoveryID=releaseNavSource==='discoveries'&&!discoveriesView.hidden?activeReleaseID:0",
+	} {
+		if !strings.Contains(script, marker) {
+			t.Fatalf("Discoveries scroll restoration is missing %q", marker)
+		}
+	}
+}
+
+func TestDiscoveriesReuseVisibleBulkSearchAndDownloadWorkflow(t *testing.T) {
+	raw, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	for _, marker := range []string{
+		"if(prefs.activeMenu==='discoveries'){releaseSelection=new Set(discoveryRows.map(item=>Number(item.id)))",
+		"const source=prefs.activeMenu==='discoveries'?discoveryRows:releases",
+		"if(inDiscoveries){const selected=new Set(ids.map(Number));discoveryRows.forEach",
+		"api('/releases/bulk/monitor-download'",
+	} {
+		if !strings.Contains(script, marker) {
+			t.Fatalf("Discoveries visible bulk workflow is missing %q", marker)
+		}
 	}
 }
 

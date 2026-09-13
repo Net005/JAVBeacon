@@ -7,6 +7,26 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.181] - 2026-09-13
+
+### Added
+
+- Discoveries now reuses the Release Library bulk Monitor + Search workflow,
+  including card selection, Shift-selection, the top bulk-action bar, priority
+  override, and the option to ignore StashApp-local state.
+- **Select all matching** on Discoveries intentionally selects only the cards
+  currently loaded and visible, never unseen fuzzy-loaded results.
+
+### Fixed
+
+- Loading another fuzzy Discoveries page now preserves the current viewport
+  instead of jumping to the top.
+- Returning from Release Details no longer reloads the already-visible
+  Discoveries view or loses its scroll position. Focus returns to the opened
+  card without scrolling unless that card is outside the viewport.
+- Completing a Discoveries bulk action updates the visible cards in place
+  rather than reloading the page and disturbing its position.
+
 ## [1.0.180] - 2026-09-13
 
 ### Fixed

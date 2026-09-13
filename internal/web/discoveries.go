@@ -794,6 +794,42 @@ func diversifyDiscoveries(items []discoveryItem, strength float64) []discoveryIt
 	return items
 }
 
+func discoveryFilterFromQuery(q url.Values, settings map[string]string, category string) (domain.ReleaseFilter, map[string][]string, string) {
+	pools := discoveryPools(settings["discoveries_pools"])
+	pool := strings.TrimSpace(q.Get("pool"))
+	filter := domain.ReleaseFilter{Search: q.Get("search"), SearchWildcards: q.Get("search_wildcards") == "true", Category: q.Get("filter_category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Sort: q.Get("sort"), Direction: q.Get("direction")}
+	if keywords := pools[pool]; pool != "" {
+		filter.PoolSearch = strings.Join(keywords, ",")
+	}
+	if filter.Sort == "" || filter.Sort == "score" {
+		filter.Sort, filter.Direction = "score", "desc"
+	} else if filter.Sort == "release_score" {
+		filter.Direction = "desc"
+	}
+	if category == "new" {
+		filter.HideLocal = true
+	} else if category == "ready" || category == "unwatched" || category == "rewatch" || category == "needs_subtitles" {
+		filter.Status = "local"
+	}
+	if !filter.ShowNonPreferred {
+		filter.IgnoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
+		filter.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
+		filter.UsePreferred = len(filter.IgnoreTags) > 0 || len(filter.IgnoreTitles) > 0
+	}
+	return filter, pools, pool
+}
+
+func discoveryReleaseMatches(release domain.Release, category, subtitles string, hasSubtitle bool, excluded map[string]bool, rewatchDays int, now time.Time) bool {
+	if discoveryHasExcludedTag(release, excluded) {
+		return false
+	}
+	itemCategory := discoveryCategory(release, rewatchDays, now)
+	if category != "" && category != "all" && category != "for_you" && category != "random" && category != itemCategory && !(category == "ready" && itemCategory == "unwatched") && !(category == "needs_subtitles" && release.Local) {
+		return false
+	}
+	return !((subtitles == "yes" && !hasSubtitle) || (subtitles == "no" && hasSubtitle) || (category == "ready" && !hasSubtitle) || (category == "needs_subtitles" && hasSubtitle))
+}
+
 func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	settings, _ := s.store.Settings(r.Context())
 	if settings["discoveries_enabled"] == "false" {
@@ -835,27 +871,7 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	// enrichment. Every catalog row remains reachable without blocking the UI
 	// on a full-library scoring pass.
 	candidateLimit := requestedLimit
-	pools := discoveryPools(settings["discoveries_pools"])
-	pool := strings.TrimSpace(q.Get("pool"))
-	filter := domain.ReleaseFilter{Search: q.Get("search"), SearchWildcards: q.Get("search_wildcards") == "true", Category: q.Get("filter_category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Sort: q.Get("sort"), Direction: q.Get("direction")}
-	if keywords := pools[pool]; pool != "" {
-		filter.PoolSearch = strings.Join(keywords, ",")
-	}
-	if filter.Sort == "" || filter.Sort == "score" {
-		filter.Sort, filter.Direction = "score", "desc"
-	} else if filter.Sort == "release_score" {
-		filter.Direction = "desc"
-	}
-	if category == "new" {
-		filter.HideLocal = true
-	} else if category == "ready" || category == "unwatched" || category == "rewatch" || category == "needs_subtitles" {
-		filter.Status = "local"
-	}
-	if !filter.ShowNonPreferred {
-		filter.IgnoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
-		filter.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
-		filter.UsePreferred = len(filter.IgnoreTags) > 0 || len(filter.IgnoreTitles) > 0
-	}
+	filter, pools, pool := discoveryFilterFromQuery(q, settings, category)
 	filter.Offset = offset
 	fullTotal, err := s.store.ReleasesCount(r.Context(), filter)
 	if err != nil {
@@ -884,15 +900,9 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	subtitles := strings.TrimSpace(r.URL.Query().Get("subtitles"))
 	items := make([]discoveryItem, 0, len(releases))
 	for _, release := range releases {
-		if discoveryHasExcludedTag(release, excluded) {
-			continue
-		}
 		itemCategory := discoveryCategory(release, rewatchDays, now)
-		if category != "" && category != "all" && category != "for_you" && category != "random" && category != itemCategory && !(category == "ready" && itemCategory == "unwatched") && !(category == "needs_subtitles" && release.Local) {
-			continue
-		}
 		hasSubtitle := subtitlesByRelease[release.ID]
-		if subtitles == "yes" && !hasSubtitle || subtitles == "no" && hasSubtitle || category == "ready" && !hasSubtitle || category == "needs_subtitles" && hasSubtitle {
+		if !discoveryReleaseMatches(release, category, subtitles, hasSubtitle, excluded, rewatchDays, now) {
 			continue
 		}
 		score, reasons := scoreDiscoveryRelease(release, profile, hasSubtitle, settings, rewatchDays, now)
