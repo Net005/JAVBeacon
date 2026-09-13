@@ -106,6 +106,67 @@ type openAIRank struct {
 	Pools  []string `json:"pools"`
 }
 
+func (s *Server) testDiscoveryOpenAI(w http.ResponseWriter, r *http.Request) {
+	settings, _ := s.store.Settings(r.Context())
+	var input struct {
+		APIKey  string `json:"api_key"`
+		BaseURL string `json:"base_url"`
+		Model   string `json:"model"`
+	}
+	if !s.decode(w, r, &input) {
+		return
+	}
+	apiKey := strings.TrimSpace(input.APIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(settings["discoveries_openai_api_key"])
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(input.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = strings.TrimRight(strings.TrimSpace(settings["discoveries_openai_base_url"]), "/")
+	}
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+	model := strings.TrimSpace(input.Model)
+	if model == "" {
+		model = strings.TrimSpace(settings["discoveries_openai_model"])
+	}
+	if model == "" {
+		model = "gpt-5-mini"
+	}
+	if apiKey == "" {
+		s.problem(w, http.StatusUnprocessableEntity, "OpenAI API key is empty")
+		return
+	}
+	body, _ := json.Marshal(map[string]any{"model": model, "input": "Reply with exactly: JAVBeacon discovery test passed", "max_output_tokens": 32})
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, baseURL+"/responses", bytes.NewReader(body))
+	if err != nil {
+		s.problem(w, 500, err.Error())
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	started := time.Now()
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		s.problem(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		s.problem(w, http.StatusBadGateway, fmt.Sprintf("OpenAI returned HTTP %d", resp.StatusCode))
+		return
+	}
+	s.json(w, http.StatusOK, map[string]any{"ok": true, "model": model, "elapsed_ms": time.Since(started).Milliseconds(), "response": strings.TrimSpace(openAIText(jsonObject(data)))})
+}
+
+func jsonObject(data []byte) map[string]any {
+	var value map[string]any
+	_ = json.Unmarshal(data, &value)
+	return value
+}
+
 var discoveryRankCache = struct {
 	sync.Mutex
 	entries map[[32]byte]discoveryRankCacheEntry
@@ -133,6 +194,13 @@ var discoverySubtitleCache = struct {
 	created      time.Time
 	availability map[int64]bool
 	checked      map[int64]bool
+}{}
+
+var discoveryAffinityCache = struct {
+	sync.RWMutex
+	created time.Time
+	key     [32]byte
+	profile affinityProfile
 }{}
 
 type discoveryRankCacheEntry struct {
@@ -329,6 +397,37 @@ func discoveryFloat(settings map[string]string, key string, fallback float64) fl
 	return v
 }
 
+func (s *Server) cachedDiscoveryAffinity(ctx context.Context, settings map[string]string, now time.Time) (affinityProfile, error) {
+	key := sha256.Sum256([]byte(strings.Join([]string{settings["discoveries_play_weight"], settings["discoveries_orgasm_weight"], settings["discoveries_recency_half_life_days"], settings["discoveries_excluded_tags"], settings["discoveries_last_synced_at"]}, "\n")))
+	discoveryAffinityCache.RLock()
+	if discoveryAffinityCache.key == key && time.Since(discoveryAffinityCache.created) < time.Hour {
+		profile := discoveryAffinityCache.profile
+		discoveryAffinityCache.RUnlock()
+		return profile, nil
+	}
+	discoveryAffinityCache.RUnlock()
+	releases, err := s.discoveryReleasePage(ctx, domain.ReleaseFilter{Status: "local", Sort: "updated", Direction: "desc", ShowNonPreferred: true}, 0)
+	if err != nil {
+		return affinityProfile{}, err
+	}
+	releases, err = archivedAffinityReleases(ctx, s.store, releases)
+	if err != nil {
+		return affinityProfile{}, err
+	}
+	excluded := discoveryExcludedTags(settings["discoveries_excluded_tags"])
+	eligible := releases[:0]
+	for _, release := range releases {
+		if !discoveryHasExcludedTag(release, excluded) {
+			eligible = append(eligible, release)
+		}
+	}
+	profile := buildAffinity(eligible, settings, now)
+	discoveryAffinityCache.Lock()
+	discoveryAffinityCache.created, discoveryAffinityCache.key, discoveryAffinityCache.profile = time.Now(), key, profile
+	discoveryAffinityCache.Unlock()
+	return profile, nil
+}
+
 func discoveryInt(settings map[string]string, key string, fallback int) int {
 	v, err := strconv.Atoi(strings.TrimSpace(settings[key]))
 	if err != nil {
@@ -415,6 +514,43 @@ func textAffinity(release domain.Release, weights map[string]float64) (float64, 
 		}
 	}
 	return best, phrase, field
+}
+
+func scoreDiscoveryRelease(release domain.Release, profile affinityProfile, hasSubtitle bool, settings map[string]string, rewatchDays int, now time.Time) (float64, []string) {
+	a, actress := affinityScore(release.Actresses, profile.actress)
+	g, genre := affinityScore(release.Genres, profile.genre)
+	st, studio := affinityScore([]string{release.Studio}, profile.studio)
+	l, label := affinityScore([]string{release.Label}, profile.label)
+	textScore, textTheme, textField := textAffinity(release, profile.genre)
+	score := a*.30 + g*.25 + st*.12 + l*.08 + textScore*.12
+	if release.PlayCount == 0 {
+		score += 8
+	}
+	if hasSubtitle {
+		score += discoveryFloat(settings, "discoveries_subtitle_bonus", 10)
+	}
+	if discoveryCategory(release, rewatchDays, now) == "rewatch" {
+		score += 6
+	}
+	reasons := make([]string, 0, 4)
+	if actress != "" {
+		reasons = append(reasons, "Performer preference: "+actress)
+	}
+	if genre != "" {
+		reasons = append(reasons, "Theme preference: "+genre)
+	}
+	if studio != "" {
+		reasons = append(reasons, "Studio preference: "+studio)
+	} else if label != "" {
+		reasons = append(reasons, "Label preference: "+label)
+	}
+	if textTheme != "" {
+		reasons = append(reasons, textField+" matches a watched theme: "+textTheme)
+	}
+	if len(reasons) == 0 {
+		reasons = append(reasons, "A fresh release outside your usual history")
+	}
+	return math.Round(score*10) / 10, reasons
 }
 
 func hasSubtitleFile(release domain.Release) bool {
@@ -579,9 +715,14 @@ func discoveryPools(raw string) map[string][]string {
 			out[name] = []string{name}
 			continue
 		}
+		seen := map[string]bool{}
 		for _, keyword := range strings.Split(parts[1], ",") {
 			if keyword = strings.TrimSpace(keyword); keyword != "" {
-				out[strings.TrimSpace(parts[0])] = append(out[strings.TrimSpace(parts[0])], keyword)
+				normalized := strings.ToLower(keyword)
+				if !seen[normalized] {
+					out[strings.TrimSpace(parts[0])] = append(out[strings.TrimSpace(parts[0])], keyword)
+					seen[normalized] = true
+				}
 			}
 		}
 	}
@@ -694,9 +835,16 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	// enrichment. Every catalog row remains reachable without blocking the UI
 	// on a full-library scoring pass.
 	candidateLimit := requestedLimit
+	pools := discoveryPools(settings["discoveries_pools"])
+	pool := strings.TrimSpace(q.Get("pool"))
 	filter := domain.ReleaseFilter{Search: q.Get("search"), SearchWildcards: q.Get("search_wildcards") == "true", Category: q.Get("filter_category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Sort: q.Get("sort"), Direction: q.Get("direction")}
+	if keywords := pools[pool]; pool != "" {
+		filter.PoolSearch = strings.Join(keywords, ",")
+	}
 	if filter.Sort == "" || filter.Sort == "score" {
-		filter.Sort, filter.Direction = "release", "desc"
+		filter.Sort, filter.Direction = "score", "desc"
+	} else if filter.Sort == "release_score" {
+		filter.Direction = "desc"
 	}
 	if category == "new" {
 		filter.HideLocal = true
@@ -724,32 +872,15 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	for index, release := range releases {
 		libraryOrder[release.ID] = index
 	}
-	// Load the complete local set rather than filtering on the mirrored release
-	// counters: an archived play can legitimately exist while those mirrors are
-	// stale or have been reset after rebuilding StashApp.
-	profileReleases, err := s.discoveryReleasePage(r.Context(), domain.ReleaseFilter{Status: "local", Sort: "updated", Direction: "desc", ShowNonPreferred: true}, 0)
-	if err != nil {
-		s.problem(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	profileReleases, err = archivedAffinityReleases(r.Context(), s.store, profileReleases)
+	excluded := discoveryExcludedTags(settings["discoveries_excluded_tags"])
+	profile, err := s.cachedDiscoveryAffinity(r.Context(), settings, now)
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, "load playback archive: "+err.Error())
 		return
 	}
-	excluded := discoveryExcludedTags(settings["discoveries_excluded_tags"])
-	profileEligible := profileReleases[:0]
-	for _, release := range profileReleases {
-		if !discoveryHasExcludedTag(release, excluded) {
-			profileEligible = append(profileEligible, release)
-		}
-	}
-	profile := buildAffinity(profileEligible, settings, now)
 	remapped := discoveryRemapReleases(releases, settings["stash_missing_path_remaps"])
 	subtitlesByRelease := cachedSubtitleAvailability(remapped, discoveryDuration(settings, "discoveries_subtitle_refresh_interval", 6*time.Hour))
 	rewatchDays := discoveryInt(settings, "discoveries_rewatch_days", 90)
-	pool := strings.TrimSpace(r.URL.Query().Get("pool"))
-	pools := discoveryPools(settings["discoveries_pools"])
 	subtitles := strings.TrimSpace(r.URL.Query().Get("subtitles"))
 	items := make([]discoveryItem, 0, len(releases))
 	for _, release := range releases {
@@ -760,52 +891,11 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		if category != "" && category != "all" && category != "for_you" && category != "random" && category != itemCategory && !(category == "ready" && itemCategory == "unwatched") && !(category == "needs_subtitles" && release.Local) {
 			continue
 		}
-		if keywords := pools[pool]; pool != "" {
-			matched := false
-			for _, keyword := range keywords {
-				if discoveryTextMatches(release, keyword) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
-		}
 		hasSubtitle := subtitlesByRelease[release.ID]
 		if subtitles == "yes" && !hasSubtitle || subtitles == "no" && hasSubtitle || category == "ready" && !hasSubtitle || category == "needs_subtitles" && hasSubtitle {
 			continue
 		}
-		a, actress := affinityScore(release.Actresses, profile.actress)
-		g, genre := affinityScore(release.Genres, profile.genre)
-		st, studio := affinityScore([]string{release.Studio}, profile.studio)
-		l, label := affinityScore([]string{release.Label}, profile.label)
-		textScore, textTheme, textField := textAffinity(release, profile.genre)
-		score := a*.30 + g*.25 + st*.12 + l*.08 + textScore*.12
-		if release.PlayCount == 0 {
-			score += 8
-		}
-		if hasSubtitle {
-			score += discoveryFloat(settings, "discoveries_subtitle_bonus", 10)
-		}
-		if itemCategory == "rewatch" {
-			score += 6
-		}
-		reasons := make([]string, 0, 3)
-		if actress != "" {
-			reasons = append(reasons, "Performer preference: "+actress)
-		}
-		if genre != "" {
-			reasons = append(reasons, "Theme preference: "+genre)
-		}
-		if studio != "" {
-			reasons = append(reasons, "Studio preference: "+studio)
-		} else if label != "" {
-			reasons = append(reasons, "Label preference: "+label)
-		}
-		if textTheme != "" {
-			reasons = append(reasons, textField+" matches a watched theme: "+textTheme)
-		}
+		score, reasons := scoreDiscoveryRelease(release, profile, hasSubtitle, settings, rewatchDays, now)
 		if keywords := pools[pool]; pool != "" {
 			for _, keyword := range keywords {
 				if discoveryTextMatches(release, keyword) {
@@ -814,21 +904,27 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if len(reasons) == 0 {
-			reasons = append(reasons, "A fresh release outside your usual history")
-		}
 		itemPools := []string{}
 		if pool != "" {
 			itemPools = append(itemPools, pool)
 		}
-		items = append(items, discoveryItem{Release: release, Score: math.Round(score*10) / 10, Category: itemCategory, Reasons: reasons, Pools: itemPools, HasSubtitle: hasSubtitle})
+		items = append(items, discoveryItem{Release: release, Score: score, Category: itemCategory, Reasons: reasons, Pools: itemPools, HasSubtitle: hasSubtitle})
 	}
 	enhanced := false
 	if category != "random" && category != "new" {
 		items, enhanced = enhanceDiscoveries(r, settings, items)
 	}
 	requestedSort := strings.TrimSpace(q.Get("sort"))
-	if requestedSort != "" && requestedSort != "score" && category != "random" {
+	if requestedSort == "score" && category != "random" {
+		sort.SliceStable(items, func(i, j int) bool { return libraryOrder[items[i].ID] < libraryOrder[items[j].ID] })
+	} else if requestedSort == "release_score" && category != "random" {
+		sort.SliceStable(items, func(i, j int) bool {
+			if items[i].ReleaseDate == items[j].ReleaseDate {
+				return items[i].Score > items[j].Score
+			}
+			return items[i].ReleaseDate > items[j].ReleaseDate
+		})
+	} else if requestedSort != "" && requestedSort != "score" && category != "random" {
 		sort.SliceStable(items, func(i, j int) bool { return libraryOrder[items[i].ID] < libraryOrder[items[j].ID] })
 	} else if category == "random" {
 		// Keep the daily surprise order stable across progressive page requests;
@@ -864,5 +960,5 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	aiRunning, aiCompleted, aiTotal, aiError := discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error
 	discoveryAIStatus.RUnlock()
 	nextOffset := offset + len(releases)
-	s.json(w, http.StatusOK, map[string]any{"items": items, "total": total, "offset": offset, "next_offset": nextOffset, "has_more": nextOffset < total, "generated_at": now, "mode": mode, "pools": poolNames, "openai": map[string]any{"enabled": settings["discoveries_openai_enabled"] == "true", "running": aiRunning, "completed": aiCompleted, "total": aiTotal, "error": aiError}})
+	s.json(w, http.StatusOK, map[string]any{"items": items, "total": total, "offset": offset, "next_offset": nextOffset, "has_more": nextOffset < total, "generated_at": now, "mode": mode, "pools": poolNames, "selected_pool": pool, "pool_keywords": pools[pool], "openai": map[string]any{"enabled": settings["discoveries_openai_enabled"] == "true", "running": aiRunning, "completed": aiCompleted, "total": aiTotal, "error": aiError}})
 }

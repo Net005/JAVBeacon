@@ -78,6 +78,55 @@ func TestReleasesUpdatedAfterFiltersIncrementalChanges(t *testing.T) {
 	}
 }
 
+func TestDiscoveryPoolSearchAndGlobalScoreOrdering(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "discovery-scores.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "Test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := []domain.Release{
+		{SiteID: site.ID, VideoID: "POOL-1", Title: "Ordinary", Story: "An undercover investigator", Source: "Test", ReleaseDate: "2026-09-13"},
+		{SiteID: site.ID, VideoID: "POOL-2", Title: "Space heroine", Source: "Test", ReleaseDate: "2026-09-13"},
+		{SiteID: site.ID, VideoID: "POOL-3", Title: "Unrelated", Source: "Test", ReleaseDate: "2026-09-12"},
+	}
+	for _, release := range inputs {
+		if _, err := s.UpsertRelease(ctx, release); err != nil {
+			t.Fatal(err)
+		}
+	}
+	poolRows, err := s.Releases(ctx, domain.ReleaseFilter{PoolSearch: "investigator,heroine", Limit: 10, ShowNonPreferred: true})
+	if err != nil || len(poolRows) != 2 {
+		t.Fatalf("pool rows=%d err=%v", len(poolRows), err)
+	}
+	all, err := s.Releases(ctx, domain.ReleaseFilter{Sort: "release", Limit: 10, ShowNonPreferred: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scores := map[int64]float64{}
+	for _, release := range all {
+		scores[release.ID] = map[string]float64{"POOL-1": 10, "POOL-2": 90, "POOL-3": 100}[release.VideoID]
+	}
+	if err := s.SaveDiscoveryScores(ctx, scores); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := s.DiscoveryScoreCount(ctx); err != nil || count != 3 {
+		t.Fatalf("score count=%d err=%v", count, err)
+	}
+	byScore, err := s.Releases(ctx, domain.ReleaseFilter{Sort: "score", Direction: "desc", Limit: 10, ShowNonPreferred: true})
+	if err != nil || byScore[0].VideoID != "POOL-3" || byScore[1].VideoID != "POOL-2" {
+		t.Fatalf("score order=%v err=%v", []string{byScore[0].VideoID, byScore[1].VideoID}, err)
+	}
+	combined, err := s.Releases(ctx, domain.ReleaseFilter{Sort: "release_score", Direction: "desc", Limit: 10, ShowNonPreferred: true})
+	if err != nil || combined[0].VideoID != "POOL-2" || combined[1].VideoID != "POOL-1" || combined[2].VideoID != "POOL-3" {
+		t.Fatalf("released+score order unexpected: %+v err=%v", combined, err)
+	}
+}
+
 func TestSQLiteRemovesAndRejectsJavLibraryGIGAReleases(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "javlibrary-giga.db"))

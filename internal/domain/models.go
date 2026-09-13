@@ -298,7 +298,7 @@ type ReleaseEdit struct {
 }
 
 type ReleaseFilter struct {
-	Search, Site, Source, Status, Sort, Direction, Category, Entries, SearchExpression string
+	Search, PoolSearch, Site, Source, Status, Sort, Direction, Category, Entries, SearchExpression string
 	// VideoID, when set, restricts results to an exact (case-insensitive)
 	// video_id match instead of the fuzzy substring matching Search does.
 	// Used for lookups that must resolve to a single specific release - for

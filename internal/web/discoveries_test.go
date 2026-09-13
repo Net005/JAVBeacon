@@ -65,12 +65,15 @@ func TestSubtitleSidecarAndCleanExcerpt(t *testing.T) {
 }
 
 func TestDiscoveryPools(t *testing.T) {
-	pools := discoveryPools("Sci-fi | space, android\nInvestigators | detective, mystery\nBrainwashing")
+	pools := discoveryPools("Sci-fi | space, android\nInvestigators | detective, mystery\nBrainwashing\nDuplicate | drug, Drug")
 	if len(pools["Sci-fi"]) != 2 || pools["Investigators"][0] != "detective" {
 		t.Fatalf("unexpected pools: %#v", pools)
 	}
 	if len(pools["Brainwashing"]) != 1 || pools["Brainwashing"][0] != "Brainwashing" {
 		t.Fatalf("bare pool was not accepted: %#v", pools)
+	}
+	if len(pools["Duplicate"]) != 1 {
+		t.Fatalf("duplicate pool keywords were not normalized: %#v", pools)
 	}
 }
 

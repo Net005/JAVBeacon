@@ -100,6 +100,8 @@ type Store interface {
 	PipelineLogs(context.Context, int64) ([]domain.PipelineLog, error)
 	Notifications(context.Context, string) ([]domain.Notification, error)
 	NotificationsPage(context.Context, string, domain.ReleaseFilter, bool, string, string, int, int) (domain.NotificationPage, error)
+	SaveDiscoveryScores(context.Context, map[int64]float64) error
+	DiscoveryScoreCount(context.Context) (int, error)
 	DeleteNotifications(context.Context, string, []int64) (int64, error)
 	CreateNotification(context.Context, int64, string, string) (bool, error)
 	WatchlistSynced(context.Context, int64, string, string) (bool, error)
@@ -199,6 +201,8 @@ CREATE TABLE IF NOT EXISTS pipeline_steps (id INTEGER PRIMARY KEY, position INTE
 CREATE TABLE IF NOT EXISTS pipeline_logs (id INTEGER PRIMARY KEY, download_id INTEGER NOT NULL REFERENCES downloads(id) ON DELETE CASCADE, step_id INTEGER REFERENCES pipeline_steps(id) ON DELETE SET NULL, state TEXT NOT NULL, output TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', started_at DATETIME NOT NULL, finished_at DATETIME);
 CREATE INDEX IF NOT EXISTS idx_pipeline_logs_download ON pipeline_logs(download_id);
 CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY, release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE, type TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL, UNIQUE(release_id,type));
+CREATE TABLE IF NOT EXISTS discovery_scores (release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE, score REAL NOT NULL DEFAULT 0, updated_at DATETIME NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_discovery_scores_score ON discovery_scores(score DESC,release_id DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_release_created ON notifications(release_id,created_at DESC);
 CREATE TABLE IF NOT EXISTS watchlist_sync (release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE, stash_scene_id TEXT NOT NULL, tag_id TEXT NOT NULL, synced_at DATETIME NOT NULL, result TEXT NOT NULL DEFAULT '');`)
 	}
@@ -1396,12 +1400,12 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		}
 		termClauses := make([]string, 0, len(terms))
 		for _, term := range terms {
-			clause := `(` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.director") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR ` + d.CaseInsensitiveLike("r.scraper_id") + ` OR ` + d.CaseInsensitiveLike("r.product_url") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE rss.release_id=r.id AND ` + d.CaseInsensitiveLike("ss.title") + `)`
+			clause := `(` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.story") + ` OR ` + d.CaseInsensitiveLike("r.director") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR ` + d.CaseInsensitiveLike("r.scraper_id") + ` OR ` + d.CaseInsensitiveLike("r.product_url") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE rss.release_id=r.id AND ` + d.CaseInsensitiveLike("ss.title") + `)`
 			v := "%" + term + "%"
 			if f.SearchWildcards {
 				v = genericSearchLikePattern(term)
 			}
-			a = append(a, v, v, v, v, v, v, v, v, v, v)
+			a = append(a, v, v, v, v, v, v, v, v, v, v, v)
 			if reversed := reverseTwoWordName(term); reversed != "" {
 				clause += ` OR EXISTS (SELECT 1 FROM release_actresses a2 WHERE a2.release_id=r.id AND ` + d.CaseInsensitiveLike("a2.name") + `)`
 				if f.SearchWildcards {
@@ -1414,6 +1418,14 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		}
 		if len(termClauses) > 0 {
 			q += ` AND (` + strings.Join(termClauses, ` OR `) + `)`
+		}
+	}
+	if f.PoolSearch != "" {
+		poolWhere, poolArgs := releaseFilterWhere(d, domain.ReleaseFilter{Search: f.PoolSearch, SearchWildcards: true})
+		poolClause := strings.TrimPrefix(poolWhere, ` WHERE 1=1 AND `)
+		if poolClause != poolWhere {
+			q += ` AND (` + poolClause + `)`
+			a = append(a, poolArgs...)
 		}
 	}
 	// VideoID is an exact (case-insensitive) match, distinct from the fuzzy
@@ -1580,7 +1592,11 @@ func (s *SQLite) Releases(ctx context.Context, f domain.ReleaseFilter) ([]domain
 	// descending sort, which made an "Added Locally · newest first" result
 	// start with releases that had no StashApp created_at at all. The explicit
 	// CASE is portable across both PostgreSQL and SQLite.
-	q += ` ORDER BY ` + sortColumn + ` ` + direction + ` NULLS LAST,r.id ` + direction
+	if f.Sort == "release_score" {
+		q += ` ORDER BY r.release_date ` + direction + ` NULLS LAST,COALESCE((SELECT ds.score FROM discovery_scores ds WHERE ds.release_id=r.id),-1) ` + direction + `,r.id ` + direction
+	} else {
+		q += ` ORDER BY ` + sortColumn + ` ` + direction + ` NULLS LAST,r.id ` + direction
+	}
 	if f.Limit <= 0 || f.Limit > 500 {
 		f.Limit = 100
 	}
@@ -1613,7 +1629,7 @@ func releaseSort(f domain.ReleaseFilter) (string, string) {
 	if strings.EqualFold(f.Direction, "asc") {
 		direction = "ASC"
 	}
-	sortColumn := map[string]string{"added": "r.added_at", "notification": "COALESCE((SELECT MAX(n.created_at) FROM notifications n WHERE n.release_id=r.id),r.added_at)", "release": "r.release_date", "name": "LOWER(r.title)", "updated": "r.updated_at", "local_added": "r.stash_created_at", "watchlist_marked": "r.watchlist_at"}[f.Sort]
+	sortColumn := map[string]string{"score": "COALESCE((SELECT ds.score FROM discovery_scores ds WHERE ds.release_id=r.id),-1)", "release_score": "r.release_date", "added": "r.added_at", "notification": "COALESCE((SELECT MAX(n.created_at) FROM notifications n WHERE n.release_id=r.id),r.added_at)", "release": "r.release_date", "name": "LOWER(r.title)", "updated": "r.updated_at", "local_added": "r.stash_created_at", "watchlist_marked": "r.watchlist_at"}[f.Sort]
 	if sortColumn == "" {
 		sortColumn = "r.release_date"
 	}
@@ -3746,6 +3762,30 @@ func (s *SQLite) NotificationsPage(ctx context.Context, kind string, filter doma
 		}
 	}
 	return domain.NotificationPage{Items: items, Total: total}, nil
+}
+
+func (s *SQLite) SaveDiscoveryScores(ctx context.Context, scores map[int64]float64) error {
+	if len(scores) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	for releaseID, score := range scores {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO discovery_scores(release_id,score,updated_at) VALUES(?,?,?) ON CONFLICT(release_id) DO UPDATE SET score=excluded.score,updated_at=excluded.updated_at`, releaseID, score, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *SQLite) DiscoveryScoreCount(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM discovery_scores`).Scan(&count)
+	return count, err
 }
 func (s *SQLite) DeleteNotifications(ctx context.Context, kind string, ids []int64) (int64, error) {
 	if strings.TrimSpace(kind) == "" {

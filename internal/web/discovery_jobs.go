@@ -124,6 +124,13 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 			cursor, _ = time.Parse(time.RFC3339Nano, settings["discoveries_last_synced_at"])
 		}
 		fullRefresh := mode == "manual" || strings.HasPrefix(mode, "subtitle-") || cursor.IsZero()
+		// Upgrades from versions before the persistent recommendation index
+		// need one complete pass. Without it, an incremental scheduled run
+		// would score only recently changed releases and leave older catalog
+		// rows with no globally sortable score.
+		if scoreCount, err := st.DiscoveryScoreCount(jobContext); err == nil && scoreCount == 0 {
+			fullRefresh = true
+		}
 		if fullRefresh {
 			discoveryJobs.Lock()
 			discoveryJobs.status.Stage = "Loading releases"
@@ -239,6 +246,53 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 			discoveryRankCache.Lock()
 			discoveryRankCache.entries = map[[32]byte]discoveryRankCacheEntry{}
 			discoveryRankCache.Unlock()
+		}
+		if len(releases) > 0 {
+			discoveryJobs.Lock()
+			discoveryJobs.status.Stage = "Updating recommendation scores"
+			discoveryJobs.status.Completed = 0
+			discoveryJobs.status.Total = len(releases)
+			discoveryJobs.Unlock()
+			profileReleases := make([]domain.Release, 0, 1000)
+			for offset := 0; ; offset += 500 {
+				page, err := st.Releases(jobContext, domain.ReleaseFilter{Status: "local", Sort: "updated", Direction: "desc", Limit: 500, Offset: offset, ShowNonPreferred: true})
+				if err != nil {
+					finish(err)
+					return
+				}
+				profileReleases = append(profileReleases, page...)
+				if len(page) < 500 {
+					break
+				}
+			}
+			profileReleases, err := archivedAffinityReleases(jobContext, st, profileReleases)
+			if err != nil {
+				finish(err)
+				return
+			}
+			excluded := discoveryExcludedTags(settings["discoveries_excluded_tags"])
+			eligible := profileReleases[:0]
+			for _, release := range profileReleases {
+				if !discoveryHasExcludedTag(release, excluded) {
+					eligible = append(eligible, release)
+				}
+			}
+			profile := buildAffinity(eligible, settings, time.Now().UTC())
+			rewatchDays := discoveryInt(settings, "discoveries_rewatch_days", 90)
+			scores := make(map[int64]float64, len(releases))
+			for index, release := range releases {
+				score, _ := scoreDiscoveryRelease(release, profile, availability[release.ID], settings, rewatchDays, time.Now().UTC())
+				scores[release.ID] = score
+				if index%250 == 0 || index == len(releases)-1 {
+					discoveryJobs.Lock()
+					discoveryJobs.status.Completed = index + 1
+					discoveryJobs.Unlock()
+				}
+			}
+			if err := st.SaveDiscoveryScores(jobContext, scores); err != nil {
+				finish(err)
+				return
+			}
 		}
 		discoveryJobs.Lock()
 		discoveryJobs.status.Completed = len(releases)

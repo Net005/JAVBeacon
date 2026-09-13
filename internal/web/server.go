@@ -526,6 +526,7 @@ func (s *Server) routes() {
 	})
 	s.mux.HandleFunc("GET /api/stash/history", s.stashHistory)
 	s.mux.HandleFunc("GET /api/discoveries", s.discoveries)
+	s.mux.HandleFunc("POST /api/discoveries/openai/test", s.testDiscoveryOpenAI)
 	s.mux.HandleFunc("GET /api/jobs/discoveries", s.discoveryJob)
 	s.mux.HandleFunc("POST /api/jobs/discoveries", s.discoveryJob)
 	s.mux.HandleFunc("GET /api/stash/history/export", s.exportStashHistory)
