@@ -36,6 +36,18 @@ It always remains visible: **+ Watchlist** adds the configured tag and
 All other tags on the scene are preserved. If no Watchlist tag ID is configured,
 the control remains visible but disabled with a configuration hint.
 
+Scene cards do not issue subtitle or Watchlist status requests while a page is
+loading. When card data does not already contain that status, the plugin checks
+the individual scene when the pointer first enters its card (or when an action
+is clicked). Results are remembered for the browser session, so the same scene
+is not checked again. The scene details page still checks subtitle status when
+needed. This keeps large scene pages and dashboard carousels from blocking
+navigation with per-card queries.
+
+Plugin settings are read without writing the partial configuration response to
+Stash's shared Apollo cache, avoiding repeated cache-merge warnings on large
+card pages.
+
 For matching scene paths, the action appears in the scene action row and at
 the bottom-right of cards on the scene overview. **+ CC** requests subtitles
 when Stash reports no linked caption or subtitle tracks. When subtitles are

@@ -5,7 +5,10 @@
   const React = window.PluginApi.React;
   const ReactDOM = window.PluginApi.ReactDOM;
   const { Button, Spinner } = window.PluginApi.libraries.Bootstrap;
-  const { gql, useMutation, useQuery } = window.PluginApi.libraries.Apollo;
+  const { gql, useLazyQuery, useMutation, useQuery } =
+    window.PluginApi.libraries.Apollo;
+  const sceneStatusCache = new Map();
+  const sceneStatusRequests = new Map();
 
   const REQUEST_SUBTITLES = gql`
     mutation JAVBeaconRequestSubtitles($pluginId: ID!, $args: Map) {
@@ -66,7 +69,9 @@
 
   function usePluginSettings() {
     const result = useQuery(FIND_PLUGIN_SETTINGS, {
-      fetchPolicy: "cache-first",
+      // This partial configuration object has no cache identity and conflicts
+      // with Stash's full Query.configuration result when Apollo merges it.
+      fetchPolicy: "no-cache",
     });
     return {
       ...result,
@@ -74,7 +79,7 @@
     };
   }
 
-  function SubtitleButton({ sceneId, completed = false }) {
+  function SubtitleButton({ sceneId, completed = false, resolveScene }) {
     const Toast = window.PluginApi.hooks.useToast();
     const [runPluginOperation] = useMutation(REQUEST_SUBTITLES);
     const [loading, setLoading] = React.useState(false);
@@ -85,6 +90,13 @@
       if (loading || completed) return;
       setLoading(true);
       try {
+        if (resolveScene) {
+          const scene = await resolveScene();
+          if (hasLinkedSubtitles(scene)) {
+            Toast.success("Subtitle already linked to this scene");
+            return;
+          }
+        }
         const response = await runPluginOperation({
           variables: {
             pluginId: PLUGIN_ID,
@@ -138,22 +150,13 @@
     );
   }
 
-  function SceneCardWatchlistAction({ scene }) {
+  function SceneCardWatchlistAction({ scene, settings, resolveScene }) {
     const Toast = window.PluginApi.hooks.useToast();
-    const settingsQuery = usePluginSettings();
     const [updateScene] = useMutation(UPDATE_SCENE_WATCHLIST);
     const [pending, setPending] = React.useState(false);
     const [membershipOverride, setMembershipOverride] = React.useState(null);
-    const tagsKnown =
-      scene != null && Object.prototype.hasOwnProperty.call(scene, "tags");
-    const statusQuery = useQuery(FIND_SCENE_CAPTIONS, {
-      fetchPolicy: "cache-first",
-      skip: tagsKnown,
-      variables: { id: String(scene.id) },
-    });
-    const tags = tagsKnown ? scene.tags : statusQuery.data?.findScene?.tags;
-    const resolved = tagsKnown || statusQuery.data?.findScene != null;
-    const tagID = String(settingsQuery.settings?.watchlist_tag_id || "").trim();
+    const tags = scene?.tags;
+    const tagID = String(settings?.watchlist_tag_id || "").trim();
     const storedMembership =
       tagID !== "" &&
       Array.isArray(tags) &&
@@ -161,35 +164,32 @@
     const inWatchlist =
       membershipOverride == null ? storedMembership : membershipOverride;
     const configured = tagID !== "";
-    const disabled =
-      pending ||
-      settingsQuery.loading ||
-      settingsQuery.error != null ||
-      settingsQuery.settings == null ||
-      statusQuery.loading ||
-      statusQuery.error != null ||
-      !resolved ||
-      !configured;
+    const disabled = pending || settings == null || !configured;
 
     const onClick = async (event) => {
       event?.preventDefault();
       event?.stopPropagation();
       if (disabled) return;
 
-      const existingTagIDs = Array.isArray(tags)
-        ? tags.map((tag) => String(tag?.id || "")).filter(Boolean)
-        : [];
-      const tagIDs = inWatchlist
-        ? existingTagIDs.filter((id) => id !== tagID)
-        : Array.from(new Set([...existingTagIDs, tagID]));
       setPending(true);
       try {
+        const currentScene = await resolveScene();
+        const currentTags = currentScene?.tags;
+        const currentMembership =
+          Array.isArray(currentTags) &&
+          currentTags.some((tag) => String(tag?.id) === tagID);
+        const existingTagIDs = Array.isArray(currentTags)
+          ? currentTags.map((tag) => String(tag?.id || "")).filter(Boolean)
+          : [];
+        const tagIDs = currentMembership
+          ? existingTagIDs.filter((id) => id !== tagID)
+          : Array.from(new Set([...existingTagIDs, tagID]));
         await updateScene({
           variables: { input: { id: String(scene.id), tag_ids: tagIDs } },
         });
-        setMembershipOverride(!inWatchlist);
+        setMembershipOverride(!currentMembership);
         Toast.success(
-          inWatchlist ? "Removed from Watchlist" : "Added to Watchlist"
+          currentMembership ? "Removed from Watchlist" : "Added to Watchlist"
         );
       } catch (error) {
         Toast.error(error instanceof Error ? error.message : String(error));
@@ -236,31 +236,8 @@
     );
   }
 
-  function SceneCardSubtitleAction({ scene }) {
-    const settingsQuery = usePluginSettings();
-    const captionsKnown =
-      scene != null &&
-      Object.prototype.hasOwnProperty.call(scene, "captions");
-    const { data, loading, error } = useQuery(FIND_SCENE_CAPTIONS, {
-      fetchPolicy: "cache-first",
-      skip: captionsKnown,
-      variables: { id: String(scene.id) },
-    });
-    const captions = captionsKnown
-      ? scene.captions
-      : data?.findScene?.captions;
-    const resolved = captionsKnown || data?.findScene != null;
-
-    // Keep the action hidden until Stash confirms the linked-subtitle state.
-    if (
-      settingsQuery.loading ||
-      settingsQuery.error ||
-      settingsQuery.settings == null ||
-      !sceneMatchesPathFilters(scene, settingsQuery.settings) ||
-      loading ||
-      error ||
-      !resolved
-    ) {
+  function SceneCardSubtitleAction({ scene, settings, resolveScene }) {
+    if (settings == null || !sceneMatchesPathFilters(scene, settings)) {
       return null;
     }
 
@@ -270,24 +247,107 @@
         className: "javbeacon-subs-card-action",
       },
       React.createElement(SubtitleButton, {
-        completed: hasLinkedSubtitles({ captions }),
+        completed: hasLinkedSubtitles(scene),
+        resolveScene,
         sceneId: scene.id,
+      })
+    );
+  }
+
+  function SceneCardActions({ scene }) {
+    const settingsQuery = usePluginSettings();
+    const sceneID = String(scene.id);
+    const [probe, setProbe] = React.useState(null);
+    const [loadedScene, setLoadedScene] = React.useState(
+      sceneStatusCache.get(sceneID) || null
+    );
+    const captionsKnown = Object.prototype.hasOwnProperty.call(scene, "captions");
+    const tagsKnown = Object.prototype.hasOwnProperty.call(scene, "tags");
+    const statusKnown = captionsKnown && tagsKnown;
+    const [loadStatus] = useLazyQuery(FIND_SCENE_CAPTIONS, {
+      fetchPolicy: "cache-first",
+    });
+    const resolvedScene = {
+      ...scene,
+      captions: captionsKnown ? scene.captions : loadedScene?.captions,
+      tags: tagsKnown ? scene.tags : loadedScene?.tags,
+    };
+    const resolveScene = async () => {
+      if (statusKnown) return scene;
+      if (loadedScene) return resolvedScene;
+      let request = sceneStatusRequests.get(sceneID);
+      if (!request) {
+        request = loadStatus({ variables: { id: sceneID } })
+          .then((result) => result.data?.findScene)
+          .finally(() => sceneStatusRequests.delete(sceneID));
+        sceneStatusRequests.set(sceneID, request);
+      }
+      const found = await request;
+      if (!found) throw new Error("Could not load scene status");
+      sceneStatusCache.set(sceneID, found);
+      setLoadedScene(found);
+      return { ...scene, ...found };
+    };
+    React.useEffect(() => {
+      if (!probe || statusKnown || loadedScene) return undefined;
+      const card = probe.closest(".scene-card") || probe.parentElement;
+      if (!card) return undefined;
+      const checkStatus = () => {
+        resolveScene().catch(() => {
+          // A failed hover check must not interrupt card navigation.
+        });
+      };
+      card.addEventListener("mouseenter", checkStatus, { once: true });
+      return () => card.removeEventListener("mouseenter", checkStatus);
+    }, [probe, sceneID, statusKnown, loadedScene]);
+    const settings =
+      settingsQuery.loading || settingsQuery.error
+        ? null
+        : settingsQuery.settings;
+
+    return React.createElement(
+      React.Fragment,
+      null,
+      React.createElement("span", {
+        className: "javbeacon-card-actions-probe",
+        ref: setProbe,
+      }),
+      React.createElement(SceneCardSubtitleAction, {
+        scene: resolvedScene,
+        settings,
+        resolveScene,
+      }),
+      React.createElement(SceneCardWatchlistAction, {
+        scene: resolvedScene,
+        settings,
+        resolveScene,
       })
     );
   }
 
   function ScenePageSubtitleAction({ scene }) {
     const { settings, loading, error } = usePluginSettings();
+    const captionsKnown = Object.prototype.hasOwnProperty.call(scene, "captions");
+    const statusQuery = useQuery(FIND_SCENE_CAPTIONS, {
+      fetchPolicy: "cache-first",
+      skip: captionsKnown,
+      variables: { id: String(scene.id) },
+    });
+    const resolvedScene = captionsKnown
+      ? scene
+      : { ...scene, captions: statusQuery.data?.findScene?.captions };
     if (
       loading ||
       error ||
       settings == null ||
-      !sceneMatchesPathFilters(scene, settings)
+      !sceneMatchesPathFilters(scene, settings) ||
+      (!captionsKnown &&
+        (statusQuery.loading || statusQuery.error || !statusQuery.data?.findScene))
     ) {
       return null;
     }
     return React.createElement(SubtitleToolbarPortal, {
-      completed: hasLinkedSubtitles(scene),
+      completed: hasLinkedSubtitles(resolvedScene),
       sceneId: scene.id,
     });
   }
@@ -342,12 +402,8 @@
       React.Fragment,
       null,
       rendered,
-      React.createElement(SceneCardSubtitleAction, {
-        key: "javbeacon-subs-card-action",
-        scene: props.scene,
-      }),
-      React.createElement(SceneCardWatchlistAction, {
-        key: "javbeacon-watchlist-card-action",
+      React.createElement(SceneCardActions, {
+        key: "javbeacon-card-actions",
         scene: props.scene,
       })
     );

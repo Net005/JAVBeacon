@@ -4,6 +4,10 @@
   display: inline-flex;
 }
 
+.javbeacon-card-actions-probe {
+  display: none;
+}
+
 .javbeacon-subs-button.btn.minimal {
   align-items: center;
   display: inline-flex;
