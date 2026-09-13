@@ -64,13 +64,16 @@ type Service struct {
 }
 
 type RefreshOptions struct {
-	SiteID    int64
-	ReleaseID int64
-	Title     string
-	Mode      string
-	Pages     int
-	AllPages  bool
-	Scheduled bool
+	SiteID int64
+	// StartSiteID applies only to an all-sites job. Enabled sites before this
+	// site in the normal monitoring-site order are skipped.
+	StartSiteID int64
+	ReleaseID   int64
+	Title       string
+	Mode        string
+	Pages       int
+	AllPages    bool
+	Scheduled   bool
 	// Kind identifies which configurable scrape-job operation
 	// this request represents, for priority-default lookup. Left empty, it
 	// is inferred from the other fields (see StartOptions) so existing
@@ -169,6 +172,18 @@ func releaseHasSite(release domain.Release, siteID int64) bool {
 		}
 	}
 	return false
+}
+
+func sitesStartingAt(sites []domain.Site, startSiteID int64) []domain.Site {
+	if startSiteID == 0 {
+		return sites
+	}
+	for index, site := range sites {
+		if site.ID == startSiteID {
+			return sites[index:]
+		}
+	}
+	return sites
 }
 
 func New(s store.Store, a *scraper.Akiba, j *scraper.JavLibrary, covers *covers.Cache, pages int, l *slog.Logger, scrapeFallback time.Duration, screenshotCaches ...*screenshots.Cache) *Service {
@@ -392,6 +407,25 @@ func (s *Service) StartOptions(ctx context.Context, options RefreshOptions) erro
 	}
 	if options.Mode == "" {
 		options.Mode = "quick"
+	}
+	if options.SiteID != 0 && options.StartSiteID != 0 {
+		return errors.New("start site can only be used when scraping all enabled sites")
+	}
+	if options.StartSiteID != 0 {
+		found := false
+		if sites, err := s.store.Sites(ctx); err != nil {
+			return err
+		} else {
+			for _, site := range sites {
+				if site.ID == options.StartSiteID && site.Enabled {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			return errors.New("start site is not an enabled monitoring site")
+		}
 	}
 	if options.Kind == "" {
 		switch {
@@ -710,6 +744,9 @@ func (s *Service) run(ctx context.Context, options RefreshOptions) {
 			continue
 		}
 		scanSites = append(scanSites, site)
+	}
+	if options.SiteID == 0 && options.StartSiteID != 0 {
+		scanSites = sitesStartingAt(scanSites, options.StartSiteID)
 	}
 	if options.SiteID == 0 {
 		job.SiteCount = len(scanSites)

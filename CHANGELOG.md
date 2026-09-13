@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.171] - 2026-09-13
+
+### Added
+
+- Added a Start at site option to Jobs → Manual Scrape. Its enabled-site list
+  is numbered in the exact order the scrape will execute, and choosing a site
+  skips every earlier site while retaining the selected mode, page limit,
+  all-pages behavior, and priority override.
+
 ## [1.0.170] - 2026-09-13
 
 ### Added

@@ -172,6 +172,44 @@ func TestStartOptionsAllPagesPromotesStartSourceToManualFull(t *testing.T) {
 	}
 }
 
+func TestStartOptionsValidatesAndQueuesStartSite(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "start-site.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	first, err := st.SaveSite(ctx, domain.Site{Title: "First", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.SaveSite(ctx, domain.Site{Title: "Second", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{store: st, log: slog.Default(), worker: true}
+	if err := service.StartOptions(ctx, RefreshOptions{StartSiteID: second.ID, Mode: "new"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(service.queue) != 1 || service.queue[0].StartSiteID != second.ID {
+		t.Fatalf("queue = %+v, want start site %d", service.queue, second.ID)
+	}
+	if err := service.StartOptions(ctx, RefreshOptions{SiteID: first.ID, StartSiteID: second.ID}); err == nil {
+		t.Fatal("expected a start-site option combined with one selected site to be rejected")
+	}
+	if err := service.StartOptions(ctx, RefreshOptions{StartSiteID: 999999}); err == nil {
+		t.Fatal("expected an unknown start site to be rejected")
+	}
+}
+
+func TestSitesStartingAtSkipsEarlierSites(t *testing.T) {
+	sites := []domain.Site{{ID: 1, Title: "First"}, {ID: 2, Title: "Second"}, {ID: 3, Title: "Third"}}
+	got := sitesStartingAt(sites, 2)
+	if len(got) != 2 || got[0].ID != 2 || got[1].ID != 3 {
+		t.Fatalf("sitesStartingAt = %+v, want Second and Third", got)
+	}
+}
+
 func TestStopCancelsActiveJobAndClearsQueue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	service := &Service{
