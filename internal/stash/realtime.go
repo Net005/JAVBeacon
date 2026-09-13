@@ -71,6 +71,18 @@ func (s *Service) EnqueueRealtimeScene(ctx context.Context, sceneID, event strin
 	if settings["stash_realtime_enabled"] != "true" {
 		return errors.New("realtime Stash sync is disabled")
 	}
+	return s.enqueueRealtimeScene(sceneID, event)
+}
+
+// EnqueueAuthenticatedRealtimeScene is used by the webhook after it has
+// already loaded settings and authenticated the caller. Keeping this path
+// database-free lets Stash receive 202 Accepted promptly even while another
+// JAVBeacon task is holding the database busy.
+func (s *Service) EnqueueAuthenticatedRealtimeScene(sceneID, event string) error {
+	return s.enqueueRealtimeScene(sceneID, event)
+}
+
+func (s *Service) enqueueRealtimeScene(sceneID, event string) error {
 	sceneID = strings.TrimSpace(sceneID)
 	if sceneID == "" {
 		return errors.New("scene_id is required")
