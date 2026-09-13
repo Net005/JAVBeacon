@@ -65,11 +65,11 @@ func (s *Server) stashRealtimeEvent(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &payload) {
 		return
 	}
-	if err := s.stash.EnqueueRealtimeScene(r.Context(), payload.SceneID, payload.Event); err != nil {
+	if err := s.stash.EnqueueAuthenticatedRealtimeScene(payload.SceneID, payload.Event); err != nil {
 		s.log.Warn("Stash plugin event rejected", "request_id", payload.RequestID, "scene_id", payload.SceneID, "event", payload.Event, "error", err)
 		s.problem(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 	s.log.Debug("Stash plugin event accepted", "request_id", strings.TrimSpace(payload.RequestID), "scene_id", strings.TrimSpace(payload.SceneID), "event", strings.TrimSpace(payload.Event), "remote", r.RemoteAddr, "elapsed", time.Since(started))
-	s.json(w, http.StatusAccepted, s.stash.RealtimeStatus(r.Context()))
+	s.json(w, http.StatusAccepted, map[string]any{"state": "accepted", "request_id": strings.TrimSpace(payload.RequestID), "scene_id": strings.TrimSpace(payload.SceneID)})
 }
