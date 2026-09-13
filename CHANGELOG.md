@@ -7,6 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.180] - 2026-09-13
+
+### Fixed
+
+- Fixed a frontend initialization-order error introduced in v1.0.179 that
+  stopped JAVBeacon from loading while preparing the Notifications structured
+  search icon.
+- Added regression coverage to ensure the Notifications control is declared
+  before its startup styling is applied.
+
 ## [1.0.179] - 2026-09-13
 
 ### Added

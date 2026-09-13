@@ -2376,6 +2376,19 @@ func TestNotificationSortOptionsAndTabDefaults(t *testing.T) {
 	}
 }
 
+func TestNotificationAdvancedSearchIsInitializedBeforeUse(t *testing.T) {
+	raw, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	declaration := strings.Index(script, "const notificationAdvancedSearch=$('#notificationAdvancedSearch')")
+	use := strings.Index(script, "notificationAdvancedSearch.classList.add('conditionButton','toolbarIcon')")
+	if declaration < 0 || use < 0 || use < declaration {
+		t.Fatalf("notificationAdvancedSearch initialization order is unsafe: declaration=%d use=%d", declaration, use)
+	}
+}
+
 // TestSettingsRejectsInvalidSiteGroupSchedules covers the site_group_schedules
 // validation block added for the new per-site-group scrape schedule feature
 // (see domain.SiteGroupSchedule and internal/monitor's
