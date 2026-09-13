@@ -6,10 +6,12 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
+	"github.com/Net005/JAVBeacon/internal/monitor"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
 
@@ -40,6 +42,42 @@ func discoveryInterval(settings map[string]string) time.Duration {
 	return interval
 }
 
+func discoveryScheduleMode(settings map[string]string) string {
+	return monitor.NormalizeScheduleMode(settings["discoveries_schedule_mode"], settings["discoveries_start_time"], settings["discoveries_weekdays"], settings["discoveries_cron"])
+}
+
+func discoveryNextRuns(settings map[string]string, now time.Time, count int) []time.Time {
+	if settings["discoveries_enabled"] != "true" || settings["discoveries_refresh_enabled"] != "true" || count <= 0 {
+		return nil
+	}
+	interval := discoveryInterval(settings)
+	switch discoveryScheduleMode(settings) {
+	case "cron":
+		return monitor.NextCalendarRuns(now, "", "", settings["discoveries_cron"], count)
+	case "advanced":
+		return monitor.NextAdvancedRuns(now, settings["discoveries_start_time"], settings["discoveries_weekdays"], interval, count)
+	default:
+		next := time.Time{}
+		if strings.TrimSpace(settings["discoveries_start_time"]) == "" {
+			if last, err := time.Parse(time.RFC3339Nano, settings["discoveries_last_synced_at"]); err == nil {
+				next = last.Add(interval)
+				for !next.After(now) {
+					next = next.Add(interval)
+				}
+			}
+		}
+		if next.IsZero() {
+			next = monitor.NextBasicRun(now, interval, settings["discoveries_start_time"])
+		}
+		runs := make([]time.Time, 0, count)
+		for len(runs) < count {
+			runs = append(runs, next)
+			next = next.Add(interval)
+		}
+		return runs
+	}
+}
+
 func discoveryJobSnapshot(settings map[string]string) discoveryJobStatus {
 	discoveryJobs.RLock()
 	status := discoveryJobs.status
@@ -47,10 +85,10 @@ func discoveryJobSnapshot(settings map[string]string) discoveryJobStatus {
 	if status.LastSyncedAt.IsZero() {
 		status.LastSyncedAt, _ = time.Parse(time.RFC3339Nano, settings["discoveries_last_synced_at"])
 	}
-	if !status.LastSyncedAt.IsZero() {
-		status.NextSyncAt = status.LastSyncedAt.Add(discoveryInterval(settings))
+	if runs := discoveryNextRuns(settings, time.Now(), 1); len(runs) > 0 {
+		status.NextSyncAt = runs[0]
 	} else {
-		status.NextSyncAt = time.Now().Add(discoveryInterval(settings))
+		status.NextSyncAt = time.Time{}
 	}
 	return status
 }
@@ -99,7 +137,10 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 			releases = append(releases, page...)
 			discoveryJobs.Lock()
 			discoveryJobs.status.Completed = len(releases)
-			discoveryJobs.status.Total = len(releases)
+			// The total is not known until the final page has been loaded. Keep
+			// it at zero so the UI does not present each intermediate batch as
+			// a misleading 100% complete current/total value.
+			discoveryJobs.status.Total = 0
 			discoveryJobs.Unlock()
 			if len(page) < 500 {
 				break
@@ -152,12 +193,49 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 func ScheduleDiscoveries(ctx context.Context, st store.Store, log *slog.Logger) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
+	var basicNext time.Time
+	var basicSignature, lastCalendarMinute string
 	for {
 		settings, err := st.Settings(ctx)
 		if err == nil && settings["discoveries_enabled"] == "true" && settings["discoveries_refresh_enabled"] == "true" {
+			now := time.Now()
 			status := discoveryJobSnapshot(settings)
-			if status.LastSyncedAt.IsZero() || (!status.Running && !status.NextSyncAt.After(time.Now())) {
-				_ = startDiscoveryJob(ctx, st, log, "scheduled")
+			mode := discoveryScheduleMode(settings)
+			interval := discoveryInterval(settings)
+			if mode == "cron" || mode == "advanced" {
+				cronText := ""
+				if mode == "cron" {
+					cronText = settings["discoveries_cron"]
+				}
+				minuteKey := now.Format("200601021504")
+				matches, matchErr := monitor.CalendarScheduleMatches(now, settings["discoveries_start_time"], settings["discoveries_weekdays"], cronText)
+				dueByInterval := mode == "cron" || status.LastSyncedAt.IsZero() || now.Sub(status.LastSyncedAt) >= interval
+				if matchErr != nil {
+					if log != nil {
+						log.Error("invalid Discoveries schedule", "error", matchErr)
+					}
+				} else if matches && dueByInterval && lastCalendarMinute != minuteKey && !status.Running {
+					lastCalendarMinute = minuteKey
+					_ = startDiscoveryJob(ctx, st, log, "scheduled")
+				}
+			} else {
+				signature := interval.String() + "|" + strings.TrimSpace(settings["discoveries_start_time"])
+				if basicSignature != signature || basicNext.IsZero() {
+					basicSignature = signature
+					if strings.TrimSpace(settings["discoveries_start_time"]) == "" && !status.LastSyncedAt.IsZero() {
+						basicNext = status.LastSyncedAt.Add(interval)
+					} else {
+						basicNext = monitor.NextBasicRun(now, interval, settings["discoveries_start_time"])
+					}
+				}
+				if !now.Before(basicNext) {
+					if !status.Running {
+						_ = startDiscoveryJob(ctx, st, log, "scheduled")
+					}
+					for !basicNext.After(now) {
+						basicNext = basicNext.Add(interval)
+					}
+				}
 			}
 		}
 		select {
@@ -166,6 +244,24 @@ func ScheduleDiscoveries(ctx context.Context, st store.Store, log *slog.Logger) 
 		case <-ticker.C:
 		}
 	}
+}
+
+func discoveryScheduleForecast(ctx context.Context, st store.Store) domain.ScheduleForecast {
+	settings, _ := st.Settings(ctx)
+	enabled := settings["discoveries_enabled"] == "true" && settings["discoveries_refresh_enabled"] == "true"
+	mode := discoveryScheduleMode(settings)
+	interval := discoveryInterval(settings)
+	forecast := domain.ScheduleForecast{Group: "Discoveries", Name: "Discovery synchronization", Enabled: enabled}
+	switch mode {
+	case "cron":
+		forecast.Interval = "cron: " + strings.TrimSpace(settings["discoveries_cron"])
+	case "advanced":
+		forecast.Interval = "advanced: " + interval.String()
+	default:
+		forecast.Interval = "basic: " + interval.String()
+	}
+	forecast.NextRuns = discoveryNextRuns(settings, time.Now(), 3)
+	return forecast
 }
 
 func (s *Server) discoveryJob(w http.ResponseWriter, r *http.Request) {
