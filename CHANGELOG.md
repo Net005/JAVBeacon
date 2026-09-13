@@ -7,6 +7,43 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.176] - 2026-09-13
+
+### Added
+
+- Added case-insensitive excluded-tag rules for Discoveries. Matching releases
+  are omitted from results and their watch and orgasm activity is excluded
+  from the recommendation affinity profile.
+- Added independent Basic, Advanced, and Cron schedules for subtitle
+  availability scans and OpenAI ranking-cache refreshes.
+- Added manual Run now controls beside all three Discoveries schedules, with
+  shared live progress, completion/error state, and separate last-run times
+  for recommendation indexing, subtitle scanning, and OpenAI enrichment.
+
+### Changed
+
+- Discovery pools now accept either a simple pool name or the expanded
+  `Name | keyword, keyword` format, and AI-ranked cards now carry a visible
+  badge while enrichment progress and failures are reported in the page.
+- Discoveries filtering and sorting now cover the complete matching library
+  instead of silently stopping at 1,000 or 5,000 candidates; cards remain
+  progressively paginated up to 500 per request.
+- Reworked the Discoveries filter toolbar to wrap cleanly and increased the
+  readability of affinity explanations.
+- Deterministic affinity scoring now matches learned genre preferences against
+  release titles and story descriptions, and cards identify title, story, and
+  discovery-pool matches directly in their affinity explanation.
+- Discovery affinity now uses the durable records shown under “Your playback
+  archive” as its authoritative play count, orgasm count, and activity-recency
+  source. Mirrored release counters are retained only as a compatibility
+  fallback when no archive is available.
+
+### Fixed
+
+- Fixed subtitle discovery for containerized Stash installations by applying
+  the configured Stash-to-JAVBeacon path remaps before looking for language
+  suffixes such as `.en.srt`, `.ja.srt`, and `.jp.srt`.
+
 ## [1.0.175] - 2026-09-13
 
 ### Fixed

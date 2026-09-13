@@ -1828,9 +1828,10 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	for _, key := range []string{
 		"discoveries_enabled", "discoveries_refresh_enabled", "discoveries_rewatch_days", "discoveries_result_limit", "discoveries_exploration_percent",
 		"discoveries_play_weight", "discoveries_orgasm_weight", "discoveries_recency_half_life_days", "discoveries_subtitle_bonus", "discoveries_diversity_percent",
+		"discoveries_excluded_tags",
 		"discoveries_openai_enabled", "discoveries_openai_api_key", "discoveries_openai_base_url", "discoveries_openai_model", "discoveries_openai_embedding_model", "discoveries_openai_candidate_limit", "discoveries_openai_monthly_budget", "discoveries_openai_batch",
 		"discoveries_subtitle_analysis_enabled", "discoveries_subtitle_languages", "discoveries_subtitle_max_chars", "discoveries_subtitle_keep_cleaned",
-		"discoveries_stash_unwatched_tag_id", "discoveries_stash_rewatch_tag_id", "discoveries_stash_hidden_tag_id", "discoveries_stash_tag_sync_enabled", "discoveries_refresh_interval", "discoveries_schedule_mode", "discoveries_start_time", "discoveries_weekdays", "discoveries_cron", "discoveries_subtitle_refresh_interval", "discoveries_openai_cache_interval", "discoveries_pools",
+		"discoveries_stash_unwatched_tag_id", "discoveries_stash_rewatch_tag_id", "discoveries_stash_hidden_tag_id", "discoveries_stash_tag_sync_enabled", "discoveries_refresh_interval", "discoveries_schedule_mode", "discoveries_start_time", "discoveries_weekdays", "discoveries_cron", "discoveries_subtitle_refresh_enabled", "discoveries_subtitle_refresh_interval", "discoveries_subtitle_schedule_mode", "discoveries_subtitle_start_time", "discoveries_subtitle_weekdays", "discoveries_subtitle_cron", "discoveries_subtitle_last_run_at", "discoveries_openai_refresh_enabled", "discoveries_openai_cache_interval", "discoveries_openai_schedule_mode", "discoveries_openai_start_time", "discoveries_openai_weekdays", "discoveries_openai_cron", "discoveries_openai_last_run_at", "discoveries_pools",
 	} {
 		allowed[key] = true
 	}
@@ -2054,6 +2055,39 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := monitor.ValidateCronSchedule(x["discoveries_cron"]); err != nil {
 				s.problem(w, http.StatusUnprocessableEntity, "discoveries: "+err.Error())
+				return
+			}
+		}
+	}
+	for _, prefix := range []string{"discoveries_subtitle", "discoveries_openai"} {
+		if _, submitted := x[prefix+"_schedule_mode"]; !submitted {
+			continue
+		}
+		mode := strings.ToLower(strings.TrimSpace(x[prefix+"_schedule_mode"]))
+		if mode == "" {
+			mode = "basic"
+		}
+		if mode != "basic" && mode != "advanced" && mode != "cron" {
+			s.problem(w, http.StatusUnprocessableEntity, prefix+": schedule mode must be Basic, Advanced, or Cron")
+			return
+		}
+		if mode != "cron" {
+			if err := monitor.ValidateCalendarSchedule(x[prefix+"_start_time"], x[prefix+"_weekdays"]); err != nil {
+				s.problem(w, http.StatusUnprocessableEntity, prefix+": "+err.Error())
+				return
+			}
+		}
+		if mode == "advanced" && strings.TrimSpace(x[prefix+"_start_time"]) == "" {
+			s.problem(w, http.StatusUnprocessableEntity, prefix+": Advanced mode requires a start time")
+			return
+		}
+		if mode == "cron" {
+			if strings.TrimSpace(x[prefix+"_cron"]) == "" {
+				s.problem(w, http.StatusUnprocessableEntity, prefix+": Cron mode requires a five-field cron expression")
+				return
+			}
+			if err := monitor.ValidateCronSchedule(x[prefix+"_cron"]); err != nil {
+				s.problem(w, http.StatusUnprocessableEntity, prefix+": "+err.Error())
 				return
 			}
 		}

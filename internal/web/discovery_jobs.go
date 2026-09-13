@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"maps"
@@ -16,17 +17,23 @@ import (
 )
 
 type discoveryJobStatus struct {
-	Running       bool      `json:"running"`
-	Mode          string    `json:"mode,omitempty"`
-	Stage         string    `json:"stage,omitempty"`
-	StartedAt     time.Time `json:"started_at,omitempty"`
-	FinishedAt    time.Time `json:"finished_at,omitempty"`
-	LastSyncedAt  time.Time `json:"last_synced_at,omitempty"`
-	NextSyncAt    time.Time `json:"next_sync_at,omitempty"`
-	Total         int       `json:"total"`
-	Completed     int       `json:"completed"`
-	SubtitleCount int       `json:"subtitle_count"`
-	Error         string    `json:"error,omitempty"`
+	Running         bool      `json:"running"`
+	Mode            string    `json:"mode,omitempty"`
+	Stage           string    `json:"stage,omitempty"`
+	StartedAt       time.Time `json:"started_at,omitempty"`
+	FinishedAt      time.Time `json:"finished_at,omitempty"`
+	LastSyncedAt    time.Time `json:"last_synced_at,omitempty"`
+	NextSyncAt      time.Time `json:"next_sync_at,omitempty"`
+	Total           int       `json:"total"`
+	Completed       int       `json:"completed"`
+	SubtitleCount   int       `json:"subtitle_count"`
+	Error           string    `json:"error,omitempty"`
+	SubtitleLastRun time.Time `json:"subtitle_last_run_at,omitempty"`
+	OpenAILastRun   time.Time `json:"openai_last_run_at,omitempty"`
+	OpenAIRunning   bool      `json:"openai_running"`
+	OpenAICompleted int       `json:"openai_completed"`
+	OpenAITotal     int       `json:"openai_total"`
+	OpenAIError     string    `json:"openai_error,omitempty"`
 }
 
 var discoveryJobs = struct {
@@ -90,6 +97,11 @@ func discoveryJobSnapshot(settings map[string]string) discoveryJobStatus {
 	} else {
 		status.NextSyncAt = time.Time{}
 	}
+	status.SubtitleLastRun, _ = time.Parse(time.RFC3339Nano, settings["discoveries_subtitle_last_run_at"])
+	status.OpenAILastRun, _ = time.Parse(time.RFC3339Nano, settings["discoveries_openai_last_run_at"])
+	discoveryAIStatus.RLock()
+	status.OpenAIRunning, status.OpenAICompleted, status.OpenAITotal, status.OpenAIError = discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error
+	discoveryAIStatus.RUnlock()
 	return status
 }
 
@@ -111,7 +123,7 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 			// cursor was introduced is already a valid incremental baseline.
 			cursor, _ = time.Parse(time.RFC3339Nano, settings["discoveries_last_synced_at"])
 		}
-		fullRefresh := mode == "manual" || cursor.IsZero()
+		fullRefresh := mode == "manual" || strings.HasPrefix(mode, "subtitle-") || cursor.IsZero()
 		if fullRefresh {
 			discoveryJobs.Lock()
 			discoveryJobs.status.Stage = "Loading releases"
@@ -127,12 +139,24 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 				discoveryJobs.status.Error = err.Error()
 			} else {
 				discoveryJobs.status.Stage = "Synchronized"
-				discoveryJobs.status.LastSyncedAt = discoveryJobs.status.FinishedAt
-				synchronizedAt = discoveryJobs.status.LastSyncedAt
+				synchronizedAt = discoveryJobs.status.FinishedAt
+				if strings.HasPrefix(mode, "subtitle-") {
+					discoveryJobs.status.SubtitleLastRun = synchronizedAt
+				} else {
+					discoveryJobs.status.LastSyncedAt = synchronizedAt
+				}
 			}
 			discoveryJobs.Unlock()
 			if !synchronizedAt.IsZero() {
-				if saveErr := st.SaveSettings(jobContext, map[string]string{"discoveries_last_synced_at": synchronizedAt.Format(time.RFC3339Nano), "discoveries_incremental_cursor_at": jobStartedAt.Format(time.RFC3339Nano)}); saveErr != nil && log != nil {
+				discoveryResultCache.Lock()
+				discoveryResultCache.created = time.Time{}
+				discoveryResultCache.items = nil
+				discoveryResultCache.Unlock()
+				values := map[string]string{"discoveries_last_synced_at": synchronizedAt.Format(time.RFC3339Nano), "discoveries_incremental_cursor_at": jobStartedAt.Format(time.RFC3339Nano)}
+				if strings.HasPrefix(mode, "subtitle-") {
+					values = map[string]string{"discoveries_subtitle_last_run_at": synchronizedAt.Format(time.RFC3339Nano)}
+				}
+				if saveErr := st.SaveSettings(jobContext, values); saveErr != nil && log != nil {
 					log.Warn("Could not persist Discoveries synchronization time", "error", saveErr)
 				}
 			}
@@ -174,7 +198,7 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 			discoveryJobs.status.Completed = 0
 			discoveryJobs.status.Total = len(releases)
 			discoveryJobs.Unlock()
-			changedAvailability := subtitleAvailabilityWithProgress(releases, func(completed int) {
+			changedAvailability := subtitleAvailabilityWithProgress(discoveryRemapReleases(releases, settings["stash_missing_path_remaps"]), func(completed int) {
 				discoveryJobs.Lock()
 				discoveryJobs.status.Completed = completed
 				discoveryJobs.Unlock()
@@ -232,7 +256,7 @@ func ScheduleDiscoveries(ctx context.Context, st store.Store, log *slog.Logger) 
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	var basicNext time.Time
-	var basicSignature, lastCalendarMinute string
+	var basicSignature, lastCalendarMinute, lastSubtitleMinute, lastOpenAIMinute string
 	for {
 		settings, err := st.Settings(ctx)
 		if err == nil && settings["discoveries_enabled"] == "true" && settings["discoveries_refresh_enabled"] == "true" {
@@ -275,6 +299,21 @@ func ScheduleDiscoveries(ctx context.Context, st store.Store, log *slog.Logger) 
 					}
 				}
 			}
+			minuteKey := now.Format("200601021504")
+			if settings["discoveries_subtitle_refresh_enabled"] == "true" && lastSubtitleMinute != minuteKey && discoveryAuxScheduleDue(settings, "discoveries_subtitle", now) {
+				lastSubtitleMinute = minuteKey
+				if !discoveryJobSnapshot(settings).Running {
+					_ = startDiscoveryJob(ctx, st, log, "subtitle-scheduled")
+					_ = st.SaveSettings(ctx, map[string]string{"discoveries_subtitle_last_run_at": now.UTC().Format(time.RFC3339Nano)})
+				}
+			}
+			if settings["discoveries_openai_refresh_enabled"] == "true" && lastOpenAIMinute != minuteKey && discoveryAuxScheduleDue(settings, "discoveries_openai", now) {
+				lastOpenAIMinute = minuteKey
+				discoveryRankCache.Lock()
+				discoveryRankCache.entries = map[[32]byte]discoveryRankCacheEntry{}
+				discoveryRankCache.Unlock()
+				_ = st.SaveSettings(ctx, map[string]string{"discoveries_openai_last_run_at": now.UTC().Format(time.RFC3339Nano)})
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -282,6 +321,31 @@ func ScheduleDiscoveries(ctx context.Context, st store.Store, log *slog.Logger) 
 		case <-ticker.C:
 		}
 	}
+}
+
+func discoveryAuxScheduleDue(settings map[string]string, prefix string, now time.Time) bool {
+	mode := monitor.NormalizeScheduleMode(settings[prefix+"_schedule_mode"], settings[prefix+"_start_time"], settings[prefix+"_weekdays"], settings[prefix+"_cron"])
+	interval := discoveryDuration(settings, map[string]string{"discoveries_subtitle": "discoveries_subtitle_refresh_interval", "discoveries_openai": "discoveries_openai_cache_interval"}[prefix], 6*time.Hour)
+	last, _ := time.Parse(time.RFC3339Nano, settings[prefix+"_last_run_at"])
+	if !last.IsZero() && now.Sub(last) < interval && mode != "cron" {
+		return false
+	}
+	if mode == "cron" {
+		matched, err := monitor.CalendarScheduleMatches(now, "", "", settings[prefix+"_cron"])
+		return err == nil && matched
+	}
+	if mode == "advanced" {
+		matched, err := monitor.CalendarScheduleMatches(now, settings[prefix+"_start_time"], settings[prefix+"_weekdays"], "")
+		return err == nil && matched
+	}
+	if last.IsZero() {
+		return true
+	}
+	next := last.Add(interval)
+	if start := strings.TrimSpace(settings[prefix+"_start_time"]); start != "" {
+		next = monitor.NextBasicRun(last, interval, start)
+	}
+	return !now.Before(next)
 }
 
 func discoveryScheduleForecast(ctx context.Context, st store.Store) domain.ScheduleForecast {
@@ -308,7 +372,39 @@ func (s *Server) discoveryJob(w http.ResponseWriter, r *http.Request) {
 		s.json(w, http.StatusOK, discoveryJobSnapshot(settings))
 		return
 	}
-	if err := startDiscoveryJob(r.Context(), s.store, s.log, "manual"); err != nil {
+	var request struct {
+		Operation string `json:"operation"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&request)
+	}
+	operation := strings.ToLower(strings.TrimSpace(request.Operation))
+	if operation == "" {
+		operation = "recommendations"
+	}
+	if operation == "openai" {
+		discoveryRankCache.Lock()
+		discoveryRankCache.entries = map[[32]byte]discoveryRankCacheEntry{}
+		discoveryRankCache.Unlock()
+		discoveryResultCache.Lock()
+		discoveryResultCache.created = time.Time{}
+		discoveryResultCache.items = nil
+		discoveryResultCache.Unlock()
+		now := time.Now().UTC()
+		_ = s.store.SaveSettings(r.Context(), map[string]string{"discoveries_openai_last_run_at": now.Format(time.RFC3339Nano)})
+		settings["discoveries_openai_last_run_at"] = now.Format(time.RFC3339Nano)
+		s.json(w, http.StatusAccepted, discoveryJobSnapshot(settings))
+		return
+	}
+	mode := "manual"
+	if operation == "subtitles" {
+		mode = "subtitle-manual"
+	}
+	if operation != "recommendations" && operation != "subtitles" {
+		s.problem(w, http.StatusBadRequest, "operation must be recommendations, subtitles, or openai")
+		return
+	}
+	if err := startDiscoveryJob(r.Context(), s.store, s.log, mode); err != nil {
 		s.problem(w, http.StatusConflict, err.Error())
 		return
 	}
