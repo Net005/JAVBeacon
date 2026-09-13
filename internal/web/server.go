@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -190,8 +191,9 @@ func (s *Server) setAPIKey(key string) {
 }
 
 var (
-	indexHTMLOnce sync.Once
-	indexHTMLBody []byte
+	indexHTMLOnce       sync.Once
+	indexHTMLBody       []byte
+	assetVersionPattern = regexp.MustCompile(`(/assets/app\.(?:js|css)\?v=)[^"']+`)
 )
 
 // indexHTML returns static/index.html with its asset cache-busting query
@@ -210,7 +212,10 @@ func indexHTML() []byte {
 		if err != nil {
 			return
 		}
-		indexHTMLBody = bytes.ReplaceAll(raw, []byte("20260908-failed-timestamp"), []byte(buildversion.Current()))
+		// Replace whatever version a previous release left in the committed
+		// shell. This makes cache busting automatic instead of relying on a
+		// second manual version edit that is easy to miss during a release.
+		indexHTMLBody = assetVersionPattern.ReplaceAll(raw, []byte("${1}"+buildversion.Current()))
 	})
 	return indexHTMLBody
 }
