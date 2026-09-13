@@ -3,8 +3,13 @@
 const assert = require("node:assert/strict");
 
 const afterPatches = {};
-let captionQueryResult = {};
+let captionQueryResult = {
+  data: { findScene: { captions: null, tags: [] } },
+  loading: false,
+};
 const mutationCalls = [];
+const queryCalls = [];
+const lazyQueryCalls = [];
 let settingsQueryResult = {
   data: {
     configuration: {
@@ -23,6 +28,7 @@ const React = {
   useState(initial) {
     return [initial, () => {}];
   },
+  useEffect() {},
   createElement(type, props, ...children) {
     return {
       type,
@@ -52,7 +58,14 @@ global.window = {
             },
           ];
         },
-        useQuery(query) {
+        useLazyQuery(query, options) {
+          return [async (executeOptions) => {
+            lazyQueryCalls.push({ query, options, executeOptions });
+            return captionQueryResult;
+          }];
+        },
+        useQuery(query, options) {
+          queryCalls.push({ query, options });
           return query.includes("JAVBeaconSubtitleSettings")
             ? settingsQueryResult
             : captionQueryResult;
@@ -71,6 +84,8 @@ global.window = {
 };
 
 require("./javbeacon_subtitles.js");
+
+(async () => {
 
 const renderedScene = React.createElement("main", { id: "scene-page" });
 const legacyContext = {};
@@ -165,63 +180,77 @@ captionQueryResult = {
   data: { findScene: { captions: null, tags: [] } },
   loading: false,
 };
+function renderCardActions(result) {
+  return result.props.children[1].type(result.props.children[1].props);
+}
+function renderCardAction(actions, index) {
+  const element = actions.props.children[index];
+  return element.type(element.props);
+}
+
+const captionQueriesBeforeCards = queryCalls.filter((call) =>
+  call.query.includes("JAVBeaconSceneCaptions")
+).length;
+let cardActions = renderCardActions(cardResult);
+let subtitleAction = renderCardAction(cardActions, 1);
+assert.equal(subtitleAction.props.className, "javbeacon-subs-card-action");
 assert.equal(
-  cardResult.props.children[1].type(cardResult.props.children[1].props).props
-    .className,
-  "javbeacon-subs-card-action"
+  queryCalls.find((call) => call.query.includes("JAVBeaconSubtitleSettings"))
+    .options.fetchPolicy,
+  "no-cache"
 );
-const watchlistAction = cardResult.props.children[2].type(
-  cardResult.props.children[2].props
+assert.equal(
+  queryCalls.filter((call) => call.query.includes("JAVBeaconSceneCaptions"))
+    .length,
+  captionQueriesBeforeCards
 );
+assert.equal(lazyQueryCalls.length, 0);
+const watchlistAction = renderCardAction(cardActions, 2);
 const watchlistButton = watchlistAction.props.children;
 assert.equal(watchlistAction.props.className, "javbeacon-watchlist-card-action");
 assert.equal(watchlistButton.props.children.props.children, "+ Watchlist");
 assert.equal(watchlistButton.props.disabled, false);
-watchlistButton.props.onClick({ preventDefault() {}, stopPropagation() {} });
+await watchlistButton.props.onClick({ preventDefault() {}, stopPropagation() {} });
+assert.equal(lazyQueryCalls.length, 1);
+assert.equal(lazyQueryCalls[0].options.variables, undefined);
+assert.deepEqual(lazyQueryCalls[0].executeOptions.variables, { id: "39382" });
 assert.deepEqual(mutationCalls.at(-1).options.variables, {
   input: { id: "39382", tag_ids: ["9"] },
 });
 settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "/COLLECTIONS/jav/";
-assert.notEqual(
-  cardResult.props.children[1].type(cardResult.props.children[1].props),
-  null
-);
+cardActions = renderCardActions(cardResult);
+assert.notEqual(renderCardAction(cardActions, 1), null);
 settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "/media/other/";
-assert.equal(
-  cardResult.props.children[1].type(cardResult.props.children[1].props),
-  null
-);
-assert.notEqual(
-  cardResult.props.children[2].type(cardResult.props.children[2].props),
-  null
-);
+cardActions = renderCardActions(cardResult);
+assert.equal(renderCardAction(cardActions, 1), null);
+assert.notEqual(renderCardAction(cardActions, 2), null);
 settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "";
-captionQueryResult = {
-  data: {
-    findScene: {
+const knownCompleteCard = afterPatches["SceneCard.Popovers"](
+  {
+    scene: {
+      id: "39382",
       captions: [{ language_code: "en" }],
       tags: [
         { id: "9", name: "Watchlist" },
         { id: "4", name: "Keep me" },
       ],
+      files: [{ path: "/Collections/JAV/PFES-046.mp4" }],
     },
   },
-  loading: false,
-};
-const completedCardAction = cardResult.props.children[1].type(
-  cardResult.props.children[1].props
+  legacyContext,
+  renderedPopovers
 );
+cardActions = renderCardActions(knownCompleteCard);
+const completedCardAction = renderCardAction(cardActions, 1);
 assert.equal(completedCardAction.props.className, "javbeacon-subs-card-action");
 assert.equal(completedCardAction.props.children.props.completed, true);
-const completedWatchlistAction = cardResult.props.children[2].type(
-  cardResult.props.children[2].props
-);
+const completedWatchlistAction = renderCardAction(cardActions, 2);
 assert.equal(
   completedWatchlistAction.props.children.props.children.props.children,
   "✓ Watchlist"
@@ -230,7 +259,7 @@ assert.equal(
   completedWatchlistAction.props.children.props["aria-pressed"],
   true
 );
-completedWatchlistAction.props.children.props.onClick({
+await completedWatchlistAction.props.children.props.onClick({
   preventDefault() {},
   stopPropagation() {},
 });
@@ -244,11 +273,14 @@ const knownCompletedCard = afterPatches["SceneCard.Popovers"](
   renderedPopovers
 );
 assert.equal(knownCompletedCard.props.children[0], renderedPopovers);
+const knownCompletedActions = renderCardActions(knownCompletedCard);
 assert.equal(
-  knownCompletedCard.props.children[1].type(
-    knownCompletedCard.props.children[1].props
-  ).props.children.props.completed,
+  renderCardAction(knownCompletedActions, 1).props.children.props.completed,
   true
 );
 
 console.log("Scene page and card patches preserve results after legacy context");
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
