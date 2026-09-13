@@ -7,6 +7,23 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.173] - 2026-09-13
+
+### Added
+
+- Added full Discoveries release scheduling with Basic interval/start-time,
+  Advanced weekday/time, and five-field Cron modes, including validation and
+  next-three-run forecasts shared with the existing schedule overview.
+
+### Changed
+
+- Reorganized Discoveries filters into clear responsive rows with shorter
+  labels and compact actions, preventing crowded or overflowing toolbars on
+  desktop, tablet, and mobile layouts.
+- Discovery synchronization now uses an indeterminate loading state and a
+  loaded-release count until the true processing total is known, instead of
+  displaying each loading batch as 100% complete.
+
 ## [1.0.172] - 2026-09-13
 
 ### Added

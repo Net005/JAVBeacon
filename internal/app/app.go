@@ -248,6 +248,10 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 	for k, v := range map[string]string{
 		"discoveries_enabled":                   "true",
 		"discoveries_refresh_enabled":           "true",
+		"discoveries_schedule_mode":             "basic",
+		"discoveries_start_time":                "",
+		"discoveries_weekdays":                  "",
+		"discoveries_cron":                      "",
 		"discoveries_rewatch_days":              "90",
 		"discoveries_result_limit":              "100",
 		"discoveries_exploration_percent":       "15",

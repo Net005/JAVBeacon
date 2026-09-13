@@ -170,6 +170,13 @@ func normalizeScheduleMode(raw, startTime, weekdays, cronText string) string {
 	return "basic"
 }
 
+// NormalizeScheduleMode exposes the shared Basic/Advanced/Cron mode
+// selection to other schedulers without duplicating its legacy fallback
+// behaviour.
+func NormalizeScheduleMode(raw, startTime, weekdays, cronText string) string {
+	return normalizeScheduleMode(raw, startTime, weekdays, cronText)
+}
+
 func nextBasicRun(now time.Time, interval time.Duration, startTime string) time.Time {
 	if strings.TrimSpace(startTime) == "" {
 		return now.Add(interval)
@@ -185,6 +192,12 @@ func nextBasicRun(now time.Time, interval time.Duration, startTime string) time.
 	return anchor
 }
 
+// NextBasicRun returns the first run for an interval schedule, optionally
+// anchored to a server-local time of day.
+func NextBasicRun(now time.Time, interval time.Duration, startTime string) time.Time {
+	return nextBasicRun(now, interval, startTime)
+}
+
 func nextAdvancedRuns(now time.Time, startTime, weekdays string, interval time.Duration, count int) []time.Time {
 	candidates := nextCalendarRuns(now, startTime, weekdays, "", count*16+16)
 	runs := make([]time.Time, 0, count)
@@ -197,6 +210,11 @@ func nextAdvancedRuns(now time.Time, startTime, weekdays string, interval time.D
 		}
 	}
 	return runs
+}
+
+// NextAdvancedRuns forecasts weekday/time runs with a minimum interval.
+func NextAdvancedRuns(now time.Time, startTime, weekdays string, interval time.Duration, count int) []time.Time {
+	return nextAdvancedRuns(now, startTime, weekdays, interval, count)
 }
 
 // calendarForecastHorizon bounds how far into the future nextCalendarRuns
@@ -233,6 +251,11 @@ func nextCalendarRuns(now time.Time, startTime, weekdays, cronText string, count
 	return runs
 }
 
+// NextCalendarRuns forecasts calendar or five-field cron matches.
+func NextCalendarRuns(now time.Time, startTime, weekdays, cronText string, count int) []time.Time {
+	return nextCalendarRuns(now, startTime, weekdays, cronText, count)
+}
+
 func calendarScheduleMatches(now time.Time, startTime, weekdays, cronText string) (bool, error) {
 	if strings.TrimSpace(cronText) != "" {
 		cron, err := parseCron(cronText)
@@ -250,4 +273,10 @@ func calendarScheduleMatches(now time.Time, startTime, weekdays, cronText string
 		return false, err
 	}
 	return now.Hour() == start.Hour() && now.Minute() == start.Minute() && (len(days) == 0 || days[now.Weekday()]), nil
+}
+
+// CalendarScheduleMatches reports whether the supplied local minute matches
+// a weekday/time or cron schedule.
+func CalendarScheduleMatches(now time.Time, startTime, weekdays, cronText string) (bool, error) {
+	return calendarScheduleMatches(now, startTime, weekdays, cronText)
 }
