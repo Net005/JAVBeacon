@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	SchemaVersion   = "2"
+	SchemaVersion   = "3"
 	MaxReasonLength = 700
 	maxPoolNameLen  = 120
 )
@@ -85,7 +85,7 @@ func validateRank(rank Rank, allowedIDs map[int64]bool, allowedPools map[string]
 	if allowedIDs != nil && !allowedIDs[rank.ID] {
 		return validationError{"unknown candidate ID"}
 	}
-	if math.IsNaN(rank.Score) || math.IsInf(rank.Score, 0) || rank.Score < 0 || rank.Score > 100 {
+	if math.IsNaN(rank.Score) || math.IsInf(rank.Score, 0) || rank.Score < 0 || rank.Score > 100 || math.Trunc(rank.Score) != rank.Score {
 		return validationError{"score outside accepted range"}
 	}
 	if !conciseText(rank.Reason, MaxReasonLength) {
@@ -111,13 +111,100 @@ func validateRank(rank Rank, allowedIDs map[int64]bool, allowedPools map[string]
 	return nil
 }
 
+func containsAny(value string, terms ...string) bool {
+	for _, term := range terms {
+		if strings.Contains(value, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsWord(value string, words ...string) bool {
+	fields := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
+	for _, field := range fields {
+		for _, word := range words {
+			if field == word {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func groundedEvidence(candidate Candidate, subjects, signals []string) bool {
+	for _, evidence := range candidate.Evidence {
+		lower := strings.ToLower(evidence)
+		if containsAny(lower, subjects...) && containsAny(lower, signals...) {
+			return true
+		}
+	}
+	return false
+}
+
+// validateGrounding prevents a model from turning a present metadata value
+// into an invented preference or history claim. Historical and preference
+// language requires an explicit deterministic signal supplied with the same
+// candidate; plain metadata claims only require that metadata to exist.
+func validateGrounding(rank Rank, candidate Candidate) error {
+	reason := strings.ToLower(rank.Reason)
+	preferenceSignals := []string{"preference", "preferred", "affinity", "watched theme"}
+	historySignals := []string{"history", "frequently watched", "previous play", "rewatch"}
+
+	studioHistoryClaim := strings.Contains(reason, "studio") && containsAny(reason, "history", "frequently watched")
+	studioPreferenceClaim := strings.Contains(reason, "studio") && containsAny(reason, "preference", "preferred", "affinity")
+	if (studioHistoryClaim && !groundedEvidence(candidate, []string{"studio"}, historySignals)) ||
+		(studioPreferenceClaim && !groundedEvidence(candidate, []string{"studio"}, preferenceSignals)) {
+		return validationError{"unsupported studio preference/history claim"}
+	}
+	performerHistoryClaim := containsAny(reason, "performer", "actress", "cast") && containsAny(reason, "history", "frequently watched")
+	performerPreferenceClaim := containsAny(reason, "performer", "actress", "cast") && containsAny(reason, "preference", "preferred", "affinity")
+	if (performerHistoryClaim && !groundedEvidence(candidate, []string{"performer", "actress"}, historySignals)) ||
+		(performerPreferenceClaim && !groundedEvidence(candidate, []string{"performer", "actress"}, preferenceSignals)) {
+		return validationError{"unsupported performer preference/history claim"}
+	}
+	themePreferenceClaim := containsAny(reason, "genre", "theme", " tag", "tags") && containsAny(reason, "user preference", "user's preference", "preferred", "preference", "affinity")
+	if themePreferenceClaim &&
+		!groundedEvidence(candidate, []string{"theme", "genre", "tag"}, preferenceSignals) {
+		return validationError{"unsupported user preference claim"}
+	}
+	if containsAny(reason, "viewing history", "watch history", "play history", "previous play", "rewatch candidate") && candidate.Played <= 0 && candidate.Orgasms <= 0 &&
+		!groundedEvidence(candidate, []string{"history", "play", "rewatch", "watch"}, historySignals) {
+		return validationError{"unsupported viewing history claim"}
+	}
+	if containsAny(reason, "orgasm count", "orgasm history") && candidate.Orgasms <= 0 {
+		return validationError{"unsupported orgasm history claim"}
+	}
+	if containsAny(reason, "play count") && candidate.Played <= 0 {
+		return validationError{"unsupported play count claim"}
+	}
+	if containsWord(reason, "subtitle", "subtitles") && strings.TrimSpace(candidate.Subtitle) == "" {
+		return validationError{"unsupported subtitle claim"}
+	}
+	if containsWord(reason, "story", "stories") && strings.TrimSpace(candidate.Story) == "" {
+		return validationError{"unsupported story claim"}
+	}
+	if strings.Contains(reason, "studio") && strings.TrimSpace(candidate.Studio) == "" {
+		return validationError{"unsupported studio claim"}
+	}
+	if containsAny(reason, "performer", "actress", "cast") && len(candidate.Actresses) == 0 {
+		return validationError{"unsupported performer claim"}
+	}
+	if containsAny(reason, "genre", " tag", "tags") && len(candidate.Genres) == 0 {
+		return validationError{"unsupported tag/genre claim"}
+	}
+	return nil
+}
+
 func validateRanks(ranks []Rank, candidates []Candidate, pools string) error {
 	if len(ranks) == 0 {
 		return validationError{"empty AI result"}
 	}
 	allowed := make(map[int64]bool, len(candidates))
+	byID := make(map[int64]Candidate, len(candidates))
 	for _, candidate := range candidates {
 		allowed[candidate.ID] = true
+		byID[candidate.ID] = candidate
 	}
 	seen := map[int64]bool{}
 	for _, rank := range ranks {
@@ -125,6 +212,9 @@ func validateRanks(ranks []Rank, candidates []Candidate, pools string) error {
 			return validationError{"duplicate candidate ID"}
 		}
 		if err := validateRank(rank, allowed, poolNames(pools)); err != nil {
+			return err
+		}
+		if err := validateGrounding(rank, byID[rank.ID]); err != nil {
 			return err
 		}
 		seen[rank.ID] = true

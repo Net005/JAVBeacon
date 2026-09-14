@@ -119,6 +119,7 @@ type discoveryAICandidate struct {
 	Local     bool     `json:"local"`
 	Played    int      `json:"play_count"`
 	Orgasms   int      `json:"orgasm_count"`
+	Evidence  []string `json:"grounding_evidence"`
 	Subtitle  string   `json:"subtitle_excerpt,omitempty"`
 }
 
@@ -293,7 +294,7 @@ func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit
 		for _, item := range items[start:end] {
 			story := item.Story
 			story = aidiscovery.TruncateUTF8(story, 1200)
-			batch = append(batch, discoveryAICandidate{ID: item.ID, VideoID: item.VideoID, Title: item.Title, Story: story, Actresses: item.Actresses, Genres: item.Genres, Studio: item.Studio, Local: item.Local, Played: item.PlayCount, Orgasms: item.OCounter})
+			batch = append(batch, discoveryAICandidate{ID: item.ID, VideoID: item.VideoID, Title: item.Title, Story: story, Actresses: item.Actresses, Genres: item.Genres, Studio: item.Studio, Local: item.Local, Played: item.PlayCount, Orgasms: item.OCounter, Evidence: slices.Clone(item.Reasons)})
 			if subtitleEnabled && item.HasSubtitle {
 				eligible++
 			}
@@ -428,7 +429,7 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 		for index, batch := range missingBatches {
 			aiCandidates := make([]aidiscovery.Candidate, 0, len(batch))
 			for _, candidate := range batch {
-				aiCandidates = append(aiCandidates, aidiscovery.Candidate{ID: candidate.ID, VideoID: candidate.VideoID, Title: candidate.Title, Story: candidate.Story, Actresses: candidate.Actresses, Genres: candidate.Genres, Studio: candidate.Studio, Local: candidate.Local, Played: candidate.Played, Orgasms: candidate.Orgasms, Subtitle: candidate.Subtitle})
+				aiCandidates = append(aiCandidates, aidiscovery.Candidate{ID: candidate.ID, VideoID: candidate.VideoID, Title: candidate.Title, Story: candidate.Story, Actresses: candidate.Actresses, Genres: candidate.Genres, Studio: candidate.Studio, Local: candidate.Local, Played: candidate.Played, Orgasms: candidate.Orgasms, Evidence: candidate.Evidence, Subtitle: candidate.Subtitle})
 			}
 			result := s.discoveryAI.Rank(context.Background(), discoveryAIConfig(settingsCopy), aiCandidates, pools)
 			if result.Skipped || len(result.Ranks) == 0 {

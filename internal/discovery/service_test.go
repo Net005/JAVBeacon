@@ -11,7 +11,7 @@ import (
 )
 
 func testCandidates() []Candidate {
-	return []Candidate{{ID: 7, VideoID: "SSIS-123", Title: "Supplied title", Studio: "S1"}}
+	return []Candidate{{ID: 7, VideoID: "SSIS-123", Title: "Supplied title", Story: "Supplied story", Studio: "S1", Actresses: []string{"Example Performer"}, Genres: []string{"Sci-Fi"}, Evidence: []string{"Performer preference: Example Performer", "Studio preference: S1", "Theme preference: Sci-Fi"}}}
 }
 
 func ollamaServer(t *testing.T, models []string, chatStatus int, chatContent string, delay time.Duration) *httptest.Server {

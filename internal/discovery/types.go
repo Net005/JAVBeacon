@@ -26,6 +26,7 @@ type Candidate struct {
 	Local     bool     `json:"local"`
 	Played    int      `json:"play_count"`
 	Orgasms   int      `json:"orgasm_count"`
+	Evidence  []string `json:"grounding_evidence"`
 	Subtitle  string   `json:"subtitle_excerpt,omitempty"`
 }
 

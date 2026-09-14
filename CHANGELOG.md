@@ -7,6 +7,24 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.185] - 2026-09-14
+
+### Changed
+
+- AI Discovery now sends each model explicit deterministic grounding evidence
+  and treats the candidate JSON as a strict evidence boundary for both Gemma
+  and Qwen-compatible Ollama models.
+- AI scores are now required to be whole integers from 0 through 100. Results
+  using fractional probability-style scores are rejected instead of stored.
+- AI rank fingerprints now use grounding schema version 3, making older
+  results eligible for regeneration under the grounded prompt.
+
+### Fixed
+
+- Recommendation explanations that invent studio, performer, viewing-history,
+  preference, subtitle, story, tag, or affinity evidence are rejected before
+  persistence; deterministic Discoveries remain available when this happens.
+
 ## [1.0.184] - 2026-09-13
 
 ### Changed
