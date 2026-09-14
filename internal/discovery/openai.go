@@ -41,7 +41,7 @@ func (s *Service) openAIRank(ctx context.Context, cfg Config, candidates []Candi
 	if model == "" {
 		model = "gpt-5-mini"
 	}
-	body, _ := json.Marshal(map[string]any{"model": model, "input": rankingPrompt(candidates, pools), "max_output_tokens": min(max(len(candidates)*160, 2048), 32768), "truncation": "auto", "store": false, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "discovery_rankings", "strict": true, "schema": rankingSchema()}}})
+	body, _ := json.Marshal(map[string]any{"model": model, "input": rankingPrompt(candidates, pools), "max_output_tokens": min(max(len(candidates)*160, 2048), 32768), "truncation": "auto", "store": false, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "discovery_rankings", "strict": true, "schema": rankingSchema(candidates)}}})
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, normalizeURL(cfg.OpenAIBaseURL, "https://api.openai.com/v1")+"/responses", bytes.NewReader(body))
 	if err != nil {
 		return nil, err

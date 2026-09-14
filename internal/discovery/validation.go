@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	SchemaVersion   = "3"
+	SchemaVersion   = "4"
 	MaxReasonLength = 700
 	maxPoolNameLen  = 120
 )
@@ -200,6 +200,9 @@ func validateRanks(ranks []Rank, candidates []Candidate, pools string) error {
 	if len(ranks) == 0 {
 		return validationError{"empty AI result"}
 	}
+	if len(ranks) != len(candidates) {
+		return validationError{"incomplete candidate coverage"}
+	}
 	allowed := make(map[int64]bool, len(candidates))
 	byID := make(map[int64]Candidate, len(candidates))
 	for _, candidate := range candidates {
@@ -218,6 +221,11 @@ func validateRanks(ranks []Rank, candidates []Candidate, pools string) error {
 			return err
 		}
 		seen[rank.ID] = true
+	}
+	for _, candidate := range candidates {
+		if !seen[candidate.ID] {
+			return validationError{"incomplete candidate coverage"}
+		}
 	}
 	return nil
 }

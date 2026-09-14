@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,6 +49,31 @@ func TestOllamaAvailabilityCheckSucceeds(t *testing.T) {
 	status := New(nil).CheckOllama(context.Background(), baseConfig(server.URL), true)
 	if !status.Reachable || !status.ModelAvailable || len(status.Models) != 2 {
 		t.Fatalf("unexpected status: %+v", status)
+	}
+}
+
+func TestRankingSchemaRestrictsIDsToSubmittedCandidates(t *testing.T) {
+	schema := rankingSchema([]Candidate{{ID: 41}, {ID: 907}})
+	properties := schema["properties"].(map[string]any)
+	rankings := properties["rankings"].(map[string]any)
+	if rankings["minItems"] != 2 || rankings["maxItems"] != 2 {
+		t.Fatalf("schema does not require complete batch size: %#v", rankings)
+	}
+	items := rankings["items"].(map[string]any)
+	rankProperties := items["properties"].(map[string]any)
+	idSchema := rankProperties["id"].(map[string]any)
+	ids, ok := idSchema["enum"].([]int64)
+	if !ok || len(ids) != 2 || ids[0] != 41 || ids[1] != 907 {
+		t.Fatalf("candidate ID enum mismatch: %#v", idSchema["enum"])
+	}
+}
+
+func TestPromptRequiresExactCandidateIDCoverage(t *testing.T) {
+	prompt := rankingPrompt([]Candidate{{ID: 41}, {ID: 907}}, "")
+	for _, text := range []string{"copy candidate.id exactly", "Never invent or transform an ID", "return exactly N rankings", "must appear exactly once"} {
+		if !strings.Contains(prompt, text) {
+			t.Fatalf("prompt missing ID rule %q", text)
+		}
 	}
 }
 
@@ -170,6 +196,32 @@ func TestInvalidQwenResponseMayFallbackOnlyWhenOllamaWasReachable(t *testing.T) 
 	result := New(nil).Rank(context.Background(), cfg, testCandidates(), "")
 	if result.Provider != "openai" || len(result.Ranks) != 1 || openAICalls.Load() != 1 {
 		t.Fatalf("eligible fallback failed: %+v calls=%d", result, openAICalls.Load())
+	}
+}
+
+func TestUnknownCandidateIDMayFallbackOnlyWhenEnabled(t *testing.T) {
+	ollama := ollamaServer(t, []string{"qwen3:8b"}, http.StatusOK, `{"rankings":[{"id":1,"score":80,"reason":"Strong title match.","pools":[]}]}`, 0)
+	defer ollama.Close()
+	var openAICalls atomic.Int32
+	openAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		openAICalls.Add(1)
+		content := `{"rankings":[{"id":7,"score":86,"reason":"Strong supplied title and story match.","pools":[]}]}`
+		_ = json.NewEncoder(w).Encode(map[string]any{"output": []any{map[string]any{"content": []any{map[string]any{"text": content}}}}})
+	}))
+	defer openAI.Close()
+
+	disabled := baseConfig(ollama.URL)
+	disabled.OpenAIAPIKey, disabled.OpenAIBaseURL = "secret", openAI.URL
+	result := New(nil).Rank(context.Background(), disabled, testCandidates(), "")
+	if !result.Skipped || openAICalls.Load() != 0 {
+		t.Fatalf("unknown ID used disabled fallback: %+v calls=%d", result, openAICalls.Load())
+	}
+
+	enabled := disabled
+	enabled.OpenAIFallbackEnabled = true
+	result = New(nil).Rank(context.Background(), enabled, testCandidates(), "")
+	if result.Provider != "openai" || len(result.Ranks) != 1 || openAICalls.Load() != 1 {
+		t.Fatalf("eligible unknown-ID fallback failed: %+v calls=%d", result, openAICalls.Load())
 	}
 }
 
