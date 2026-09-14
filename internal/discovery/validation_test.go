@@ -46,6 +46,7 @@ func TestRankingValidationRejectsUnsafeStructures(t *testing.T) {
 		{"duplicate ID", []Rank{validRank(), validRank()}},
 		{"negative score", []Rank{{ID: 7, Score: -1, Reason: "Strong genre match."}}},
 		{"high score", []Rank{{ID: 7, Score: 101, Reason: "Strong genre match."}}},
+		{"fractional score", []Rank{{ID: 7, Score: 0.9, Reason: "Strong genre match."}}},
 		{"NaN score", []Rank{{ID: 7, Score: math.NaN(), Reason: "Strong genre match."}}},
 		{"unknown pool", []Rank{{ID: 7, Score: 50, Reason: "Strong genre match.", Pools: []string{"Unknown"}}}},
 		{"markdown reason", []Rank{{ID: 7, Score: 50, Reason: "```Strong genre match.```"}}},
@@ -56,6 +57,77 @@ func TestRankingValidationRejectsUnsafeStructures(t *testing.T) {
 				t.Fatal("invalid ranking was accepted")
 			}
 		})
+	}
+}
+
+func TestCanonicalIntegerScoreAccepted(t *testing.T) {
+	rank := validRank()
+	rank.Score = 90
+	if err := validateRanks([]Rank{rank}, testCandidates(), "Sci-Fi | space"); err != nil {
+		t.Fatalf("canonical integer score rejected: %v", err)
+	}
+}
+
+func TestGemmaGroundedRecommendationAccepted(t *testing.T) {
+	candidate := Candidate{ID: 7, Title: "Space investigator", Genres: []string{"Sci-Fi"}, Evidence: []string{"Theme preference: Sci-Fi"}}
+	rank := Rank{ID: 7, Score: 88, Reason: "Strong sci-fi match supported by the supplied theme preference."}
+	if err := validateRanks([]Rank{rank}, []Candidate{candidate}, ""); err != nil {
+		t.Fatalf("valid Gemma-style grounded result rejected: %v", err)
+	}
+}
+
+func TestQwenGroundedRecommendationAccepted(t *testing.T) {
+	candidate := Candidate{ID: 7, Title: "Detective story", Story: "An undercover investigation.", Played: 2}
+	rank := Rank{ID: 7, Score: 81, Reason: "Good rewatch candidate based on the supplied play history and story."}
+	if err := validateRanks([]Rank{rank}, []Candidate{candidate}, ""); err != nil {
+		t.Fatalf("valid Qwen-style grounded result rejected: %v", err)
+	}
+}
+
+func TestUngroundedHistoricalAndPreferenceClaimsRejected(t *testing.T) {
+	candidate := Candidate{ID: 7, Title: "Supplied title", Studio: "S1", Actresses: []string{"A"}, Genres: []string{"Sci-Fi"}}
+	for _, reason := range []string{
+		"Strong match based on this studio's history.",
+		"Strong match with a frequently watched studio.",
+		"Matches the preferred performer and related tags.",
+		"Fits the user's preferred genre.",
+		"Good rewatch candidate based on viewing history.",
+	} {
+		rank := Rank{ID: 7, Score: 80, Reason: reason}
+		if err := validateRanks([]Rank{rank}, []Candidate{candidate}, ""); err == nil {
+			t.Fatalf("ungrounded claim accepted: %q", reason)
+		}
+	}
+}
+
+func TestGroundedHistoricalAndPreferenceClaimsAccepted(t *testing.T) {
+	candidate := Candidate{
+		ID: 7, Title: "Supplied title", Studio: "S1", Actresses: []string{"A"}, Genres: []string{"Sci-Fi"}, Played: 3,
+		Evidence: []string{"Studio preference: S1", "Studio history: watched 4 releases from S1", "Performer preference: A", "Theme preference: Sci-Fi"},
+	}
+	for _, reason := range []string{
+		"Strong match with the supplied studio preference.",
+		"Strong match supported by the supplied studio history.",
+		"Matches the preferred performer and related tags.",
+		"Fits the user's preferred genre.",
+		"Good rewatch candidate based on viewing history.",
+	} {
+		rank := Rank{ID: 7, Score: 80, Reason: reason}
+		if err := validateRanks([]Rank{rank}, []Candidate{candidate}, ""); err != nil {
+			t.Fatalf("grounded claim rejected (%q): %v", reason, err)
+		}
+	}
+}
+
+func TestSubtitleClaimRequiresSubtitleEvidence(t *testing.T) {
+	rank := Rank{ID: 7, Score: 70, Reason: "Subtitle availability supports this recommendation."}
+	candidate := Candidate{ID: 7, Title: "Supplied title"}
+	if err := validateRanks([]Rank{rank}, []Candidate{candidate}, ""); err == nil {
+		t.Fatal("subtitle claim without subtitle evidence was accepted")
+	}
+	candidate.Subtitle = "A meaningful supplied line"
+	if err := validateRanks([]Rank{rank}, []Candidate{candidate}, ""); err != nil {
+		t.Fatalf("grounded subtitle claim rejected: %v", err)
 	}
 }
 
@@ -89,7 +161,7 @@ func TestReasonLengthLimit(t *testing.T) {
 
 func TestHardenedPromptSeparatesSubtitleFromUserRequest(t *testing.T) {
 	prompt := rankingPrompt([]Candidate{{ID: 7, Subtitle: "fragmented line"}}, "Sci-Fi | space")
-	for _, required := range []string{"not chatting with a user", "Do not summarize", "optional weak supporting evidence", "never a user request", "Return only valid JSON"} {
+	for _, required := range []string{"not chatting with a user", "Do not summarize", "optional weak supporting evidence", "never a user request", "Return only valid JSON", "complete evidence boundary", "Only grounding_evidence", "INTEGER score"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("prompt missing %q", required)
 		}
