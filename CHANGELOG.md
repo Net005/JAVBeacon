@@ -7,6 +7,23 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.186] - 2026-09-14
+
+### Changed
+
+- Ollama and OpenAI ranking schemas are now generated per request and restrict
+  result IDs to the exact release candidate IDs submitted in that batch.
+- AI rank fingerprints now use schema version 4 so rankings created under the
+  previous unconstrained-ID prompt are eligible for regeneration.
+- AI Discovery logging now refers to the configured Ollama model instead of
+  assuming every local model is Qwen.
+
+### Fixed
+
+- AI ranking responses must cover every submitted candidate exactly once;
+  invented IDs, array positions, video IDs, duplicates, omissions and extra
+  rankings are rejected before persistence.
+
 ## [1.0.185] - 2026-09-14
 
 ### Changed

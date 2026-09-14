@@ -61,19 +61,19 @@ func (s *Service) Rank(ctx context.Context, cfg Config, candidates []Candidate, 
 	s.log.Info("Using Ollama model", "model", status.Model)
 	ranks, err := s.ollamaRank(ctx, cfg, candidates, pools)
 	if err == nil {
-		s.log.Info("Qwen Discovery completed", "candidate_count", len(candidates))
-		return Result{Ranks: ranks, Provider: "ollama", Status: "Qwen Discovery completed"}
+		s.log.Info("Ollama Discovery completed", "model", status.Model, "candidate_count", len(candidates))
+		return Result{Ranks: ranks, Provider: "ollama", Status: "Ollama Discovery completed"}
 	}
 	var invalid validationError
 	if errors.As(err, &invalid) {
-		s.log.Warn("AI Discovery: Qwen result rejected", "reason", invalid.kind)
+		s.log.Warn("AI Discovery: Ollama result rejected", "model", status.Model, "reason", invalid.kind)
 	} else {
-		s.log.Warn("Qwen inference failed", "error", err)
+		s.log.Warn("Ollama inference failed", "model", status.Model, "error", err)
 	}
 	if !cfg.OpenAIFallbackEnabled {
-		return Result{Skipped: true, Status: "Qwen inference failed; OpenAI fallback disabled"}
+		return Result{Skipped: true, Status: "Ollama inference failed; OpenAI fallback disabled"}
 	}
-	s.log.Info("Using OpenAI fallback after Qwen inference failure")
+	s.log.Info("Using OpenAI fallback after Ollama inference failure", "model", status.Model)
 	ranks, fallbackErr := s.openAIRank(ctx, cfg, candidates, pools)
 	if fallbackErr != nil {
 		s.log.Warn("OpenAI fallback failed", "error", fallbackErr)

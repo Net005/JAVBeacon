@@ -144,6 +144,44 @@ func TestStrictRankingJSONRejectsInvalidJSONMarkdownAndUnknownFields(t *testing.
 	}
 }
 
+func coverageCandidates() []Candidate {
+	return []Candidate{{ID: 41, VideoID: "777", Title: "First supplied title"}, {ID: 907, VideoID: "TWO-907", Title: "Second supplied title"}}
+}
+
+func TestRankingMustCoverEveryCandidateExactlyOnce(t *testing.T) {
+	valid := []Rank{
+		{ID: 41, Score: 80, Reason: "Strong title match.", Pools: []string{}},
+		{ID: 907, Score: 72, Reason: "Relevant title match.", Pools: []string{}},
+	}
+	if err := validateRanks(valid, coverageCandidates(), ""); err != nil {
+		t.Fatalf("complete one-to-one coverage rejected: %v", err)
+	}
+	for name, ranks := range map[string][]Rank{
+		"missing candidate": valid[:1],
+		"extra ranking":     append(append([]Rank{}, valid...), Rank{ID: 999, Score: 60, Reason: "Title match."}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validateRanks(ranks, coverageCandidates(), "")
+			if err == nil || !strings.Contains(err.Error(), "incomplete candidate coverage") {
+				t.Fatalf("coverage violation not rejected correctly: %v", err)
+			}
+		})
+	}
+	duplicate := []Rank{valid[0], valid[0]}
+	if err := validateRanks(duplicate, coverageCandidates(), ""); err == nil || !strings.Contains(err.Error(), "duplicate candidate ID") {
+		t.Fatalf("duplicate IDs not rejected correctly: %v", err)
+	}
+}
+
+func TestUnknownCandidateIDRejected(t *testing.T) {
+	for _, id := range []int64{1, 2, 3, 777} {
+		ranks := []Rank{{ID: id, Score: 80, Reason: "Strong title match."}, {ID: 907, Score: 70, Reason: "Relevant title match."}}
+		if err := validateRanks(ranks, coverageCandidates(), ""); err == nil || !strings.Contains(err.Error(), "unknown candidate ID") {
+			t.Fatalf("invented/positional/video ID %d not rejected correctly: %v", id, err)
+		}
+	}
+}
+
 func TestActualBadStoredReasonRejected(t *testing.T) {
 	err := ValidateStoredRank(domain.DiscoveryAIRank{ReleaseID: 7, Score: 60, Reason: actualBadReason}, "")
 	if err == nil || !strings.Contains(err.Error(), "conversational") {

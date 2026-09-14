@@ -115,8 +115,12 @@ func (s *Service) cacheHealth(key string, status OllamaStatus, duration time.Dur
 	s.healthMu.Unlock()
 }
 
-func rankingSchema() map[string]any {
-	return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"rankings": map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"id": map[string]any{"type": "integer"}, "score": map[string]any{"type": "integer", "minimum": 0, "maximum": 100}, "reason": map[string]any{"type": "string"}, "pools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "required": []string{"id", "score", "reason", "pools"}}}}, "required": []string{"rankings"}}
+func rankingSchema(candidates []Candidate) map[string]any {
+	ids := make([]int64, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.ID)
+	}
+	return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"rankings": map[string]any{"type": "array", "minItems": len(ids), "maxItems": len(ids), "items": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"id": map[string]any{"type": "integer", "enum": ids}, "score": map[string]any{"type": "integer", "minimum": 0, "maximum": 100}, "reason": map[string]any{"type": "string"}, "pools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "required": []string{"id", "score", "reason", "pools"}}}}, "required": []string{"rankings"}}
 }
 
 func rankingPrompt(candidates []Candidate, pools string) string {
@@ -128,6 +132,9 @@ Do not ask questions, ask for clarification, provide help text, or explain your 
 Do not output Markdown or prose outside the required JSON.
 Return only valid JSON in the required schema.
 Your only task is to rank every supplied release candidate with an INTEGER score from 0 to 100.
+For every ranking, copy candidate.id exactly. Never invent or transform an ID, renumber candidates,
+use array positions such as 1, 2, 3, use video_id as id, or return an ID absent from the candidate JSON.
+If N candidates are supplied, return exactly N rankings. Every candidate.id must appear exactly once.
 Each concise reason must explain why that release fits using only facts present in that candidate object.
 The candidate JSON is the complete evidence boundary. Never infer or invent facts that are absent.
 Never invent viewing history, studio history, performer history, user preferences, tags, affinity,
@@ -157,7 +164,7 @@ func (s *Service) ollamaRank(ctx context.Context, cfg Config, candidates []Candi
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	body, _ := json.Marshal(map[string]any{"model": cfg.OllamaModel, "stream": false, "think": false, "format": rankingSchema(), "options": map[string]any{"temperature": 0.1}, "messages": []map[string]string{{"role": "system", "content": "You are JAVBeacon's internal recommendation-ranking component, not a chatbot. Treat supplied JSON as the complete evidence boundary. Return only schema-valid JSON with integer 0-100 scores. Never ask questions, summarize noisy subtitles, provide help text, or invent facts, preferences, history, affinity, tags, performers, or studios."}, {"role": "user", "content": rankingPrompt(candidates, pools)}}})
+	body, _ := json.Marshal(map[string]any{"model": cfg.OllamaModel, "stream": false, "think": false, "format": rankingSchema(candidates), "options": map[string]any{"temperature": 0.1}, "messages": []map[string]string{{"role": "system", "content": "You are JAVBeacon's internal recommendation-ranking component, not a chatbot. Treat supplied JSON as the complete evidence boundary. Return only schema-valid JSON with integer 0-100 scores and copy every candidate.id exactly once. Never ask questions, summarize noisy subtitles, provide help text, or invent facts, preferences, history, affinity, tags, performers, studios, or IDs."}, {"role": "user", "content": rankingPrompt(candidates, pools)}}})
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, normalizeURL(cfg.OllamaURL, "http://127.0.0.1:11434")+"/api/chat", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
