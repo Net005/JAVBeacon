@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Release Library no longer pops up the "Refreshing release list…" overlay
+  or collapses your scrolled position back to page 1 when a background
+  scrape updates the list (a scheduled scan finishing, or a live release
+  update arriving over the socket). That feedback now only appears for a
+  refresh you triggered yourself, such as changing filters or starting a
+  manual scan.
+
 ## [1.0.186] - 2026-09-14
 
 ### Changed
