@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -43,6 +44,34 @@ func TestFFprobeVideoRejectsCorruptPayloadWithClearReason(t *testing.T) {
 	err := ffprobeVideo(context.Background(), path)
 	if err == nil || !strings.Contains(err.Error(), "ffprobe rejected the video") {
 		t.Fatalf("ffprobe error = %v, want an explicit rejection", err)
+	}
+}
+
+// TestFFprobeVideoParsesJSONFromStdoutOnlyIgnoringStderrNoise guards against
+// a regression to cmd.CombinedOutput(), which merges stdout and stderr into
+// one buffer with no ordering guarantee. -v error still lets ffprobe/ffmpeg
+// print codec-level diagnostics ("[h264 @ ...] ..." style lines) to stderr
+// even on an otherwise clean, exit-0 probe; a real report saw exactly this
+// corrupt the JSON on an actually-fine re-downloaded video ("read ffprobe
+// result: invalid character '[' looking for beginning of object key
+// string"). This stubs `ffprobe` on PATH to write a bracketed stderr line
+// before the valid JSON on stdout - reproducing that shape deterministically
+// - and asserts the probe still succeeds because JSON is now read from
+// stdout alone.
+func TestFFprobeVideoParsesJSONFromStdoutOnlyIgnoringStderrNoise(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake ffprobe shell script requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"printf '[h264 @ 0x0] mmco: unref short failure\\n' 1>&2\n" +
+		"printf '{\"format\":{\"duration\":\"12.5\"},\"streams\":[{\"codec_type\":\"video\",\"nb_read_packets\":\"300\"}]}'\n"
+	if err := os.WriteFile(filepath.Join(dir, "ffprobe"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := ffprobeVideo(context.Background(), "irrelevant.mp4"); err != nil {
+		t.Fatalf("stderr diagnostics on an otherwise clean probe should not fail JSON parsing: %v", err)
 	}
 }
 
