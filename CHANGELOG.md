@@ -7,6 +7,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.188] - 2026-09-20
+
 ### Fixed
 
 - Video integrity checks no longer misreported a fully valid, downloaded
