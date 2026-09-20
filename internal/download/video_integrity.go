@@ -1,6 +1,7 @@
 package download
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -46,19 +47,41 @@ func ffprobeVideo(ctx context.Context, path string) error {
 	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(probeCtx, "ffprobe", "-v", "error", "-err_detect", "explode", "-count_packets", "-show_entries", "format=duration:stream=codec_type,nb_read_packets", "-of", "json", path)
-	output, err := cmd.CombinedOutput()
+	// stdout and stderr are captured separately (not CombinedOutput) because
+	// -v error still lets ffprobe/ffmpeg's codec-level diagnostics ("[h264 @
+	// 0x...] ..." style log lines) through on stderr even on an otherwise
+	// clean, exit-0 probe. CombinedOutput interleaves the two file
+	// descriptors' writes into one buffer with no ordering guarantee, so a
+	// stderr line written while ffprobe is mid-write on the JSON to stdout
+	// could land in the middle of it, corrupting the JSON (surfacing as e.g.
+	// "invalid character '[' looking for beginning of object key string")
+	// even though the probe itself succeeded and the video is fine.
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
 	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
 		return errors.New("ffprobe timed out after 30 minutes")
 	}
 	if err != nil {
-		reason := strings.TrimSpace(string(output))
+		reason := strings.TrimSpace(stderr.String())
+		if reason == "" {
+			reason = strings.TrimSpace(stdout.String())
+		}
 		if reason == "" {
 			reason = err.Error()
 		}
 		return fmt.Errorf("ffprobe rejected the video: %s", reason)
 	}
 	var result ffprobeResult
-	if err := json.Unmarshal(output, &result); err != nil {
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		// A non-fatal codec warning on stderr is the far more likely
+		// explanation for stdout not being clean JSON than the exit-0 probe
+		// having actually failed - surface it instead of the raw json error
+		// when it is available.
+		if reason := strings.TrimSpace(stderr.String()); reason != "" {
+			return fmt.Errorf("read ffprobe result: %s", reason)
+		}
 		return fmt.Errorf("read ffprobe result: %w", err)
 	}
 	videoPackets := int64(0)
