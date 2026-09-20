@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -906,6 +907,85 @@ func TestJavDBSortingKeepsBlacklistedHTTPCandidatesRejectedAndLast(t *testing.T)
 	}
 	if !strings.Contains(rows[1].Reason, "blacklist") || rows[1].PreferredFilenameMatch {
 		t.Fatalf("blacklist reason was overwritten: %+v", rows[1])
+	}
+}
+
+// TestJavDBSearchInspectsCandidatesConcurrentlyAndReportsProgress covers the
+// fix for a live report: a release with many published mirrors (16
+// candidates in the wild) left the Search & Download dialog on a static
+// "Searching…" for 1-2 minutes, because every candidate's PikPak inspection
+// - each its own handful of real network round trips - ran strictly one at
+// a time. This builds a fixture release with several candidates, confirms
+// they are inspected with real overlap (bounded by
+// httpCandidateInspectionConcurrency, not fully serial and not unbounded),
+// and confirms HTTPSearchProgress reports the search as active with the
+// right total while it runs and clears once Search returns.
+func TestJavDBSearchInspectsCandidatesConcurrentlyAndReportsProgress(t *testing.T) {
+	const candidateCount = 6
+	var detailBody strings.Builder
+	detailBody.WriteString("<html><body>ID: MULTI-001")
+	for i := 0; i < candidateCount; i++ {
+		fmt.Fprintf(&detailBody, `<div class="item"><span class="name">MULTI-001-%d.mp4</span><a href="https://keepshare.org/share-%d">Download</a></div>`, i, i)
+	}
+	detailBody.WriteString("</body></html>")
+
+	provider, closeServer := javDBFixtureProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search" {
+			_, _ = w.Write([]byte(javDBSearchPage("MULTI-001", "2026-09-15", "/v/multi")))
+			return
+		}
+		_, _ = w.Write([]byte(detailBody.String()))
+	})
+	defer closeServer()
+
+	release := domain.Release{ID: 4242, VideoID: "MULTI-001", ReleaseDate: "2026-09-15"}
+	if _, _, active := HTTPSearchProgress(release.ID); active {
+		t.Fatal("progress should not be active before the search starts")
+	}
+
+	var (
+		mu            sync.Mutex
+		inFlight      int
+		maxConcurrent int
+	)
+	provider.inspectCandidate = func(ctx context.Context, link, releaseID string) (pikPakFile, []pikPakFile, error) {
+		mu.Lock()
+		inFlight++
+		if inFlight > maxConcurrent {
+			maxConcurrent = inFlight
+		}
+		mu.Unlock()
+
+		// Hold this "inspection" open briefly so concurrent ones actually
+		// overlap, and so there is a window to observe live progress.
+		time.Sleep(30 * time.Millisecond)
+		if completed, total, active := HTTPSearchProgress(release.ID); !active || total != candidateCount {
+			t.Errorf("progress mid-search = completed=%d total=%d active=%v, want total=%d active=true", completed, total, active, candidateCount)
+		}
+
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+
+		selected := pikPakFile{ID: "video", Name: "4k688.com@" + releaseID + ".mp4", Size: "4294967296"}
+		return selected, []pikPakFile{selected}, nil
+	}
+
+	rows, err := provider.Search(context.Background(), release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != candidateCount {
+		t.Fatalf("rows = %d, want %d", len(rows), candidateCount)
+	}
+	if _, _, active := HTTPSearchProgress(release.ID); active {
+		t.Fatal("progress should be cleared once the search returns")
+	}
+	if maxConcurrent < 2 {
+		t.Fatalf("max concurrent inspections = %d, want at least 2 (candidates should overlap, not run fully serially)", maxConcurrent)
+	}
+	if maxConcurrent > httpCandidateInspectionConcurrency {
+		t.Fatalf("max concurrent inspections = %d, exceeded the cap of %d", maxConcurrent, httpCandidateInspectionConcurrency)
 	}
 }
 

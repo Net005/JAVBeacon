@@ -1718,6 +1718,37 @@ func TestBackgroundSearchAndDownloadReleaseQueuesWithoutChangingMonitoring(t *te
 	t.Fatal("background Search + Download did not run")
 }
 
+// TestReleaseSearchProgressReportsInactiveWhenNoSearchIsRunning covers the
+// new /releases/{id}/search-progress endpoint's default shape: with no HTTP
+// candidate inspection currently running for this release ID (the common
+// case - most of the time nothing is mid-search), it reports active=false
+// rather than erroring, so the frontend can poll it unconditionally while a
+// search dialog is open. The active=true/live-count path is exercised in
+// the download package's own tests (TestJavDBSearchInspectsCandidatesConcurrentlyAndReportsProgress),
+// since only that package can actually drive a search into an in-flight
+// state to observe it.
+func TestReleaseSearchProgressReportsInactiveWhenNoSearchIsRunning(t *testing.T) {
+	s := &Server{}
+	req := httptest.NewRequest(http.MethodGet, "/api/releases/4242/search-progress", nil)
+	req.SetPathValue("id", "4242")
+	rec := httptest.NewRecorder()
+	s.releaseSearchProgress(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Completed int  `json:"completed"`
+		Total     int  `json:"total"`
+		Active    bool `json:"active"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Active || out.Completed != 0 || out.Total != 0 {
+		t.Fatalf("expected an inactive, zeroed response with nothing running, got %+v", out)
+	}
+}
+
 // TestCreateSearchDownloadTaskSkipsReleaseWithActiveOrCompletedDownload is the
 // regression test for the double-queue bug: Search + Download (and the
 // "Monitor + download" bulk action, which shares createSearchDownloadTask)
