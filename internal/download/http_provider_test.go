@@ -574,6 +574,83 @@ func TestReleaseIDsEqualIgnoresCaseAndCommonSeparators(t *testing.T) {
 	}
 }
 
+// TestGetHTMLDirectWithRetryRecoversFromTransientNetworkFailure covers a
+// live report: a JavDB search request failing outright with "context
+// deadline exceeded (Client.Timeout exceeded while awaiting headers)" or
+// "read tcp ...: connection reset by peer" - a transport-level failure
+// (status stays 0; the request never got an HTTP response at all) that a
+// retry a moment later usually clears. getHTMLDirectWithRetry now retries
+// that case instead of failing the whole search immediately.
+func TestGetHTMLDirectWithRetryRecoversFromTransientNetworkFailure(t *testing.T) {
+	originalDelay := javDBTransientRetryDelay
+	javDBTransientRetryDelay = time.Millisecond
+	t.Cleanup(func() { javDBTransientRetryDelay = originalDelay })
+	attempts := 0
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts < javDBTransientNetworkAttempts {
+			return nil, errors.New("read tcp 1.2.3.4:1->5.6.7.8:443: read: connection reset by peer")
+		}
+		return pikPakJSONResponse(http.StatusOK, "<html><body>ok</body></html>"), nil
+	})}
+	provider := &javDBProvider{client: client}
+	doc, status, err := provider.getHTMLDirectWithRetry(context.Background(), "https://javdb.com/search?q=X")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("expected eventual success, got status=%d err=%v", status, err)
+	}
+	if doc == nil {
+		t.Fatal("expected a parsed document")
+	}
+	if attempts != javDBTransientNetworkAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, javDBTransientNetworkAttempts)
+	}
+}
+
+func TestGetHTMLDirectWithRetryGivesUpAfterMaxAttempts(t *testing.T) {
+	originalDelay := javDBTransientRetryDelay
+	javDBTransientRetryDelay = time.Millisecond
+	t.Cleanup(func() { javDBTransientRetryDelay = originalDelay })
+	attempts := 0
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return nil, errors.New("context deadline exceeded (Client.Timeout exceeded while awaiting headers)")
+	})}
+	provider := &javDBProvider{client: client}
+	_, status, err := provider.getHTMLDirectWithRetry(context.Background(), "https://javdb.com/search?q=X")
+	if err == nil {
+		t.Fatal("expected an error after exhausting retries")
+	}
+	if status != 0 {
+		t.Fatalf("status = %d, want 0 (no response was ever received)", status)
+	}
+	if attempts != javDBTransientNetworkAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, javDBTransientNetworkAttempts)
+	}
+}
+
+// TestGetHTMLDirectWithRetryDoesNotRetryARealHTTPResponse confirms the retry
+// is scoped to transport failures only: once JavDB actually answers with an
+// HTTP response - even an error one - it is returned as-is, on the first
+// attempt, exactly like before this change.
+func TestGetHTMLDirectWithRetryDoesNotRetryARealHTTPResponse(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return pikPakJSONResponse(http.StatusNotFound, "not found"), nil
+	})}
+	provider := &javDBProvider{client: client}
+	_, status, err := provider.getHTMLDirectWithRetry(context.Background(), "https://javdb.com/search?q=X")
+	if err == nil {
+		t.Fatal("expected an error for a 404 response")
+	}
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", status)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (a real HTTP response must not be retried here)", attempts)
+	}
+}
+
 func javDBFixtureProvider(t *testing.T, handler http.HandlerFunc) (*javDBProvider, func()) {
 	t.Helper()
 	server := httptest.NewServer(handler)
