@@ -7,6 +7,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.187] - 2026-09-20
+
 ### Fixed
 
 - Release Library no longer pops up the "Refreshing release list…" overlay
@@ -15,6 +17,12 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   update arriving over the socket). That feedback now only appears for a
   refresh you triggered yourself, such as changing filters or starting a
   manual scan.
+- HTTP downloads no longer fail with a confusing "PikPak resolution failed
+  after 3 attempts: unsupported protocol scheme" error when a JavDB release
+  only has a magnet/torrent link published and no Keepshare/PikPak mirror.
+  That case is now recognized immediately and skipped with a clear message,
+  and the existing Torrent fallback kicks in right away instead of waiting
+  out a pointless retry loop.
 
 ## [1.0.186] - 2026-09-14
 
