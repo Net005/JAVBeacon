@@ -584,7 +584,7 @@ func (p *javDBProvider) getHTML(ctx context.Context, raw string) (*html.Node, in
 	if err := javDBRequestThrottle.wait(ctx); err != nil {
 		return nil, 0, err
 	}
-	doc, status, err := p.getHTMLDirect(ctx, raw)
+	doc, status, err := p.getHTMLDirectWithRetry(ctx, raw)
 	javDBRequestThrottle.reportResult(err)
 	if status == http.StatusForbidden && p.gluetun != nil {
 		oldIP, newIP, attempts, rotateErr := p.gluetun.rotateUntilIPChanges(ctx)
@@ -619,6 +619,48 @@ func (p *javDBProvider) getHTML(ctx context.Context, raw string) (*html.Node, in
 			p.log.Warn("JavDB HTTP 403 solver fallback failed", "url", raw, "direct_status", status, "error", solverErr)
 		}
 		return nil, status, fmt.Errorf("HTTP 403; Byparr/FlareSolverr fallback failed: %w", solverErr)
+	}
+	return doc, status, err
+}
+
+// javDBTransientNetworkAttempts is how many times getHTMLDirectWithRetry
+// tries a request that never got a response at all before giving up.
+const javDBTransientNetworkAttempts = 3
+
+// javDBTransientRetryDelay is the base backoff between those attempts
+// (attempt*javDBTransientRetryDelay); a test seam like
+// pikPakRestoreRetryDelay so retry tests don't have to wait out real time.
+var javDBTransientRetryDelay = 500 * time.Millisecond
+
+// getHTMLDirectWithRetry retries getHTMLDirect when the request never
+// reached JavDB at all - status stays 0, meaning p.client.Do itself failed:
+// a dial timeout, a connection reset or refused, a DNS hiccup, or any other
+// transport-level error before an HTTP response existed to read a status
+// from. A one-off network blip like that usually clears a moment later, so
+// it is worth a couple of quick retries rather than failing the whole
+// search/detail-page fetch (and, on a search request, the whole scrape of
+// that release) immediately. It never retries once JavDB has actually
+// responded with something, even an error status - status 403 already has
+// its own recovery path (Gluetun rotation, then the solver pool) in
+// getHTML above, and any other non-zero status is returned as-is.
+func (p *javDBProvider) getHTMLDirectWithRetry(ctx context.Context, raw string) (*html.Node, int, error) {
+	var doc *html.Node
+	var status int
+	var err error
+	for attempt := 0; attempt < javDBTransientNetworkAttempts; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(time.Duration(attempt) * javDBTransientRetryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return doc, status, err
+			case <-timer.C:
+			}
+		}
+		doc, status, err = p.getHTMLDirect(ctx, raw)
+		if status != 0 || err == nil {
+			return doc, status, err
+		}
 	}
 	return doc, status, err
 }
