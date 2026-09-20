@@ -7,6 +7,25 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Video integrity checks no longer misreported a fully valid, downloaded
+  video as corrupt with a confusing "read ffprobe result: invalid
+  character '[' looking for beginning of object key string" error.
+  ffprobe's stdout and stderr were being merged into one stream, so a
+  diagnostic warning on stderr could interleave with and corrupt the JSON
+  result on stdout; they are now captured and parsed separately.
+- JavDB searches and page lookups no longer fail outright on a single
+  transient network hiccup (a connection timeout or a reset connection).
+  These requests are now retried automatically before giving up.
+
+### Changed
+
+- Search & Download now inspects Keepshare/PikPak candidates concurrently
+  instead of one at a time, cutting the typical wait for JavDB releases
+  with many candidates roughly threefold, and shows live "Inspecting N of
+  M candidates" progress in the dialog while it runs.
+
 ## [1.0.187] - 2026-09-20
 
 ### Fixed
