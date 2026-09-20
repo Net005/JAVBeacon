@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -473,6 +474,69 @@ func TestDiscoverPikPakShareIDParsesDirectPlayerURLWithoutRequest(t *testing.T) 
 	}
 	if shareID != "direct-share" {
 		t.Fatalf("share ID=%q", shareID)
+	}
+}
+
+func TestValidateJavDBShareReferenceRejectsUnsupportedLinks(t *testing.T) {
+	for _, ref := range []string{
+		"",
+		"   ",
+		"magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=PRPM-002",
+		"ftp://keepshare.org/s/abc",
+		"https://example.com/not-a-share",
+		"https://keepshare.org",
+		"https://mypikpak.com/not-a-share-path",
+	} {
+		if err := validateJavDBShareReference(ref); err == nil {
+			t.Fatalf("reference %q: expected an error, got nil", ref)
+		}
+	}
+	for _, ref := range []string{
+		"https://keepshare.org/abc123",
+		"https://mypikpak.com/s/abc123/def456",
+	} {
+		if err := validateJavDBShareReference(ref); err != nil {
+			t.Fatalf("reference %q: expected no error, got %v", ref, err)
+		}
+	}
+}
+
+// TestJavDBResolveSkipsUnsupportedSourceReferenceWithoutNetworkCalls covers
+// the bug where a Download row with no real Keepshare/PikPak share link -
+// for example a JavDB release that only ever published a magnet/torrent
+// link, or an empty SourceReference left over from a "not available"
+// placeholder - reached discoverPikPakShareID's raw http.Client request and
+// surfaced as "PikPak resolution failed after 3 attempts: ... unsupported
+// protocol scheme". Resolve must now reject it immediately (no PikPak
+// requests, no 3-attempt retry loop) with a clear, actionable error, while
+// leaving a real share link to resolve normally.
+func TestJavDBResolveSkipsUnsupportedSourceReferenceWithoutNetworkCalls(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ref  string
+	}{
+		{"empty", ""},
+		{"magnet", "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=PRPM-002"},
+		{"unrelated host", "https://example.com/whatever"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := 0
+			client := &http.Client{Transport: pikPakRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				requests++
+				return nil, fmt.Errorf("unexpected request to %s", r.URL)
+			})}
+			provider := &javDBProvider{client: client}
+			_, err := provider.Resolve(context.Background(), domain.Download{SourceReference: tc.ref, Query: "PRPM-002"})
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if requests != 0 {
+				t.Fatalf("expected no PikPak requests for an unsupported reference, got %d", requests)
+			}
+			if strings.Contains(err.Error(), "unsupported protocol scheme") {
+				t.Fatalf("expected a clear diagnostic, not the raw transport error: %v", err)
+			}
+		})
 	}
 }
 

@@ -121,6 +121,9 @@ func (p *javDBProvider) Resolve(ctx context.Context, download domain.Download) (
 	if (p.pikPakUsername == "") != (p.pikPakPassword == "") {
 		return resolvedHTTPFile{}, errors.New("PikPak account configuration is incomplete: configure both username and password, or clear both")
 	}
+	if err := validateJavDBShareReference(download.SourceReference); err != nil {
+		return resolvedHTTPFile{}, err
+	}
 	resolveCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	ctx = resolveCtx
@@ -162,6 +165,37 @@ resolveAttempts:
 		return resolvedHTTPFile{}, fmt.Errorf("PikPak resolution timed out after 2 minutes: %w", ctx.Err())
 	}
 	return resolvedHTTPFile{}, fmt.Errorf("PikPak resolution failed after %d attempts: %w", attempts, err)
+}
+
+// validateJavDBShareReference rejects a download's SourceReference before any
+// PikPak API call is attempted. A JavDB release detail page sometimes
+// publishes only a magnet/torrent link with no Keepshare/PikPak mirror at
+// all - discoverJavDBDownloads correctly leaves such a candidate
+// unaccepted/unlinked, but a queued Download row can still end up here with
+// an empty, magnet:, or otherwise non-HTTP SourceReference (for example a
+// retried "not available" placeholder). Without this check, Resolve fell
+// through to discoverPikPakShareID issuing a raw http.Client request against
+// that reference, which surfaced as a baffling three-attempt "PikPak
+// resolution failed ... unsupported protocol scheme" error instead of a
+// clear one - and burned the same 3-attempt/backoff loop on a failure that
+// is never transient. Rejecting it immediately here also lets the existing
+// failed-HTTP-download Torrent fallback (tryFailedHTTPTorrentFallback) kick
+// in right away instead of waiting out that pointless retry loop. A
+// well-formed Keepshare/PikPak share link is unaffected and continues on to
+// the normal resolution attempts below.
+func validateJavDBShareReference(raw string) error {
+	ref := strings.TrimSpace(raw)
+	if ref == "" {
+		return errors.New("no Keepshare/PikPak share link is available for this download - JavDB likely only lists a magnet/torrent link for this release, or has not published a download mirror yet; use Torrent download instead")
+	}
+	u, err := url.Parse(ref)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("download source reference %q is not an HTTP(S) Keepshare/PikPak share link (likely a magnet/torrent link) - use Torrent download instead", ref)
+	}
+	if !isJavDBShareURL(u) {
+		return fmt.Errorf("download source reference %q is not a recognized Keepshare/PikPak share link", ref)
+	}
+	return nil
 }
 
 func normalizeReleaseID(s string) string {
