@@ -361,6 +361,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/releases/{id}/stash-history", s.releaseStashHistory)
 	s.mux.HandleFunc("PATCH /api/releases/{id}", s.patchRelease)
 	s.mux.HandleFunc("GET /api/releases/{id}/search", s.searchRelease)
+	s.mux.HandleFunc("GET /api/releases/{id}/search-progress", s.releaseSearchProgress)
 	s.mux.HandleFunc("POST /api/releases/{id}/search-download", s.backgroundSearchAndDownloadRelease)
 	s.mux.HandleFunc("POST /api/releases/{id}/download", s.downloadRelease)
 	s.mux.HandleFunc("GET /api/jobs/search-download-queue", s.searchDownloadQueue)
@@ -881,6 +882,25 @@ func (s *Server) searchRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, 200, rows)
+}
+
+// releaseSearchProgress reports live "N of M candidates inspected" progress
+// for an in-flight HTTP (JavDB/Keepshare) search for this release, so the
+// frontend can show that instead of a static "Searching…" while the
+// blocking GET /releases/{id}/search?provider=http request above is still
+// running - a release with many published mirrors inspects each one
+// against PikPak and can take well over a minute. active is false, with
+// completed/total both 0, once no such search is currently running for this
+// release (finished, never started, or this release has no HTTP provider
+// results to inspect at all).
+func (s *Server) releaseSearchProgress(w http.ResponseWriter, r *http.Request) {
+	n, e := id(r)
+	if e != nil {
+		s.problem(w, 400, "invalid release id")
+		return
+	}
+	completed, total, active := download.HTTPSearchProgress(n)
+	s.json(w, 200, map[string]any{"completed": completed, "total": total, "active": active})
 }
 
 func (s *Server) backgroundSearchAndDownloadRelease(w http.ResponseWriter, r *http.Request) {

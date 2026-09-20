@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode"
@@ -246,6 +247,64 @@ type javDBDownloadDiscovery struct {
 	actionURLs           []string
 }
 
+// httpCandidateInspectionConcurrency caps how many JavDB HTTP search
+// candidates are inspected against PikPak at once (see the comment above
+// the inspection loop in Search for why this is bounded rather than
+// unlimited or 1).
+const httpCandidateInspectionConcurrency = 3
+
+// httpSearchProgress tracks the live "N of M candidates inspected" state for
+// an in-flight JavDB HTTP search, keyed by release ID. A single HTTP search
+// is one blocking call (Service.SearchHTTP / the /releases/{id}/search?
+// provider=http endpoint) that can legitimately take over a minute when a
+// release has a dozen-plus mirrors, each needing its own PikPak round trips
+// - this lets the frontend poll HTTPSearchProgress while that request is
+// still in flight instead of showing a static "Searching…" the whole time.
+var httpSearchProgress = struct {
+	mu   sync.Mutex
+	byID map[int64]*httpSearchProgressState
+}{byID: map[int64]*httpSearchProgressState{}}
+
+type httpSearchProgressState struct {
+	total     int
+	completed int32 // accessed atomically
+}
+
+func startHTTPSearchProgress(releaseID int64, total int) {
+	httpSearchProgress.mu.Lock()
+	httpSearchProgress.byID[releaseID] = &httpSearchProgressState{total: total}
+	httpSearchProgress.mu.Unlock()
+}
+
+func advanceHTTPSearchProgress(releaseID int64) {
+	httpSearchProgress.mu.Lock()
+	state := httpSearchProgress.byID[releaseID]
+	httpSearchProgress.mu.Unlock()
+	if state != nil {
+		atomic.AddInt32(&state.completed, 1)
+	}
+}
+
+func finishHTTPSearchProgress(releaseID int64) {
+	httpSearchProgress.mu.Lock()
+	delete(httpSearchProgress.byID, releaseID)
+	httpSearchProgress.mu.Unlock()
+}
+
+// HTTPSearchProgress reports live candidate-inspection progress for release
+// ID's in-flight JavDB HTTP search, if one is currently running. active is
+// false once the search has finished (or none is running), at which point
+// the caller already has - or is about to have - the real, final results.
+func HTTPSearchProgress(releaseID int64) (completed, total int, active bool) {
+	httpSearchProgress.mu.Lock()
+	state := httpSearchProgress.byID[releaseID]
+	httpSearchProgress.mu.Unlock()
+	if state == nil {
+		return 0, 0, false
+	}
+	return int(atomic.LoadInt32(&state.completed)), state.total, true
+}
+
 func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]domain.SearchResult, error) {
 	base := strings.TrimRight(strings.TrimSpace(p.baseURL), "/")
 	if base == "" {
@@ -333,45 +392,74 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 	// preferred filename patterns rank the real downloadable file. A blocked,
 	// expired, or otherwise uninspectable share remains visible for diagnosis,
 	// but is never left accepted or queued as a placeholder folder.
-	// Inspect shares serially. Each inspection creates an anonymous PikPak
-	// session/CAPTCHA token; firing every share at once can make otherwise valid
-	// public shares fail transiently and leaves the search card with only its
-	// JavDB row title. A later download resolution would then appear to
-	// "discover" the preferred filename after the search had already missed it.
-	// Keeping this phase ordered also makes the final HTTP ranking deterministic.
-	inspectionFailures := 0
+	// Inspect shares with bounded concurrency (httpCandidateInspectionConcurrency
+	// at a time), not one at a time and not all at once. Each inspection
+	// creates its own anonymous PikPak session/CAPTCHA token, and firing every
+	// share at once made otherwise-valid public shares fail transiently -
+	// leaving the search card with only its JavDB row title, and a later
+	// download resolution would then appear to "discover" the preferred
+	// filename after the search had already missed it. A handful of releases
+	// legitimately publish a dozen-plus mirrors, and each one is a handful of
+	// real network round trips (discover the PikPak share ID, mint a CAPTCHA
+	// token, list the share), so doing them fully serially could leave a
+	// user's Search & Download dialog watching a plain "Searching…" for a
+	// minute or more; pikPakRequestThrottle (see below) still paces the
+	// actual PikPak request issuance regardless of how many of these run
+	// concurrently, so this does not defeat the anti-abuse spacing that
+	// motivated the original serial design - it only lets the network
+	// round-trip time of up to httpCandidateInspectionConcurrency inspections
+	// overlap instead of queuing behind each other. Each goroutine only ever
+	// writes rows[i] for its own index, so no two goroutines touch the same
+	// row; the shared failure counter and progress counter are the only
+	// state they contend over. Sorting afterward does not depend on
+	// inspection order, so the final ranking stays deterministic.
+	startHTTPSearchProgress(release.ID, len(rows))
+	defer finishHTTPSearchProgress(release.ID)
+	var (
+		inspectionFailures int32
+		wg                 sync.WaitGroup
+		sem                = make(chan struct{}, httpCandidateInspectionConcurrency)
+	)
 	for i := range rows {
-		inspect := p.inspectSearchCandidate
-		if p.inspectCandidate != nil {
-			inspect = p.inspectCandidate
-		}
-		selected, files, inspectErr := inspect(ctx, rows[i].Link, release.VideoID)
-		if inspectErr != nil {
-			inspectionFailures++
-			rows[i].Accepted = false
-			rows[i].ProviderFileID = ""
-			rows[i].Reason = "release ID matched; Keepshare filename inspection failed: " + inspectErr.Error()
-			continue
-		}
-		rows[i].Title = selected.Name
-		rows[i].MatchedFile = selected.Name
-		rows[i].ProviderFileID = selected.ID
-		rows[i].PreferredFilenameMatch, _, rows[i].PreferredFilenamePriority = matchesAcceptedHTTPPattern(selected.Name, p.acceptedPatterns)
-		if blacklisted, pattern := matchesBlacklistedFilename(selected.Name, p.blacklistedPatterns); blacklisted {
-			rows[i].Accepted = false
-			rows[i].BlacklistedFilenameMatch = true
-			rows[i].PreferredFilenameMatch = false
-			rows[i].PreferredFilenamePriority = 0
-			rows[i].Reason = fmt.Sprintf("filename matched blacklist pattern %s: %s", pattern, selected.Name)
-		}
-		if selected.FolderReleaseMatch {
-			rows[i].Reason = "exact release-ID PikPak folder fallback selected the highest-priority/largest child video"
-		}
-		rows[i].Files, rows[i].FileDetails = pikPakSearchFiles(files, selected)
-		if size, parseErr := strconv.ParseInt(selected.Size, 10, 64); parseErr == nil && size > 0 {
-			rows[i].SizeBytes = size
-		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			defer advanceHTTPSearchProgress(release.ID)
+			inspect := p.inspectSearchCandidate
+			if p.inspectCandidate != nil {
+				inspect = p.inspectCandidate
+			}
+			selected, files, inspectErr := inspect(ctx, rows[i].Link, release.VideoID)
+			if inspectErr != nil {
+				atomic.AddInt32(&inspectionFailures, 1)
+				rows[i].Accepted = false
+				rows[i].ProviderFileID = ""
+				rows[i].Reason = "release ID matched; Keepshare filename inspection failed: " + inspectErr.Error()
+				return
+			}
+			rows[i].Title = selected.Name
+			rows[i].MatchedFile = selected.Name
+			rows[i].ProviderFileID = selected.ID
+			rows[i].PreferredFilenameMatch, _, rows[i].PreferredFilenamePriority = matchesAcceptedHTTPPattern(selected.Name, p.acceptedPatterns)
+			if blacklisted, pattern := matchesBlacklistedFilename(selected.Name, p.blacklistedPatterns); blacklisted {
+				rows[i].Accepted = false
+				rows[i].BlacklistedFilenameMatch = true
+				rows[i].PreferredFilenameMatch = false
+				rows[i].PreferredFilenamePriority = 0
+				rows[i].Reason = fmt.Sprintf("filename matched blacklist pattern %s: %s", pattern, selected.Name)
+			}
+			if selected.FolderReleaseMatch {
+				rows[i].Reason = "exact release-ID PikPak folder fallback selected the highest-priority/largest child video"
+			}
+			rows[i].Files, rows[i].FileDetails = pikPakSearchFiles(files, selected)
+			if size, parseErr := strconv.ParseInt(selected.Size, 10, 64); parseErr == nil && size > 0 {
+				rows[i].SizeBytes = size
+			}
+		}(i)
 	}
+	wg.Wait()
 	sortJavDBDownloadCandidates(rows, release.VideoID, p.acceptedPatterns)
 	rows = append(rows, unavailable...)
 	if p.log != nil {
