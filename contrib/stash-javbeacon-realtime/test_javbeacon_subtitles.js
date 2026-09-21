@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 
 const afterPatches = {};
 let captionQueryResult = {
@@ -85,6 +86,17 @@ global.window = {
 
 require("./javbeacon_subtitles.js");
 
+const pluginSource = fs.readFileSync(
+  require.resolve("./javbeacon_subtitles.js"),
+  "utf8"
+);
+assert.match(pluginSource, /mode: "release_link"/);
+assert.ok(
+  pluginSource.indexOf("React.createElement(SubtitleButton") <
+    pluginSource.indexOf("React.createElement(ReleaseLinkButton"),
+  "the + CC action must remain to the left of the JAVBeacon release link"
+);
+
 (async () => {
 
 const renderedScene = React.createElement("main", { id: "scene-page" });
@@ -132,7 +144,11 @@ assert.notEqual(
 settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "/media/other/";
-assert.equal(result.props.children[1].type(result.props.children[1].props), null);
+const filteredPageAction = result.props.children[1].type(
+  result.props.children[1].props
+);
+assert.notEqual(filteredPageAction, null);
+assert.equal(filteredPageAction.props.showSubtitles, false);
 settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "";

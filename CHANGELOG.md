@@ -7,6 +7,31 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.193] - 2026-09-21
+
+### Changed
+
+- The StashApp scene-page plugin now places a distinct yellow beacon link to
+  the exact JAVBeacon release to the right of **+ CC**, with safer spacing.
+  Scene lookup remains server-side and authenticated, and an optional browser
+  URL supports installations whose JAVBeacon service URL is Docker-internal.
+- Notifications now uses incremental infinite scrolling like Release Library.
+  The configured batch size controls each fetch, loaded cards and selections
+  remain in place, and filter or tab changes safely discard stale requests.
+- Notifications and Release Library now share the same saved filter sets.
+  Notifications can create and manage those sets, maps every compatible
+  search/filter/sort option, and includes local-cover fading and ignored-release
+  visibility controls.
+- Release Library and Notifications now preserve useful wildcard search-field
+  width, wrap secondary controls before squeezing search text, and only shorten
+  wildcard value badges when the available viewport genuinely requires it.
+
+### Fixed
+
+- Bulk download deletion/replacement no longer remains permanently stuck when
+  an active HTTP transfer fails to acknowledge cancellation. Each cleanup is
+  bounded, failed items are reported, and later bulk jobs remain available.
+
 ## [1.0.192] - 2026-09-21
 
 ### Added

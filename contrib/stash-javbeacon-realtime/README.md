@@ -5,6 +5,8 @@ This plugin provides two integrations:
 - realtime scene-change notifications from Stash to JAVBeacon;
 - a native subtitle button on each Stash scene page that submits the scene's
   full file path to JAVBeacon-Subs.
+- a beacon button beside **+ CC** that opens the scene's exact JAVBeacon
+  release page in a new tab.
 - an always-visible Watchlist toggle on Stash scene cards.
 
 The subtitle request runs in Python inside the Stash plugin process. It does
@@ -18,6 +20,8 @@ not expose the API token to the scene page.
 3. Open this plugin's settings and set:
    - **JAVBeacon URL** to an address reachable from the Stash server, normally
      `http://javbeacon:8080` when both applications share a Docker network;
+   - optionally set **JAVBeacon browser URL** (for example
+     `https://jav.example.com`) when the server URL is Docker-internal;
    - **JAVBeacon webhook secret** to the same dedicated secret saved in
      JAVBeacon under **Settings → StashApp → Changed-scene sync**;
    - optionally adjust **JAVBeacon request timeout** from its 10-second default;
@@ -79,6 +83,13 @@ For safety, `inputs` is always replaced with the current scene's full path.
 When **Scene path filters** is configured, the action is shown only when the
 first scene file path contains at least one configured fragment. The same
 check is enforced by the server when the request is submitted.
+
+On scene detail pages, the yellow beacon icon appears to the right of **+ CC**
+with extra separation between the two actions. It securely resolves the
+scene's linked release through JAVBeacon and opens its exact release page. The
+beacon remains available when subtitle path filters hide **+ CC**. The
+server-facing URL and webhook secret stay inside the Stash plugin process;
+only the configured browser URL and final release path reach the page.
 
 ## Realtime sync
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -222,6 +223,41 @@ func TestBulkRemoveAlreadyAbsentSelectionIsIdempotent(t *testing.T) {
 	job, err := New(st, time.Second, slog.Default()).StartBulkRemoveAndReplace(ctx, []int64{987654}, false)
 	if err != nil || job.Running || job.Total != 1 {
 		t.Fatalf("stale selection should be accepted: job=%+v err=%v", job, err)
+	}
+}
+
+func TestBulkRemoveDoesNotRemainRunningWhenHTTPDownloadWillNotStop(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "remove-stuck-http.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "STUCK-001", Title: "Test", Source: "JavLibrary", Released: true})
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	download, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "STUCK-001", Transport: "http", Status: "downloading"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, time.Second, slog.Default())
+	service.replacementCleanupTimeout = 25 * time.Millisecond
+	service.httpMu.Lock()
+	service.httpRuns[download.ID] = &httpDownloadRun{cancel: func() {}, done: make(chan struct{})}
+	service.httpMu.Unlock()
+	if _, err := service.StartBulkRemoveAndReplace(ctx, []int64{download.ID}, false); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for service.ReplacementStatus().Running && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	job := service.ReplacementStatus()
+	if job.Running || job.Processed != 1 || job.Failed != 1 || !strings.Contains(job.LastError, context.DeadlineExceeded.Error()) {
+		t.Fatalf("stuck cancellation did not release bulk job: %+v", job)
+	}
+	if _, err := service.StartBulkRemoveAndReplace(ctx, []int64{987654}, false); err != nil {
+		t.Fatalf("completed timed-out job still blocks later jobs: %v", err)
 	}
 }
 

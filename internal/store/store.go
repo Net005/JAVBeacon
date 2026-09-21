@@ -1444,6 +1444,10 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		q += ` AND LOWER(r.stash_file_path)=LOWER(?)`
 		a = append(a, f.StashFilePath)
 	}
+	if f.StashSceneID != "" {
+		q += ` AND r.stash_scene_id=?`
+		a = append(a, f.StashSceneID)
+	}
 	if f.Source != "" {
 		q += ` AND LOWER(r.source)=LOWER(?)`
 		a = append(a, f.Source)

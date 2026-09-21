@@ -521,6 +521,7 @@ func (s *Server) routes() {
 	})
 	s.mux.HandleFunc("POST /api/hooks/stash/scene", s.stashRealtimeEvent)
 	s.mux.HandleFunc("POST /api/hooks/stash/test", s.stashRealtimeTest)
+	s.mux.HandleFunc("POST /api/hooks/stash/release-link", s.stashReleaseLink)
 	s.mux.HandleFunc("POST /api/jobs/stash/watchlist", func(w http.ResponseWriter, r *http.Request) {
 		x, e := s.stash.SyncWatchlist(r.Context())
 		if e != nil {
