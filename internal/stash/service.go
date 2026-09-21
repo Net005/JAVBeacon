@@ -289,15 +289,43 @@ func (s *Service) run(ctx context.Context) {
 			}
 			if tagID := strings.TrimSpace(settings["stash_watchlist_tag_id"]); local && tagID != "" {
 				if tags, available := sceneTags[sceneID]; available {
-					watchlist := false
+					hasTag := false
 					for _, id := range tags {
 						if id == tagID {
-							watchlist = true
+							hasTag = true
 							break
 						}
 					}
-					if watchlist != release.Watchlist {
-						if e := s.store.PatchRelease(ctx, release.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil); e != nil {
+					switch {
+					case hasTag == release.Watchlist:
+						// Already in sync.
+					case !hasTag && release.Watchlist:
+						// Stash has no tag but JAVBeacon thinks this release is
+						// watchlisted. Only trust that as an intentional
+						// un-watchlist if we've previously confirmed the tag
+						// was applied to this scene; otherwise this release's
+						// Watchlist mark was never pushed yet (e.g. it was
+						// marked while still downloading, before this scene
+						// existed to tag) - push it now instead of silently
+						// discarding the mark the instant the release becomes
+						// local.
+						if synced, _ := s.store.WatchlistSynced(ctx, release.ID, sceneID, tagID); synced {
+							if e := s.store.PatchRelease(ctx, release.ID, nil, nil, nil, nil, &hasTag, nil, nil, nil); e != nil {
+								result.Error = e.Error()
+							} else {
+								releaseUpdated = true
+							}
+						} else {
+							withScene := release
+							withScene.StashSceneID = sceneID
+							if _, tagErr := s.setWatchlistTag(ctx, withScene, baseURL, apiKey, tagID, true); tagErr != nil {
+								s.log.Warn("failed to push pending Watchlist tag for newly-local release", "release_id", release.ID, "video_id", release.VideoID, "error", tagErr)
+							}
+						}
+					default:
+						// Stash has the tag but JAVBeacon doesn't know about
+						// it yet - adopt it.
+						if e := s.store.PatchRelease(ctx, release.ID, nil, nil, nil, nil, &hasTag, nil, nil, nil); e != nil {
 							result.Error = e.Error()
 						} else {
 							releaseUpdated = true

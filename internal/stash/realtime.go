@@ -289,15 +289,39 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 		return "", err
 	}
 	if tagID := strings.TrimSpace(settings["stash_watchlist_tag_id"]); tagID != "" {
-		watchlist := false
+		hasTag := false
 		for _, tag := range scene.Tags {
 			if tag.ID == tagID {
-				watchlist = true
+				hasTag = true
 				break
 			}
 		}
-		if watchlist != match.Watchlist {
-			if err := s.store.PatchRelease(ctx, match.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil); err != nil {
+		switch {
+		case hasTag == match.Watchlist:
+			// Already in sync.
+		case !hasTag && match.Watchlist:
+			// Stash has no tag but JAVBeacon thinks this release is
+			// watchlisted. Only trust that as an intentional un-watchlist if
+			// we've previously confirmed the tag was applied to this scene;
+			// otherwise this release's Watchlist mark was never pushed yet
+			// (e.g. it was marked while still downloading, before this scene
+			// existed to tag) - push it now instead of silently discarding
+			// the mark the instant the release becomes local.
+			if synced, _ := s.store.WatchlistSynced(ctx, match.ID, scene.ID, tagID); synced {
+				if err := s.store.PatchRelease(ctx, match.ID, nil, nil, nil, nil, &hasTag, nil, nil, nil); err != nil {
+					return "", err
+				}
+			} else {
+				withScene := *match
+				withScene.StashSceneID = scene.ID
+				if _, err := s.setWatchlistTag(ctx, withScene, base, strings.TrimSpace(settings["stash_api_key"]), tagID, true); err != nil {
+					s.log.Warn("failed to push pending Watchlist tag for newly-local release", "release_id", match.ID, "video_id", match.VideoID, "error", err)
+				}
+			}
+		default:
+			// Stash has the tag but JAVBeacon doesn't know about it yet -
+			// adopt it.
+			if err := s.store.PatchRelease(ctx, match.ID, nil, nil, nil, nil, &hasTag, nil, nil, nil); err != nil {
 				return "", err
 			}
 		}

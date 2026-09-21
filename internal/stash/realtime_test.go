@@ -167,6 +167,13 @@ func TestRealtimeSceneSyncClearsWatchlistWhenTagIsRemoved(t *testing.T) {
 	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "ABC-123", Title: "Matched", Watchlist: true})
 	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
 	_ = st.SetStashState(ctx, releases[0].ID, true, "scene-123")
+	// A prior sync record means the tag really was applied to this scene
+	// before - so its absence now is a genuine, intentional un-watchlist in
+	// Stash, and should be trusted. Without this record (see
+	// TestRealtimeSceneSyncPushesPendingWatchlistTagInsteadOfClearingIt) the
+	// release's Watchlist mark has simply never been pushed yet and must not
+	// be discarded.
+	_ = st.SaveWatchlistSync(ctx, releases[0].ID, "scene-123", "watchlist", "tag added")
 	svc := New(st, time.Second, slog.Default(), nil, nil)
 	svc.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body := `{"data":{"findScene":{"id":"scene-123","title":"ABC-123","code":"ABC-123","created_at":"2024-01-03T04:05:06Z","tags":[],"files":[{"path":"/library/ABC-123.mp4"}]}}}`
@@ -178,6 +185,57 @@ func TestRealtimeSceneSyncClearsWatchlistWhenTagIsRemoved(t *testing.T) {
 	got, _ := st.Release(ctx, releases[0].ID)
 	if got.Watchlist {
 		t.Fatal("Watchlist remained set after the Stash tag was removed")
+	}
+}
+
+// TestRealtimeSceneSyncPushesPendingWatchlistTagInsteadOfClearingIt covers
+// the regression this session fixed: a release marked Watchlist in JAVBeacon
+// while it was still downloading (so the tag was never pushed to Stash,
+// since no scene existed yet to tag) must not have that mark silently
+// discarded the instant the release becomes local and the realtime Stash
+// webhook reports a scene with no watchlist tag on it. Instead, the pending
+// tag should be pushed to Stash now, and the mark kept.
+func TestRealtimeSceneSyncPushesPendingWatchlistTagInsteadOfClearingIt(t *testing.T) {
+	ctx := context.Background()
+	st, _ := store.OpenSQLite(filepath.Join(t.TempDir(), "watchlist-pending.db"))
+	defer st.Close()
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "Test", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "ABC-123", Title: "Matched", Watchlist: true})
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+	// No prior SetStashState/SaveWatchlistSync: this release has never been
+	// local before, matching the real "marked to Watchlist while still
+	// downloading" scenario.
+	svc := New(st, time.Second, slog.Default(), nil, nil)
+	var sawSceneUpdate bool
+	svc.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		buf, _ := io.ReadAll(r.Body)
+		body := string(buf)
+		switch {
+		case strings.Contains(body, `"variables"`):
+			// fetchRealtimeScene: the only caller that sends a parameterized
+			// query with a separate "variables" field.
+			resp := `{"data":{"findScene":{"id":"scene-new","title":"ABC-123","code":"ABC-123","created_at":"2024-01-03T04:05:06Z","tags":[],"files":[{"path":"/library/ABC-123.mp4"}]}}}`
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(resp)), Header: make(http.Header)}, nil
+		case strings.Contains(body, "sceneUpdate"):
+			sawSceneUpdate = true
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":{"sceneUpdate":{"id":"scene-new"}}}`)), Header: make(http.Header)}, nil
+		default:
+			// setWatchlistTag's own findScene(id:...){tags{id}} lookup.
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":{"findScene":{"tags":[]}}}`)), Header: make(http.Header)}, nil
+		}
+	})
+	if _, err := svc.syncRealtimeScene(ctx, map[string]string{"stash_base_url": "https://stash.example", "stash_watchlist_tag_id": "watchlist"}, "scene-new"); err != nil {
+		t.Fatal(err)
+	}
+	if !sawSceneUpdate {
+		t.Fatal("expected the pending Watchlist tag to be pushed to Stash via sceneUpdate")
+	}
+	got, _ := st.Release(ctx, releases[0].ID)
+	if !got.Watchlist {
+		t.Fatal("Watchlist mark was discarded instead of being pushed to Stash")
+	}
+	if !got.Local || got.StashSceneID != "scene-new" {
+		t.Fatalf("release was not matched local as expected: %+v", got)
 	}
 }
 
