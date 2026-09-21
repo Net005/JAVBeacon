@@ -239,6 +239,21 @@ func TestEmptyOpenAIResultGetsOneStrictRegenerationAttempt(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		call := calls.Add(1)
+		var request map[string]any
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("decode OpenAI request: %v", err)
+		}
+		reasoning, _ := request["reasoning"].(map[string]any)
+		if reasoning["effort"] != "minimal" {
+			t.Errorf("GPT-5 Mini reasoning effort = %#v, want minimal", reasoning["effort"])
+		}
+		wantTokens := 4096
+		if call == 2 {
+			wantTokens = 8192
+		}
+		if got := int(request["max_output_tokens"].(float64)); got != wantTokens {
+			t.Errorf("attempt %d max_output_tokens = %d, want %d", call, got, wantTokens)
+		}
 		content := `{"rankings":[]}`
 		if call == 2 {
 			if !strings.Contains(string(body), "REPAIR REQUIRED") || !strings.Contains(string(body), "empty AI result") {
@@ -260,6 +275,37 @@ func TestEmptyOpenAIResultGetsOneStrictRegenerationAttempt(t *testing.T) {
 	}
 	if result.Usage.InputTokens != 200 || result.Usage.OutputTokens != 40 || result.Usage.TotalTokens != 240 {
 		t.Fatalf("retry usage was not accumulated: %+v", result.Usage)
+	}
+}
+
+func TestIncompleteOpenAIResponseIsRetriedWithLargerBudget(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		call := calls.Add(1)
+		if call == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":             "incomplete",
+				"incomplete_details": map[string]any{"reason": "max_output_tokens"},
+				"usage":              map[string]any{"input_tokens": 100, "output_tokens": 4096, "total_tokens": 4196},
+			})
+			return
+		}
+		content := `{"rankings":[{"id":7,"score":87,"reason":"Match: supplied story and Sci-Fi tag support this recommendation.","pools":[]}]}`
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "completed",
+			"output": []any{map[string]any{"content": []any{map[string]any{"text": content}}}},
+			"usage":  map[string]any{"input_tokens": 100, "output_tokens": 30, "total_tokens": 130},
+		})
+	}))
+	defer server.Close()
+	cfg := baseConfig("")
+	cfg.PrimaryProvider, cfg.OpenAIAPIKey, cfg.OpenAIBaseURL = "openai", "secret", server.URL
+	result := New(nil).Rank(context.Background(), cfg, testCandidates(), "")
+	if result.Provider != "openai" || len(result.Ranks) != 1 || calls.Load() != 2 {
+		t.Fatalf("incomplete OpenAI response did not recover: %+v calls=%d", result, calls.Load())
+	}
+	if result.Usage.TotalTokens != 4326 {
+		t.Fatalf("usage across incomplete and completed attempts = %+v", result.Usage)
 	}
 }
 

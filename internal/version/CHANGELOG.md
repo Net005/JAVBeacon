@@ -7,6 +7,14 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.201] - 2026-09-21
+
+### Fixed
+
+- GPT-5 Mini ranking requests now use minimal reasoning with a larger visible
+  output allowance, double that allowance for the single repair attempt, and
+  recognize incomplete or refused Responses API results before JSON parsing.
+
 ## [1.0.200] - 2026-09-21
 
 ### Fixed
