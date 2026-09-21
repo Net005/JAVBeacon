@@ -7,6 +7,20 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.198] - 2026-09-21
+
+### Fixed
+
+- Release Library filters now remain on one compact row on wide desktops,
+  matching Notifications, and both views use a narrower primary wildcard
+  search field so secondary filters and sort controls retain their space. The
+  secondary wildcard field is compact too, and the former AND/OR menu is now
+  a clean `&` / `|` toggle beside the primary wildcard search. Notifications
+  now presents Batch size as one unified toolbar control, reserves enough room
+  for it, and only forces a single row when the usable desktop width can hold
+  every control, avoiding the label and selector overlap seen near the previous
+  breakpoint.
+
 ## [1.0.197] - 2026-09-21
 
 ### Fixed
