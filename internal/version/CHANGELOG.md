@@ -7,6 +7,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.196] - 2026-09-21
+
+### Fixed
+
+- Background whole-collection work now uses complete pagination instead of
+  magic one-shot limits. Recent and older monitored-release searches and the
+  Release Upgrade Schedule previously requested 5,000 releases in one call;
+  that exceeded the release store's 500-row maximum and silently fell back to
+  only 100. Missing Files status restoration no longer assumes its result set
+  remains below 5,000 rows either.
+
 ## [1.0.195] - 2026-09-21
 
 ### Changed

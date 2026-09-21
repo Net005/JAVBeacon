@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -252,5 +253,41 @@ func TestEligibleReleaseUpgradesNoPatternsConfigured(t *testing.T) {
 	}
 	if len(patterns) != 0 || candidates != nil {
 		t.Fatalf("expected no patterns and no candidates, got patterns=%+v candidates=%+v", patterns, candidates)
+	}
+}
+
+func TestEligibleReleaseUpgradesLoadsBeyondFirstStorePage(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "release-upgrade-pages.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"accepted_patterns": `[{"pattern":"hhd800.com@","priority":1},{"pattern":"4k688.com@","priority":10}]`}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	today := time.Now().UTC().Format("2006-01-02")
+	for i := 1; i <= 501; i++ {
+		videoID := fmt.Sprintf("UPG-%04d", i)
+		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: "Upgrade", Source: "JavLibrary", Released: true, ReleaseDate: today}); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := st.Releases(ctx, domain.ReleaseFilter{VideoID: videoID, Limit: 1})
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("release setup for %s failed: rows=%d err=%v", videoID, len(rows), err)
+		}
+		if _, err := st.SaveDownload(ctx, domain.Download{ReleaseID: rows[0].ID, Query: videoID, Transport: "http", Status: "completed", Name: "4k688.com@" + videoID + ".mp4"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := New(st, time.Second, slog.Default())
+	candidates, _, err := service.eligibleReleaseUpgrades(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 501 {
+		t.Fatalf("eligible candidates = %d, want all 501", len(candidates))
 	}
 }

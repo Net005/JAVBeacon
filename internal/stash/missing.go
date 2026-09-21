@@ -73,7 +73,7 @@ func (s *Service) restoreMissingScanStatus(ctx context.Context) {
 			return
 		}
 	}
-	rows, err := s.store.StashMissingScenes(ctx, domain.StashMissingFilter{Limit: 5000})
+	rows, err := s.allMissingScenePages(ctx, domain.StashMissingFilter{})
 	if err != nil || len(rows) == 0 || rows[0].LastScanAt.IsZero() {
 		return
 	}
@@ -84,6 +84,26 @@ func (s *Service) restoreMissingScanStatus(ctx context.Context) {
 		}
 	}
 	s.missingStatus = status
+}
+
+// allMissingScenePages loads a complete background-job/status snapshot without
+// assuming the missing-scene table will stay below an arbitrary ceiling. UI
+// requests remain independently paginated by the store.
+func (s *Service) allMissingScenePages(ctx context.Context, filter domain.StashMissingFilter) ([]domain.StashMissingScene, error) {
+	const pageSize = 500
+	all := make([]domain.StashMissingScene, 0, pageSize)
+	for offset := 0; ; offset += pageSize {
+		filter.Limit = pageSize
+		filter.Offset = offset
+		page, err := s.store.StashMissingScenes(ctx, filter)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if len(page) < pageSize {
+			return all, nil
+		}
+	}
 }
 
 func (s *Service) persistMissingScanStatus(ctx context.Context, status MissingStatus) {
