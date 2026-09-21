@@ -27,6 +27,39 @@ func responseText(response map[string]any) string {
 	return ""
 }
 
+func openAIResponseStateError(response map[string]any) error {
+	status, _ := response["status"].(string)
+	if status == "incomplete" {
+		details, _ := response["incomplete_details"].(map[string]any)
+		if reason, _ := details["reason"].(string); reason == "max_output_tokens" {
+			return validationError{"incomplete OpenAI response: output token limit reached"}
+		}
+		return validationError{"incomplete OpenAI response"}
+	}
+	if status == "failed" || status == "cancelled" {
+		return fmt.Errorf("OpenAI response %s", status)
+	}
+	output, _ := response["output"].([]any)
+	for _, raw := range output {
+		item, _ := raw.(map[string]any)
+		content, _ := item["content"].([]any)
+		for _, partRaw := range content {
+			part, _ := partRaw.(map[string]any)
+			if refusal, _ := part["refusal"].(string); strings.TrimSpace(refusal) != "" {
+				return validationError{"OpenAI refused the ranking request"}
+			}
+		}
+	}
+	return nil
+}
+
+func configureOpenAIReasoning(body map[string]any, model string) {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	if lower == "gpt-5-mini" || strings.HasPrefix(lower, "gpt-5-mini-") {
+		body["reasoning"] = map[string]any{"effort": "minimal"}
+	}
+}
+
 func (s *Service) openAIRank(ctx context.Context, cfg Config, candidates []Candidate, pools string) ([]Rank, Usage, error) {
 	var totalUsage Usage
 	var lastErr error
@@ -78,7 +111,13 @@ func (s *Service) openAIRankOnce(ctx context.Context, cfg Config, candidates []C
 		}
 		prompt = "REPAIR REQUIRED: The previous response was rejected for " + kind + ". Regenerate the complete batch from scratch. Do not repeat or discuss the rejected response. Return exactly one ranking for every supplied candidate ID.\n\n" + prompt
 	}
-	body, _ := json.Marshal(map[string]any{"model": model, "input": prompt, "max_output_tokens": min(max(len(openAICandidates)*160, 2048), 32768), "truncation": "auto", "store": false, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "discovery_rankings", "strict": true, "schema": rankingSchema(openAICandidates, pools)}}})
+	maxOutputTokens := min(max(len(openAICandidates)*240, 4096), 32768)
+	if repair {
+		maxOutputTokens = min(maxOutputTokens*2, 32768)
+	}
+	requestBody := map[string]any{"model": model, "input": prompt, "max_output_tokens": maxOutputTokens, "truncation": "auto", "store": false, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "discovery_rankings", "strict": true, "schema": rankingSchema(openAICandidates, pools)}}}
+	configureOpenAIReasoning(requestBody, model)
+	body, _ := json.Marshal(requestBody)
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, normalizeURL(cfg.OpenAIBaseURL, "https://api.openai.com/v1")+"/responses", bytes.NewReader(body))
 	if err != nil {
 		return nil, Usage{}, err
@@ -101,8 +140,11 @@ func (s *Service) openAIRankOnce(ctx context.Context, cfg Config, candidates []C
 	if json.Unmarshal(data, &envelope) != nil {
 		return nil, Usage{}, errors.New("OpenAI returned an invalid response")
 	}
-	ranks, err := parseRankingJSON(responseText(envelope), candidates, pools)
 	usage := responseUsage(envelope)
+	if err := openAIResponseStateError(envelope); err != nil {
+		return nil, usage, err
+	}
+	ranks, err := parseRankingJSON(responseText(envelope), candidates, pools)
 	if err != nil {
 		return nil, usage, err
 	}
