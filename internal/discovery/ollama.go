@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 func normalizeURL(raw, fallback string) string {
@@ -274,5 +275,29 @@ func (s *Service) ollamaRankOnce(ctx context.Context, cfg Config, candidates []C
 	if envelope.DoneReason == "length" {
 		return nil, errors.New("Ollama output reached its token limit before completing JSON")
 	}
-	return parseRankingJSON(envelope.Message.Content, candidates, pools)
+	ranks, err := parseRankingJSON(envelope.Message.Content, candidates, pools)
+	if err != nil {
+		// The caller only logs the validation category (e.g. "conversational/
+		// non-ranking reason"), which says a rejection happened but not why -
+		// diagnosing a persistently rejecting model otherwise means guessing
+		// blind. Log a bounded snippet of what the model actually returned so
+		// the real phrasing is visible in Live Logs without risking an
+		// unbounded log line from a runaway or malformed response.
+		s.log.Debug("AI Discovery: Ollama response failed validation", "model", cfg.OllamaModel, "error", err, "content_snippet", truncateForLog(envelope.Message.Content, 1000))
+	}
+	return ranks, err
+}
+
+// truncateForLog bounds a diagnostic string by byte length without splitting
+// a UTF-8 rune, so a runaway or malformed model response can't blow up log
+// storage while still leaving enough context to diagnose a rejection.
+func truncateForLog(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+	truncated := value[:maxBytes]
+	for len(truncated) > 0 && !utf8.ValidString(truncated) {
+		truncated = truncated[:len(truncated)-1]
+	}
+	return truncated + "…"
 }
