@@ -76,6 +76,37 @@ func TestSubtitleSidecarAndCleanExcerpt(t *testing.T) {
 	}
 }
 
+func TestSubtitleSidecarMatchingIsCaseInsensitiveAndBounded(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"thza-10.en.srt", "THZA-100.en.srt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("subtitle"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release := domain.Release{ID: 10, StashFilePath: filepath.Join(dir, "THZA-10.mp4")}
+	if !hasSubtitleFile(release) {
+		t.Fatal("case-insensitive subtitle sidecar was not detected")
+	}
+	if subtitleSidecarMatches("THZA-10", "THZA-100.en.srt") {
+		t.Fatal("a different release ID was accepted as a subtitle sidecar")
+	}
+}
+
+func TestSubtitleScanReportsLiveFoundCount(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "abc-1.en.srt"), []byte("subtitle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	releases := []domain.Release{{ID: 1, StashFilePath: filepath.Join(dir, "ABC-1.mp4")}, {ID: 2, StashFilePath: filepath.Join(dir, "ABC-2.mp4")}}
+	lastCompleted, lastFound := 0, 0
+	availability, stats := scanSubtitleAvailability(releases, func(completed, found int) {
+		lastCompleted, lastFound = completed, found
+	})
+	if !availability[1] || availability[2] || lastCompleted != 2 || lastFound != 1 || stats.Directories != 1 || stats.UnreadableDirectories != 0 {
+		t.Fatalf("unexpected subtitle scan: availability=%v completed=%d found=%d stats=%+v", availability, lastCompleted, lastFound, stats)
+	}
+}
+
 func TestSubtitleExcerptRemovesNoiseDuplicatesAndPreservesUTF8(t *testing.T) {
 	dir := t.TempDir()
 	video := filepath.Join(dir, "UTF-001.mp4")
