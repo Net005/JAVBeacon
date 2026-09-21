@@ -7,6 +7,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.208] - 2026-09-21
+
 ### Changed
 
 - AI Discovery cards now show reasons as flowing text instead of tightly
