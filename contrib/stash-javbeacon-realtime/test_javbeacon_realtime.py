@@ -193,6 +193,29 @@ class SubtitleRequestTests(unittest.TestCase):
             },
         )
 
+    @mock.patch.object(plugin, "_plugin_settings")
+    @mock.patch.object(plugin.urllib.request, "urlopen")
+    def test_realtime_sync_accepts_nested_hook_scene_id(self, urlopen, plugin_settings):
+        plugin_settings.return_value = {
+            "javbeacon_url": "http://javbeacon:8080",
+            "webhook_secret": "hook-secret",
+        }
+        urlopen.return_value = FakeResponse({"state": "queued"})
+
+        plugin.request_realtime_sync(
+            {},
+            {
+                "mode": "hook",
+                "hookContext": {
+                    "input": {"id": "39381"},
+                    "type": "Scene.Create.Post",
+                },
+            },
+        )
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(json.loads(request.data)["scene_id"], "39381")
+
     @mock.patch.object(plugin, "_plugin_settings", return_value={})
     def test_realtime_sync_requires_plugin_ui_settings(self, _plugin_settings):
         with self.assertRaisesRegex(RuntimeError, "Settings > Plugins"):

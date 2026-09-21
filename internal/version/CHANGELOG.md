@@ -7,6 +7,24 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.195] - 2026-09-21
+
+### Changed
+
+- The Released date-window start date now defaults to the browser's current
+  local date on every app load and is no longer stored in preferences or saved
+  filter sets. A safe startup repair removes older stored start dates while
+  preserving every other filter. Empty minimum and maximum age fields now both
+  mean no limit, and clearing the start date disables the entire date window.
+
+### Fixed
+
+- Realtime StashApp scene creation now recognizes release IDs in attached file
+  paths and source URLs when the scene code or title has not been populated yet.
+  An incomplete initial scene snapshot activates the existing bounded retry
+  cycle instead of being silently accepted, and the plugin accepts alternate
+  Stash hook-context ID shapes used by different Stash versions.
+
 ## [1.0.194] - 2026-09-21
 
 ### Changed

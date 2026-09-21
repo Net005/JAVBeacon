@@ -208,7 +208,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`saveDeviceDisplayPreference('uiZoom',uiZoom.value)`,
 		`deviceDisplayPreferenceConfig={coverZoom:`,
 		`localStorage.setItem(` + "`javbeacon.device.${name}`" + `,String(next))`,
-		`function preferencePayload(){return{...prefs,...serverDisplayDefaults}}`,
+		`function preferencePayload(){const{releasedStartDate:ignoredReleasedStartDate,...savedPrefs}=prefs;return{...savedPrefs,...serverDisplayDefaults}}`,
 		`for(const name of Object.keys(deviceDisplayPreferenceConfig))delete state[name]`,
 		`toast('Release filters cleared · release-day range kept')`,
 		`saveDeviceDisplayPreference('notificationCoverZoom',e.target.value)`,
@@ -236,7 +236,10 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		`safe=(v='')=>{v=String(v||'').trim();if(!v)return'';`,
 		`x.download_source_reference||''`,
 		`cardScreenshotTimers.get(cover)!==state||!state.indexes.length`,
-		`releasedStartDate:prefs.releasedStartDate||''`,
+		`releasedStartDate.value=isoDateDaysAgo(0)`,
+		`if(!/^\d{4}-\d{2}-\d{2}$/.test(startDate))return{minDate:'',maxDate:''}`,
+		`delete saved.releasedStartDate`,
+		`const{releasedStartDate:ignoredReleasedStartDate,...savedPrefs}=prefs`,
 		`function downloadNextRunText(`,
 		`validDate(j.finished_at)?fullDateTime(j.finished_at):'never'`,
 		`const settingsSaveStatus=$('#settingsSaveStatus')`,
@@ -515,7 +518,10 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 		t.Fatal("embedded index.html is missing the mobile release close target")
 	}
 	if !strings.Contains(string(markup), `id="releasedStartDate" type="date"`) {
-		t.Fatal("embedded index.html is missing the persisted Released-tab start date")
+		t.Fatal("embedded index.html is missing the current Released-tab start date")
+	}
+	if !strings.Contains(string(markup), `id="releasedMinDays" type="number" placeholder="No limit"`) {
+		t.Fatal("embedded index.html does not show an unbounded empty minimum age")
 	}
 	if !strings.Contains(string(markup), `id="releaseFiltersPanel" class="releaseFiltersPanel" open`) || !strings.Contains(string(markup), `id="releaseFiltersSummary"`) {
 		t.Fatal("embedded index.html is missing the mobile Release Library filter fold")

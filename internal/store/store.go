@@ -314,6 +314,9 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 		err = s.migrateWatchlistNaming(context.Background())
 	}
 	if err == nil {
+		err = s.removeReleasedStartDates(context.Background())
+	}
+	if err == nil {
 		// Backfill watchlist_at for releases already marked Watchlist before this
 		// column existed, so the Watchlist tab's "when marked as watchlist" sort
 		// has something to sort by right after upgrade instead of every
@@ -690,6 +693,57 @@ func (s *SQLite) migrateWatchlistNaming(ctx context.Context) error {
 	}{{"releases", retired + "_at", releaseTimeColumn}, {"releases", retired, releaseColumn}, {"sites", retired, siteColumn}} {
 		if item.exists {
 			if _, err := s.db.ExecContext(ctx, `ALTER TABLE `+item.table+` DROP COLUMN `+item.column); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// removeReleasedStartDates removes the retired absolute anchor from user
+// preferences and every saved filter set. The Released view now anchors its
+// relative day window to the browser's current local date on each load.
+// Scanning at startup is intentionally idempotent so restored/imported presets
+// are repaired as well as databases upgraded in place.
+func (s *SQLite) removeReleasedStartDates(ctx context.Context) error {
+	type stateRow struct {
+		id    int64
+		state string
+	}
+	for _, target := range []struct {
+		table    string
+		idColumn string
+	}{{"user_preferences", "user_id"}, {"filter_presets", "id"}} {
+		rows, err := s.db.QueryContext(ctx, `SELECT `+target.idColumn+`,state FROM `+target.table)
+		if err != nil {
+			return err
+		}
+		states := make([]stateRow, 0)
+		for rows.Next() {
+			var row stateRow
+			if err := rows.Scan(&row.id, &row.state); err != nil {
+				rows.Close()
+				return err
+			}
+			states = append(states, row)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, row := range states {
+			var state map[string]json.RawMessage
+			if json.Unmarshal([]byte(row.state), &state) != nil {
+				continue
+			}
+			if _, exists := state["releasedStartDate"]; !exists {
+				continue
+			}
+			delete(state, "releasedStartDate")
+			next, err := json.Marshal(state)
+			if err != nil {
+				return err
+			}
+			if _, err := s.db.ExecContext(ctx, `UPDATE `+target.table+` SET state=?,updated_at=? WHERE `+target.idColumn+`=?`, string(next), time.Now().UTC(), row.id); err != nil {
 				return err
 			}
 		}

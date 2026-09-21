@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,8 @@ import (
 )
 
 const realtimeSceneQuery = `query JAVBeaconRealtimeScene($id: ID!) { findScene(id: $id) { id title code date created_at urls o_counter play_count last_played_at play_duration play_history o_history tags { id } files { path } } }`
+
+var errRealtimeSceneUnmatched = errors.New("changed Stash scene does not have a matchable JAVBeacon release yet")
 
 type RealtimeStatus struct {
 	Enabled       bool      `json:"enabled"`
@@ -225,17 +229,7 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 		return "", err
 	}
 	var match *domain.Release
-	sceneKeys := map[string]bool{}
-	if scene != nil {
-		if key := canonical(scene.Code); key != "" {
-			sceneKeys[key] = true
-		}
-		for _, raw := range idInText.FindAllString(scene.Title, -1) {
-			if key := canonical(raw); key != "" {
-				sceneKeys[key] = true
-			}
-		}
-	}
+	sceneKeys := realtimeSceneMatchKeys(scene)
 	for offset := 0; ; offset += 500 {
 		releases, e := s.store.Releases(ctx, domain.ReleaseFilter{Limit: 500, Offset: offset})
 		if e != nil {
@@ -274,11 +268,12 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 		return match.VideoID, nil
 	}
 	if match == nil {
-		// A later full sync may match custom title-based queries. Realtime sync
-		// deliberately avoids guessing when Stash has no canonical scene code.
-		s.markJellyfinLibraryChanged(ctx)
-		s.log.Debug("changed Stash scene has no JAVBeacon release match", "scene_id", sceneID, "code", scene.Code, "candidate_keys", len(sceneKeys), "elapsed", time.Since(started))
-		return "", nil
+		// Scene.Create.Post can arrive before Stash has finished attaching the
+		// file or applying scraper metadata. Returning a retryable error lets the
+		// existing bounded retry policy fetch the scene again instead of silently
+		// treating that incomplete first snapshot as synchronized.
+		s.log.Debug("changed Stash scene is not matchable yet", "scene_id", sceneID, "code", scene.Code, "candidate_keys", len(sceneKeys), "elapsed", time.Since(started))
+		return "", errRealtimeSceneUnmatched
 	}
 	if err := s.store.SetStashState(ctx, match.ID, true, scene.ID); err != nil {
 		return "", err
@@ -352,6 +347,47 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 	s.markJellyfinLibraryChanged(ctx)
 	s.log.Debug("changed Stash scene applied to JAVBeacon", "scene_id", sceneID, "release", match.VideoID, "file_path", path, "plays", scene.PlayCount, "orgasms", scene.OCounter, "elapsed", time.Since(started))
 	return match.VideoID, nil
+}
+
+func realtimeSceneMatchKeys(scene *realtimeScene) map[string]bool {
+	keys := map[string]bool{}
+	if scene == nil {
+		return keys
+	}
+	addExact := func(raw string) {
+		if key := canonical(raw); key != "" {
+			keys[key] = true
+		}
+	}
+	addEmbedded := func(raw string) {
+		for _, candidate := range idInText.FindAllString(raw, -1) {
+			addExact(candidate)
+		}
+	}
+
+	// Code is the authoritative Stash identifier. Titles, file paths, and
+	// source URLs are supporting identifiers for newly imported scenes whose
+	// code has not been populated yet.
+	addExact(scene.Code)
+	addEmbedded(scene.Title)
+	for _, file := range scene.Files {
+		name := filepath.Base(strings.TrimSpace(file.Path))
+		addEmbedded(strings.TrimSuffix(name, filepath.Ext(name)))
+	}
+	for _, rawURL := range scene.URLs {
+		parsed, err := url.Parse(strings.TrimSpace(rawURL))
+		if err != nil {
+			continue
+		}
+		name := filepath.Base(parsed.Path)
+		addEmbedded(strings.TrimSuffix(name, filepath.Ext(name)))
+		for _, values := range parsed.Query() {
+			for _, value := range values {
+				addEmbedded(value)
+			}
+		}
+	}
+	return keys
 }
 
 func (s *Service) markJellyfinLibraryChanged(ctx context.Context) {
