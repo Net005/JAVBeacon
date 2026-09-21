@@ -1433,7 +1433,7 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 .actionGroup{grid-template-columns:76px repeat(3,minmax(0,1fr))!important;align-items:stretch;padding:6px 7px!important;gap:6px!important}
 .actionGroupTitle{display:flex;align-items:center;padding:0 8px 0 3px;border-right:1px solid #2f3641;color:#929ba8;font-size:9px;font-weight:850;line-height:1.2;letter-spacing:1.1px;text-transform:uppercase}
 .statusGroup{grid-template-columns:76px minmax(0,1fr)!important}
-.statusItems{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;min-width:0}
+.statusItems{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;min-width:0}
 .statusItems .downloadPillWrap{display:flex;width:100%;min-width:0}
 .statusItems .downloadPill.inline{width:100%;min-height:34px;margin-left:0;padding:5px 8px;justify-content:center;border-radius:7px;font-size:11px;line-height:1.2;box-shadow:inset 0 0 0 1px #ffffff05;text-shadow:none}
 .statusItems .releaseStatusInfo{height:100%;min-height:34px;border-radius:7px}

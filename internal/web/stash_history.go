@@ -18,8 +18,7 @@ type stashHistoryReader interface {
 }
 
 type stashReleaseHistoryReader interface {
-	StashHistoryScenes(context.Context) ([]domain.StashHistoryScene, error)
-	StashHistoryEventsForScene(context.Context, string) ([]domain.StashHistoryEvent, error)
+	StashHistoryForRelease(context.Context, int64) ([]domain.StashHistoryScene, []domain.StashHistoryEvent, error)
 }
 
 func (s *Server) releaseStashHistory(w http.ResponseWriter, r *http.Request) {
@@ -33,24 +32,10 @@ func (s *Server) releaseStashHistory(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusInternalServerError, "history storage is unavailable")
 		return
 	}
-	scenes, err := store.StashHistoryScenes(r.Context())
+	scenes, events, err := store.StashHistoryForRelease(r.Context(), releaseID)
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	matched := make([]domain.StashHistoryScene, 0, 1)
-	events := make([]domain.StashHistoryEvent, 0)
-	for _, scene := range scenes {
-		if scene.ReleaseID != releaseID {
-			continue
-		}
-		matched = append(matched, scene)
-		sceneEvents, eventErr := store.StashHistoryEventsForScene(r.Context(), scene.StashSceneID)
-		if eventErr != nil {
-			s.problem(w, http.StatusInternalServerError, eventErr.Error())
-			return
-		}
-		events = append(events, sceneEvents...)
 	}
 	sort.Slice(events, func(i, j int) bool { return events[i].OccurredAt.After(events[j].OccurredAt) })
 	var plays, orgasms int
@@ -63,7 +48,37 @@ func (s *Server) releaseStashHistory(w http.ResponseWriter, r *http.Request) {
 			orgasms++
 		}
 	}
-	s.json(w, http.StatusOK, map[string]any{"release_id": releaseID, "scenes": matched, "events": events, "play_count": plays, "orgasm_count": orgasms, "play_seconds": seconds})
+	s.json(w, http.StatusOK, map[string]any{"release_id": releaseID, "scenes": scenes, "events": events, "play_count": plays, "orgasm_count": orgasms, "play_seconds": seconds})
+}
+
+func applyStashHistoryToRelease(release *domain.Release, events []domain.StashHistoryEvent) {
+	if release == nil || len(events) == 0 {
+		return
+	}
+	var plays, orgasms int
+	var lastPlayed, lastOrgasm time.Time
+	for _, event := range events {
+		switch event.Type {
+		case "play":
+			plays++
+			if event.OccurredAt.After(lastPlayed) {
+				lastPlayed = event.OccurredAt
+			}
+		case "orgasm":
+			orgasms++
+			if event.OccurredAt.After(lastOrgasm) {
+				lastOrgasm = event.OccurredAt
+			}
+		}
+	}
+	release.PlayCount = plays
+	release.OCounter = orgasms
+	if !lastPlayed.IsZero() {
+		release.LastPlayedAt = lastPlayed.UTC().Format(time.RFC3339)
+	}
+	if !lastOrgasm.IsZero() {
+		release.LastOCountAt = lastOrgasm.UTC().Format(time.RFC3339)
+	}
 }
 
 func parseHistoryBound(raw string) (time.Time, error) {

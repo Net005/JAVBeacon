@@ -233,6 +233,47 @@ func (s *SQLite) StashHistoryScenes(ctx context.Context) ([]domain.StashHistoryS
 	return x.Scenes, err
 }
 
+// StashHistoryForRelease returns the durable history attached to one release.
+// Release Details calls this on every open, so keep it as a pair of indexed
+// database queries instead of exporting and scanning the complete archive.
+func (s *SQLite) StashHistoryForRelease(ctx context.Context, releaseID int64) ([]domain.StashHistoryScene, []domain.StashHistoryEvent, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT stash_scene_id,release_id,video_id,title,javlibrary_url,file_path,total_play_seconds,play_count,orgasm_count,observed_at FROM stash_history_scenes WHERE release_id=? ORDER BY stash_scene_id`, releaseID)
+	if err != nil {
+		return nil, nil, err
+	}
+	var scenes []domain.StashHistoryScene
+	for rows.Next() {
+		var x domain.StashHistoryScene
+		if err = rows.Scan(&x.StashSceneID, &x.ReleaseID, &x.VideoID, &x.Title, &x.JavLibraryURL, &x.FilePath, &x.TotalPlaySeconds, &x.PlayCount, &x.OrgasmCount, &x.ObservedAt); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		scenes = append(scenes, x)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, nil, err
+	}
+	rows.Close()
+
+	rows, err = s.db.QueryContext(ctx, `SELECT e.id,e.stash_scene_id,e.event_type,e.occurred_at,e.duration_seconds,e.duration_estimated FROM stash_history_events e JOIN stash_history_scenes s ON s.stash_scene_id=e.stash_scene_id WHERE s.release_id=? ORDER BY e.occurred_at DESC`, releaseID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var events []domain.StashHistoryEvent
+	for rows.Next() {
+		var x domain.StashHistoryEvent
+		var estimated int
+		if err = rows.Scan(&x.ID, &x.StashSceneID, &x.Type, &x.OccurredAt, &x.DurationSeconds, &estimated); err != nil {
+			return nil, nil, err
+		}
+		x.Estimated = estimated != 0
+		events = append(events, x)
+	}
+	return scenes, events, rows.Err()
+}
+
 func (s *SQLite) StashHistoryEventsForScene(ctx context.Context, sceneID string) ([]domain.StashHistoryEvent, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,stash_scene_id,event_type,occurred_at,duration_seconds,duration_estimated FROM stash_history_events WHERE stash_scene_id=? ORDER BY occurred_at`, sceneID)
 	if err != nil {

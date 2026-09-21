@@ -7,6 +7,18 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.211] - 2026-09-21
+
+### Fixed
+
+- Release Details now reads play count, orgasm count, and latest activity dates
+  from the same durable Stash History archive used by the History view, so
+  activity remains visible even when the older release-row counters are stale.
+- Release-specific history uses indexed database queries rather than scanning
+  the complete archive whenever a release is opened.
+- Download, StashApp, and play/orgasm status controls now occupy three explicit
+  columns, preventing the history control from falling behind the next row.
+
 ## [1.0.210] - 2026-09-21
 
 ### Fixed

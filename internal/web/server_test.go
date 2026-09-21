@@ -505,6 +505,9 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 			t.Fatalf("Release Details download telemetry styling is missing %q", marker)
 		}
 	}
+	if !strings.Contains(string(stylesheet), `.statusItems{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;min-width:0}`) {
+		t.Fatal("Release Details status items must keep download, local, and Stash history on one row")
+	}
 	for _, marker := range []string{`.releaseStatusInfo{`, `.releaseStatusInfo.downloaded{`, `.releaseStatusInfo.local{`, `.releaseToast{`, `.releaseToast.show{`, `.releaseDetailLoading{`, `#releaseDetail.releaseSwapPending::before{`, `.releaseDialog::backdrop{background:#090b0ff2!important;backdrop-filter:none!important}`, `.detailValueEntry[hidden]{display:none!important}`, `.detailValueOverflow.hasOverflow::after{`, `.detailMeta dd:has(.detailValueOverflow.open)`, `.detailMeta dd:has(.detailValueOverflow.hasOverflow:hover)`, `.statusItems .downloadPill.inline{width:100%;min-height:34px`, `.statusItems .releaseStatusInfo b{font-size:11px}`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("Release Details status/notification styling is missing %q", marker)
@@ -2130,6 +2133,30 @@ func TestReleaseStashHistoryReturnsOnlySelectedReleaseEvents(t *testing.T) {
 	}
 	if len(response.Scenes) != 1 || response.Scenes[0].StashSceneID != "wanted" || len(response.Events) != 2 || response.PlayCount != 1 || response.OrgasmCount != 1 || response.PlaySeconds != 1200 {
 		t.Fatalf("release history response=%+v", response)
+	}
+}
+
+func TestApplyStashHistoryToReleaseUsesArchivedEvents(t *testing.T) {
+	playOne := time.Date(2026, 9, 18, 20, 33, 0, 0, time.UTC)
+	playTwo := time.Date(2026, 9, 19, 8, 1, 0, 0, time.UTC)
+	orgasm := time.Date(2026, 9, 19, 8, 12, 0, 0, time.UTC)
+	release := domain.Release{PlayCount: 0, OCounter: 0}
+	applyStashHistoryToRelease(&release, []domain.StashHistoryEvent{
+		{Type: "play", OccurredAt: playOne},
+		{Type: "orgasm", OccurredAt: orgasm},
+		{Type: "play", OccurredAt: playTwo},
+	})
+	if release.PlayCount != 2 || release.OCounter != 1 {
+		t.Fatalf("release history counts=%d/%d, want 2 plays and 1 orgasm", release.PlayCount, release.OCounter)
+	}
+	if release.LastPlayedAt != playTwo.Format(time.RFC3339) || release.LastOCountAt != orgasm.Format(time.RFC3339) {
+		t.Fatalf("release history dates=%q/%q", release.LastPlayedAt, release.LastOCountAt)
+	}
+
+	unchanged := domain.Release{PlayCount: 4, OCounter: 2, LastPlayedAt: "existing"}
+	applyStashHistoryToRelease(&unchanged, nil)
+	if unchanged.PlayCount != 4 || unchanged.OCounter != 2 || unchanged.LastPlayedAt != "existing" {
+		t.Fatalf("empty archive unexpectedly changed release stats: %+v", unchanged)
 	}
 }
 
