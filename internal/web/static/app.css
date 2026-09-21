@@ -1590,11 +1590,8 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 .historyDetailsPanel{display:flex;min-height:0;flex-direction:column;overflow:hidden}
 .historyDetailsHead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex:0 0 auto;margin-bottom:12px}
 .historyDetailsHead h2{margin:.1rem 0 0}.historyDetailsHead .muted{display:block;font-size:10px}
-.historyCoverControl{display:flex!important;align-items:center;gap:9px;flex:0 0 auto;margin:0!important;padding:7px 10px!important;border:1px solid var(--line);border-radius:999px;background:var(--surface2);white-space:nowrap;color:var(--muted)!important;font-size:10px!important;font-weight:700;letter-spacing:.25px}
-.historyCoverControl input{appearance:none;-webkit-appearance:none;width:92px!important;height:4px;padding:0!important;border:0;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--accent)) 0/var(--history-cover-progress,30%) 100% no-repeat,#343945;outline:none}
-.historyCoverControl input::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border:2px solid var(--surface2);border-radius:50%;background:var(--accent);box-shadow:0 0 0 1px #ffffff38;cursor:ew-resize}
-.historyCoverControl input::-moz-range-thumb{width:12px;height:12px;border:2px solid var(--surface2);border-radius:50%;background:var(--accent);box-shadow:0 0 0 1px #ffffff38;cursor:ew-resize}
-.historyCoverControl input::-moz-range-track{height:4px;border:0;border-radius:999px;background:#343945}.historyCoverControl output{min-width:30px;color:var(--text);font:700 10px/1 var(--font);text-align:right}
+.historyCoverControl{flex:0 0 auto;margin:0!important;padding:0!important;border:0;background:transparent;white-space:nowrap;color:var(--muted)!important;font-size:11px!important;font-weight:400}
+.historyCoverControl input{width:100px!important;padding:0!important}
 .historyDate time{overflow:hidden;color:#d4d8e1;font-size:10px;font-variant-numeric:tabular-nums;text-overflow:ellipsis;white-space:nowrap}
 .historyListViewport{min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-right:5px;scrollbar-gutter:stable}
 .historyItem{grid-template-columns:52px var(--history-cover,84px) minmax(120px,1fr) 72px;gap:9px;min-height:calc(var(--history-cover,84px) * .676 + 20px)}

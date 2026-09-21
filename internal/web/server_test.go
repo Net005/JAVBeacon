@@ -522,6 +522,15 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(string(markup), `<h2>Authoritative playback &amp; O history</h2>`) || !strings.Contains(string(markup), `Full sync reconciles missing additions without deleting stored history`) {
+		t.Fatal("embedded Stash history page does not describe its authoritative realtime role")
+	}
+	if !strings.Contains(string(javascript), `including new play and O history`) || !strings.Contains(string(javascript), `Stash deletions and resets never remove JAVBeacon events`) {
+		t.Fatal("Stash realtime settings do not explain playback/O history synchronization")
+	}
+	if !strings.Contains(string(stylesheet), `.historyCoverControl{flex:0 0 auto;margin:0!important;padding:0!important;border:0;background:transparent`) || strings.Contains(string(javascript), `historyCoverSizeValue`) {
+		t.Fatal("Stash history cover control does not match the standard compact cover-size slider")
+	}
 	if !strings.Contains(string(markup), `aria-label="Fullscreen screenshot view"`) {
 		t.Fatal("embedded index.html is missing the fullscreen screenshot view")
 	}
