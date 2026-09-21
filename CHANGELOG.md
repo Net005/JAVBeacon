@@ -7,6 +7,19 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.200] - 2026-09-21
+
+### Fixed
+
+- Ollama AI Discovery now gives schema-valid but semantically rejected output
+  one strict local regeneration attempt before skipping the batch or considering
+  the configured OpenAI fallback. Recommendation reasons must begin with an
+  evidence-led `Match:` statement, and rejected prose is never echoed back to
+  the model or persisted.
+- OpenAI Discovery now also regenerates a schema-valid but empty or otherwise
+  rejected ranking batch once, accounts for both requests' token usage, and
+  persists nothing unless the regenerated batch passes full validation.
+
 ## [1.0.199] - 2026-09-21
 
 ### Changed
