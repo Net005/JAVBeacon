@@ -2620,7 +2620,7 @@ func TestWildcardSearchFieldsStayCompactAndExposeLogic(t *testing.T) {
 		".releaseFiltersBody>.toolbar>.search{flex:1 1 300px;min-width:240px;max-width:340px}",
 		".releaseFiltersBody>.toolbar>.genericWildcardField{flex:1 1 190px;min-width:140px;max-width:280px}",
 		".notificationToolbar>.search{flex:1 1 300px;min-width:240px;max-width:340px}",
-		".notificationToolbar>.check{flex:0 0 auto;min-width:140px;min-height:42px",
+		".notificationToolbar>.check{flex:0 0 auto;min-width:64px;min-height:42px",
 		"@media(min-width:2000px){.releaseFiltersBody>.toolbar,.notificationToolbar{align-items:center;flex-wrap:nowrap}",
 		".wildcardLogic{flex:0 0 68px!important;width:68px!important",
 		".wildcardLogicToggle{display:grid;flex:0 0 42px!important",
@@ -2634,7 +2634,7 @@ func TestWildcardSearchFieldsStayCompactAndExposeLogic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{"wildcardLogicToggle('releaseWildcardLogic')", "wildcardLogicToggle('notificationWildcardLogic')", "discoveryWildcardLogic", "wildcard_logic", "&amp; matches all wildcard values"} {
+	for _, marker := range []string{"wildcardLogicToggle('releaseWildcardLogic')", "wildcardLogicToggle('notificationWildcardLogic')", "notificationPageSize.title='Batch size'", "discoveryWildcardLogic", "wildcard_logic", "&amp; matches all wildcard values"} {
 		if !strings.Contains(string(script), marker) {
 			t.Fatalf("Wildcard logic UI is missing %q", marker)
 		}
