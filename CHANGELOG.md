@@ -42,8 +42,10 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ranking stage, which normally takes much longer than a second per batch
   anyway.
 - Stash History's "day" view (one bar per day, labeled "Current week")
-  only ever showed Monday through Friday and never fetched Saturday or
-  Sunday playback at all. It now covers the full 7-day week.
+  only ever requested and displayed Monday through Friday. Saturday and
+  Sunday playback was already synced from StashApp and stored locally the
+  whole time - it just wasn't being asked for or shown in this one chart
+  view. It now covers the full 7-day week.
 
 ## [1.0.207] - 2026-09-21
 
