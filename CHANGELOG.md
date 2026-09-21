@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.202] - 2026-09-21
+
+### Fixed
+
+- Release Library and Notifications filter toolbars now stay on one compact
+  row at iPad and tablet widths. Both wildcard placeholders use the same
+  smaller text, and their fields can shrink cleanly without changing the phone
+  layout.
+
 ## [1.0.201] - 2026-09-21
 
 ### Fixed

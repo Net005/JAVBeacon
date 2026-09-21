@@ -1692,3 +1692,23 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 .genericWildcardBadges button span{max-width:min(420px,60vw)}
 @media(min-width:2000px){.releaseFiltersBody>.toolbar,.notificationToolbar{align-items:center;flex-wrap:nowrap}.notificationToolbar>.search,.releaseFiltersBody>.toolbar>.search{flex:0 1 290px;width:290px;min-width:230px}.notificationToolbar>.check{flex:0 0 64px}.notificationToolbar>#notificationCategory,.releaseFiltersBody>.toolbar>#categoryFilter{flex:0 1 115px;width:115px}.notificationToolbar>.genericWildcardField,.releaseFiltersBody>.toolbar>.genericWildcardField{flex:0 1 170px;width:170px;min-width:135px}.notificationToolbar>#notificationStatus{flex:0 1 130px;width:130px}.notificationToolbar>.zoom,.releaseFiltersBody>.toolbar>.zoom{flex:0 1 145px;min-width:125px}.notificationToolbar>#notificationSort,.releaseFiltersBody>.toolbar>#sortField{flex:0 1 155px;width:155px}.notificationToolbar>.toolbarIcon,.notificationToolbar>.toolbarToggleIcon,.notificationToolbar>.presetMenu,.notificationToolbar>#notificationSortDirection,.releaseFiltersBody>.toolbar>.toolbarIcon,.releaseFiltersBody>.toolbar>.toolbarToggleIcon,.releaseFiltersBody>.toolbar>.presetMenu,.releaseFiltersBody>.toolbar>#sortDirection{flex:0 0 40px}.notificationToolbar>.wildcardLogicToggle,.releaseFiltersBody>.toolbar>.wildcardLogicToggle{flex-basis:42px}}
 @media(max-width:700px){.releaseFiltersBody>.toolbar>.search,.notificationToolbar>.search{flex-basis:100%;min-width:100%;max-width:none}.releaseFiltersBody>.toolbar>.genericWildcardField,.notificationToolbar>.genericWildcardField,.notificationToolbar>select:not(.wildcardLogic){flex:1 1 100%;width:100%;max-width:none}.notificationToolbar>.zoom{flex-basis:100%;min-width:0}}
+
+/* iPad/tablet filter bars: keep both shared-filter toolbars on one compact row. */
+#search::placeholder,#notificationSearch::placeholder,#entryFilter::placeholder,#notificationEntry::placeholder{font-size:10px}
+@media(min-width:701px) and (max-width:1600px){
+  .releaseFiltersBody>.toolbar,.notificationToolbar{align-items:center;gap:4px;flex-wrap:nowrap!important;padding:8px}
+  .releaseFiltersBody>.toolbar>*,.notificationToolbar>*{min-width:0!important}
+  .releaseFiltersBody>.toolbar>.search,.notificationToolbar>.search{flex:2 1 150px;width:auto;min-width:120px!important;max-width:230px}
+  .releaseFiltersBody>.toolbar>.search input,.notificationToolbar>.search input,#entryFilter,#notificationEntry{font-size:10px}
+  .releaseFiltersBody>.toolbar>.genericWildcardField,.notificationToolbar>.genericWildcardField{flex:1 1 90px;width:auto;min-width:72px!important;max-width:160px}
+  .releaseFiltersBody>.toolbar>#categoryFilter,.notificationToolbar>#notificationCategory{flex:0 1 78px;width:78px;max-width:78px}
+  .notificationToolbar>.check{flex:0 1 50px;min-width:44px!important}
+  .notificationToolbar>.check>select{width:100%;min-width:0}
+  .notificationToolbar>#notificationStatus{flex:1 1 92px;width:auto;max-width:118px}
+  .releaseFiltersBody>.toolbar>.zoom,.notificationToolbar>.zoom{flex:1 1 92px;min-width:76px!important;max-width:130px;gap:4px;font-size:9px;white-space:nowrap}
+  .releaseFiltersBody>.toolbar>.zoom input,.notificationToolbar>.zoom input{width:100%;min-width:38px}
+  .releaseFiltersBody>.toolbar>#sortField,.notificationToolbar>#notificationSort{flex:1 1 98px;width:auto;min-width:82px!important;max-width:132px}
+  .releaseFiltersBody>.toolbar>.toolbarIcon,.releaseFiltersBody>.toolbar>.toolbarToggleIcon,.releaseFiltersBody>.toolbar>.presetMenu,.releaseFiltersBody>.toolbar>#sortDirection,.notificationToolbar>.toolbarIcon,.notificationToolbar>.toolbarToggleIcon,.notificationToolbar>.presetMenu,.notificationToolbar>#notificationSortDirection{flex:0 0 34px!important;width:34px!important;min-width:34px!important;height:36px}
+  .releaseFiltersBody>.toolbar>.wildcardLogicToggle,.notificationToolbar>.wildcardLogicToggle{flex-basis:34px!important;width:34px!important;min-width:34px!important;height:36px;font-size:15px}
+  .releaseFiltersBody>.toolbar select,.notificationToolbar select{padding-inline:6px;font-size:10px}
+}
