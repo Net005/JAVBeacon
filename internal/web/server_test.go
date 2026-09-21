@@ -484,6 +484,11 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 			t.Fatalf("embedded app.css is missing %q", marker)
 		}
 	}
+	for _, marker := range []string{`#search::placeholder,#notificationSearch::placeholder,#entryFilter::placeholder,#notificationEntry::placeholder{font-size:10px}`, `@media(min-width:701px) and (max-width:1600px){`, `.releaseFiltersBody>.toolbar,.notificationToolbar{align-items:center;gap:4px;flex-wrap:nowrap!important;padding:8px}`} {
+		if !strings.Contains(string(stylesheet), marker) {
+			t.Fatalf("iPad filter-toolbar styling is missing %q", marker)
+		}
+	}
 	if !strings.Contains(string(stylesheet), `.releaseArt .detailCover{color:transparent;font-size:0;text-indent:-9999px}`) {
 		t.Fatal("Release Details cover must hide image fallback text while navigation loads the next cover")
 	}
