@@ -30,14 +30,16 @@ import (
 )
 
 const (
-	defaultJavDBURL      = "https://javdb.com"
-	pikPakAPIHost        = "https://api-drive.mypikpak.com"
-	pikPakUserHost       = "https://user.mypikpak.com"
-	pikPakClientID       = "YUMx5nI8ZU8Ap8pm"
-	pikPakClientSecret   = "dbw2OtmVEeuUvIptb1Coyg"
-	pikPakClientVersion  = "2.0.0"
-	pikPakPackageName    = "mypikpak.com"
-	publicShareUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+	defaultJavDBURL                = "https://javdb.com"
+	pikPakAPIHost                  = "https://api-drive.mypikpak.com"
+	pikPakUserHost                 = "https://user.mypikpak.com"
+	pikPakClientID                 = "YUMx5nI8ZU8Ap8pm"
+	pikPakClientSecret             = "dbw2OtmVEeuUvIptb1Coyg"
+	pikPakClientVersion            = "2.0.0"
+	pikPakPackageName              = "mypikpak.com"
+	publicShareUserAgent           = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+	defaultJavDBRequestTimeout     = 90 * time.Second
+	defaultPikPakResolutionTimeout = 10 * time.Minute
 )
 
 var pikPakAlgorithms = []string{
@@ -63,6 +65,7 @@ type javDBProvider struct {
 	inspectCandidate    func(context.Context, string, string) (pikPakFile, []pikPakFile, error)
 	solverPool          *scraper.SolverPool
 	gluetun             *gluetunRotator
+	resolutionTimeout   time.Duration
 }
 
 // HTTPSourceProvider is the extension point for direct-download sources.
@@ -92,8 +95,16 @@ type resolvedHTTPFile struct {
 func httpSourceProviders(client *http.Client, settings map[string]string, logger *slog.Logger, authenticate func(context.Context, string, string) (*pikPakClient, error), solverPool *scraper.SolverPool, rotationMu *sync.Mutex) []HTTPSourceProvider {
 	patterns := ParsePreferredFilenamePatterns(settings["accepted_patterns"])
 	blacklist := ParseBlacklistedFilenamePatterns(settings["blacklisted_filename_patterns"])
+	// JavDB page loads and PikPak metadata calls are control-plane requests,
+	// not file transfers. Give them their own timeout instead of inheriting the
+	// app-wide 30-second request limit: JavDB regularly takes longer to return
+	// headers, especially while a bulk search is running. Clone the client so
+	// transport connection pooling remains shared without weakening timeouts
+	// for unrelated APIs and downloads.
+	providerClient := *client
+	providerClient.Timeout = settingDurationSeconds(settings, "javdb_request_timeout_seconds", defaultJavDBRequestTimeout, 15*time.Second, 10*time.Minute)
 	return []HTTPSourceProvider{&javDBProvider{
-		client:              client,
+		client:              &providerClient,
 		baseURL:             settings["javdb_url"],
 		acceptedPatterns:    patterns,
 		blacklistedPatterns: blacklist,
@@ -105,7 +116,20 @@ func httpSourceProviders(client *http.Client, settings map[string]string, logger
 		log:                 logger,
 		solverPool:          solverPool,
 		gluetun:             newGluetunRotator(client, settings, logger, rotationMu),
+		resolutionTimeout:   settingDurationSeconds(settings, "pikpak_resolution_timeout_seconds", defaultPikPakResolutionTimeout, time.Minute, time.Hour),
 	}}
+}
+
+func settingDurationSeconds(settings map[string]string, key string, fallback, minimum, maximum time.Duration) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(settings[key]))
+	if err != nil {
+		return fallback
+	}
+	value := time.Duration(seconds) * time.Second
+	if value < minimum || value > maximum {
+		return fallback
+	}
+	return value
 }
 
 func (p *javDBProvider) Name() string { return "JavDB / Keepshare" }
@@ -125,7 +149,11 @@ func (p *javDBProvider) Resolve(ctx context.Context, download domain.Download) (
 	if err := validateJavDBShareReference(download.SourceReference); err != nil {
 		return resolvedHTTPFile{}, err
 	}
-	resolveCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	resolutionTimeout := p.resolutionTimeout
+	if resolutionTimeout <= 0 {
+		resolutionTimeout = defaultPikPakResolutionTimeout
+	}
+	resolveCtx, cancel := context.WithTimeout(ctx, resolutionTimeout)
 	defer cancel()
 	ctx = resolveCtx
 	// Restoring a share mutates the user's drive, so this used to cap the
@@ -163,7 +191,7 @@ resolveAttempts:
 		}
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return resolvedHTTPFile{}, fmt.Errorf("PikPak resolution timed out after 2 minutes: %w", ctx.Err())
+		return resolvedHTTPFile{}, fmt.Errorf("PikPak resolution timed out after %s: %w", resolutionTimeout, ctx.Err())
 	}
 	return resolvedHTTPFile{}, fmt.Errorf("PikPak resolution failed after %d attempts: %w", attempts, err)
 }

@@ -7,6 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.197] - 2026-09-21
+
+### Fixed
+
+- JavDB searches now use a dedicated, configurable request timeout instead of
+  inheriting the app-wide 30-second ceiling. PikPak/Keepshare resolution also
+  has a configurable 10-minute workflow timeout, allowing large shares and
+  slow folder/file enumeration to complete while preserving bounded retries,
+  adaptive request pacing, and cancellation.
+
 ## [1.0.196] - 2026-09-21
 
 ### Fixed
