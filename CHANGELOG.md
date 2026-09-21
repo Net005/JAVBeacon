@@ -7,6 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.209] - 2026-09-21
+
+### Changed
+
+- No functional changes. Corrects the changelog wording on 1.0.208's Stash
+  History day-view fix: weekend playback was always synced from StashApp
+  and stored in the local database the whole time - only that one chart
+  view's own request to (and display from) the local database was
+  affected, not the underlying sync.
+
 ## [1.0.208] - 2026-09-21
 
 ### Changed
