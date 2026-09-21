@@ -174,6 +174,88 @@ func TestDiscoveryAIRanksPersistAndUpdateByRelease(t *testing.T) {
 	}
 }
 
+func TestClearDiscoveryAIRanksOnlyClearsAIRankings(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "clear-discovery-ai.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "AI", Type: "Site", Name: "AI", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "AI-CLEAR-1", Title: "Keep release", Source: "AI"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releases, err := s.Releases(ctx, domain.ReleaseFilter{Limit: 10, ShowNonPreferred: true})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("load release: %#v err=%v", releases, err)
+	}
+	release := releases[0]
+	if err := s.SaveDiscoveryAIRanks(ctx, []domain.DiscoveryAIRank{{ReleaseID: release.ID, Fingerprint: "old", Model: "ollama:qwen3:8b", Score: 88, Reason: "Match: supplied story metadata."}}); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := s.ClearDiscoveryAIRanks(ctx)
+	if err != nil || removed != 1 {
+		t.Fatalf("clear removed=%d err=%v", removed, err)
+	}
+	ranks, err := s.AllDiscoveryAIRanks(ctx)
+	if err != nil || len(ranks) != 0 {
+		t.Fatalf("AI rankings remain: %#v err=%v", ranks, err)
+	}
+	releases, err = s.Releases(ctx, domain.ReleaseFilter{Limit: 10, ShowNonPreferred: true})
+	if err != nil || len(releases) != 1 || releases[0].VideoID != "AI-CLEAR-1" {
+		t.Fatalf("release was altered: %#v err=%v", releases, err)
+	}
+	removed, err = s.ClearDiscoveryAIRanks(ctx)
+	if err != nil || removed != 0 {
+		t.Fatalf("idempotent clear removed=%d err=%v", removed, err)
+	}
+}
+
+func TestReleaseFilterAIEnhancedCountsAndPagesStoredRankings(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "ai-enhanced-filter.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "AI", Type: "Site", Name: "AI", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, videoID := range []string{"AI-FILTER-1", "AI-FILTER-2", "AI-FILTER-3"} {
+		if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: videoID, Title: videoID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := s.Releases(ctx, domain.ReleaseFilter{Limit: 10, ShowNonPreferred: true})
+	if err != nil || len(all) != 3 {
+		t.Fatalf("load releases: %#v err=%v", all, err)
+	}
+	for _, release := range all[:2] {
+		if err := s.SaveDiscoveryAIRanks(ctx, []domain.DiscoveryAIRank{{ReleaseID: release.ID, Fingerprint: "current", Model: "ollama:qwen3:8b", Score: 80, Reason: "Match: supplied metadata."}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	filter := domain.ReleaseFilter{AIEnhanced: true, Limit: 1, ShowNonPreferred: true}
+	total, err := s.ReleasesCount(ctx, filter)
+	if err != nil || total != 2 {
+		t.Fatalf("AI-enhanced total=%d err=%v", total, err)
+	}
+	page, err := s.Releases(ctx, filter)
+	if err != nil || len(page) != 1 {
+		t.Fatalf("AI-enhanced page=%#v err=%v", page, err)
+	}
+	filter.Offset = 1
+	page, err = s.Releases(ctx, filter)
+	if err != nil || len(page) != 1 || page[0].ID == all[2].ID {
+		t.Fatalf("second AI-enhanced page=%#v err=%v", page, err)
+	}
+}
+
 func TestSQLiteRemovesAndRejectsJavLibraryGIGAReleases(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "javlibrary-giga.db"))

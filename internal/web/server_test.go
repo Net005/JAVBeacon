@@ -119,6 +119,9 @@ func TestOllamaSettingsUIControlsAndLoadingState(t *testing.T) {
 		`/discoveries/ollama/test`,
 		`id="estimateDiscoveryOpenAI"`,
 		`/discoveries/openai/estimate`,
+		`id="clearDiscoveryAIRecommendations"`,
+		`/discoveries/ai-rankings`,
+		`Clear all AI recommendations`,
 		`discoveries_ai_primary_provider`,
 		`If Ollama is offline or its model is missing, AI is skipped and OpenAI is never called`,
 	} {

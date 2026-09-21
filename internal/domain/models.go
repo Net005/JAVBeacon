@@ -316,6 +316,10 @@ type ReleaseFilter struct {
 	StashSceneID                                                       string
 	SiteID                                                             int64
 	Watchlist, HideLocal, HideMonitored, MonitorDownload, UsePreferred bool
+	// AIEnhanced restricts releases to those with a persisted AI ranking.
+	// Discoveries uses it before count and pagination so the AI-only total and
+	// infinite-scroll offsets describe the same result set as the cards.
+	AIEnhanced bool
 	// SearchWildcards enables the web UI's generic search syntax: comma-
 	// separated alternatives combined with OR, with * and ? wildcards.
 	// Programmatic callers keep the original literal substring semantics.

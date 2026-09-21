@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -184,6 +185,35 @@ func TestDiscoveryAIBatchesBoundInputAndAdaptSubtitleExcerpt(t *testing.T) {
 	}
 }
 
+func TestDiscoveryAIBatchesPrecomputeCandidatePoolEligibility(t *testing.T) {
+	items := []discoveryItem{{Release: domain.Release{ID: 1, Title: "A drug-themed investigation", Story: "An investigator uncovers a coercive drug scheme.", Genres: []string{"Drug"}, Studio: "S1", Label: "L1", Director: "D1", ReleaseDate: "2026-09-20", Duration: "120 min"}, Score: 73.5, Category: "unwatched", HasSubtitle: true, Reasons: []string{"Performer preference: A", "Theme preference: Drug", "Studio preference: S1"}}}
+	settings := map[string]string{
+		"discoveries_pools":                     "Brainwashing / Drugs | drug, brainwashing\nAgent / Ninja / Spy | agent, ninja, spy",
+		"discoveries_subtitle_analysis_enabled": "false",
+	}
+	batches, payloads := discoveryAIBatches(items, settings, 1, 1, 20000)
+	if len(batches) != 1 || len(batches[0]) != 1 {
+		t.Fatalf("unexpected batches: %#v", batches)
+	}
+	if !slices.Equal(batches[0][0].EligiblePools, []string{"Brainwashing / Drugs"}) {
+		t.Fatalf("candidate pool eligibility=%#v", batches[0][0].EligiblePools)
+	}
+	candidate := batches[0][0]
+	if candidate.BaselineScore != 73.5 || candidate.DiscoveryState != "unwatched" ||
+		candidate.Story == "" || candidate.Label != "L1" || candidate.Director != "D1" ||
+		candidate.ReleaseDate != "2026-09-20" || candidate.Duration != "120 min" || !candidate.SubtitleAvailable ||
+		!slices.Equal(candidate.Taste.PreferredPerformers, []string{"A"}) ||
+		!slices.Equal(candidate.Taste.PreferredThemes, []string{"Drug"}) || candidate.Taste.PreferredStudio != "S1" {
+		t.Fatalf("structured recommendation context=%#v", candidate)
+	}
+	payload := string(payloads[0])
+	if strings.Contains(payload, "grounding_evidence") || strings.Contains(payload, "Performer preference:") ||
+		!strings.Contains(payload, `"taste_match"`) || !strings.Contains(payload, `"director":"D1"`) ||
+		!strings.Contains(payload, `"subtitle_available":true`) {
+		t.Fatalf("model payload still contains label-heavy evidence: %s", payload)
+	}
+}
+
 func TestDiscoveryAIRequestLimitsKeepSmallModelWorkBounded(t *testing.T) {
 	batchSize, inputChars := discoveryAIRequestLimits(map[string]string{
 		"discoveries_openai_batch_size":      "50",
@@ -289,7 +319,7 @@ func (s *recordingAIRankSaver) SaveDiscoveryAIRanks(_ context.Context, ranks []d
 
 func TestValidatedAIRankingPersistenceGuard(t *testing.T) {
 	saver := &recordingAIRankSaver{}
-	valid := domain.DiscoveryAIRank{ReleaseID: 7, Fingerprint: "v2", Model: "ollama:qwen3:8b", Score: 84, Reason: "Strong story and preferred studio match."}
+	valid := domain.DiscoveryAIRank{ReleaseID: 7, Fingerprint: "v2", Model: "ollama:qwen3:8b", Score: 84, Reason: "Match: Its detailed story and familiar studio provide strong support for this recommendation."}
 	if err := saveValidatedDiscoveryAIRanks(context.Background(), saver, []domain.DiscoveryAIRank{valid}, ""); err != nil || len(saver.saved) != 1 {
 		t.Fatalf("valid result was not persisted: saved=%d err=%v", len(saver.saved), err)
 	}
@@ -347,7 +377,7 @@ func TestExistingInvalidAIRankingRepairAgainstSQLite(t *testing.T) {
 		}
 	}
 	badReason := "The content you provided appears to be a mix of unrelated text. There is no clear narrative. Please provide more context."
-	if err := st.SaveDiscoveryAIRanks(ctx, []domain.DiscoveryAIRank{{ReleaseID: goodID, Score: 90, Reason: "Strong preferred studio and story match.", Fingerprint: "good"}, {ReleaseID: badID, Score: 50, Reason: badReason, Fingerprint: "bad"}}); err != nil {
+	if err := st.SaveDiscoveryAIRanks(ctx, []domain.DiscoveryAIRank{{ReleaseID: goodID, Score: 90, Reason: "Match: Its detailed story and familiar studio provide strong support for this recommendation.", Fingerprint: "good"}, {ReleaseID: badID, Score: 50, Reason: badReason, Fingerprint: "bad"}}); err != nil {
 		t.Fatal(err)
 	}
 	removed, err := aidiscovery.RepairStoredRanks(ctx, st, "", nil)
@@ -357,6 +387,39 @@ func TestExistingInvalidAIRankingRepairAgainstSQLite(t *testing.T) {
 	remaining, err := st.AllDiscoveryAIRanks(ctx)
 	if err != nil || len(remaining) != 1 || remaining[0].ReleaseID != goodID {
 		t.Fatalf("valid/invalid repair result: %#v err=%v", remaining, err)
+	}
+}
+
+func TestClearDiscoveryAIRankingsEndpoint(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "clear-ai-endpoint.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Clear AI", Name: "Clear AI", Type: "Site", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "CLEAR-001", Title: "Keep me"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Limit: 1, ShowNonPreferred: true})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release lookup: %#v err=%v", releases, err)
+	}
+	if err := st.SaveDiscoveryAIRanks(ctx, []domain.DiscoveryAIRank{{ReleaseID: releases[0].ID, Fingerprint: "old", Model: "ollama:qwen3:8b", Score: 85, Reason: "Match: supplied title metadata."}}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, log: slog.Default()}
+	rec := httptest.NewRecorder()
+	s.clearDiscoveryAIRankings(rec, httptest.NewRequest(http.MethodDelete, "/api/discoveries/ai-rankings", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"removed":1`) {
+		t.Fatalf("clear response status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	ranks, err := st.AllDiscoveryAIRanks(ctx)
+	if err != nil || len(ranks) != 0 {
+		t.Fatalf("rankings remain: %#v err=%v", ranks, err)
 	}
 }
 

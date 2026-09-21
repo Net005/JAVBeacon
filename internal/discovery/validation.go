@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	SchemaVersion   = "4"
+	SchemaVersion   = "5"
 	MaxReasonLength = 700
 	maxPoolNameLen  = 120
 )
@@ -38,6 +38,11 @@ func conciseText(value string, max int) bool {
 
 func conversationalReason(reason string) bool {
 	lower := strings.ToLower(strings.TrimSpace(reason))
+	if containsWord(lower, "pool", "pools") || strings.Contains(lower, "custom discovery pool") || strings.Contains(lower, "pool tags") ||
+		(strings.HasPrefix(lower, "match: no ") && strings.Contains(lower, "present")) ||
+		containsAny(lower, "performer preference:", "theme preference:", "studio preference:", "studio history:") {
+		return true
+	}
 	if strings.Contains(lower, "```") || strings.HasPrefix(lower, "#") {
 		return true
 	}
@@ -94,6 +99,13 @@ func validateRank(rank Rank, allowedIDs map[int64]bool, allowedPools map[string]
 	if conversationalReason(rank.Reason) {
 		return validationError{"conversational/non-ranking reason"}
 	}
+	if !strings.HasPrefix(strings.TrimSpace(rank.Reason), "Match:") {
+		return validationError{"recommendation reason must begin with Match:"}
+	}
+	wordCount := len(strings.Fields(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rank.Reason), "Match:"))))
+	if wordCount < 8 || wordCount > 36 {
+		return validationError{"recommendation reason is not sufficiently descriptive"}
+	}
 	if len(rank.Pools) > 20 {
 		return validationError{"too many pools"}
 	}
@@ -132,7 +144,45 @@ func containsWord(value string, words ...string) bool {
 	return false
 }
 
+func containsGroundedClaim(value string, subjects, signals []string) bool {
+	value = strings.ToLower(value)
+	for _, subject := range subjects {
+		for _, signal := range signals {
+			// Match the relationship in either natural word order instead of
+			// treating two unrelated words anywhere in a sentence as a claim.
+			if strings.Contains(value, signal+" "+subject) || strings.Contains(value, subject+" "+signal) ||
+				strings.Contains(value, signal+" for "+subject) || strings.Contains(value, subject+" with "+signal) ||
+				strings.Contains(value, signal+" with "+subject) || strings.Contains(value, subject+" of "+signal) ||
+				strings.Contains(value, subject+"'s "+signal) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func groundedEvidence(candidate Candidate, subjects, signals []string) bool {
+	for _, subject := range subjects {
+		switch subject {
+		case "performer", "actress":
+			if len(candidate.Taste.PreferredPerformers) > 0 {
+				return true
+			}
+		case "studio":
+			if strings.TrimSpace(candidate.Taste.PreferredStudio) != "" {
+				return true
+			}
+		case "theme", "genre", "tag":
+			if len(candidate.Taste.PreferredThemes) > 0 || len(candidate.Taste.WatchedTextThemes) > 0 {
+				return true
+			}
+		case "history", "play", "rewatch", "watch":
+			if len(candidate.Taste.PreferredPerformers) > 0 || len(candidate.Taste.PreferredThemes) > 0 ||
+				candidate.Taste.PreferredStudio != "" || candidate.Taste.PreferredLabel != "" || len(candidate.Taste.WatchedTextThemes) > 0 {
+				return true
+			}
+		}
+	}
 	for _, evidence := range candidate.Evidence {
 		lower := strings.ToLower(evidence)
 		if containsAny(lower, subjects...) && containsAny(lower, signals...) {
@@ -151,19 +201,20 @@ func validateGrounding(rank Rank, candidate Candidate) error {
 	preferenceSignals := []string{"preference", "preferred", "affinity", "watched theme"}
 	historySignals := []string{"history", "frequently watched", "previous play", "rewatch"}
 
-	studioHistoryClaim := strings.Contains(reason, "studio") && containsAny(reason, "history", "frequently watched")
-	studioPreferenceClaim := strings.Contains(reason, "studio") && containsAny(reason, "preference", "preferred", "affinity")
+	studioHistoryClaim := containsGroundedClaim(reason, []string{"studio", "studios"}, []string{"history", "frequently watched"})
+	studioPreferenceClaim := containsGroundedClaim(reason, []string{"studio", "studios"}, []string{"preference", "preferred", "affinity"})
 	if (studioHistoryClaim && !groundedEvidence(candidate, []string{"studio"}, historySignals)) ||
 		(studioPreferenceClaim && !groundedEvidence(candidate, []string{"studio"}, preferenceSignals)) {
 		return validationError{"unsupported studio preference/history claim"}
 	}
-	performerHistoryClaim := containsAny(reason, "performer", "actress", "cast") && containsAny(reason, "history", "frequently watched")
-	performerPreferenceClaim := containsAny(reason, "performer", "actress", "cast") && containsAny(reason, "preference", "preferred", "affinity")
+	performerSubjects := []string{"performer", "performers", "actress", "actresses", "cast"}
+	performerHistoryClaim := containsGroundedClaim(reason, performerSubjects, []string{"history", "frequently watched"})
+	performerPreferenceClaim := containsGroundedClaim(reason, performerSubjects, []string{"preference", "preferred", "affinity"})
 	if (performerHistoryClaim && !groundedEvidence(candidate, []string{"performer", "actress"}, historySignals)) ||
 		(performerPreferenceClaim && !groundedEvidence(candidate, []string{"performer", "actress"}, preferenceSignals)) {
 		return validationError{"unsupported performer preference/history claim"}
 	}
-	themePreferenceClaim := containsAny(reason, "genre", "theme", " tag", "tags") && containsAny(reason, "user preference", "user's preference", "preferred", "preference", "affinity")
+	themePreferenceClaim := containsGroundedClaim(reason, []string{"genre", "genres", "theme", "themes", "tag", "tags"}, []string{"user preference", "user's preference", "preferred", "preference", "affinity"})
 	if themePreferenceClaim &&
 		!groundedEvidence(candidate, []string{"theme", "genre", "tag"}, preferenceSignals) {
 		return validationError{"unsupported user preference claim"}
@@ -178,7 +229,7 @@ func validateGrounding(rank Rank, candidate Candidate) error {
 	if containsAny(reason, "play count") && candidate.Played <= 0 {
 		return validationError{"unsupported play count claim"}
 	}
-	if containsWord(reason, "subtitle", "subtitles") && strings.TrimSpace(candidate.Subtitle) == "" {
+	if containsWord(reason, "subtitle", "subtitles") && !candidate.SubtitleAvailable && strings.TrimSpace(candidate.Subtitle) == "" {
 		return validationError{"unsupported subtitle claim"}
 	}
 	if containsWord(reason, "story", "stories") && strings.TrimSpace(candidate.Story) == "" {
@@ -219,6 +270,18 @@ func validateRanks(ranks []Rank, candidates []Candidate, pools string) error {
 		}
 		if err := validateGrounding(rank, byID[rank.ID]); err != nil {
 			return err
+		}
+		candidate := byID[rank.ID]
+		if candidate.EligiblePools != nil {
+			eligible := make(map[string]bool, len(candidate.EligiblePools))
+			for _, pool := range candidate.EligiblePools {
+				eligible[strings.ToLower(strings.TrimSpace(pool))] = true
+			}
+			for _, pool := range rank.Pools {
+				if !eligible[strings.ToLower(strings.TrimSpace(pool))] {
+					return validationError{"pool unsupported by candidate evidence"}
+				}
+			}
 		}
 		seen[rank.ID] = true
 	}
