@@ -2766,6 +2766,11 @@ func (s *Server) release(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, 400, e.Error())
 		return
 	}
+	if history, ok := s.store.(stashReleaseHistoryReader); ok {
+		if _, events, historyErr := history.StashHistoryForRelease(r.Context(), n); historyErr == nil {
+			applyStashHistoryToRelease(&x, events)
+		}
+	}
 	if downloads, ok := s.store.(interface {
 		LatestReleaseDownload(context.Context, int64) (domain.Download, error)
 	}); ok {
