@@ -7,6 +7,18 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.206] - 2026-09-21
+
+### Fixed
+
+- Release Library and Notifications toolbar icon buttons (saved filter
+  sets, save-filter, advanced Conditions, sort direction, and the
+  wildcard AND/OR toggle) no longer render at inconsistent sizes across
+  the two pages or overflow their own row at iPad and narrow-desktop
+  widths. The saved-filters bookmark button in particular could overlap
+  its neighbors once the toolbar switched to its compact single-row
+  layout. Every icon button is now a consistent 40x40px at all widths.
+
 ## [1.0.205] - 2026-09-21
 
 ### Fixed
