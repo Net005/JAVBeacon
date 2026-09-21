@@ -9,6 +9,88 @@
     window.PluginApi.libraries.Apollo;
   const sceneStatusCache = new Map();
   const sceneStatusRequests = new Map();
+  const historySyncTimers = new Map();
+
+  // Stash's dedicated play/O/activity mutations bypass Scene.Update.Post.
+  // Observe successful GraphQL mutations in the browser and invoke this
+  // plugin's server-side operation, keeping the webhook secret out of the UI.
+  const historyMutationFields = [
+    "sceneAddPlay",
+    "sceneDeletePlay",
+    "sceneResetPlayCount",
+    "sceneIncrementPlayCount",
+    "sceneAddO",
+    "sceneDeleteO",
+    "sceneResetO",
+    "sceneIncrementO",
+    "sceneDecrementO",
+    "sceneSaveActivity",
+    "sceneResetActivity",
+  ];
+
+  function historySceneIDs(payload) {
+    const operations = Array.isArray(payload) ? payload : [payload];
+    return operations.flatMap((operation) => {
+      const query = String(operation?.query || "");
+      if (!historyMutationFields.some((field) => query.includes(field))) return [];
+      const id = String(operation?.variables?.id || "").trim();
+      return id ? [id] : [];
+    });
+  }
+
+  function installHistoryMutationBridge() {
+    if (window.__javbeaconHistoryMutationBridge || typeof window.fetch !== "function") return;
+    window.__javbeaconHistoryMutationBridge = true;
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async function javbeaconHistoryAwareFetch(input, init) {
+      let payload;
+      try {
+        const rawBody = typeof init?.body === "string"
+          ? init.body
+          : input instanceof Request
+            ? await input.clone().text()
+            : "";
+        payload = rawBody ? JSON.parse(rawBody) : null;
+      } catch (_) {
+        payload = null;
+      }
+      const sceneIDs = historySceneIDs(payload);
+      const response = await originalFetch(input, init);
+      if (!response.ok || sceneIDs.length === 0) return response;
+      try {
+        const result = await response.clone().json();
+        const results = Array.isArray(result) ? result : [result];
+        if (results.some((entry) => Array.isArray(entry?.errors) && entry.errors.length)) return response;
+      } catch (_) {
+        return response;
+      }
+      const endpoint = input instanceof Request ? input.url : input;
+      const sourceHeaders = input instanceof Request ? input.headers : init?.headers;
+      for (const sceneID of new Set(sceneIDs)) {
+        clearTimeout(historySyncTimers.get(sceneID));
+        historySyncTimers.set(sceneID, setTimeout(() => {
+          historySyncTimers.delete(sceneID);
+          const headers = new Headers(sourceHeaders || {});
+          headers.set("Content-Type", "application/json");
+          originalFetch(endpoint, {
+            credentials: "same-origin",
+            headers,
+            method: "POST",
+            body: JSON.stringify({
+              operationName: "JAVBeaconRealtimeHistorySync",
+              query: "mutation JAVBeaconRealtimeHistorySync($pluginId: ID!, $args: Map) { runPluginOperation(plugin_id: $pluginId, args: $args) }",
+              variables: { pluginId: PLUGIN_ID, args: { mode: "history", scene_id: sceneID } },
+            }),
+          }).catch(() => {
+            // The scheduled full sync remains the reconciliation fallback.
+          });
+        }, 3000));
+      }
+      return response;
+    };
+  }
+
+  installHistoryMutationBridge();
 
   const REQUEST_SUBTITLES = gql`
     mutation JAVBeaconRequestSubtitles($pluginId: ID!, $args: Map) {

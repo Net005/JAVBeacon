@@ -49,7 +49,7 @@ type affinityProfile struct {
 	label   map[string]float64
 }
 
-// archivedAffinityReleases overlays the durable "Your playback archive"
+// archivedAffinityReleases overlays the authoritative Stash playback/O history
 // counters and event timestamps onto release metadata. Release-row playback
 // fields remain a fallback for installations which have not built an archive.
 func archivedAffinityReleases(ctx context.Context, st any, releases []domain.Release) ([]domain.Release, error) {
@@ -1386,7 +1386,7 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	excluded := discoveryExcludedTags(settings["discoveries_excluded_tags"])
 	profile, err := s.cachedDiscoveryAffinity(r.Context(), settings, now)
 	if err != nil {
-		s.problem(w, http.StatusInternalServerError, "load playback archive: "+err.Error())
+		s.problem(w, http.StatusInternalServerError, "load authoritative Stash history: "+err.Error())
 		return
 	}
 	remapped := discoveryRemapReleases(releases, settings["stash_missing_path_remaps"])

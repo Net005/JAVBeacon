@@ -92,6 +92,10 @@ const pluginSource = fs.readFileSync(
   "utf8"
 );
 assert.match(pluginSource, /mode: "release_link"/);
+assert.match(pluginSource, /JAVBeaconRealtimeHistorySync/);
+assert.match(pluginSource, /sceneAddPlay/);
+assert.match(pluginSource, /sceneAddO/);
+assert.match(pluginSource, /sceneSaveActivity/);
 assert.match(pluginSource, /details\s*\n\s*captions/);
 assert.match(pluginSource, /title: story/);
 assert.match(pluginSource, /"aria-expanded": expanded/);

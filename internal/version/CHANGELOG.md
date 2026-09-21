@@ -7,6 +7,29 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.212] - 2026-09-21
+
+### Added
+
+- The bundled Stash plugin now detects successful play, O-history, and playback
+  activity mutations that Stash does not expose through `Scene.Update.Post`,
+  then securely queues an immediate JAVBeacon scene refresh without exposing
+  the webhook secret to browser code.
+
+### Changed
+
+- Stash History is now presented as the authoritative playback and O history.
+  Its copy and realtime settings explicitly explain that stored events are
+  append-only: Stash deletions and resets never remove JAVBeacon history.
+- The Stash History cover-size control now uses the same compact label and
+  slider presentation as the other cover-size controls.
+- The bundled Stash plugin is updated to version 1.10.1.
+
+### Fixed
+
+- Added regression coverage ensuring later Stash syncs cannot delete playback
+  or O events already retained by JAVBeacon.
+
 ## [1.0.211] - 2026-09-21
 
 ### Fixed

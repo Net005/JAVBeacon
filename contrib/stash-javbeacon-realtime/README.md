@@ -106,7 +106,15 @@ URL and dedicated webhook secret configured in the plugin UI. The task writes th
 endpoint, elapsed time, and result to Stash's debug log; JAVBeacon records the
 same request ID in its own log so a connection can be traced end to end.
 
-The hook watches scene create, update, and delete events. It only queues the
-scene ID; JAVBeacon then fetches the authoritative scene from Stash. Rapid
-updates to one scene are coalesced and transient failures are retried. The
-scheduled full local-library sync should remain enabled as reconciliation.
+The server hook watches scene create, update, and delete events. Stash's
+dedicated play, O, and activity mutations do not emit that hook, so the bundled
+browser component also detects their successful GraphQL responses and invokes
+the same server-side plugin operation. The webhook secret remains server-side.
+The plugin only queues the scene ID; JAVBeacon then fetches the authoritative
+scene from Stash, including its complete current play and O event lists. New
+events therefore reach JAVBeacon without waiting for a full scan.
+JAVBeacon's history is authoritative and append-only: deleting or resetting
+history in Stash never removes or modifies events already retained by
+JAVBeacon. Rapid updates to one scene are coalesced and transient failures are
+retried. The scheduled full local-library sync should remain enabled as
+reconciliation.

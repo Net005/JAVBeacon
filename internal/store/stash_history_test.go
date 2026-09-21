@@ -76,3 +76,36 @@ func TestStashHistoryConsolidatesRecreatedSceneForSameRelease(t *testing.T) {
 		t.Fatalf("got %d events after consolidation, want 2", len(exported.Events))
 	}
 }
+
+func TestStashHistoryNeverDeletesEventsMissingFromStash(t *testing.T) {
+	ctx := context.Background()
+	st, err := OpenSQLite(filepath.Join(t.TempDir(), "history-authoritative.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	firstPlay := time.Date(2026, 9, 18, 20, 33, 0, 0, time.UTC)
+	secondPlay := time.Date(2026, 9, 19, 8, 1, 0, 0, time.UTC)
+	orgasm := time.Date(2026, 9, 19, 8, 12, 0, 0, time.UTC)
+	scene := domain.StashHistoryScene{StashSceneID: "scene-1", ReleaseID: 42, VideoID: "START-548", TotalPlaySeconds: 600}
+	if err = st.UpsertStashHistory(ctx, scene, []time.Time{firstPlay, secondPlay}, []time.Time{orgasm}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stash deleted one play and reset O history. JAVBeacon is authoritative,
+	// so a later sync may add observations but must never remove stored events.
+	scene.TotalPlaySeconds = 180
+	if err = st.UpsertStashHistory(ctx, scene, []time.Time{secondPlay}, nil); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.StashHistoryEventsForScene(ctx, scene.StashSceneID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("authoritative history lost events removed from Stash: %+v", events)
+	}
+	if events[0].Type != "play" || !events[0].OccurredAt.Equal(firstPlay) || events[1].Type != "play" || !events[1].OccurredAt.Equal(secondPlay) || events[2].Type != "orgasm" || !events[2].OccurredAt.Equal(orgasm) {
+		t.Fatalf("authoritative history events changed unexpectedly: %+v", events)
+	}
+}
