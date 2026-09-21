@@ -492,6 +492,11 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 			t.Fatalf("iPad filter-toolbar styling is missing %q", marker)
 		}
 	}
+	for _, marker := range []string{`@media(min-width:1400px){`, `grid-template-columns:minmax(240px,2fr) 40px 115px minmax(180px,1.35fr)`, `.releaseFiltersBody>.toolbar>*{width:100%!important;max-width:none!important;min-width:0!important}`, `grid-template-columns:minmax(240px,2fr) 40px 72px 115px minmax(180px,1.35fr)`, `.notificationToolbar>*{width:100%!important;max-width:none!important;min-width:0!important}`, `@media(min-width:701px) and (max-width:1399px){`, `.releaseFiltersBody>.toolbar{flex-wrap:wrap!important;overflow:visible}`, `.notificationToolbar{flex-wrap:wrap!important;overflow:visible}`} {
+		if !strings.Contains(string(stylesheet), marker) {
+			t.Fatalf("Release Library or Notifications filter toolbar overlap protection is missing %q", marker)
+		}
+	}
 	if !strings.Contains(string(stylesheet), `.releaseArt .detailCover{color:transparent;font-size:0;text-indent:-9999px}`) {
 		t.Fatal("Release Details cover must hide image fallback text while navigation loads the next cover")
 	}

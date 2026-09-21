@@ -1712,3 +1712,52 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
   .releaseFiltersBody>.toolbar>.wildcardLogicToggle,.notificationToolbar>.wildcardLogicToggle{flex-basis:40px!important;width:40px!important;min-width:40px!important;height:40px}
   .releaseFiltersBody>.toolbar select,.notificationToolbar select{padding-inline:6px;font-size:10px}
 }
+
+/* Release and notification filters contain many independent controls. Keep
+   each control in its own layout cell so long placeholders and native input
+   minimums cannot paint underneath neighboring buttons. Wide screens use one
+   deterministic row; narrower desktops wrap whole controls. */
+@media(min-width:1400px){
+  .releaseFiltersBody>.toolbar{
+    display:grid;
+    grid-template-columns:minmax(240px,2fr) 40px 115px minmax(180px,1.35fr) 40px 40px 40px minmax(145px,1fr) 40px 40px 40px 40px minmax(130px,1fr) 40px 40px;
+    align-items:center;
+    overflow:visible;
+  }
+  .releaseFiltersBody>.toolbar>*{width:100%!important;max-width:none!important;min-width:0!important}
+  .releaseFiltersBody>.toolbar>.presetMenu,
+  .releaseFiltersBody>.toolbar>.toolbarIcon,
+  .releaseFiltersBody>.toolbar>.toolbarToggleIcon,
+  .releaseFiltersBody>.toolbar>#sortDirection,
+  .releaseFiltersBody>.toolbar>.wildcardLogicToggle{width:40px!important;min-width:40px!important}
+  .releaseFiltersBody>.toolbar input,
+  .releaseFiltersBody>.toolbar select{min-width:0;max-width:100%}
+  .notificationToolbar{
+    display:grid;
+    grid-template-columns:minmax(240px,2fr) 40px 72px 115px minmax(180px,1.35fr) 40px 40px minmax(125px,1fr) minmax(145px,1fr) minmax(140px,1fr) 40px 40px;
+    align-items:center;
+    overflow:visible;
+  }
+  .notificationToolbar>*{width:100%!important;max-width:none!important;min-width:0!important}
+  .notificationToolbar>.presetMenu,
+  .notificationToolbar>.toolbarIcon,
+  .notificationToolbar>.toolbarToggleIcon,
+  .notificationToolbar>#notificationSortDirection,
+  .notificationToolbar>.wildcardLogicToggle{width:40px!important;min-width:40px!important}
+  .notificationToolbar>.check{width:72px!important;min-width:72px!important}
+  .notificationToolbar input,
+  .notificationToolbar select{min-width:0;max-width:100%}
+}
+@media(min-width:701px) and (max-width:1399px){
+  .releaseFiltersBody>.toolbar{flex-wrap:wrap!important;overflow:visible}
+  .releaseFiltersBody>.toolbar>.search{flex:2 1 280px;max-width:none}
+  .releaseFiltersBody>.toolbar>.genericWildcardField{flex:1 1 190px;max-width:none}
+  .releaseFiltersBody>.toolbar>.zoom{flex:1 1 180px;max-width:none}
+  .releaseFiltersBody>.toolbar>#sortField{flex:1 1 150px;max-width:none}
+  .notificationToolbar{flex-wrap:wrap!important;overflow:visible}
+  .notificationToolbar>.search{flex:2 1 280px;max-width:none}
+  .notificationToolbar>.genericWildcardField{flex:1 1 190px;max-width:none}
+  .notificationToolbar>#notificationStatus{flex:1 1 150px;max-width:none}
+  .notificationToolbar>.zoom{flex:1 1 180px;max-width:none}
+  .notificationToolbar>#notificationSort{flex:1 1 150px;max-width:none}
+}
