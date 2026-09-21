@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -1047,6 +1048,16 @@ func discoveryExcludedTags(raw string) map[string]bool {
 	return out
 }
 
+func discoveryExcludedTagValues(raw string) []string {
+	excluded := discoveryExcludedTags(raw)
+	values := make([]string, 0, len(excluded))
+	for value := range excluded {
+		values = append(values, value)
+	}
+	sort.Strings(values)
+	return values
+}
+
 func discoveryHasExcludedTag(release domain.Release, excluded map[string]bool) bool {
 	for _, tag := range release.Genres {
 		if excluded[strings.ToLower(strings.TrimSpace(tag))] {
@@ -1105,7 +1116,12 @@ func diversifyDiscoveries(items []discoveryItem, strength float64) []discoveryIt
 func discoveryFilterFromQuery(q url.Values, settings map[string]string, category string) (domain.ReleaseFilter, map[string][]string, string) {
 	pools := discoveryPools(settings["discoveries_pools"])
 	pool := strings.TrimSpace(q.Get("pool"))
-	filter := domain.ReleaseFilter{Search: q.Get("search"), SearchWildcards: q.Get("search_wildcards") == "true", Category: q.Get("filter_category"), Entries: q.Get("entries"), SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Sort: q.Get("sort"), Direction: q.Get("direction")}
+	filter := domain.ReleaseFilter{Search: q.Get("search"), SearchWildcards: q.Get("search_wildcards") == "true", Category: q.Get("filter_category"), Entries: q.Get("entries"), WildcardLogic: q.Get("wildcard_logic"), SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Sort: q.Get("sort"), Direction: q.Get("direction")}
+	// Apply discovery-specific exclusions in SQL so totals, offsets and pages
+	// describe the same candidate set. Filtering these only after fetching a
+	// page could produce an empty page while still reporting thousands of
+	// matches whenever the highest-scored releases carried an excluded tag.
+	filter.ExcludeTags = discoveryExcludedTagValues(settings["discoveries_excluded_tags"])
 	// AI text is produced after the database query, so it must be filtered
 	// after enrichment rather than being mistaken for a release column.
 	if strings.EqualFold(strings.TrimSpace(filter.Category), "AI text") {
@@ -1132,7 +1148,7 @@ func discoveryFilterFromQuery(q url.Values, settings map[string]string, category
 	return filter, pools, pool
 }
 
-func discoveryAITextMatches(text, rawEntries string) bool {
+func discoveryAITextMatches(text, rawEntries, logic string) bool {
 	if strings.TrimSpace(rawEntries) == "" {
 		return true
 	}
@@ -1143,13 +1159,24 @@ func discoveryAITextMatches(text, rawEntries string) bool {
 		entries = strings.Split(rawEntries, ",")
 	}
 	text = strings.ToLower(text)
+	matched := 0
+	wanted := 0
 	for _, entry := range entries {
 		entry = strings.ToLower(strings.TrimSpace(entry))
-		if entry != "" && strings.Contains(text, entry) {
-			return true
+		if entry != "" {
+			wanted++
+			pattern := regexp.QuoteMeta(entry)
+			pattern = strings.ReplaceAll(pattern, `\*`, `.*`)
+			pattern = strings.ReplaceAll(pattern, `\?`, `.`)
+			if ok, _ := regexp.MatchString(pattern, text); ok {
+				matched++
+			}
 		}
 	}
-	return false
+	if strings.EqualFold(logic, "and") {
+		return wanted == 0 || matched == wanted
+	}
+	return wanted == 0 || matched > 0
 }
 
 func discoveryReleaseMatches(release domain.Release, category, subtitles string, hasSubtitle bool, excluded map[string]bool, rewatchDays int, now time.Time) bool {
@@ -1268,7 +1295,7 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 			if aiOnly && !item.AIEnhanced {
 				continue
 			}
-			if aiTextEntries != "" && (!item.AIEnhanced || !discoveryAITextMatches(item.AIText, aiTextEntries)) {
+			if aiTextEntries != "" && (!item.AIEnhanced || !discoveryAITextMatches(item.AIText, aiTextEntries, filter.WildcardLogic)) {
 				continue
 			}
 			filtered = append(filtered, item)

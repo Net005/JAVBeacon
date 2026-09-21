@@ -8,6 +8,8 @@ This plugin provides two integrations:
 - a beacon button beside **+ CC** that opens the scene's exact JAVBeacon
   release page in a new tab.
 - an always-visible Watchlist toggle on Stash scene cards.
+- scene details beneath the scene ID on Stash scene cards, with a compact
+  two-line preview, full-text hover tooltip, and click-to-expand display.
 
 The subtitle request runs in Python inside the Stash plugin process. It does
 not require `curl`, does not call JAVBeacon-Subs from the browser, and does
@@ -47,6 +49,12 @@ is clicked). Results are remembered for the browser session, so the same scene
 is not checked again. The scene details page still checks subtitle status when
 needed. This keeps large scene pages and dashboard carousels from blocking
 navigation with per-card queries.
+
+When Stash includes scene details in its card data, the story appears
+immediately below the scene ID. Otherwise it is included in that same deferred
+card lookup. The preview uses the full card width and is clamped to two lines;
+hovering shows the complete text in a tooltip, while clicking (or pressing
+Enter/Space) toggles the full story without opening the scene.
 
 Plugin settings are read without writing the partial configuration response to
 Stash's shared Apollo cache, avoiding repeated cache-merge warnings on large

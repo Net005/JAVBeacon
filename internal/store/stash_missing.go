@@ -85,11 +85,12 @@ func numericConditionOp(op string) string {
 // "after" (default) for last_played/last_o_count) - fields the release Conditions
 // builder's Exact/Wildcard toggle has no use for.
 type stashMissingFilterCondition struct {
-	Field    string `json:"field"`
-	Value    string `json:"value"`
-	Op       string `json:"op"`
-	Exact    bool   `json:"exact"`
-	Wildcard bool   `json:"wildcard"`
+	Field      string `json:"field"`
+	Value      string `json:"value"`
+	ValueLogic string `json:"value_logic"`
+	Op         string `json:"op"`
+	Exact      bool   `json:"exact"`
+	Wildcard   bool   `json:"wildcard"`
 }
 
 // stashMissingFilterConditionGroup is one AND/OR group of conditions
@@ -133,7 +134,11 @@ func stashMissingConditionGroupClause(d Dialect, conditions []stashMissingFilter
 					alternative.Value = value
 					alternatives = append(alternatives, alternative)
 				}
-				clause, args := stashMissingConditionGroupClause(d, alternatives, "or")
+				valueLogic := "or"
+				if strings.EqualFold(c.ValueLogic, "and") {
+					valueLogic = "and"
+				}
+				clause, args := stashMissingConditionGroupClause(d, alternatives, valueLogic)
 				if clause != "" {
 					parts = append(parts, clause)
 					a = append(a, args...)

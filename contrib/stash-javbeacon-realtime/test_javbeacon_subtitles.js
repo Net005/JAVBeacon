@@ -30,6 +30,7 @@ const React = {
     return [initial, () => {}];
   },
   useEffect() {},
+  useLayoutEffect() {},
   createElement(type, props, ...children) {
     return {
       type,
@@ -44,7 +45,7 @@ const React = {
 global.window = {
   PluginApi: {
     React,
-    ReactDOM: { createPortal() {} },
+    ReactDOM: { createPortal(element) { return element; } },
     hooks: { useToast: () => ({ error() {}, success() {} }) },
     libraries: {
       Apollo: {
@@ -91,6 +92,10 @@ const pluginSource = fs.readFileSync(
   "utf8"
 );
 assert.match(pluginSource, /mode: "release_link"/);
+assert.match(pluginSource, /details\s*\n\s*captions/);
+assert.match(pluginSource, /title: story/);
+assert.match(pluginSource, /"aria-expanded": expanded/);
+assert.match(pluginSource, /setExpanded\(\(value\) => !value\)/);
 assert.ok(
   pluginSource.indexOf("React.createElement(SubtitleButton") <
     pluginSource.indexOf("React.createElement(ReleaseLinkButton"),
@@ -208,7 +213,7 @@ const captionQueriesBeforeCards = queryCalls.filter((call) =>
   call.query.includes("JAVBeaconSceneCaptions")
 ).length;
 let cardActions = renderCardActions(cardResult);
-let subtitleAction = renderCardAction(cardActions, 1);
+let subtitleAction = renderCardAction(cardActions, 2);
 assert.equal(subtitleAction.props.className, "javbeacon-subs-card-action");
 assert.equal(
   queryCalls.find((call) => call.query.includes("JAVBeaconSubtitleSettings"))
@@ -221,7 +226,7 @@ assert.equal(
   captionQueriesBeforeCards
 );
 assert.equal(lazyQueryCalls.length, 0);
-const watchlistAction = renderCardAction(cardActions, 2);
+const watchlistAction = renderCardAction(cardActions, 3);
 const watchlistButton = watchlistAction.props.children;
 assert.equal(watchlistAction.props.className, "javbeacon-watchlist-card-action");
 assert.equal(watchlistButton.props.children.props.children, "+ Watchlist");
@@ -237,13 +242,13 @@ settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "/COLLECTIONS/jav/";
 cardActions = renderCardActions(cardResult);
-assert.notEqual(renderCardAction(cardActions, 1), null);
+assert.notEqual(renderCardAction(cardActions, 2), null);
 settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "/media/other/";
 cardActions = renderCardActions(cardResult);
-assert.equal(renderCardAction(cardActions, 1), null);
-assert.notEqual(renderCardAction(cardActions, 2), null);
+assert.equal(renderCardAction(cardActions, 2), null);
+assert.notEqual(renderCardAction(cardActions, 3), null);
 settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "";
@@ -257,16 +262,47 @@ const knownCompleteCard = afterPatches["SceneCard.Popovers"](
         { id: "4", name: "Keep me" },
       ],
       files: [{ path: "/Collections/JAV/PFES-046.mp4" }],
+      details: "A detailed story that should appear below the scene ID.",
     },
   },
   legacyContext,
   renderedPopovers
 );
 cardActions = renderCardActions(knownCompleteCard);
-const completedCardAction = renderCardAction(cardActions, 1);
+assert.equal(
+  cardActions.props.children[1].props.scene.details,
+  "A detailed story that should appear below the scene ID."
+);
+const storyElement = cardActions.props.children[1];
+const originalUseState = React.useState;
+let storyStateIndex = 0;
+let expandedState = null;
+React.useState = (initial) => {
+  storyStateIndex += 1;
+  if (storyStateIndex === 1) return [{ closest() {} }, () => {}];
+  if (storyStateIndex === 2) return [{}, () => {}];
+  return [initial, (updater) => {
+    expandedState = updater(initial);
+  }];
+};
+const storyResult = storyElement.type(storyElement.props);
+React.useState = originalUseState;
+const storyContent = storyResult.props.children[1];
+assert.equal(storyContent.props.title, storyElement.props.scene.details);
+assert.equal(storyContent.props["aria-expanded"], false);
+let prevented = false;
+let stopped = false;
+storyContent.props.onClick({
+  preventDefault() { prevented = true; },
+  stopPropagation() { stopped = true; },
+});
+assert.equal(expandedState, true);
+assert.equal(prevented, true);
+assert.equal(stopped, true);
+const completedCardAction = renderCardAction(cardActions, 2);
 assert.equal(completedCardAction.props.className, "javbeacon-subs-card-action");
 assert.equal(completedCardAction.props.children.props.completed, true);
-const completedWatchlistAction = renderCardAction(cardActions, 2);
+const completedWatchlistAction = renderCardAction(cardActions, 3);
 assert.equal(
   completedWatchlistAction.props.children.props.children.props.children,
   "✓ Watchlist"
@@ -291,7 +327,7 @@ const knownCompletedCard = afterPatches["SceneCard.Popovers"](
 assert.equal(knownCompletedCard.props.children[0], renderedPopovers);
 const knownCompletedActions = renderCardActions(knownCompletedCard);
 assert.equal(
-  renderCardAction(knownCompletedActions, 1).props.children.props.completed,
+  renderCardAction(knownCompletedActions, 2).props.children.props.completed,
   true
 );
 

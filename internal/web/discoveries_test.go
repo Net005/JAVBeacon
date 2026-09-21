@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -107,6 +109,16 @@ func TestDiscoveryExcludedTagsAreCaseInsensitive(t *testing.T) {
 	}
 	if discoveryHasExcludedTag(domain.Release{Genres: []string{"Drama"}}, excluded) {
 		t.Fatal("unrelated tag was excluded")
+	}
+}
+
+func TestDiscoveryFilterPushesExcludedTagsBeforePaging(t *testing.T) {
+	filter, _, _ := discoveryFilterFromQuery(url.Values{}, map[string]string{
+		"discoveries_excluded_tags": "Solowork, solo work\nFighters; Fighting Action",
+	}, "for_you")
+	want := []string{"fighters", "fighting action", "solo work", "solowork"}
+	if !slices.Equal(filter.ExcludeTags, want) {
+		t.Fatalf("ExcludeTags = %#v, want %#v", filter.ExcludeTags, want)
 	}
 }
 
@@ -249,9 +261,15 @@ func TestDiscoveryAITextFilteringIsPartialAndCaseInsensitive(t *testing.T) {
 		{"Investigator story with an undercover reporter", "cover rep", true},
 		{"Sci-fi heroine", `["brainwashing","drugs"]`, false},
 	} {
-		if got := discoveryAITextMatches(tt.text, tt.entries); got != tt.want {
+		if got := discoveryAITextMatches(tt.text, tt.entries, "or"); got != tt.want {
 			t.Fatalf("discoveryAITextMatches(%q, %q) = %v, want %v", tt.text, tt.entries, got, tt.want)
 		}
+	}
+	if !discoveryAITextMatches("Undercover investigator story", "under*, investigator", "and") {
+		t.Fatal("AND AI text filtering should require and accept every partial value")
+	}
+	if discoveryAITextMatches("Undercover investigator story", "under, missing", "and") {
+		t.Fatal("AND AI text filtering accepted a missing value")
 	}
 }
 

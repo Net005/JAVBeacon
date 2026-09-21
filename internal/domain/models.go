@@ -298,7 +298,7 @@ type ReleaseEdit struct {
 }
 
 type ReleaseFilter struct {
-	Search, PoolSearch, Site, Source, Status, Sort, Direction, Category, Entries, SearchExpression string
+	Search, PoolSearch, Site, Source, Status, Sort, Direction, Category, Entries, WildcardLogic, SearchExpression string
 	// VideoID, when set, restricts results to an exact (case-insensitive)
 	// video_id match instead of the fuzzy substring matching Search does.
 	// Used for lookups that must resolve to a single specific release - for
@@ -341,6 +341,10 @@ type ReleaseFilter struct {
 	// Releases/ReleasesCount never need their own settings access.
 	ShowNonPreferred         bool
 	IgnoreTags, IgnoreTitles []string
+	// ExcludeTags always removes releases carrying one of these exact tags,
+	// independently of the Release Library's preferred/ignored toggle. It is
+	// used by Discoveries so exclusion happens before counting and paging.
+	ExcludeTags []string
 	// IgnoreLocalForceDownload filters the "Releases checked by the
 	// scheduled job" table by the persistent per-release override of the
 	// same name: nil means no filter, true/false restrict to releases with

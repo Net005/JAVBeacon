@@ -32,6 +32,7 @@
     query JAVBeaconSceneCaptions($id: ID!) {
       findScene(id: $id) {
         id
+        details
         captions {
           language_code
           caption_type
@@ -340,6 +341,81 @@
     );
   }
 
+  function sceneStory(scene) {
+    return String(scene?.details || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function SceneCardStory({ scene }) {
+    const [probe, setProbe] = React.useState(null);
+    const [mountNode, setMountNode] = React.useState(null);
+    const [expanded, setExpanded] = React.useState(false);
+    const story = sceneStory(scene);
+
+    React.useLayoutEffect(() => {
+      if (!probe || !story) return undefined;
+      const card = probe.closest(".scene-card") || probe.parentElement;
+      if (!card) return undefined;
+
+      const title = card.querySelector(
+        ".card-section-title, .scene-card-title, .scene-card__title, .card-title"
+      );
+      const section =
+        title?.closest(".card-section") || card.querySelector(".card-section");
+      if (!section) return undefined;
+
+      const mount = document.createElement("div");
+      mount.className = "javbeacon-scene-story-mount";
+      const titleContainer = title?.parentElement;
+      if (titleContainer?.parentElement === section) {
+        section.insertBefore(mount, titleContainer.nextSibling);
+      } else if (title?.parentElement === section) {
+        section.insertBefore(mount, title.nextSibling);
+      } else section.prepend(mount);
+      setMountNode(mount);
+
+      return () => mount.remove();
+    }, [probe, story]);
+
+    React.useEffect(() => setExpanded(false), [scene?.id, story]);
+
+    const toggle = (event) => {
+      event?.preventDefault();
+      event?.stopPropagation();
+      setExpanded((value) => !value);
+    };
+    const onKeyDown = (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      toggle(event);
+    };
+    const content = React.createElement(
+      "div",
+      {
+        "aria-expanded": expanded,
+        "aria-label": `Scene details: ${story}`,
+        className: `javbeacon-scene-story${expanded ? " is-expanded" : ""}`,
+        onClick: toggle,
+        onKeyDown,
+        onMouseDown: (event) => event.stopPropagation(),
+        role: "button",
+        tabIndex: 0,
+        title: story,
+      },
+      story
+    );
+
+    return React.createElement(
+      React.Fragment,
+      null,
+      React.createElement("span", {
+        className: "javbeacon-card-actions-probe",
+        ref: setProbe,
+      }),
+      mountNode ? ReactDOM.createPortal(content, mountNode) : null
+    );
+  }
+
   function SceneCardActions({ scene }) {
     const settingsQuery = usePluginSettings();
     const sceneID = String(scene.id);
@@ -349,7 +425,8 @@
     );
     const captionsKnown = Object.prototype.hasOwnProperty.call(scene, "captions");
     const tagsKnown = Object.prototype.hasOwnProperty.call(scene, "tags");
-    const statusKnown = captionsKnown && tagsKnown;
+    const detailsKnown = Object.prototype.hasOwnProperty.call(scene, "details");
+    const statusKnown = captionsKnown && tagsKnown && detailsKnown;
     const [loadStatus] = useLazyQuery(FIND_SCENE_CAPTIONS, {
       fetchPolicy: "cache-first",
     });
@@ -357,6 +434,7 @@
       ...scene,
       captions: captionsKnown ? scene.captions : loadedScene?.captions,
       tags: tagsKnown ? scene.tags : loadedScene?.tags,
+      details: detailsKnown ? scene.details : loadedScene?.details,
     };
     const resolveScene = async () => {
       if (statusKnown) return scene;
@@ -398,6 +476,7 @@
         className: "javbeacon-card-actions-probe",
         ref: setProbe,
       }),
+      React.createElement(SceneCardStory, { scene: resolvedScene }),
       React.createElement(SceneCardSubtitleAction, {
         scene: resolvedScene,
         settings,

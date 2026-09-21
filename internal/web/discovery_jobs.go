@@ -134,6 +134,11 @@ func discoveryJobSnapshot(settings map[string]string) discoveryJobStatus {
 				status.ETASeconds = float64(status.Total-status.Completed) / status.ItemsPerSecond
 			}
 		}
+	} else if !status.StartedAt.IsZero() && !status.FinishedAt.IsZero() {
+		status.ElapsedSeconds = status.FinishedAt.Sub(status.StartedAt).Seconds()
+		if status.Completed > 0 && status.ElapsedSeconds > 0 {
+			status.ItemsPerSecond = float64(status.Completed) / status.ElapsedSeconds
+		}
 	}
 	discoveryAIStatus.RLock()
 	status.OpenAIRunning, status.OpenAICompleted, status.OpenAITotal, status.OpenAIBatch, status.OpenAIBatches, status.OpenAICurrent, status.OpenAIError = discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Batch, discoveryAIStatus.Batches, discoveryAIStatus.Current, discoveryAIStatus.Error
