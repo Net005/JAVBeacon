@@ -2512,6 +2512,33 @@ func TestNotificationAdvancedSearchIsInitializedBeforeUse(t *testing.T) {
 	}
 }
 
+func TestHideMonitoredFiltersArePersistentAndPortable(t *testing.T) {
+	raw, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	for _, marker := range []string{
+		"hideMonitored:false",
+		"hide_monitored:String(!!prefs.hideMonitored)",
+		"hideMonitored:!!prefs.hideMonitored",
+		"setToggleButton(hideMonitored,prefs.hideMonitored)",
+		"hideMonitored.onclick=()=>{prefs.hideMonitored=!prefs.hideMonitored",
+		"notificationHideMonitoredByType",
+	} {
+		if !strings.Contains(script, marker) {
+			t.Fatalf("hide-monitored persistence is missing %q", marker)
+		}
+	}
+	markup, err := assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(markup), `id="hideMonitored"`) {
+		t.Fatal("Release Library is missing its Hide Monitored control")
+	}
+}
+
 func TestDiscoveriesPreserveScrollDuringPagingAndDetailReturn(t *testing.T) {
 	raw, err := assets.ReadFile("static/app.js")
 	if err != nil {

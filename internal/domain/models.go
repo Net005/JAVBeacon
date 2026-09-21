@@ -310,9 +310,9 @@ type ReleaseFilter struct {
 	// full video path reported by StashApp. This lets API clients such as
 	// JAVBeaconSubs map a media file back to its JAVBeacon release without a
 	// fuzzy text match.
-	StashFilePath                                       string
-	SiteID                                              int64
-	Watchlist, HideLocal, MonitorDownload, UsePreferred bool
+	StashFilePath                                                      string
+	SiteID                                                             int64
+	Watchlist, HideLocal, HideMonitored, MonitorDownload, UsePreferred bool
 	// SearchWildcards enables the web UI's generic search syntax: comma-
 	// separated alternatives combined with OR, with * and ? wildcards.
 	// Programmatic callers keep the original literal substring semantics.

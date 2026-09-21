@@ -1533,6 +1533,9 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 	if f.MonitorDownload {
 		q += ` AND r.monitor_download=1`
 	}
+	if f.HideMonitored {
+		q += ` AND r.monitor_download=0`
+	}
 	if f.IgnoreLocalForceDownload != nil {
 		q += ` AND r.ignore_local_force_download=?`
 		a = append(a, *f.IgnoreLocalForceDownload)
@@ -3700,7 +3703,10 @@ func (s *SQLite) NotificationsPage(ctx context.Context, kind string, filter doma
 		args = append(args, kind)
 	}
 	if hideMonitored {
-		where += ` AND r.monitor_download=FALSE`
+		// Boolean-shaped release columns are stored as INTEGER on both SQLite
+		// and PostgreSQL. Comparing one to FALSE makes PostgreSQL reject the
+		// query with "operator does not exist: integer = boolean".
+		where += ` AND r.monitor_download=0`
 	}
 	from := ` FROM notifications n JOIN releases r ON r.id=n.release_id JOIN sites s ON s.id=r.site_id`
 	var total int
