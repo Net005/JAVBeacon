@@ -82,6 +82,10 @@ type Service struct {
 	pikPakCheckMu      sync.Mutex
 	pikPakCheckRunning bool
 	pikPakSessionMu    sync.Mutex
+	// pikPakRangeRetryMu serializes the holdoff/retry window entered after a
+	// parallel PikPak range set fails. Healthy downloads still run concurrently,
+	// but several failures cannot stampede the same CDN with overlapping retries.
+	pikPakRangeRetryMu sync.Mutex
 	httpSolverMu       sync.Mutex
 	httpSolverConfig   string
 	httpSolverPool     *scraper.SolverPool
@@ -1601,7 +1605,24 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 			"error", cause,
 		)
 	}
-	connections, err := downloadHTTPToFile(ctx, &downloadClient, resolved, out, d.BytesTotal, httpConnections(settings), &transferred, downgrade)
+	retrying := func(connections, attempt int, cause error) {
+		s.log.Warn("PikPak HTTP connection retry before reduction",
+			"download_id", d.ID,
+			"release_id", d.ReleaseID,
+			"video_id", d.Query,
+			"connections", connections,
+			"attempt", attempt,
+			"max_attempts", 3,
+			"error", cause,
+		)
+	}
+	var retryObserver func(int, int, error)
+	var retryMu *sync.Mutex
+	if resolved.Authenticated {
+		retryObserver = retrying
+		retryMu = &s.pikPakRangeRetryMu
+	}
+	connections, err := downloadHTTPToFileCoordinated(ctx, &downloadClient, resolved, out, d.BytesTotal, httpConnections(settings), &transferred, downgrade, retryObserver, retryMu)
 	if err != nil && ctx.Err() == nil && resolved.Authenticated {
 		// Signed PikPak CDN URLs can expire or be invalidated while a large
 		// transfer is retrying. Resolve the exact selected account file once
@@ -1636,7 +1657,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 			} else if _, seekErr := out.Seek(0, io.SeekStart); seekErr != nil {
 				err = fmt.Errorf("seek partial HTTP transfer before refreshed URL retry: %w", seekErr)
 			} else {
-				connections, err = downloadHTTPToFile(ctx, &downloadClient, refreshed, out, d.BytesTotal, httpConnections(settings), &transferred, downgrade)
+				connections, err = downloadHTTPToFileCoordinated(ctx, &downloadClient, refreshed, out, d.BytesTotal, httpConnections(settings), &transferred, downgrade, retrying, &s.pikPakRangeRetryMu)
 			}
 		}
 	}
@@ -1813,6 +1834,10 @@ func resetHTTPTransfer(out *os.File, total int64, transferred *atomic.Int64) err
 }
 
 func downloadHTTPToFile(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, out *os.File, total int64, connections int, transferred *atomic.Int64, onDowngrade func(int, int, error)) (int, error) {
+	return downloadHTTPToFileCoordinated(ctx, client, resolved, out, total, connections, transferred, onDowngrade, nil, nil)
+}
+
+func downloadHTTPToFileCoordinated(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, out *os.File, total int64, connections int, transferred *atomic.Int64, onDowngrade func(int, int, error), onRetry func(int, int, error), retryMu *sync.Mutex) (int, error) {
 	connections = min(connections, 32)
 	if connections < 2 || total <= 0 {
 		return 1, downloadHTTPSingleStream(ctx, client, resolved, out, total, transferred)
@@ -1859,6 +1884,19 @@ func downloadHTTPToFile(ctx context.Context, client *http.Client, resolved resol
 		if err := downloadHTTPRanges(ctx, client, resolved, out, total, current, transferred); err == nil {
 			return current, nil
 		} else {
+			initialErr := err
+			err = runCoordinatedHTTPRangeRetries(ctx, retryMu, func(attempt int) error {
+				if onRetry != nil {
+					onRetry(current, attempt, initialErr)
+				}
+				if resetErr := resetHTTPTransfer(out, total, transferred); resetErr != nil {
+					return resetErr
+				}
+				return downloadHTTPRanges(ctx, client, resolved, out, total, current, transferred)
+			})
+			if err == nil {
+				return current, nil
+			}
 			next := 1
 			if current > 2 {
 				next = max(2, current/2)
@@ -1876,6 +1914,27 @@ func downloadHTTPToFile(ctx context.Context, client *http.Client, resolved resol
 		return 0, err
 	}
 	return 1, downloadHTTPSingleStream(ctx, client, resolved, out, total, transferred)
+}
+
+// runCoordinatedHTTPRangeRetries gives a failed connection level three more
+// chances before the caller reduces it. The optional mutex is shared by all
+// PikPak downloads in a Service, including the backoff itself, so concurrent
+// failures queue behind one another instead of producing overlapping bursts.
+func runCoordinatedHTTPRangeRetries(ctx context.Context, retryMu *sync.Mutex, retry func(attempt int) error) error {
+	if retryMu != nil {
+		retryMu.Lock()
+		defer retryMu.Unlock()
+	}
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err := sleepContext(ctx, time.Duration(attempt)*httpRangeRetryBaseDelay); err != nil {
+			return err
+		}
+		if lastErr = retry(attempt); lastErr == nil {
+			return nil
+		}
+	}
+	return lastErr
 }
 
 func downloadHTTPRanges(ctx context.Context, client *http.Client, resolved resolvedHTTPFile, out *os.File, total int64, connections int, transferred *atomic.Int64) error {
