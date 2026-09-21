@@ -362,6 +362,52 @@ func TestSQLiteMigratesWatchlistNamingWithoutLosingState(t *testing.T) {
 	}
 }
 
+func TestRemoveReleasedStartDatesFromPreferencesAndFilterPresets(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "released-start-date.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.SaveUser(ctx, "admin", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SavePreferences(ctx, json.RawMessage(`{"releasedStartDate":"2026-01-02","releasedMinDays":"7","search":"keep"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveFilterPreset(ctx, domain.FilterPreset{Name: "legacy", State: json.RawMessage(`{"releasedStartDate":"2025-04-03","releasedMaxDays":"30","search":"keep"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveFilterPreset(ctx, domain.FilterPreset{Name: "valid", State: json.RawMessage(`{"search":"untouched"}`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	for run := 0; run < 2; run++ {
+		if err := s.removeReleasedStartDates(ctx); err != nil {
+			t.Fatalf("repair run %d: %v", run+1, err)
+		}
+	}
+	preferences, err := s.Preferences(ctx)
+	if err != nil || strings.Contains(string(preferences), "releasedStartDate") || !strings.Contains(string(preferences), `"releasedMinDays":"7"`) || !strings.Contains(string(preferences), `"search":"keep"`) {
+		t.Fatalf("preferences after repair = %s, err=%v", preferences, err)
+	}
+	presets, err := s.FilterPresets(ctx)
+	if err != nil || len(presets) != 2 {
+		t.Fatalf("presets after repair = %+v, err=%v", presets, err)
+	}
+	for _, preset := range presets {
+		if strings.Contains(string(preset.State), "releasedStartDate") {
+			t.Fatalf("preset %q retained releasedStartDate: %s", preset.Name, preset.State)
+		}
+	}
+	if !strings.Contains(string(presets[0].State), `"releasedMaxDays":"30"`) || !strings.Contains(string(presets[0].State), `"search":"keep"`) {
+		t.Fatalf("legacy preset lost unrelated filters: %s", presets[0].State)
+	}
+	if string(presets[1].State) != `{"search":"untouched"}` {
+		t.Fatalf("valid preset changed: %s", presets[1].State)
+	}
+}
+
 func TestReleaseCardsUseCursorPaginationAndLightweightRows(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "release-cards.db"))

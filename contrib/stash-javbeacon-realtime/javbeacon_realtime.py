@@ -221,7 +221,14 @@ def request_subtitles(payload, args):
 
 def request_realtime_sync(payload, args):
     hook = args.get("hookContext") or {}
-    scene_id = str(hook.get("id") or "").strip()
+    hook_input = hook.get("input") if isinstance(hook.get("input"), dict) else {}
+    scene_id = str(
+        hook.get("id")
+        or hook.get("scene_id")
+        or hook_input.get("id")
+        or args.get("scene_id")
+        or ""
+    ).strip()
     settings = _plugin_settings(payload)
     base_url = str(settings.get("javbeacon_url") or "").strip().rstrip("/")
     secret = str(settings.get("webhook_secret") or "").strip()
