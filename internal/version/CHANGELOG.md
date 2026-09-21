@@ -7,6 +7,14 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.199] - 2026-09-21
+
+### Changed
+
+- Notifications no longer shows the redundant **Batch size** text in its
+  compact filter toolbar. The selector retains that name as its tooltip and
+  accessible label while using only the width needed for the selected value.
+
 ## [1.0.198] - 2026-09-21
 
 ### Fixed
