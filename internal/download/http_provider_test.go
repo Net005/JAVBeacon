@@ -652,6 +652,186 @@ func TestGetHTMLDirectWithRetryDoesNotRetryARealHTTPResponse(t *testing.T) {
 	}
 }
 
+// TestDoWithTransientNetworkRetryRecoversFromTransientFailure covers a live
+// report: a JavDB release page correctly listed real Keepshare -> PikPak
+// share links (discoverJavDBDownloads found and accepted them), but
+// resolving one of those shares hit "unsupported protocol scheme" / reset /
+// timeout-style transport failures with no retry at all, unlike JavDB's own
+// page fetches (getHTMLDirectWithRetry). doWithTransientNetworkRetry gives
+// the Keepshare redirect hop and every PikPak API call that same recovery.
+func TestDoWithTransientNetworkRetryRecoversFromTransientFailure(t *testing.T) {
+	originalDelay := javDBTransientRetryDelay
+	javDBTransientRetryDelay = time.Millisecond
+	t.Cleanup(func() { javDBTransientRetryDelay = originalDelay })
+	attempts := 0
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts < javDBTransientNetworkAttempts {
+			return nil, errors.New("read tcp 1.2.3.4:1->5.6.7.8:443: read: connection reset by peer")
+		}
+		return pikPakJSONResponse(http.StatusOK, "ok"), nil
+	})}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://mypikpak.example/s/abc", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := doWithTransientNetworkRetry(client, req)
+	if err != nil {
+		t.Fatalf("expected eventual success, got err=%v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if attempts != javDBTransientNetworkAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, javDBTransientNetworkAttempts)
+	}
+}
+
+func TestDoWithTransientNetworkRetryGivesUpAfterMaxAttempts(t *testing.T) {
+	originalDelay := javDBTransientRetryDelay
+	javDBTransientRetryDelay = time.Millisecond
+	t.Cleanup(func() { javDBTransientRetryDelay = originalDelay })
+	attempts := 0
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return nil, errors.New("context deadline exceeded (Client.Timeout exceeded while awaiting headers)")
+	})}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://mypikpak.example/s/abc", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := doWithTransientNetworkRetry(client, req); err == nil {
+		t.Fatal("expected an error after exhausting retries")
+	}
+	if attempts != javDBTransientNetworkAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, javDBTransientNetworkAttempts)
+	}
+}
+
+func TestDoWithTransientNetworkRetryDoesNotRetryARealHTTPResponse(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return pikPakJSONResponse(http.StatusForbidden, "blocked"), nil
+	})}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://mypikpak.example/s/abc", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := doWithTransientNetworkRetry(client, req)
+	if err != nil {
+		t.Fatalf("a real HTTP response must not surface as an error here, got %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (a real HTTP response must not be retried here)", attempts)
+	}
+}
+
+// TestDoWithTransientNetworkRetryReplaysBodyOnRetry confirms a POST body
+// built from strings.NewReader (as every PikPak API call in this file
+// builds its body) survives a retry intact - net/http populates GetBody
+// automatically for that reader type, and doWithTransientNetworkRetry must
+// use it to give the second attempt a fresh, unconsumed body rather than an
+// empty one.
+func TestDoWithTransientNetworkRetryReplaysBodyOnRetry(t *testing.T) {
+	originalDelay := javDBTransientRetryDelay
+	javDBTransientRetryDelay = time.Millisecond
+	t.Cleanup(func() { javDBTransientRetryDelay = originalDelay })
+	const payload = `{"want":"this exact body"}`
+	var bodies []string
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		data, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(data))
+		if len(bodies) < javDBTransientNetworkAttempts {
+			return nil, errors.New("connection reset by peer")
+		}
+		return pikPakJSONResponse(http.StatusOK, "ok"), nil
+	})}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://mypikpak.example/v1/auth/signin", strings.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := doWithTransientNetworkRetry(client, req); err != nil {
+		t.Fatalf("expected eventual success, got err=%v", err)
+	}
+	if len(bodies) != javDBTransientNetworkAttempts {
+		t.Fatalf("attempts = %d, want %d", len(bodies), javDBTransientNetworkAttempts)
+	}
+	for i, body := range bodies {
+		if body != payload {
+			t.Fatalf("attempt %d body = %q, want the full original payload %q (not empty or partial)", i, body, payload)
+		}
+	}
+}
+
+// TestDoWithTransientNetworkRetrySkipsRetryWhenBodyIsNotReplayable confirms
+// a request body that net/http cannot snapshot via GetBody (an arbitrary
+// io.ReadCloser, not one of the buffer/reader types it recognizes) is never
+// retried, since a second attempt could send a partial or empty body.
+func TestDoWithTransientNetworkRetrySkipsRetryWhenBodyIsNotReplayable(t *testing.T) {
+	originalDelay := javDBTransientRetryDelay
+	javDBTransientRetryDelay = time.Millisecond
+	t.Cleanup(func() { javDBTransientRetryDelay = originalDelay })
+	attempts := 0
+	client := &http.Client{Transport: pikPakRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return nil, errors.New("connection reset by peer")
+	})}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://mypikpak.example/v1/auth/signin", strings.NewReader("body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.GetBody = nil // simulate a body net/http cannot safely re-read
+	if _, err := doWithTransientNetworkRetry(client, req); err == nil {
+		t.Fatal("expected an error (no retries attempted)")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (a non-replayable body must not be retried)", attempts)
+	}
+}
+
+// TestDiscoverPikPakShareIDRecoversFromTransientNetworkFailure covers the
+// exact live scenario that motivated this change: a JavDB page correctly
+// lists a Keepshare link (e.g. https://keepshare.org/<id>/magnet%3A...)
+// that itself redirects to a real PikPak share
+// (https://mypikpak.com/s/<share>/<file>) - but the Keepshare redirect hop
+// hit a one-off transport failure before doWithTransientNetworkRetry
+// existed, failing resolution outright instead of recovering like a retry
+// a moment later would.
+func TestDiscoverPikPakShareIDRecoversFromTransientNetworkFailure(t *testing.T) {
+	originalDelay := javDBTransientRetryDelay
+	javDBTransientRetryDelay = time.Millisecond
+	t.Cleanup(func() { javDBTransientRetryDelay = originalDelay })
+	entry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://mypikpak.com/s/VP-YhHbopMQjt_gRbkB6ORjZo2/AAAAAAfNVsQqoHTeqzJ8lh0Yo2_VP-?act=play", http.StatusFound)
+	}))
+	defer entry.Close()
+	attempts := 0
+	realTransport := entry.Client().Transport
+	flaky := &http.Client{Transport: pikPakRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts < javDBTransientNetworkAttempts {
+			return nil, errors.New("dial tcp: i/o timeout")
+		}
+		return realTransport.RoundTrip(r)
+	})}
+	shareID, err := discoverPikPakShareID(context.Background(), flaky, entry.URL)
+	if err != nil {
+		t.Fatalf("expected the Keepshare redirect hop to recover, got err=%v", err)
+	}
+	if shareID != "VP-YhHbopMQjt_gRbkB6ORjZo2" {
+		t.Fatalf("share ID=%q", shareID)
+	}
+	if attempts != javDBTransientNetworkAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, javDBTransientNetworkAttempts)
+	}
+}
+
 func javDBFixtureProvider(t *testing.T, handler http.HandlerFunc) (*javDBProvider, func()) {
 	t.Helper()
 	server := httptest.NewServer(handler)

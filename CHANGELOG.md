@@ -7,6 +7,18 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.189] - 2026-09-21
+
+### Fixed
+
+- Resolving a JavDB Keepshare/PikPak download could fail outright on a
+  single one-off network blip - a dial timeout, a connection reset, a DNS
+  hiccup - while following the Keepshare -> PikPak share redirect, or while
+  calling the PikPak API to list a share's files. JavDB's own page fetches
+  already recovered from exactly this kind of transient failure with a
+  retry; the Keepshare/PikPak resolution steps now get the same treatment
+  instead of failing the whole download on the first hiccup.
+
 ## [1.0.188] - 2026-09-20
 
 ### Fixed
