@@ -244,6 +244,60 @@ func TestLocalSyncDoesNotRunWatchlistTagSync(t *testing.T) {
 	}
 }
 
+// TestLocalSyncPushesPendingWatchlistTagInsteadOfClearingIt covers the same
+// regression as its realtime-webhook counterpart
+// (TestRealtimeSceneSyncPushesPendingWatchlistTagInsteadOfClearingIt), but
+// for the "Sync local library" job: a release marked Watchlist while still
+// downloading has never had its tag pushed to Stash, so the first local sync
+// that matches it to a freshly-created scene must push the tag rather than
+// treat the scene's tagless state as an intentional un-watchlist.
+func TestLocalSyncPushesPendingWatchlistTagInsteadOfClearingIt(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "stash-watchlist-pending.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": "https://stash.example", "stash_watchlist_tag_id": "watchlist"}); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "GIGA", Type: "Site", Name: "GIGA", Enabled: true})
+	_, _ = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "TEST-1", Title: "Watchlist", Source: "GIGA", Watchlist: true})
+	releases, _ := st.Releases(ctx, domain.ReleaseFilter{Limit: 10})
+
+	var sawSceneUpdate bool
+	s := New(st, time.Second, slog.Default(), nil, nil)
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.Contains(string(body), "JAVBeaconSceneCreatedAt"):
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":{"findScenes":{"scenes":[{"id":"scene-1","created_at":"2026-08-28T10:00:00Z"}]}}}`)), Header: make(http.Header)}, nil
+		case strings.Contains(string(body), "sceneUpdate"):
+			sawSceneUpdate = true
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":{"sceneUpdate":{"id":"scene-1"}}}`)), Header: make(http.Header)}, nil
+		case strings.Contains(string(body), "findScene(id:"):
+			// setWatchlistTag's own tags-only lookup for this scene.
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":{"findScene":{"tags":[]}}}`)), Header: make(http.Header)}, nil
+		default:
+			// Scene discovery: the scene exists in Stash but has no tags yet
+			// (the Watchlist tag was never pushed, since this release only
+			// just became local).
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":{"findScenes":{"scenes":[{"id":"scene-1","title":"TEST-1","code":"TEST-1","tags":[]}]}}}`)), Header: make(http.Header)}, nil
+		}
+	})
+	s.run(ctx)
+	if !sawSceneUpdate {
+		t.Fatal("expected the pending Watchlist tag to be pushed to Stash via sceneUpdate")
+	}
+	got, _ := st.Release(ctx, releases[0].ID)
+	if !got.Watchlist {
+		t.Fatal("Watchlist mark was discarded instead of being pushed to Stash")
+	}
+	if !got.Local || got.StashSceneID != "scene-1" {
+		t.Fatalf("release was not matched local as expected: %+v", got)
+	}
+}
+
 func TestFirstLocalSyncStoresPlaybackStatsForReleaseConditions(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "stash-first-sync.db"))
