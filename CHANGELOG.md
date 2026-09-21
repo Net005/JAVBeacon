@@ -7,6 +7,36 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.194] - 2026-09-21
+
+### Changed
+
+- Saving a filter set with an existing name now asks before overwriting it.
+  Name matching is case-insensitive, respects the shared Release Library and
+  Notifications collection, and keeps Missing Files filter sets separate.
+- Saved-filter menus now include a save icon on every row for replacing that
+  preset with the current page's filters, with an overwrite confirmation.
+- Stash scene cards now use the space beneath the scene ID for a compact
+  two-line scene-story preview. Hovering exposes the complete story in a
+  tooltip, and clicking or using the keyboard toggles the full text in place.
+- Wildcard filter fields now keep compact desktop proportions and provide an
+  explicit, persistent **OR / AND** selector with an explanatory tooltip in
+  Release Library, Notifications, Discoveries, and structured Conditions.
+  Saved filter sets retain the chosen matching mode.
+- Notifications keeps its complete filter and sort toolbar on one row on wide
+  desktop layouts, while retaining responsive wrapping on narrower screens.
+- The Discoveries manual-run controls are now compact, non-overlapping status
+  cards with full timestamps and descriptive actions. Their detailed status
+  panel remains visible after completion and reports operation, stage, current
+  item, counts, subtitle total, timing, throughput, ETA, AI batch/provider,
+  token usage, estimated cost, and errors where applicable.
+
+### Fixed
+
+- Discoveries now applies its excluded-tag rules before database counting and
+  pagination. High-scoring excluded releases can no longer create an empty
+  first page that still claims thousands of matching discoveries.
+
 ## [1.0.193] - 2026-09-21
 
 ### Changed

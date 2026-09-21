@@ -2585,7 +2585,8 @@ func TestNotificationsShareReleaseLibraryFilterSets(t *testing.T) {
 		"function currentNotificationFilterState(overrides={})",
 		"function applyNotificationPreset(id)",
 		"function renderNotificationPresetMenu()",
-		"state:currentNotificationFilterState(overrides)",
+		"persistNamedFilterSet(name,currentNotificationFilterState(overrides),releasePresets())",
+		"saveCurrentToPreset(${x.id},'notifications')",
 		"show_non_preferred:String(!!prefs.showNonPreferred)",
 		"notificationLocalDim.onclick",
 		"notificationShowNonPreferred.onclick",
@@ -2602,7 +2603,7 @@ func TestNotificationsShareReleaseLibraryFilterSets(t *testing.T) {
 	}
 }
 
-func TestWildcardSearchFieldsKeepUsefulWidth(t *testing.T) {
+func TestWildcardSearchFieldsStayCompactAndExposeLogic(t *testing.T) {
 	stylesheet, err := assets.ReadFile("static/app.css")
 	if err != nil {
 		t.Fatal(err)
@@ -2610,12 +2611,45 @@ func TestWildcardSearchFieldsKeepUsefulWidth(t *testing.T) {
 	styles := string(stylesheet)
 	for _, marker := range []string{
 		".toolbar .search>.genericWildcardField{flex:1 1 auto;width:100%;min-width:0;max-width:none}",
-		".releaseFiltersBody>.toolbar>.search{flex:5 1 560px;min-width:min(560px,100%)}",
-		".notificationToolbar>.search{flex:5 1 560px;min-width:min(560px,100%)}",
+		".releaseFiltersBody>.toolbar>.search{flex:1 1 360px;min-width:280px;max-width:520px}",
+		".notificationToolbar>.search{flex:1 1 360px;min-width:280px;max-width:520px}",
+		"@media(min-width:1501px){.notificationToolbar{align-items:center;flex-wrap:nowrap}",
+		".wildcardLogic{flex:0 0 68px!important;width:68px!important",
 		".genericWildcardBadges button span{max-width:min(420px,60vw)}",
 	} {
 		if !strings.Contains(styles, marker) {
 			t.Fatalf("Wildcard search layout is missing %q", marker)
+		}
+	}
+	script, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"releaseWildcardLogic", "notificationWildcardLogic", "discoveryWildcardLogic", "wildcard_logic", "OR matches any comma-separated"} {
+		if !strings.Contains(string(script), marker) {
+			t.Fatalf("Wildcard logic UI is missing %q", marker)
+		}
+	}
+}
+
+func TestDiscoveryManualRunLayoutAndPersistentDetails(t *testing.T) {
+	stylesheet, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, javascript := string(stylesheet), string(script)
+	for _, marker := range []string{".discoveryRunCards{display:grid", ".discoveryRunCards article{display:flex", ".discoveryRunProgress{display:grid", ".discoveryProgressWide"} {
+		if !strings.Contains(styles, marker) {
+			t.Fatalf("manual-run layout is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{"Run recommendations", "Run subtitle scan", "Run AI enrichment", "Subtitles indexed", "Provider / model", "Last recommendations", "details.hidden=false"} {
+		if !strings.Contains(javascript, marker) {
+			t.Fatalf("manual-run detail UI is missing %q", marker)
 		}
 	}
 }

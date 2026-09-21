@@ -945,6 +945,13 @@ func TestStructuredReleaseWildcardAcceptsUniqueCommaSeparatedAlternatives(t *tes
 	if len(args) != 2 || args[0] != "ABC-%" || args[1] != "xyz-%" {
 		t.Fatalf("multi-wildcard args = %#v", args)
 	}
+	andClause, andArgs := releaseConditionGroupClause(SQLiteDialect{}, []releaseFilterCondition{{Field: "title", Value: "ABC-*, *special*", ValueLogic: "and", Wildcard: true}}, "and")
+	if strings.Count(andClause, "r.title LIKE") != 2 || !strings.Contains(andClause, " AND ") || strings.Contains(andClause, " OR ") {
+		t.Fatalf("AND multi-wildcard clause = %q, want two AND values", andClause)
+	}
+	if len(andArgs) != 2 {
+		t.Fatalf("AND multi-wildcard args = %#v", andArgs)
+	}
 	inverted, invertedArgs := releaseConditionGroupClause(SQLiteDialect{}, []releaseFilterCondition{{Field: "title", Value: "ABC-*, xyz-*", Wildcard: true, Invert: true}}, "and")
 	if !strings.Contains(inverted, "NOT (") || len(invertedArgs) != 2 {
 		t.Fatalf("inverted multi-wildcard = %q %#v", inverted, invertedArgs)
@@ -1117,10 +1124,46 @@ func TestReleaseGenericSearchSupportsCommaSeparatedWildcards(t *testing.T) {
 		t.Fatalf("question-mark wildcard search returned %+v: %v", rows, err)
 	}
 
+	rows, err = s.Releases(ctx, domain.ReleaseFilter{Search: "beta-*, *sunrise", SearchWildcards: true, WildcardLogic: "and", Limit: 10})
+	if err != nil || len(rows) != 1 || rows[0].VideoID != "BETA-205" {
+		t.Fatalf("AND wildcard search returned %+v: %v", rows, err)
+	}
+	rows, err = s.Releases(ctx, domain.ReleaseFilter{Search: "alpha-*, *sunrise", SearchWildcards: true, WildcardLogic: "and", Limit: 10})
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("AND wildcard search matched values split across releases: %+v: %v", rows, err)
+	}
+
 	// Non-UI callers retain literal substring behavior, including commas.
 	rows, err = s.Releases(ctx, domain.ReleaseFilter{Search: "Foo, Bar", Limit: 10})
 	if err != nil || len(rows) != 1 || rows[0].VideoID != "COMMA-1" {
 		t.Fatalf("literal programmatic search returned %+v: %v", rows, err)
+	}
+}
+
+func TestReleaseFilterExcludeTagsAppliesBeforeCountAndPaging(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "exclude-tags-before-paging.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, _ := s.SaveSite(ctx, domain.Site{Title: "Discovery source", Type: "Site", Name: "Discovery source", Enabled: true})
+	for _, release := range []domain.Release{
+		{SiteID: site.ID, VideoID: "EXCLUDED-1", Title: "Excluded", Genres: []string{"Fighters"}},
+		{SiteID: site.ID, VideoID: "VISIBLE-1", Title: "Visible", Genres: []string{"Drama"}},
+	} {
+		if _, err := s.UpsertRelease(ctx, release); err != nil {
+			t.Fatal(err)
+		}
+	}
+	filter := domain.ReleaseFilter{ExcludeTags: []string{"fighters"}, Sort: "added", Direction: "asc", Limit: 1}
+	rows, err := s.Releases(ctx, filter)
+	if err != nil || len(rows) != 1 || rows[0].VideoID != "VISIBLE-1" {
+		t.Fatalf("excluded tag page = %+v, err=%v", rows, err)
+	}
+	count, err := s.ReleasesCount(ctx, filter)
+	if err != nil || count != 1 {
+		t.Fatalf("excluded tag count = %d, err=%v", count, err)
 	}
 }
 
@@ -1488,6 +1531,14 @@ func TestReleaseFiltersReverseActressNameStructuredSearchAndWatchlist(t *testing
 	rows, err = s.Releases(ctx, domain.ReleaseFilter{Category: "Studio", Entries: `["does-not-match*","video gr?up"]`, Limit: 10})
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("multiple wildcard studio alternatives: rows=%d err=%v", len(rows), err)
+	}
+	rows, err = s.Releases(ctx, domain.ReleaseFilter{Category: "Studio", Entries: `["video*","*group"]`, WildcardLogic: "and", Limit: 10})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("AND wildcard studio values: rows=%d err=%v", len(rows), err)
+	}
+	rows, err = s.Releases(ctx, domain.ReleaseFilter{Category: "Studio", Entries: `["video*","missing"]`, WildcardLogic: "and", Limit: 10})
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("AND wildcard studio accepted missing value: rows=%d err=%v", len(rows), err)
 	}
 	rows, err = s.Releases(ctx, domain.ReleaseFilter{Category: "Actress", Entries: `[]`, Limit: 10})
 	if err != nil || len(rows) != 1 {

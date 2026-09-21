@@ -1114,12 +1114,13 @@ const releaseFrom = ` FROM releases r JOIN sites s ON s.id=r.site_id`
 // that the original text-only fields (title/tag/actress/description) and
 // the newer text fields (studio/label) have no use for.
 type releaseFilterCondition struct {
-	Field    string `json:"field"`
-	Value    string `json:"value"`
-	Op       string `json:"op"`
-	Exact    bool   `json:"exact"`
-	Wildcard bool   `json:"wildcard"`
-	Invert   bool   `json:"invert"`
+	Field      string `json:"field"`
+	Value      string `json:"value"`
+	ValueLogic string `json:"value_logic"`
+	Op         string `json:"op"`
+	Exact      bool   `json:"exact"`
+	Wildcard   bool   `json:"wildcard"`
+	Invert     bool   `json:"invert"`
 }
 
 // releaseFilterConditionGroup is one AND/OR group of conditions (TODO-2.0
@@ -1220,7 +1221,11 @@ func releaseConditionGroupClause(d Dialect, conditions []releaseFilterCondition,
 					alternative.Invert = false
 					alternatives = append(alternatives, alternative)
 				}
-				clause, args := releaseConditionGroupClause(d, alternatives, "or")
+				valueLogic := "or"
+				if strings.EqualFold(condition.ValueLogic, "and") {
+					valueLogic = "and"
+				}
+				clause, args := releaseConditionGroupClause(d, alternatives, valueLogic)
 				if clause != "" {
 					if condition.Invert {
 						clause = "NOT " + clause
@@ -1423,7 +1428,11 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 			termClauses = append(termClauses, clause+`)`)
 		}
 		if len(termClauses) > 0 {
-			q += ` AND (` + strings.Join(termClauses, ` OR `) + `)`
+			logic := ` OR `
+			if strings.EqualFold(f.WildcardLogic, "and") {
+				logic = ` AND `
+			}
+			q += ` AND (` + strings.Join(termClauses, logic) + `)`
 		}
 	}
 	if f.PoolSearch != "" {
@@ -1523,7 +1532,11 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 				}
 			}
 			if len(filterParts) > 0 {
-				q += ` AND (` + strings.Join(filterParts, ` OR `) + `)`
+				logic := ` OR `
+				if strings.EqualFold(f.WildcardLogic, "and") {
+					logic = ` AND `
+				}
+				q += ` AND (` + strings.Join(filterParts, logic) + `)`
 				a = append(a, filterArgs...)
 			}
 		}
@@ -1556,6 +1569,14 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 			a = append(a, tag)
 		}
 		q += ` AND NOT EXISTS (SELECT 1 FROM release_tags t WHERE t.release_id=r.id AND t.name_normalized IN (` + strings.Join(placeholders, ",") + `))`
+	}
+	if len(f.ExcludeTags) > 0 {
+		placeholders := make([]string, len(f.ExcludeTags))
+		for i, tag := range f.ExcludeTags {
+			placeholders[i] = "LOWER(?)"
+			a = append(a, tag)
+		}
+		q += ` AND NOT EXISTS (SELECT 1 FROM release_tags excluded_tag WHERE excluded_tag.release_id=r.id AND excluded_tag.name_normalized IN (` + strings.Join(placeholders, ",") + `))`
 	}
 	if !f.UsePreferred && len(f.IgnoreTitles) > 0 {
 		titleParts := make([]string, len(f.IgnoreTitles))

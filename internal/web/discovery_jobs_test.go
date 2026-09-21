@@ -42,6 +42,24 @@ func TestDiscoveryNextRunsDisabledHasNoForecast(t *testing.T) {
 	}
 }
 
+func TestDiscoveryJobSnapshotKeepsCompletedRunTiming(t *testing.T) {
+	discoveryJobs.Lock()
+	previous := discoveryJobs.status
+	started := time.Now().UTC().Add(-10 * time.Second)
+	discoveryJobs.status = discoveryJobStatus{Stage: "Synchronized", StartedAt: started, FinishedAt: started.Add(10 * time.Second), Completed: 50, Total: 50}
+	discoveryJobs.Unlock()
+	t.Cleanup(func() {
+		discoveryJobs.Lock()
+		discoveryJobs.status = previous
+		discoveryJobs.Unlock()
+	})
+
+	status := discoveryJobSnapshot(map[string]string{})
+	if status.ElapsedSeconds != 10 || status.ItemsPerSecond != 5 {
+		t.Fatalf("completed timing = %.2fs at %.2f items/s, want 10s at 5 items/s", status.ElapsedSeconds, status.ItemsPerSecond)
+	}
+}
+
 func cloneStringMap(source map[string]string) map[string]string {
 	clone := make(map[string]string, len(source))
 	for key, value := range source {

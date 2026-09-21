@@ -148,6 +148,13 @@ func TestStashMissingWildcardAcceptsUniqueCommaSeparatedAlternatives(t *testing.
 	if len(args) != 4 || args[0] != "%/one/%" || args[2] != "%/two/%" {
 		t.Fatalf("multi-wildcard args = %#v", args)
 	}
+	andClause, andArgs := stashMissingConditionGroupClause(SQLiteDialect{}, []stashMissingFilterCondition{{Field: "path", Value: "*/one/*, *movie*", ValueLogic: "and", Wildcard: true}}, "and")
+	if strings.Count(andClause, "m.path LIKE") != 2 || !strings.Contains(andClause, ") AND (") {
+		t.Fatalf("AND multi-wildcard clause = %q, want two AND values", andClause)
+	}
+	if len(andArgs) != 4 {
+		t.Fatalf("AND multi-wildcard args = %#v", andArgs)
+	}
 }
 
 func TestStashMissingScenesEffectiveStatusReflectsLinkedReleaseDownloads(t *testing.T) {
