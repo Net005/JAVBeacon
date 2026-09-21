@@ -2631,7 +2631,7 @@ func TestWildcardSearchFieldsStayCompactAndExposeLogic(t *testing.T) {
 		".notificationToolbar>.check{flex:0 0 auto;min-width:64px;min-height:42px",
 		"@media(min-width:2000px){.releaseFiltersBody>.toolbar,.notificationToolbar{align-items:center;flex-wrap:nowrap}",
 		".wildcardLogic{flex:0 0 68px!important;width:68px!important",
-		".wildcardLogicToggle{display:grid;flex:0 0 42px!important",
+		".wildcardLogicToggle{display:grid;flex:0 0 40px!important",
 		".genericWildcardBadges button span{max-width:min(420px,60vw)}",
 	} {
 		if !strings.Contains(styles, marker) {
