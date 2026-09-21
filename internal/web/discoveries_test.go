@@ -107,6 +107,34 @@ func TestSubtitleScanReportsLiveFoundCount(t *testing.T) {
 	}
 }
 
+// TestSubtitleScanCountsMissingFilePathSeparatelyFromUnreadableDirectories
+// guards the diagnostic distinction added for the "why is subtitles indexed
+// stuck at 0" report: a release with no recorded Stash file path at all
+// (never matched/synced yet) must be counted separately from a directory
+// that exists but can't be read (a real permission/mount problem), since
+// the two point to completely different fixes.
+func TestSubtitleScanCountsMissingFilePathSeparatelyFromUnreadableDirectories(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "abc-1.en.srt"), []byte("subtitle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	releases := []domain.Release{
+		{ID: 1, StashFilePath: filepath.Join(dir, "ABC-1.mp4")},
+		{ID: 2, StashFilePath: ""},
+		{ID: 3, StashFilePath: filepath.Join(dir, "unreadable-dir", "ABC-3.mp4")},
+	}
+	availability, stats := scanSubtitleAvailability(releases, nil)
+	if !availability[1] || availability[2] || availability[3] {
+		t.Fatalf("unexpected availability: %v", availability)
+	}
+	if stats.MissingFilePath != 1 {
+		t.Fatalf("expected 1 release with a missing file path, got %d", stats.MissingFilePath)
+	}
+	if stats.UnreadableDirectories != 1 {
+		t.Fatalf("expected 1 unreadable directory, got %d", stats.UnreadableDirectories)
+	}
+}
+
 func TestSubtitleExcerptRemovesNoiseDuplicatesAndPreservesUTF8(t *testing.T) {
 	dir := t.TempDir()
 	video := filepath.Join(dir, "UTF-001.mp4")
@@ -341,6 +369,34 @@ func TestApplyOpenAIRanksRetainsGeneratedTextForFiltering(t *testing.T) {
 	}
 }
 
+// TestApplyOpenAIRanksDistinguishesSubtitleUsedFromAvailable guards the
+// "subtitle used in analysis" signal: a release can have HasSubtitle=true
+// (a subtitle file exists) while discoveryAIBatches' shared per-batch
+// character budget left no room for its excerpt, so the AI never actually
+// saw it. The UI must be able to tell the two states apart instead of
+// treating file existence as proof the AI used it.
+func TestApplyOpenAIRanksDistinguishesSubtitleUsedFromAvailable(t *testing.T) {
+	items := []discoveryItem{
+		{Release: domain.Release{ID: 1}, HasSubtitle: true},
+		{Release: domain.Release{ID: 2}, HasSubtitle: true},
+	}
+	ranks := []openAIRank{
+		{ID: 1, Score: 80, Reason: "Used subtitle dialogue", SubtitleUsed: true},
+		{ID: 2, Score: 60, Reason: "Budget exhausted before this release", SubtitleUsed: false},
+	}
+	result := applyOpenAIRanks(items, ranks)
+	byID := map[int64]discoveryItem{}
+	for _, item := range result {
+		byID[item.ID] = item
+	}
+	if !byID[1].HasSubtitle || !byID[1].SubtitleUsed {
+		t.Fatalf("release 1 should show both available and used: %#v", byID[1])
+	}
+	if !byID[2].HasSubtitle || byID[2].SubtitleUsed {
+		t.Fatalf("release 2 has a subtitle file but the AI never saw it: %#v", byID[2])
+	}
+}
+
 type recordingAIRankSaver struct{ saved []domain.DiscoveryAIRank }
 
 func (s *recordingAIRankSaver) SaveDiscoveryAIRanks(_ context.Context, ranks []domain.DiscoveryAIRank) error {
@@ -418,6 +474,80 @@ func TestExistingInvalidAIRankingRepairAgainstSQLite(t *testing.T) {
 	remaining, err := st.AllDiscoveryAIRanks(ctx)
 	if err != nil || len(remaining) != 1 || remaining[0].ReleaseID != goodID {
 		t.Fatalf("valid/invalid repair result: %#v err=%v", remaining, err)
+	}
+}
+
+// TestDiscoveryAIRankSubtitleUsedPersistsAcrossReload guards the durable
+// storage side of the "subtitle used" signal: it must survive a save/reload
+// round trip through the real SQLite store, not just an in-memory struct,
+// since discoveries.go relies on DiscoveryAIRanks/AllDiscoveryAIRanks to
+// rehydrate it on every page load and by the repair job.
+func TestDiscoveryAIRankSubtitleUsedPersistsAcrossReload(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "subtitle-used.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Subtitle Used", Name: "Subtitle Used", Type: "Site", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, release := range []domain.Release{{SiteID: site.ID, VideoID: "USED-001", Title: "Used"}, {SiteID: site.ID, VideoID: "SKIP-001", Title: "Skipped"}} {
+		if _, err := st.UpsertRelease(ctx, release); err != nil {
+			t.Fatal(err)
+		}
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Limit: 10, ShowNonPreferred: true})
+	if err != nil || len(releases) != 2 {
+		t.Fatalf("load releases: %v count=%d", err, len(releases))
+	}
+	var usedID, skippedID int64
+	for _, release := range releases {
+		if release.VideoID == "USED-001" {
+			usedID = release.ID
+		} else {
+			skippedID = release.ID
+		}
+	}
+	if err := st.SaveDiscoveryAIRanks(ctx, []domain.DiscoveryAIRank{
+		{ReleaseID: usedID, Fingerprint: "u1", Score: 90, Reason: "Match: subtitle dialogue supports this recommendation.", SubtitleUsed: true},
+		{ReleaseID: skippedID, Fingerprint: "s1", Score: 70, Reason: "Match: title and metadata support this recommendation.", SubtitleUsed: false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	byID, err := st.DiscoveryAIRanks(ctx, []int64{usedID, skippedID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !byID[usedID].SubtitleUsed {
+		t.Fatalf("subtitle_used=true did not round-trip: %#v", byID[usedID])
+	}
+	if byID[skippedID].SubtitleUsed {
+		t.Fatalf("subtitle_used=false was incorrectly persisted as true: %#v", byID[skippedID])
+	}
+	all, err := st.AllDiscoveryAIRanks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allByID := map[int64]domain.DiscoveryAIRank{}
+	for _, rank := range all {
+		allByID[rank.ReleaseID] = rank
+	}
+	if !allByID[usedID].SubtitleUsed || allByID[skippedID].SubtitleUsed {
+		t.Fatalf("AllDiscoveryAIRanks did not preserve subtitle_used: %#v", allByID)
+	}
+	// A later save that flips the flag on the same release must overwrite it,
+	// not merely add a second row (release_id is the primary key).
+	if err := st.SaveDiscoveryAIRanks(ctx, []domain.DiscoveryAIRank{{ReleaseID: usedID, Fingerprint: "u2", Score: 91, Reason: "Match: refreshed without subtitle dialogue.", SubtitleUsed: false}}); err != nil {
+		t.Fatal(err)
+	}
+	byID, err = st.DiscoveryAIRanks(ctx, []int64{usedID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byID[usedID].SubtitleUsed {
+		t.Fatalf("subtitle_used was not overwritten on update: %#v", byID[usedID])
 	}
 }
 

@@ -337,6 +337,7 @@ CREATE TABLE IF NOT EXISTS discovery_ai_ranks (
  score DOUBLE PRECISION NOT NULL DEFAULT 0,
  reason TEXT NOT NULL DEFAULT '',
  pools TEXT NOT NULL DEFAULT '[]',
+ subtitle_used INTEGER NOT NULL DEFAULT 0,
  generated_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_discovery_ai_ranks_fingerprint ON discovery_ai_ranks(fingerprint);
@@ -593,6 +594,7 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS scheduled INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE job_history ADD COLUMN IF NOT EXISTS site_count INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE stash_missing_scenes ADD COLUMN IF NOT EXISTS last_o_count_at TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE discovery_ai_ranks ADD COLUMN IF NOT EXISTS subtitle_used INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err

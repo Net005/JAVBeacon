@@ -208,7 +208,7 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_logs_download ON pipeline_logs(download_
 CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY, release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE, type TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL, UNIQUE(release_id,type));
 CREATE TABLE IF NOT EXISTS discovery_scores (release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE, score REAL NOT NULL DEFAULT 0, updated_at DATETIME NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_discovery_scores_score ON discovery_scores(score DESC,release_id DESC);
-CREATE TABLE IF NOT EXISTS discovery_ai_ranks (release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE, fingerprint TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', score REAL NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '', pools TEXT NOT NULL DEFAULT '[]', generated_at DATETIME NOT NULL);
+CREATE TABLE IF NOT EXISTS discovery_ai_ranks (release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE, fingerprint TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', score REAL NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '', pools TEXT NOT NULL DEFAULT '[]', subtitle_used INTEGER NOT NULL DEFAULT 0, generated_at DATETIME NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_discovery_ai_ranks_fingerprint ON discovery_ai_ranks(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_notifications_release_created ON notifications(release_id,created_at DESC);
 CREATE TABLE IF NOT EXISTS watchlist_sync (release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE, stash_scene_id TEXT NOT NULL, tag_id TEXT NOT NULL, synced_at DATETIME NOT NULL, result TEXT NOT NULL DEFAULT '');`)
@@ -302,6 +302,7 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 			`ALTER TABLE downloads ADD COLUMN bytes_downloaded INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE downloads ADD COLUMN bytes_per_second INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE downloads ADD COLUMN priority INTEGER NOT NULL DEFAULT 50`,
+			`ALTER TABLE discovery_ai_ranks ADD COLUMN subtitle_used INTEGER NOT NULL DEFAULT 0`,
 		} {
 			if _, alterErr := s.db.Exec(statement); alterErr != nil && !strings.Contains(strings.ToLower(alterErr.Error()), "duplicate column") {
 				return alterErr
@@ -3893,7 +3894,7 @@ func (s *SQLite) DiscoveryAIRanks(ctx context.Context, releaseIDs []int64) (map[
 	for i, id := range releaseIDs {
 		placeholders[i], args[i] = "?", id
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT release_id,fingerprint,model,score,reason,pools,generated_at FROM discovery_ai_ranks WHERE release_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT release_id,fingerprint,model,score,reason,pools,subtitle_used,generated_at FROM discovery_ai_ranks WHERE release_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -3901,7 +3902,7 @@ func (s *SQLite) DiscoveryAIRanks(ctx context.Context, releaseIDs []int64) (map[
 	for rows.Next() {
 		var rank domain.DiscoveryAIRank
 		var pools string
-		if err := rows.Scan(&rank.ReleaseID, &rank.Fingerprint, &rank.Model, &rank.Score, &rank.Reason, &pools, &rank.GeneratedAt); err != nil {
+		if err := rows.Scan(&rank.ReleaseID, &rank.Fingerprint, &rank.Model, &rank.Score, &rank.Reason, &pools, &rank.SubtitleUsed, &rank.GeneratedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(pools), &rank.Pools)
@@ -3911,7 +3912,7 @@ func (s *SQLite) DiscoveryAIRanks(ctx context.Context, releaseIDs []int64) (map[
 }
 
 func (s *SQLite) AllDiscoveryAIRanks(ctx context.Context) ([]domain.DiscoveryAIRank, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT release_id,fingerprint,model,score,reason,pools,generated_at FROM discovery_ai_ranks ORDER BY release_id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT release_id,fingerprint,model,score,reason,pools,subtitle_used,generated_at FROM discovery_ai_ranks ORDER BY release_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -3920,7 +3921,7 @@ func (s *SQLite) AllDiscoveryAIRanks(ctx context.Context) ([]domain.DiscoveryAIR
 	for rows.Next() {
 		var rank domain.DiscoveryAIRank
 		var pools string
-		if err := rows.Scan(&rank.ReleaseID, &rank.Fingerprint, &rank.Model, &rank.Score, &rank.Reason, &pools, &rank.GeneratedAt); err != nil {
+		if err := rows.Scan(&rank.ReleaseID, &rank.Fingerprint, &rank.Model, &rank.Score, &rank.Reason, &pools, &rank.SubtitleUsed, &rank.GeneratedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(pools), &rank.Pools); err != nil {
@@ -3949,7 +3950,7 @@ func (s *SQLite) SaveDiscoveryAIRanks(ctx context.Context, ranks []domain.Discov
 		if generatedAt.IsZero() {
 			generatedAt = time.Now().UTC()
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO discovery_ai_ranks(release_id,fingerprint,model,score,reason,pools,generated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(release_id) DO UPDATE SET fingerprint=excluded.fingerprint,model=excluded.model,score=excluded.score,reason=excluded.reason,pools=excluded.pools,generated_at=excluded.generated_at`, rank.ReleaseID, rank.Fingerprint, rank.Model, rank.Score, rank.Reason, string(pools), generatedAt); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO discovery_ai_ranks(release_id,fingerprint,model,score,reason,pools,subtitle_used,generated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(release_id) DO UPDATE SET fingerprint=excluded.fingerprint,model=excluded.model,score=excluded.score,reason=excluded.reason,pools=excluded.pools,subtitle_used=excluded.subtitle_used,generated_at=excluded.generated_at`, rank.ReleaseID, rank.Fingerprint, rank.Model, rank.Score, rank.Reason, string(pools), rank.SubtitleUsed, generatedAt); err != nil {
 			return err
 		}
 	}

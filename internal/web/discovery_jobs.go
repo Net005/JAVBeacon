@@ -31,31 +31,40 @@ type discoveryJobStatus struct {
 	SubtitleCount   int       `json:"subtitle_count"`
 	Error           string    `json:"error,omitempty"`
 	SubtitleLastRun time.Time `json:"subtitle_last_run_at,omitempty"`
-	OpenAILastRun   time.Time `json:"openai_last_run_at,omitempty"`
-	OpenAIRunning   bool      `json:"openai_running"`
-	OpenAICompleted int       `json:"openai_completed"`
-	OpenAITotal     int       `json:"openai_total"`
-	OpenAIBatch     int       `json:"openai_batch"`
-	OpenAIBatches   int       `json:"openai_batches"`
-	OpenAICurrent   int       `json:"openai_current"`
-	OpenAIError     string    `json:"openai_error,omitempty"`
-	CurrentItem     string    `json:"current_item,omitempty"`
-	ElapsedSeconds  float64   `json:"elapsed_seconds"`
-	ItemsPerSecond  float64   `json:"items_per_second"`
-	ETASeconds      float64   `json:"eta_seconds"`
-	OpenAIStartedAt time.Time `json:"openai_started_at,omitempty"`
-	OpenAIBatchAt   time.Time `json:"openai_batch_started_at,omitempty"`
-	OpenAIItems     []string  `json:"openai_current_items,omitempty"`
-	OpenAIElapsed   float64   `json:"openai_elapsed_seconds"`
-	OpenAIBatchTime float64   `json:"openai_batch_elapsed_seconds"`
-	OpenAILastBatch float64   `json:"openai_last_batch_seconds"`
-	OpenAIRate      float64   `json:"openai_items_per_second"`
-	OpenAIETA       float64   `json:"openai_eta_seconds"`
-	AIProvider      string    `json:"ai_provider,omitempty"`
-	AIModel         string    `json:"ai_model,omitempty"`
-	AIInputTokens   int64     `json:"ai_input_tokens"`
-	AIOutputTokens  int64     `json:"ai_output_tokens"`
-	AICostUSD       float64   `json:"ai_estimated_cost_usd"`
+	// SubtitleScanned/SubtitleUnreadableDirs/SubtitleMissingPath describe the
+	// most recently completed subtitle availability scan. Unlike
+	// Total/Completed (which later job stages reuse and overwrite), these
+	// persist until the next subtitle scan runs, so the Settings page can
+	// always show what the last scan actually found - most importantly,
+	// whether "0 subtitles" means none exist or the scan couldn't read them.
+	SubtitleScanned        int       `json:"subtitle_scanned"`
+	SubtitleUnreadableDirs int       `json:"subtitle_unreadable_directories"`
+	SubtitleMissingPath    int       `json:"subtitle_missing_file_path"`
+	OpenAILastRun          time.Time `json:"openai_last_run_at,omitempty"`
+	OpenAIRunning          bool      `json:"openai_running"`
+	OpenAICompleted        int       `json:"openai_completed"`
+	OpenAITotal            int       `json:"openai_total"`
+	OpenAIBatch            int       `json:"openai_batch"`
+	OpenAIBatches          int       `json:"openai_batches"`
+	OpenAICurrent          int       `json:"openai_current"`
+	OpenAIError            string    `json:"openai_error,omitempty"`
+	CurrentItem            string    `json:"current_item,omitempty"`
+	ElapsedSeconds         float64   `json:"elapsed_seconds"`
+	ItemsPerSecond         float64   `json:"items_per_second"`
+	ETASeconds             float64   `json:"eta_seconds"`
+	OpenAIStartedAt        time.Time `json:"openai_started_at,omitempty"`
+	OpenAIBatchAt          time.Time `json:"openai_batch_started_at,omitempty"`
+	OpenAIItems            []string  `json:"openai_current_items,omitempty"`
+	OpenAIElapsed          float64   `json:"openai_elapsed_seconds"`
+	OpenAIBatchTime        float64   `json:"openai_batch_elapsed_seconds"`
+	OpenAILastBatch        float64   `json:"openai_last_batch_seconds"`
+	OpenAIRate             float64   `json:"openai_items_per_second"`
+	OpenAIETA              float64   `json:"openai_eta_seconds"`
+	AIProvider             string    `json:"ai_provider,omitempty"`
+	AIModel                string    `json:"ai_model,omitempty"`
+	AIInputTokens          int64     `json:"ai_input_tokens"`
+	AIOutputTokens         int64     `json:"ai_output_tokens"`
+	AICostUSD              float64   `json:"ai_estimated_cost_usd"`
 }
 
 var discoveryJobs = struct {
@@ -289,8 +298,18 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 				discoveryJobs.status.SubtitleCount = found
 				discoveryJobs.Unlock()
 			})
-			if subtitleStats.UnreadableDirectories > 0 && log != nil {
-				log.Warn("Discovery subtitle scan could not read media directories", "unreadable", subtitleStats.UnreadableDirectories, "directories", subtitleStats.Directories)
+			discoveryJobs.Lock()
+			discoveryJobs.status.SubtitleScanned = len(releases)
+			discoveryJobs.status.SubtitleUnreadableDirs = subtitleStats.UnreadableDirectories
+			discoveryJobs.status.SubtitleMissingPath = subtitleStats.MissingFilePath
+			discoveryJobs.Unlock()
+			if log != nil {
+				if subtitleStats.UnreadableDirectories > 0 {
+					log.Warn("Discovery subtitle scan could not read media directories", "unreadable", subtitleStats.UnreadableDirectories, "directories", subtitleStats.Directories)
+				}
+				if subtitleStats.MissingFilePath > 0 {
+					log.Warn("Discovery subtitle scan skipped releases with no recorded file path", "missing_file_path", subtitleStats.MissingFilePath, "scanned", len(releases))
+				}
 			}
 			if fullRefresh {
 				availability = changedAvailability

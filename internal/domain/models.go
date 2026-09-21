@@ -374,7 +374,14 @@ type DiscoveryAIRank struct {
 	Score       float64
 	Reason      string
 	Pools       []string
-	GeneratedAt time.Time
+	// SubtitleUsed records whether subtitle dialogue text was actually part of
+	// the prompt payload sent to the AI provider for this release, as opposed
+	// to a subtitle file merely existing on disk. Per-batch character-budget
+	// rationing in discoveryAIBatches can leave this false even when a
+	// release has a subtitle file, so it must not be inferred from
+	// availability alone.
+	SubtitleUsed bool
+	GeneratedAt  time.Time
 }
 
 type NotificationPage struct {

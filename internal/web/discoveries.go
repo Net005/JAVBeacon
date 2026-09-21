@@ -34,6 +34,12 @@ type discoveryItem struct {
 	HasSubtitle bool     `json:"has_subtitle"`
 	AIEnhanced  bool     `json:"ai_enhanced"`
 	AIText      string   `json:"ai_text,omitempty"`
+	// SubtitleUsed is true only when subtitle dialogue text actually made it
+	// into the AI prompt payload for this release, unlike HasSubtitle which
+	// only means a sidecar subtitle file exists. discoveryAIBatches rations a
+	// shared character budget across a batch, so an eligible release can
+	// still receive no subtitle excerpt at all if the budget ran out first.
+	SubtitleUsed bool `json:"subtitle_used"`
 }
 
 type affinityProfile struct {
@@ -107,6 +113,10 @@ type openAIRank struct {
 	Score  float64  `json:"score"`
 	Reason string   `json:"reason"`
 	Pools  []string `json:"pools"`
+	// SubtitleUsed mirrors domain.DiscoveryAIRank.SubtitleUsed: whether
+	// subtitle dialogue text was actually part of the payload sent to the AI
+	// for this release, not merely whether a subtitle file exists.
+	SubtitleUsed bool `json:"subtitle_used"`
 }
 
 type discoveryAICandidate struct {
@@ -352,6 +362,7 @@ func applyOpenAIRanks(items []discoveryItem, ranks []openAIRank) []discoveryItem
 	for i := range items {
 		if rank, ok := byID[items[i].ID]; ok {
 			items[i].AIEnhanced = true
+			items[i].SubtitleUsed = rank.SubtitleUsed
 			items[i].AIText = strings.TrimSpace(rank.Reason)
 			items[i].Score = math.Round((items[i].Score*.35+rank.Score*.65)*10) / 10
 			items[i].Pools = append(items[i].Pools, rank.Pools...)
@@ -551,7 +562,7 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 	if err == nil {
 		for _, id := range releaseIDs {
 			if rank, ok := stored[id]; ok && rank.Fingerprint == fingerprints[id] && aidiscovery.ValidateStoredRank(rank, pools) == nil {
-				persisted = append(persisted, openAIRank{ID: id, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools})
+				persisted = append(persisted, openAIRank{ID: id, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools, SubtitleUsed: rank.SubtitleUsed})
 			}
 		}
 	}
@@ -662,14 +673,22 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 				discoveryAIStatus.Unlock()
 				return
 			}
+			// The batch's own candidates are the ground truth for whether a
+			// subtitle excerpt actually reached the AI payload - HasSubtitle
+			// only means a file exists, but the shared per-batch character
+			// budget in discoveryAIBatches can leave Subtitle empty anyway.
+			subtitleUsedByID := make(map[int64]bool, len(batch))
+			for _, candidate := range batch {
+				subtitleUsedByID[candidate.ID] = candidate.Subtitle != ""
+			}
 			ranks := make([]openAIRank, 0, len(result.Ranks))
 			for _, rank := range result.Ranks {
-				ranks = append(ranks, openAIRank{ID: rank.ID, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools})
+				ranks = append(ranks, openAIRank{ID: rank.ID, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools, SubtitleUsed: subtitleUsedByID[rank.ID]})
 			}
 			now := time.Now().UTC()
 			durable := make([]domain.DiscoveryAIRank, 0, len(ranks))
 			for _, rank := range ranks {
-				durable = append(durable, domain.DiscoveryAIRank{ReleaseID: rank.ID, Fingerprint: fingerprints[rank.ID], Model: result.Provider + ":" + resultModel, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools, GeneratedAt: now})
+				durable = append(durable, domain.DiscoveryAIRank{ReleaseID: rank.ID, Fingerprint: fingerprints[rank.ID], Model: result.Provider + ":" + resultModel, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools, SubtitleUsed: rank.SubtitleUsed, GeneratedAt: now})
 			}
 			if err := saveValidatedDiscoveryAIRanks(context.Background(), s.store, durable, pools); err != nil {
 				discoveryAIStatus.Lock()
@@ -941,6 +960,14 @@ func subtitleAvailability(releases []domain.Release) map[int64]bool {
 type subtitleScanStats struct {
 	Directories           int
 	UnreadableDirectories int
+	// MissingFilePath counts releases skipped without ever attempting a
+	// directory read because Stash has not recorded a file path for them
+	// yet (not matched to a local scene, or the sync hasn't populated it).
+	// This is the dominant, otherwise-silent reason a fresh library shows
+	// zero subtitles: distinguishing it from UnreadableDirectories (a real
+	// permission/mount problem) is what makes the "why is this zero"
+	// question answerable from the UI instead of guesswork.
+	MissingFilePath int
 }
 
 func subtitleSidecarMatches(videoBase, name string) bool {
@@ -966,6 +993,7 @@ func scanSubtitleAvailability(releases []domain.Release, progress func(completed
 	for index, release := range releases {
 		path := strings.TrimSpace(release.StashFilePath)
 		if path == "" {
+			stats.MissingFilePath++
 			if progress != nil && (index%25 == 0 || index == len(releases)-1) {
 				progress(index+1, len(out))
 			}
