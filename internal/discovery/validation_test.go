@@ -99,6 +99,31 @@ func TestQwenGroundedRecommendationAccepted(t *testing.T) {
 	}
 }
 
+// TestGroundedSubtitleMentionNotTreatedAsQualityComplaint guards against a
+// real false-positive rejection observed with small local models such as
+// qwen3:8b-q4_K_M, which frequently echo the prompt's own vocabulary
+// ("subtitle text"/"subtitle lines") when legitimately citing subtitle
+// evidence, rather than complaining about its quality. Only an actual
+// quality complaint (corrupt/incoherent/random/unrelated/incomplete)
+// should trip the conversational-reason rejection.
+func TestGroundedSubtitleMentionNotTreatedAsQualityComplaint(t *testing.T) {
+	candidate := Candidate{ID: 7, Title: "Office drama", Story: "A workplace romance.", Subtitle: "A meaningful supplied line", SubtitleAvailable: true}
+	for _, reason := range []string{
+		"Match: Its subtitle text describes a workplace romance that aligns with the story, giving this release clear thematic relevance.",
+		"Match: The subtitle lines reinforce the story's workplace romance theme, supporting a strong recommendation here.",
+	} {
+		rank := Rank{ID: 7, Score: 78, Reason: reason}
+		if err := validateRanks([]Rank{rank}, []Candidate{candidate}, ""); err != nil {
+			t.Fatalf("legitimate subtitle-grounded reason rejected (%q): %v", reason, err)
+		}
+	}
+	// An actual quality complaint about subtitles must still be rejected.
+	complaint := Rank{ID: 7, Score: 40, Reason: "Match: The subtitle text is incoherent and contains random phrases, but the story theme is a relevant match."}
+	if err := validateRanks([]Rank{complaint}, []Candidate{candidate}, ""); err == nil {
+		t.Fatal("subtitle quality complaint was accepted")
+	}
+}
+
 func TestUngroundedHistoricalAndPreferenceClaimsRejected(t *testing.T) {
 	candidate := Candidate{ID: 7, Title: "Supplied title", Studio: "S1", Actresses: []string{"A"}, Genres: []string{"Sci-Fi"}}
 	for _, reason := range []string{

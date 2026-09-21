@@ -61,9 +61,17 @@ func conversationalReason(reason string) bool {
 			}
 		}
 	}
-	// Reject long generic subtitle-quality commentary even if it avoids the
-	// common assistant phrases above. Valid reasons describe match/relevance.
-	qualityTerms := []string{"corrupt", "incoherent", "unrelated text", "random phrases", "incomplete data", "subtitle text", "subtitle lines"}
+	// Reject generic data-quality commentary even if it avoids the common
+	// assistant phrases above. Valid reasons describe match/relevance.
+	// "subtitle text"/"subtitle lines" were deliberately removed from this
+	// list: the prompt explicitly allows subtitle excerpts as supporting
+	// evidence, so a grounded reason that legitimately cites "subtitle
+	// text" or "subtitle lines" (a phrasing smaller/local models produce
+	// often, since it echoes the prompt's own vocabulary) must not be
+	// rejected just for using those words. An actual quality complaint
+	// about subtitles is still caught below via corrupt/incoherent/random
+	// phrases/unrelated text/incomplete data.
+	qualityTerms := []string{"corrupt", "incoherent", "unrelated text", "random phrases", "incomplete data"}
 	relevanceTerms := []string{"match", "preference", "preferred", "history", "rewatch", "performer", "studio", "genre", "tag", "pool", "story", "recommend", "affinity", "overlap", "signal", " fit", "similar"}
 	quality, relevance := false, false
 	for _, term := range qualityTerms {
