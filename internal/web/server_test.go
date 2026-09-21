@@ -492,7 +492,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 			t.Fatalf("iPad filter-toolbar styling is missing %q", marker)
 		}
 	}
-	for _, marker := range []string{`@media(min-width:1400px){`, `grid-template-columns:minmax(240px,2fr) 40px 115px minmax(180px,1.35fr)`, `.releaseFiltersBody>.toolbar>*{width:100%!important;max-width:none!important;min-width:0!important}`, `grid-template-columns:minmax(240px,2fr) 40px 72px 115px minmax(180px,1.35fr)`, `.notificationToolbar>*{width:100%!important;max-width:none!important;min-width:0!important}`, `@media(min-width:701px) and (max-width:1399px){`, `.releaseFiltersBody>.toolbar{flex-wrap:wrap!important;overflow:visible}`, `.notificationToolbar{flex-wrap:wrap!important;overflow:visible}`} {
+	for _, marker := range []string{`@media(min-width:1400px){`, `grid-template-columns:minmax(240px,2fr) 40px 115px minmax(180px,1.35fr)`, `.releaseFiltersBody>.toolbar>*{width:100%!important;max-width:none!important;min-width:0!important}`, `grid-template-columns:minmax(180px,1.5fr) 40px 60px 90px minmax(120px,1fr) 40px 40px minmax(110px,1fr) 40px 40px 40px 40px 40px minmax(120px,1fr) minmax(115px,1fr) 40px 40px`, `.notificationToolbar>*{width:100%!important;max-width:none!important;min-width:0!important}`, `.notificationToolbar>.genericWildcardField{overflow:hidden}`, `@media(min-width:701px) and (max-width:1399px){`, `.releaseFiltersBody>.toolbar{flex-wrap:wrap!important;overflow:visible}`, `.notificationToolbar{flex-wrap:wrap!important;overflow:visible}`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("Release Library or Notifications filter toolbar overlap protection is missing %q", marker)
 		}

@@ -7,6 +7,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.210] - 2026-09-21
+
+### Fixed
+
+- Release Library and Notifications filter controls no longer overlap on wide
+  or constrained desktop layouts. Wide screens use dedicated toolbar cells,
+  while narrower desktop widths wrap complete controls instead of shrinking
+  content beneath neighboring buttons.
+- The Notifications toolbar now reserves an explicit cell for every runtime
+  filter and toggle, and contains wildcard text within its own field.
+
 ## [1.0.209] - 2026-09-21
 
 ### Changed

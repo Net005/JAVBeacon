@@ -1734,9 +1734,11 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
   .releaseFiltersBody>.toolbar select{min-width:0;max-width:100%}
   .notificationToolbar{
     display:grid;
-    grid-template-columns:minmax(240px,2fr) 40px 72px 115px minmax(180px,1.35fr) 40px 40px minmax(125px,1fr) minmax(145px,1fr) minmax(140px,1fr) 40px 40px;
+    grid-template-columns:minmax(180px,1.5fr) 40px 60px 90px minmax(120px,1fr) 40px 40px minmax(110px,1fr) 40px 40px 40px 40px 40px minmax(120px,1fr) minmax(115px,1fr) 40px 40px;
     align-items:center;
-    overflow:visible;
+    overflow-x:auto;
+    overflow-y:hidden;
+    scrollbar-width:thin;
   }
   .notificationToolbar>*{width:100%!important;max-width:none!important;min-width:0!important}
   .notificationToolbar>.presetMenu,
@@ -1747,6 +1749,8 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
   .notificationToolbar>.check{width:72px!important;min-width:72px!important}
   .notificationToolbar input,
   .notificationToolbar select{min-width:0;max-width:100%}
+  .notificationToolbar>.search,
+  .notificationToolbar>.genericWildcardField{overflow:hidden}
 }
 @media(min-width:701px) and (max-width:1399px){
   .releaseFiltersBody>.toolbar{flex-wrap:wrap!important;overflow:visible}
