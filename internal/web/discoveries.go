@@ -938,14 +938,36 @@ func subtitleAvailability(releases []domain.Release) map[int64]bool {
 	return subtitleAvailabilityWithProgress(releases, nil)
 }
 
-func subtitleAvailabilityWithProgress(releases []domain.Release, progress func(int)) map[int64]bool {
+type subtitleScanStats struct {
+	Directories           int
+	UnreadableDirectories int
+}
+
+func subtitleSidecarMatches(videoBase, name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	if ext != ".srt" && ext != ".ass" && ext != ".ssa" && ext != ".vtt" {
+		return false
+	}
+	base := strings.ToLower(strings.TrimSpace(videoBase))
+	name = strings.ToLower(strings.TrimSpace(name))
+	if base == "" || !strings.HasPrefix(name, base) {
+		return false
+	}
+	// Require a sidecar boundary so ABC-12 does not claim ABC-123.en.srt.
+	remainder := strings.TrimPrefix(name, base)
+	return strings.HasPrefix(remainder, ".") || strings.HasPrefix(remainder, "-") || strings.HasPrefix(remainder, "_")
+}
+
+func scanSubtitleAvailability(releases []domain.Release, progress func(completed, found int)) (map[int64]bool, subtitleScanStats) {
 	directories := map[string][]os.DirEntry{}
+	directoryErrors := map[string]bool{}
 	out := make(map[int64]bool, len(releases))
+	stats := subtitleScanStats{}
 	for index, release := range releases {
 		path := strings.TrimSpace(release.StashFilePath)
 		if path == "" {
 			if progress != nil && (index%25 == 0 || index == len(releases)-1) {
-				progress(index + 1)
+				progress(index+1, len(out))
 			}
 			continue
 		}
@@ -953,22 +975,42 @@ func subtitleAvailabilityWithProgress(releases []domain.Release, progress func(i
 		directory := filepath.Dir(base)
 		entries, loaded := directories[directory]
 		if !loaded {
-			entries, _ = os.ReadDir(directory)
+			stats.Directories++
+			var err error
+			entries, err = os.ReadDir(directory)
+			if err != nil {
+				directoryErrors[directory] = true
+				stats.UnreadableDirectories++
+			}
 			directories[directory] = entries
+		}
+		if directoryErrors[directory] {
+			if progress != nil && (index%25 == 0 || index == len(releases)-1) {
+				progress(index+1, len(out))
+			}
+			continue
 		}
 		prefix := filepath.Base(base)
 		for _, entry := range entries {
-			ext := strings.ToLower(filepath.Ext(entry.Name()))
-			if !entry.IsDir() && strings.HasPrefix(entry.Name(), prefix) && (ext == ".srt" || ext == ".ass" || ext == ".ssa" || ext == ".vtt") {
+			if !entry.IsDir() && subtitleSidecarMatches(prefix, entry.Name()) {
 				out[release.ID] = true
 				break
 			}
 		}
 		if progress != nil && (index%25 == 0 || index == len(releases)-1) {
-			progress(index + 1)
+			progress(index+1, len(out))
 		}
 	}
-	return out
+	return out, stats
+}
+
+func subtitleAvailabilityWithProgress(releases []domain.Release, progress func(int)) map[int64]bool {
+	availability, _ := scanSubtitleAvailability(releases, func(completed, _ int) {
+		if progress != nil {
+			progress(completed)
+		}
+	})
+	return availability
 }
 
 func cachedSubtitleAvailability(releases []domain.Release, ttl time.Duration) map[int64]bool {
@@ -1041,8 +1083,7 @@ func subtitleFiles(release domain.Release) []string {
 	prefix := filepath.Base(base)
 	for _, entry := range entries {
 		name := entry.Name()
-		ext := strings.ToLower(filepath.Ext(name))
-		if !entry.IsDir() && strings.HasPrefix(name, prefix) && (ext == ".srt" || ext == ".ass" || ext == ".ssa" || ext == ".vtt") {
+		if !entry.IsDir() && subtitleSidecarMatches(prefix, name) {
 			files = append(files, filepath.Join(filepath.Dir(base), name))
 		}
 	}

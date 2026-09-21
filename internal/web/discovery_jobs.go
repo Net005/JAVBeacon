@@ -173,12 +173,15 @@ func discoveryJobSnapshot(settings map[string]string) discoveryJobStatus {
 
 func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mode string) error {
 	jobStartedAt := time.Now().UTC()
+	discoverySubtitleCache.RLock()
+	previousSubtitleCount := len(discoverySubtitleCache.availability)
+	discoverySubtitleCache.RUnlock()
 	discoveryJobs.Lock()
 	if discoveryJobs.status.Running {
 		discoveryJobs.Unlock()
 		return errors.New("a Discoveries refresh is already running")
 	}
-	discoveryJobs.status = discoveryJobStatus{Running: true, Mode: mode, Stage: "Loading changed releases", StartedAt: jobStartedAt, StageStartedAt: jobStartedAt}
+	discoveryJobs.status = discoveryJobStatus{Running: true, Mode: mode, Stage: "Loading changed releases", StartedAt: jobStartedAt, StageStartedAt: jobStartedAt, SubtitleCount: previousSubtitleCount}
 	discoveryJobs.Unlock()
 	go func() {
 		jobContext := context.WithoutCancel(ctx)
@@ -280,11 +283,15 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 			discoveryJobs.status.Total = len(releases)
 			discoveryJobs.status.CurrentItem = "Filesystem subtitle paths"
 			discoveryJobs.Unlock()
-			changedAvailability := subtitleAvailabilityWithProgress(discoveryRemapReleases(releases, settings["stash_missing_path_remaps"]), func(completed int) {
+			changedAvailability, subtitleStats := scanSubtitleAvailability(discoveryRemapReleases(releases, settings["stash_missing_path_remaps"]), func(completed, found int) {
 				discoveryJobs.Lock()
 				discoveryJobs.status.Completed = completed
+				discoveryJobs.status.SubtitleCount = found
 				discoveryJobs.Unlock()
 			})
+			if subtitleStats.UnreadableDirectories > 0 && log != nil {
+				log.Warn("Discovery subtitle scan could not read media directories", "unreadable", subtitleStats.UnreadableDirectories, "directories", subtitleStats.Directories)
+			}
 			if fullRefresh {
 				availability = changedAvailability
 				checked = make(map[int64]bool, len(releases))

@@ -7,6 +7,20 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.204] - 2026-09-21
+
+### Fixed
+
+- Subtitle availability scanning now matches sidecar filenames
+  case-insensitively on Linux while retaining release-ID boundaries, so a file
+  such as `thza-10.en.srt` is associated with `THZA-10.mp4` without incorrectly
+  matching `THZA-100`.
+- Subtitle scan progress now preserves the previous index count while releases
+  load and reports newly found subtitles live during filesystem indexing rather
+  than displaying zero until all scoring work finishes.
+- Unreadable media directories are now counted and logged as a concise warning
+  instead of being silently treated as directories containing no subtitles.
+
 ## [1.0.203] - 2026-09-21
 
 ### Changed
