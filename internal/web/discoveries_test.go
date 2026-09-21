@@ -172,6 +172,74 @@ func TestDiscoveryAIBatchesBoundInputAndAdaptSubtitleExcerpt(t *testing.T) {
 	}
 }
 
+func TestDiscoveryAIRequestLimitsKeepSmallModelWorkBounded(t *testing.T) {
+	batchSize, inputChars := discoveryAIRequestLimits(map[string]string{
+		"discoveries_openai_batch_size":      "50",
+		"discoveries_openai_max_input_chars": "500000",
+	})
+	if batchSize != 5 || inputChars != 60000 {
+		t.Fatalf("oversized saved settings were not bounded: batch=%d input=%d", batchSize, inputChars)
+	}
+	batchSize, inputChars = discoveryAIRequestLimits(nil)
+	if batchSize != 5 || inputChars != 50000 {
+		t.Fatalf("unexpected defaults: batch=%d input=%d", batchSize, inputChars)
+	}
+}
+
+func TestDiscoveryOpenAICostEstimate(t *testing.T) {
+	if got := discoveryOpenAICostUSD("gpt-5-mini", 1_000_000, 1_000_000); got != 2.25 {
+		t.Fatalf("unexpected GPT-5 Mini cost estimate: %f", got)
+	}
+	if got := discoveryOpenAICostUSD("custom-model", 1_000_000, 1_000_000); got != 0 {
+		t.Fatalf("unknown model should not receive a guessed price: %f", got)
+	}
+}
+
+func TestEstimateDiscoveryOpenAIUsesConfiguredCaps(t *testing.T) {
+	estimate := estimateDiscoveryOpenAI("gpt-5-mini", 1000, 5, 50000, true)
+	if estimate.Candidates != 1000 || estimate.Batches != 200 {
+		t.Fatalf("unexpected estimate scope: %+v", estimate)
+	}
+	if estimate.EstimatedCostUSD <= 0 || estimate.MaximumCostUSD < estimate.EstimatedCostUSD {
+		t.Fatalf("invalid cost range: %+v", estimate)
+	}
+}
+
+func TestEstimateDiscoveryOpenAIEndpointIsLocalDryRun(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "openai-estimate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(context.Background(), domain.Site{Title: "Estimate", Type: "Site", Name: "Estimate", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, videoID := range []string{"EST-1", "EST-2", "EST-3"} {
+		if _, err := st.UpsertRelease(context.Background(), domain.Release{SiteID: site.ID, VideoID: videoID, Title: videoID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Server{store: st}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/discoveries/openai/estimate", strings.NewReader(`{"model":"gpt-5-mini","candidate_limit":1000,"batch_size":2,"max_input_chars":20000}`))
+	s.estimateDiscoveryOpenAI(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		DryRun       bool                    `json:"dry_run"`
+		OpenAICalled bool                    `json:"openai_called"`
+		Run          discoveryOpenAIEstimate `json:"run"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.DryRun || response.OpenAICalled || response.Run.Candidates != 3 || response.Run.Batches != 2 {
+		t.Fatalf("unexpected dry-run response: %+v", response)
+	}
+}
+
 func TestDiscoveryAITextFilteringIsPartialAndCaseInsensitive(t *testing.T) {
 	for _, tt := range []struct {
 		text, entries string

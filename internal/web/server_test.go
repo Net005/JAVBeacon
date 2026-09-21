@@ -83,6 +83,7 @@ func TestAISettingsPersistUsingExistingSettingsStore(t *testing.T) {
 	defer st.Close()
 	want := map[string]string{
 		"discoveries_ai_enabled":                     "true",
+		"discoveries_ai_primary_provider":            "openai",
 		"discoveries_ollama_url":                     "http://192.168.1.50:11434",
 		"discoveries_ollama_model":                   "qwen3:8b",
 		"discoveries_ollama_request_timeout_seconds": "60",
@@ -112,10 +113,14 @@ func TestOllamaSettingsUIControlsAndLoadingState(t *testing.T) {
 	for _, required := range []string{
 		`id="testDiscoveryOllama"`,
 		`discoveries_openai_fallback_enabled`,
+		`discoveries_openai_include_subtitles`,
 		`Testing Ollama…`,
 		`testDiscoveryOllama.disabled=true`,
 		`/discoveries/ollama/test`,
-		`OpenAI is never used for either condition`,
+		`id="estimateDiscoveryOpenAI"`,
+		`/discoveries/openai/estimate`,
+		`discoveries_ai_primary_provider`,
+		`If Ollama is offline or its model is missing, AI is skipped and OpenAI is never called`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("Ollama settings UI is missing %q", required)

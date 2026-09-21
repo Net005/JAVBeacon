@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -53,7 +54,7 @@ func TestOllamaAvailabilityCheckSucceeds(t *testing.T) {
 }
 
 func TestRankingSchemaRestrictsIDsToSubmittedCandidates(t *testing.T) {
-	schema := rankingSchema([]Candidate{{ID: 41}, {ID: 907}})
+	schema := rankingSchema([]Candidate{{ID: 41}, {ID: 907}}, "Sci-Fi | space\nInvestigator | detective")
 	properties := schema["properties"].(map[string]any)
 	rankings := properties["rankings"].(map[string]any)
 	if rankings["minItems"] != 2 || rankings["maxItems"] != 2 {
@@ -65,6 +66,32 @@ func TestRankingSchemaRestrictsIDsToSubmittedCandidates(t *testing.T) {
 	ids, ok := idSchema["enum"].([]int64)
 	if !ok || len(ids) != 2 || ids[0] != 41 || ids[1] != 907 {
 		t.Fatalf("candidate ID enum mismatch: %#v", idSchema["enum"])
+	}
+	poolSchema := rankProperties["pools"].(map[string]any)
+	poolItems := poolSchema["items"].(map[string]any)
+	poolEnum, ok := poolItems["enum"].([]string)
+	if !ok || len(poolEnum) != 2 || poolEnum[0] != "Sci-Fi" || poolEnum[1] != "Investigator" {
+		t.Fatalf("configured pool enum mismatch: %#v", poolItems["enum"])
+	}
+	reasonSchema := rankProperties["reason"].(map[string]any)
+	if reasonSchema["maxLength"] != 240 {
+		t.Fatalf("reason length is not constrained: %#v", reasonSchema)
+	}
+}
+
+func TestOllamaLengthStopReportsUsefulFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "qwen3:8b"}}})
+		case "/api/chat":
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": `{"rankings":[`}, "done_reason": "length"})
+		}
+	}))
+	defer server.Close()
+	result := New(nil).Rank(context.Background(), baseConfig(server.URL), testCandidates(), "")
+	if !result.Skipped || !strings.Contains(result.Status, "token limit") {
+		t.Fatalf("length stop did not return a useful status: %+v", result)
 	}
 }
 
@@ -153,6 +180,65 @@ func TestQwenSuccessNeverCallsOpenAI(t *testing.T) {
 	result := New(nil).Rank(context.Background(), cfg, testCandidates(), "")
 	if result.Provider != "ollama" || len(result.Ranks) != 1 || openAICalls.Load() != 0 {
 		t.Fatalf("unexpected Qwen result: %+v calls=%d", result, openAICalls.Load())
+	}
+}
+
+func TestOpenAIPrimarySkipsOllamaAndReportsUsage(t *testing.T) {
+	var ollamaCalls, openAICalls atomic.Int32
+	ollama := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { ollamaCalls.Add(1) }))
+	defer ollama.Close()
+	openAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		openAICalls.Add(1)
+		content := `{"rankings":[{"id":7,"score":91,"reason":"Strong story and preferred studio match.","pools":[]}]}`
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"output": []any{map[string]any{"content": []any{map[string]any{"text": content}}}},
+			"usage":  map[string]any{"input_tokens": 1234, "output_tokens": 56, "total_tokens": 1290},
+		})
+	}))
+	defer openAI.Close()
+	cfg := baseConfig(ollama.URL)
+	cfg.PrimaryProvider = "openai"
+	cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, cfg.OpenAIModel = "secret", openAI.URL, "gpt-5-mini"
+	result := New(nil).Rank(context.Background(), cfg, testCandidates(), "")
+	if result.Provider != "openai" || len(result.Ranks) != 1 || ollamaCalls.Load() != 0 || openAICalls.Load() != 1 {
+		t.Fatalf("OpenAI primary decision flow failed: %+v ollama=%d openai=%d", result, ollamaCalls.Load(), openAICalls.Load())
+	}
+	if result.Usage.InputTokens != 1234 || result.Usage.OutputTokens != 56 || result.Usage.TotalTokens != 1290 {
+		t.Fatalf("OpenAI usage was not returned: %+v", result.Usage)
+	}
+}
+
+func TestOpenAIPrimaryFailureDoesNotCallOllama(t *testing.T) {
+	var ollamaCalls atomic.Int32
+	ollama := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { ollamaCalls.Add(1) }))
+	defer ollama.Close()
+	cfg := baseConfig(ollama.URL)
+	cfg.PrimaryProvider = "openai"
+	result := New(nil).Rank(context.Background(), cfg, testCandidates(), "")
+	if !result.Skipped || ollamaCalls.Load() != 0 || !strings.Contains(result.Status, "OpenAI primary failed") {
+		t.Fatalf("OpenAI primary failure was not isolated: %+v ollama=%d", result, ollamaCalls.Load())
+	}
+}
+
+func TestOpenAICanExcludeSubtitleEvidence(t *testing.T) {
+	const subtitle = "UNIQUE SUBTITLE DIALOGUE MUST NOT LEAVE JAVBEACON"
+	openAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), subtitle) {
+			t.Errorf("OpenAI request contained excluded subtitle evidence: %s", body)
+		}
+		content := `{"rankings":[{"id":7,"score":88,"reason":"Strong title and studio match.","pools":[]}]}`
+		_ = json.NewEncoder(w).Encode(map[string]any{"output": []any{map[string]any{"content": []any{map[string]any{"text": content}}}}})
+	}))
+	defer openAI.Close()
+	candidates := testCandidates()
+	candidates[0].Subtitle = subtitle
+	cfg := baseConfig("")
+	cfg.PrimaryProvider, cfg.OpenAIAPIKey, cfg.OpenAIBaseURL = "openai", "secret", openAI.URL
+	cfg.OpenAIIncludeSubtitles = false
+	result := New(nil).Rank(context.Background(), cfg, candidates, "")
+	if result.Provider != "openai" || len(result.Ranks) != 1 {
+		t.Fatalf("metadata-only OpenAI ranking failed: %+v", result)
 	}
 }
 

@@ -154,6 +154,89 @@ func (s *Server) testDiscoveryOpenAI(w http.ResponseWriter, r *http.Request) {
 	s.json(w, http.StatusOK, map[string]any{"ok": true, "model": settings["discoveries_openai_model"], "elapsed_ms": elapsed.Milliseconds()})
 }
 
+type discoveryOpenAIEstimate struct {
+	Candidates       int     `json:"candidates"`
+	Batches          int     `json:"batches"`
+	EstimatedInput   int64   `json:"estimated_input_tokens"`
+	MaximumInput     int64   `json:"maximum_input_tokens"`
+	EstimatedOutput  int64   `json:"estimated_output_tokens"`
+	MaximumOutput    int64   `json:"maximum_output_tokens"`
+	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
+	MaximumCostUSD   float64 `json:"maximum_cost_usd"`
+}
+
+func estimateDiscoveryOpenAI(model string, candidates, batchSize, maxInputChars int, includeSubtitles bool) discoveryOpenAIEstimate {
+	candidates = max(candidates, 0)
+	batchSize = min(max(batchSize, 1), 5)
+	maxInputChars = min(max(maxInputChars, 20000), 60000)
+	batches := 0
+	if candidates > 0 {
+		batches = (candidates + batchSize - 1) / batchSize
+	}
+	maximumInput := int64(math.Ceil(float64(batches*maxInputChars) / 4))
+	// A concise five-ranking JSON response is normally much smaller than its
+	// output allowance. Sixty-five percent input occupancy and 100 output
+	// tokens per candidate provide a useful planning estimate; maxima mirror
+	// the actual per-request caps and form a conservative budget ceiling.
+	inputOccupancy := 0.65
+	if !includeSubtitles {
+		inputOccupancy = 0.40
+	}
+	estimatedInput := int64(math.Ceil(float64(maximumInput) * inputOccupancy))
+	estimatedOutput := int64(candidates * 100)
+	maximumOutput := int64(batches * min(max(batchSize*160, 2048), 32768))
+	return discoveryOpenAIEstimate{
+		Candidates: candidates, Batches: batches,
+		EstimatedInput: estimatedInput, MaximumInput: maximumInput,
+		EstimatedOutput: estimatedOutput, MaximumOutput: maximumOutput,
+		EstimatedCostUSD: discoveryOpenAICostUSD(model, estimatedInput, estimatedOutput),
+		MaximumCostUSD:   discoveryOpenAICostUSD(model, maximumInput, maximumOutput),
+	}
+}
+
+func (s *Server) estimateDiscoveryOpenAI(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Model            string `json:"model"`
+		CandidateLimit   int    `json:"candidate_limit"`
+		BatchSize        int    `json:"batch_size"`
+		MaxInputChars    int    `json:"max_input_chars"`
+		IncludeSubtitles bool   `json:"include_subtitles"`
+	}
+	if !s.decode(w, r, &input) {
+		return
+	}
+	settings, _ := s.store.Settings(r.Context())
+	model := strings.TrimSpace(input.Model)
+	if model == "" {
+		model = strings.TrimSpace(settings["discoveries_openai_model"])
+	}
+	if model == "" {
+		model = "gpt-5-mini"
+	}
+	if input.CandidateLimit <= 0 {
+		input.CandidateLimit = discoveryInt(settings, "discoveries_openai_candidate_limit", 150)
+	}
+	if input.BatchSize <= 0 {
+		input.BatchSize = discoveryInt(settings, "discoveries_openai_batch_size", 5)
+	}
+	if input.MaxInputChars <= 0 {
+		input.MaxInputChars = discoveryInt(settings, "discoveries_openai_max_input_chars", 50000)
+	}
+	total, err := s.store.ReleasesCount(r.Context(), domain.ReleaseFilter{ShowNonPreferred: true})
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	runCandidates := min(max(input.CandidateLimit, 10), min(total, 1000))
+	_, pricingKnown := discoveryOpenAIRates(model)
+	s.json(w, http.StatusOK, map[string]any{
+		"dry_run": true, "openai_called": false, "model": model, "pricing_known": pricingKnown,
+		"include_subtitles": input.IncludeSubtitles,
+		"run":               estimateDiscoveryOpenAI(model, runCandidates, input.BatchSize, input.MaxInputChars, input.IncludeSubtitles),
+		"full_library":      estimateDiscoveryOpenAI(model, total, input.BatchSize, input.MaxInputChars, input.IncludeSubtitles),
+	})
+}
+
 func (s *Server) testDiscoveryOllama(w http.ResponseWriter, r *http.Request) {
 	settings, _ := s.store.Settings(r.Context())
 	var input struct {
@@ -184,10 +267,23 @@ var discoveryRankCache = struct {
 
 var discoveryAIStatus = struct {
 	sync.RWMutex
-	Running   bool
-	Completed int
-	Total     int
-	Error     string
+	Running           bool
+	Completed         int
+	Total             int
+	Batch             int
+	Batches           int
+	Current           int
+	Error             string
+	StartedAt         time.Time
+	BatchStartedAt    time.Time
+	LastBatchSeconds  float64
+	CurrentItems      []string
+	StartingCompleted int
+	Provider          string
+	Model             string
+	InputTokens       int64
+	OutputTokens      int64
+	EstimatedCostUSD  float64
 }{}
 
 var discoveryResultCache = struct {
@@ -285,7 +381,13 @@ func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit
 	items = items[:min(limit, len(items))]
 	poolsSize := len(settings["discoveries_pools"])
 	subtitleEnabled := settings["discoveries_subtitle_analysis_enabled"] == "true"
-	configuredSubtitleChars := min(max(discoveryInt(settings, "discoveries_subtitle_max_chars", 16000), 0), 100000)
+	if strings.EqualFold(strings.TrimSpace(settings["discoveries_ai_primary_provider"]), "openai") && settings["discoveries_openai_include_subtitles"] == "false" {
+		subtitleEnabled = false
+	}
+	// Subtitle dialogue is weak supporting evidence. Large excerpts dominate
+	// prompt evaluation time on small local models without improving ranking
+	// quality, so each candidate receives a compact cleaned sample.
+	configuredSubtitleChars := min(max(discoveryInt(settings, "discoveries_subtitle_max_chars", 4000), 0), 4000)
 	batches, payloads := make([][]discoveryAICandidate, 0, (len(items)+batchSize-1)/batchSize), make([][]byte, 0, (len(items)+batchSize-1)/batchSize)
 	for start := 0; start < len(items); start += batchSize {
 		end := min(start+batchSize, len(items))
@@ -339,17 +441,32 @@ func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit
 	return batches, payloads
 }
 
+func discoveryAIRequestLimits(settings map[string]string) (int, int) {
+	batchSize := min(max(discoveryInt(settings, "discoveries_openai_batch_size", 5), 1), 5)
+	maxInputChars := min(max(discoveryInt(settings, "discoveries_openai_max_input_chars", 50000), 20000), 60000)
+	return batchSize, maxInputChars
+}
+
 func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string, items []discoveryItem) ([]discoveryItem, bool) {
 	if settings["discoveries_ai_enabled"] != "true" || len(items) == 0 {
 		return items, false
 	}
 	limit := discoveryInt(settings, "discoveries_openai_candidate_limit", 150)
 	limit = min(max(limit, 10), min(len(items), 1000))
-	batchSize := min(max(discoveryInt(settings, "discoveries_openai_batch_size", 20), 5), 50)
-	maxInputChars := min(max(discoveryInt(settings, "discoveries_openai_max_input_chars", 180000), 50000), 500000)
+	// Small batches make the first durable results visible quickly and avoid a
+	// single oversized constrained-generation request monopolizing remote GPUs.
+	// This caps request size, not the total number of candidates enriched.
+	batchSize, maxInputChars := discoveryAIRequestLimits(settings)
 	batches, payloads := discoveryAIBatches(items, settings, limit, batchSize, maxInputChars)
 	pools := strings.TrimSpace(settings["discoveries_pools"])
+	provider := strings.ToLower(strings.TrimSpace(settings["discoveries_ai_primary_provider"]))
+	if provider != "openai" {
+		provider = "ollama"
+	}
 	model := strings.TrimSpace(settings["discoveries_ollama_model"])
+	if provider == "openai" {
+		model = strings.TrimSpace(settings["discoveries_openai_model"])
+	}
 	if model == "" {
 		model = "qwen3:8b"
 	}
@@ -416,22 +533,64 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 	// cache in the background; a later refresh automatically uses the enhanced
 	// ranking.
 	settingsCopy := maps.Clone(settings)
+	discoveryAIStatus.Lock()
+	if discoveryAIStatus.Running {
+		discoveryAIStatus.Unlock()
+		return applyOpenAIRanks(items, persisted), len(persisted) > 0
+	}
+	discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Batch, discoveryAIStatus.Batches, discoveryAIStatus.Current, discoveryAIStatus.Error = true, len(persisted), limit, 1, len(missingBatches), len(missingBatches[0]), ""
+	discoveryAIStatus.StartedAt, discoveryAIStatus.BatchStartedAt, discoveryAIStatus.LastBatchSeconds = time.Now().UTC(), time.Now().UTC(), 0
+	discoveryAIStatus.CurrentItems = discoveryBatchLabels(missingBatches[0])
+	discoveryAIStatus.StartingCompleted, discoveryAIStatus.Provider, discoveryAIStatus.Model = len(persisted), provider, model
+	discoveryAIStatus.InputTokens, discoveryAIStatus.OutputTokens, discoveryAIStatus.EstimatedCostUSD = 0, 0, 0
+	discoveryAIStatus.Unlock()
 	discoveryRankCache.Lock()
 	discoveryRankCache.entries[cacheKey] = discoveryRankCacheEntry{created: time.Now(), ranks: slices.Clone(persisted)}
 	discoveryRankCache.Unlock()
 	go func() {
-		discoveryAIStatus.Lock()
-		discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error = true, len(persisted), limit, ""
-		discoveryAIStatus.Unlock()
-		defer func() { discoveryAIStatus.Lock(); discoveryAIStatus.Running = false; discoveryAIStatus.Unlock() }()
+		defer func() {
+			discoveryAIStatus.Lock()
+			discoveryAIStatus.Running, discoveryAIStatus.Current = false, 0
+			discoveryAIStatus.CurrentItems = nil
+			discoveryAIStatus.Unlock()
+		}()
 		combined := slices.Clone(persisted)
 		completed := len(persisted)
 		for index, batch := range missingBatches {
+			discoveryAIStatus.Lock()
+			discoveryAIStatus.Batch, discoveryAIStatus.Current = index+1, len(batch)
+			discoveryAIStatus.BatchStartedAt = time.Now().UTC()
+			discoveryAIStatus.CurrentItems = discoveryBatchLabels(batch)
+			discoveryAIStatus.Unlock()
 			aiCandidates := make([]aidiscovery.Candidate, 0, len(batch))
 			for _, candidate := range batch {
 				aiCandidates = append(aiCandidates, aidiscovery.Candidate{ID: candidate.ID, VideoID: candidate.VideoID, Title: candidate.Title, Story: candidate.Story, Actresses: candidate.Actresses, Genres: candidate.Genres, Studio: candidate.Studio, Local: candidate.Local, Played: candidate.Played, Orgasms: candidate.Orgasms, Evidence: candidate.Evidence, Subtitle: candidate.Subtitle})
 			}
 			result := s.discoveryAI.Rank(context.Background(), discoveryAIConfig(settingsCopy), aiCandidates, pools)
+			resultModel := model
+			telemetryProvider := result.Provider
+			if telemetryProvider == "" {
+				telemetryProvider = result.AttemptedProvider
+			}
+			if telemetryProvider == "openai" {
+				resultModel = strings.TrimSpace(settingsCopy["discoveries_openai_model"])
+			}
+			discoveryAIStatus.Lock()
+			if telemetryProvider != "" {
+				discoveryAIStatus.Provider, discoveryAIStatus.Model = telemetryProvider, resultModel
+			}
+			discoveryAIStatus.InputTokens += result.Usage.InputTokens
+			discoveryAIStatus.OutputTokens += result.Usage.OutputTokens
+			discoveryAIStatus.EstimatedCostUSD = discoveryOpenAICostUSD(resultModel, discoveryAIStatus.InputTokens, discoveryAIStatus.OutputTokens)
+			usageSettings := map[string]string{
+				"discoveries_ai_last_provider":           discoveryAIStatus.Provider,
+				"discoveries_ai_last_model":              discoveryAIStatus.Model,
+				"discoveries_ai_last_input_tokens":       strconv.FormatInt(discoveryAIStatus.InputTokens, 10),
+				"discoveries_ai_last_output_tokens":      strconv.FormatInt(discoveryAIStatus.OutputTokens, 10),
+				"discoveries_ai_last_estimated_cost_usd": strconv.FormatFloat(discoveryAIStatus.EstimatedCostUSD, 'f', 8, 64),
+			}
+			discoveryAIStatus.Unlock()
+			_ = s.store.SaveSettings(context.Background(), usageSettings)
 			if result.Skipped || len(result.Ranks) == 0 {
 				discoveryAIStatus.Lock()
 				discoveryAIStatus.Error = fmt.Sprintf("Batch %d/%d: %s", index+1, len(missingBatches), result.Status)
@@ -445,7 +604,7 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 			now := time.Now().UTC()
 			durable := make([]domain.DiscoveryAIRank, 0, len(ranks))
 			for _, rank := range ranks {
-				durable = append(durable, domain.DiscoveryAIRank{ReleaseID: rank.ID, Fingerprint: fingerprints[rank.ID], Model: result.Provider + ":" + model, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools, GeneratedAt: now})
+				durable = append(durable, domain.DiscoveryAIRank{ReleaseID: rank.ID, Fingerprint: fingerprints[rank.ID], Model: result.Provider + ":" + resultModel, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools, GeneratedAt: now})
 			}
 			if err := saveValidatedDiscoveryAIRanks(context.Background(), s.store, durable, pools); err != nil {
 				discoveryAIStatus.Lock()
@@ -462,14 +621,50 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 			discoveryRankCache.Unlock()
 			discoveryAIStatus.Lock()
 			discoveryAIStatus.Completed = min(completed, limit)
+			discoveryAIStatus.LastBatchSeconds = time.Since(discoveryAIStatus.BatchStartedAt).Seconds()
 			discoveryAIStatus.Unlock()
 		}
 	}()
 	return applyOpenAIRanks(items, persisted), len(persisted) > 0
 }
 
+func discoveryBatchLabels(batch []discoveryAICandidate) []string {
+	labels := make([]string, 0, len(batch))
+	for _, candidate := range batch {
+		label := strings.TrimSpace(candidate.VideoID)
+		if label == "" {
+			label = strconv.FormatInt(candidate.ID, 10)
+		}
+		labels = append(labels, label)
+	}
+	return labels
+}
+
 func discoveryProviderFingerprint(settings map[string]string, model string) string {
-	return strings.Join([]string{"ai-discovery-schema:" + aidiscovery.SchemaVersion, settings["discoveries_ollama_url"], model, settings["discoveries_openai_fallback_enabled"], settings["discoveries_openai_model"]}, "\n")
+	return strings.Join([]string{"ai-discovery-schema:" + aidiscovery.SchemaVersion, settings["discoveries_ai_primary_provider"], settings["discoveries_ollama_url"], model, settings["discoveries_openai_fallback_enabled"], settings["discoveries_openai_model"], settings["discoveries_openai_include_subtitles"]}, "\n")
+}
+
+func discoveryOpenAICostUSD(model string, inputTokens, outputTokens int64) float64 {
+	// Standard Responses API rates per million tokens. Unknown/custom models
+	// deliberately return zero rather than presenting a misleading estimate.
+	rate, ok := discoveryOpenAIRates(model)
+	if !ok {
+		return 0
+	}
+	return float64(inputTokens)/1_000_000*rate[0] + float64(outputTokens)/1_000_000*rate[1]
+}
+
+func discoveryOpenAIRates(model string) ([2]float64, bool) {
+	rates := map[string][2]float64{
+		"gpt-5-mini":    {0.25, 2.00},
+		"gpt-5.4-mini":  {0.75, 4.50},
+		"gpt-5.6-luna":  {0.20, 1.20},
+		"gpt-5.6-terra": {2.00, 12.00},
+		"gpt-5.6-sol":   {4.00, 20.00},
+		"gpt-6-astra":   {10.00, 50.00},
+	}
+	rate, ok := rates[strings.ToLower(strings.TrimSpace(model))]
+	return rate, ok
 }
 
 type discoveryAIRankSaver interface {
@@ -495,16 +690,18 @@ func discoveryFloat(settings map[string]string, key string, fallback float64) fl
 
 func discoveryAIConfig(settings map[string]string) aidiscovery.Config {
 	return aidiscovery.Config{
-		Enabled:               settings["discoveries_ai_enabled"] == "true",
-		OllamaURL:             strings.TrimSpace(settings["discoveries_ollama_url"]),
-		OllamaModel:           strings.TrimSpace(settings["discoveries_ollama_model"]),
-		RequestTimeout:        time.Duration(min(max(discoveryInt(settings, "discoveries_ollama_request_timeout_seconds", 60), 5), 1800)) * time.Second,
-		HealthTimeout:         time.Duration(min(max(discoveryInt(settings, "discoveries_ollama_health_timeout_seconds", 2), 1), 30)) * time.Second,
-		OpenAIFallbackEnabled: settings["discoveries_openai_fallback_enabled"] == "true",
-		OpenAIAPIKey:          strings.TrimSpace(settings["discoveries_openai_api_key"]),
-		OpenAIBaseURL:         strings.TrimSpace(settings["discoveries_openai_base_url"]),
-		OpenAIModel:           strings.TrimSpace(settings["discoveries_openai_model"]),
-		OpenAITimeout:         time.Duration(min(max(discoveryInt(settings, "discoveries_openai_timeout_seconds", 120), 15), 600)) * time.Second,
+		Enabled:                settings["discoveries_ai_enabled"] == "true",
+		PrimaryProvider:        strings.TrimSpace(settings["discoveries_ai_primary_provider"]),
+		OllamaURL:              strings.TrimSpace(settings["discoveries_ollama_url"]),
+		OllamaModel:            strings.TrimSpace(settings["discoveries_ollama_model"]),
+		RequestTimeout:         time.Duration(min(max(discoveryInt(settings, "discoveries_ollama_request_timeout_seconds", 120), 5), 7200)) * time.Second,
+		HealthTimeout:          time.Duration(min(max(discoveryInt(settings, "discoveries_ollama_health_timeout_seconds", 2), 1), 30)) * time.Second,
+		OpenAIFallbackEnabled:  settings["discoveries_openai_fallback_enabled"] == "true",
+		OpenAIAPIKey:           strings.TrimSpace(settings["discoveries_openai_api_key"]),
+		OpenAIBaseURL:          strings.TrimSpace(settings["discoveries_openai_base_url"]),
+		OpenAIModel:            strings.TrimSpace(settings["discoveries_openai_model"]),
+		OpenAITimeout:          time.Duration(min(max(discoveryInt(settings, "discoveries_openai_timeout_seconds", 120), 15), 600)) * time.Second,
+		OpenAIIncludeSubtitles: settings["discoveries_openai_include_subtitles"] != "false",
 	}
 }
 

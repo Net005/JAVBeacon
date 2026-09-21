@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ type discoveryJobStatus struct {
 	Mode            string    `json:"mode,omitempty"`
 	Stage           string    `json:"stage,omitempty"`
 	StartedAt       time.Time `json:"started_at,omitempty"`
+	StageStartedAt  time.Time `json:"stage_started_at,omitempty"`
 	FinishedAt      time.Time `json:"finished_at,omitempty"`
 	LastSyncedAt    time.Time `json:"last_synced_at,omitempty"`
 	NextSyncAt      time.Time `json:"next_sync_at,omitempty"`
@@ -33,7 +35,27 @@ type discoveryJobStatus struct {
 	OpenAIRunning   bool      `json:"openai_running"`
 	OpenAICompleted int       `json:"openai_completed"`
 	OpenAITotal     int       `json:"openai_total"`
+	OpenAIBatch     int       `json:"openai_batch"`
+	OpenAIBatches   int       `json:"openai_batches"`
+	OpenAICurrent   int       `json:"openai_current"`
 	OpenAIError     string    `json:"openai_error,omitempty"`
+	CurrentItem     string    `json:"current_item,omitempty"`
+	ElapsedSeconds  float64   `json:"elapsed_seconds"`
+	ItemsPerSecond  float64   `json:"items_per_second"`
+	ETASeconds      float64   `json:"eta_seconds"`
+	OpenAIStartedAt time.Time `json:"openai_started_at,omitempty"`
+	OpenAIBatchAt   time.Time `json:"openai_batch_started_at,omitempty"`
+	OpenAIItems     []string  `json:"openai_current_items,omitempty"`
+	OpenAIElapsed   float64   `json:"openai_elapsed_seconds"`
+	OpenAIBatchTime float64   `json:"openai_batch_elapsed_seconds"`
+	OpenAILastBatch float64   `json:"openai_last_batch_seconds"`
+	OpenAIRate      float64   `json:"openai_items_per_second"`
+	OpenAIETA       float64   `json:"openai_eta_seconds"`
+	AIProvider      string    `json:"ai_provider,omitempty"`
+	AIModel         string    `json:"ai_model,omitempty"`
+	AIInputTokens   int64     `json:"ai_input_tokens"`
+	AIOutputTokens  int64     `json:"ai_output_tokens"`
+	AICostUSD       float64   `json:"ai_estimated_cost_usd"`
 }
 
 var discoveryJobs = struct {
@@ -99,9 +121,48 @@ func discoveryJobSnapshot(settings map[string]string) discoveryJobStatus {
 	}
 	status.SubtitleLastRun, _ = time.Parse(time.RFC3339Nano, settings["discoveries_subtitle_last_run_at"])
 	status.OpenAILastRun, _ = time.Parse(time.RFC3339Nano, settings["discoveries_openai_last_run_at"])
+	now := time.Now().UTC()
+	if status.Running && !status.StartedAt.IsZero() {
+		stageStartedAt := status.StageStartedAt
+		if stageStartedAt.IsZero() {
+			stageStartedAt = status.StartedAt
+		}
+		status.ElapsedSeconds = now.Sub(stageStartedAt).Seconds()
+		if status.Completed > 0 && status.ElapsedSeconds > 0 {
+			status.ItemsPerSecond = float64(status.Completed) / status.ElapsedSeconds
+			if status.Total > status.Completed {
+				status.ETASeconds = float64(status.Total-status.Completed) / status.ItemsPerSecond
+			}
+		}
+	}
 	discoveryAIStatus.RLock()
-	status.OpenAIRunning, status.OpenAICompleted, status.OpenAITotal, status.OpenAIError = discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error
+	status.OpenAIRunning, status.OpenAICompleted, status.OpenAITotal, status.OpenAIBatch, status.OpenAIBatches, status.OpenAICurrent, status.OpenAIError = discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Batch, discoveryAIStatus.Batches, discoveryAIStatus.Current, discoveryAIStatus.Error
+	status.OpenAIStartedAt, status.OpenAIBatchAt, status.OpenAILastBatch = discoveryAIStatus.StartedAt, discoveryAIStatus.BatchStartedAt, discoveryAIStatus.LastBatchSeconds
+	status.OpenAIItems = append([]string(nil), discoveryAIStatus.CurrentItems...)
+	status.AIProvider, status.AIModel = discoveryAIStatus.Provider, discoveryAIStatus.Model
+	status.AIInputTokens, status.AIOutputTokens, status.AICostUSD = discoveryAIStatus.InputTokens, discoveryAIStatus.OutputTokens, discoveryAIStatus.EstimatedCostUSD
+	openAIStartingCompleted := discoveryAIStatus.StartingCompleted
 	discoveryAIStatus.RUnlock()
+	if !status.OpenAIRunning && status.AIProvider == "" {
+		status.AIProvider = strings.TrimSpace(settings["discoveries_ai_last_provider"])
+		status.AIModel = strings.TrimSpace(settings["discoveries_ai_last_model"])
+		status.AIInputTokens, _ = strconv.ParseInt(settings["discoveries_ai_last_input_tokens"], 10, 64)
+		status.AIOutputTokens, _ = strconv.ParseInt(settings["discoveries_ai_last_output_tokens"], 10, 64)
+		status.AICostUSD, _ = strconv.ParseFloat(settings["discoveries_ai_last_estimated_cost_usd"], 64)
+	}
+	if status.OpenAIRunning && !status.OpenAIStartedAt.IsZero() {
+		status.OpenAIElapsed = now.Sub(status.OpenAIStartedAt).Seconds()
+		if !status.OpenAIBatchAt.IsZero() {
+			status.OpenAIBatchTime = now.Sub(status.OpenAIBatchAt).Seconds()
+		}
+		processed := status.OpenAICompleted - openAIStartingCompleted
+		if processed > 0 && status.OpenAIElapsed > 0 {
+			status.OpenAIRate = float64(processed) / status.OpenAIElapsed
+			if status.OpenAITotal > status.OpenAICompleted {
+				status.OpenAIETA = float64(status.OpenAITotal-status.OpenAICompleted) / status.OpenAIRate
+			}
+		}
+	}
 	return status
 }
 
@@ -112,7 +173,7 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 		discoveryJobs.Unlock()
 		return errors.New("a Discoveries refresh is already running")
 	}
-	discoveryJobs.status = discoveryJobStatus{Running: true, Mode: mode, Stage: "Loading changed releases", StartedAt: jobStartedAt}
+	discoveryJobs.status = discoveryJobStatus{Running: true, Mode: mode, Stage: "Loading changed releases", StartedAt: jobStartedAt, StageStartedAt: jobStartedAt}
 	discoveryJobs.Unlock()
 	go func() {
 		jobContext := context.WithoutCancel(ctx)
@@ -134,6 +195,16 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 		if fullRefresh {
 			discoveryJobs.Lock()
 			discoveryJobs.status.Stage = "Loading releases"
+			discoveryJobs.status.StageStartedAt = time.Now().UTC()
+			discoveryJobs.Unlock()
+		}
+		countFilter := domain.ReleaseFilter{ShowNonPreferred: true}
+		if !fullRefresh {
+			countFilter.UpdatedAfter = cursor
+		}
+		if total, err := st.ReleasesCount(jobContext, countFilter); err == nil {
+			discoveryJobs.Lock()
+			discoveryJobs.status.Total = total
 			discoveryJobs.Unlock()
 		}
 		finish := func(err error) {
@@ -185,10 +256,7 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 			releases = append(releases, page...)
 			discoveryJobs.Lock()
 			discoveryJobs.status.Completed = len(releases)
-			// The total is not known until the final page has been loaded. Keep
-			// it at zero so the UI does not present each intermediate batch as
-			// a misleading 100% complete current/total value.
-			discoveryJobs.status.Total = 0
+			discoveryJobs.status.CurrentItem = "Database page " + strconv.Itoa(offset/500+1)
 			discoveryJobs.Unlock()
 			if len(page) < 500 {
 				break
@@ -202,8 +270,10 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 		if subtitleDue {
 			discoveryJobs.Lock()
 			discoveryJobs.status.Stage = "Indexing subtitle availability"
+			discoveryJobs.status.StageStartedAt = time.Now().UTC()
 			discoveryJobs.status.Completed = 0
 			discoveryJobs.status.Total = len(releases)
+			discoveryJobs.status.CurrentItem = "Filesystem subtitle paths"
 			discoveryJobs.Unlock()
 			changedAvailability := subtitleAvailabilityWithProgress(discoveryRemapReleases(releases, settings["stash_missing_path_remaps"]), func(completed int) {
 				discoveryJobs.Lock()
@@ -232,12 +302,16 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 		} else if availability != nil {
 			discoveryJobs.Lock()
 			discoveryJobs.status.Stage = "Using current subtitle index"
+			discoveryJobs.status.StageStartedAt = time.Now().UTC()
+			discoveryJobs.status.CurrentItem = "Cached subtitle index"
 			discoveryJobs.status.Completed = len(releases)
 			discoveryJobs.status.Total = len(releases)
 			discoveryJobs.Unlock()
 		} else {
 			discoveryJobs.Lock()
 			discoveryJobs.status.Stage = "Changed releases synchronized"
+			discoveryJobs.status.StageStartedAt = time.Now().UTC()
+			discoveryJobs.status.CurrentItem = "No subtitle rescan needed"
 			discoveryJobs.status.Completed = len(releases)
 			discoveryJobs.status.Total = len(releases)
 			discoveryJobs.Unlock()
@@ -250,8 +324,10 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 		if len(releases) > 0 {
 			discoveryJobs.Lock()
 			discoveryJobs.status.Stage = "Updating recommendation scores"
+			discoveryJobs.status.StageStartedAt = time.Now().UTC()
 			discoveryJobs.status.Completed = 0
 			discoveryJobs.status.Total = len(releases)
+			discoveryJobs.status.CurrentItem = "Building affinity profile"
 			discoveryJobs.Unlock()
 			profileReleases := make([]domain.Release, 0, 1000)
 			for offset := 0; ; offset += 500 {
@@ -286,6 +362,7 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 				if index%250 == 0 || index == len(releases)-1 {
 					discoveryJobs.Lock()
 					discoveryJobs.status.Completed = index + 1
+					discoveryJobs.status.CurrentItem = release.VideoID
 					discoveryJobs.Unlock()
 				}
 			}
