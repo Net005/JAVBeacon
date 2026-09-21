@@ -487,7 +487,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 			t.Fatalf("embedded app.css is missing %q", marker)
 		}
 	}
-	for _, marker := range []string{`#search::placeholder,#notificationSearch::placeholder,#entryFilter::placeholder,#notificationEntry::placeholder{font-size:10px}`, `@media(min-width:701px) and (max-width:1600px){`, `.releaseFiltersBody>.toolbar,.notificationToolbar{align-items:center;gap:4px;flex-wrap:nowrap!important;padding:8px}`} {
+	for _, marker := range []string{`#search::placeholder,#notificationSearch::placeholder,#entryFilter::placeholder,#notificationEntry::placeholder{font-size:10px}`, `@media(min-width:701px){`, `.releaseFiltersBody>.toolbar,.notificationToolbar{align-items:center;gap:4px;flex-wrap:nowrap!important;overflow-x:auto;overflow-y:hidden;padding:8px;scrollbar-width:thin}`, `.releaseFiltersBody>.toolbar>.search,.notificationToolbar>.search{flex:0 1 clamp(120px,15vw,240px);width:clamp(120px,15vw,240px);min-width:110px!important;max-width:240px}`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("iPad filter-toolbar styling is missing %q", marker)
 		}

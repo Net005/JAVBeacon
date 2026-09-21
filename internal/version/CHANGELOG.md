@@ -7,6 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.205] - 2026-09-21
+
+### Fixed
+
+- Release Library and Notifications filter controls now remain on one row at
+  every non-mobile width, including the previous desktop breakpoint gap.
+- The primary wildcard search field now uses a compact responsive width so the
+  remaining filter controls fit cleanly; exceptionally narrow toolbars scroll
+  horizontally instead of wrapping a control onto a second row.
+
 ## [1.0.204] - 2026-09-21
 
 ### Fixed
