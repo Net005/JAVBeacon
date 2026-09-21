@@ -1295,7 +1295,7 @@ func (p *pikPakClient) doJSON(req *http.Request, out any) error {
 	if err := pikPakRequestThrottle.wait(req.Context()); err != nil {
 		return err
 	}
-	resp, err := p.http.Do(req)
+	resp, err := doWithTransientNetworkRetry(p.http, req)
 	pikPakRequestThrottle.reportResult(err)
 	if err != nil {
 		return err
@@ -1317,6 +1317,56 @@ func (p *pikPakClient) doJSON(req *http.Request, out any) error {
 	}
 	return err
 }
+
+// doWithTransientNetworkRetry retries client.Do(req) up to
+// javDBTransientNetworkAttempts times (the same attempt count and backoff
+// as JavDB's own getHTMLDirectWithRetry) when the transport itself failed -
+// a dial timeout, a connection reset or refused, a DNS hiccup - and no HTTP
+// response was ever received. client.Do returns a non-nil error only in
+// that case; once a request actually gets a response, even an error status,
+// it comes back with a nil error and this never retries it. The Keepshare
+// -> PikPak share redirect hop (discoverPikPakShareID) and every PikPak API
+// call (doJSON) are exposed to that same one-off network blip as JavDB's
+// own page fetches, so they share the identical retry treatment instead of
+// failing the whole resolution on the first hiccup.
+//
+// A request body is only safely retried when req.GetBody is set - net/http
+// populates it automatically for the strings.Reader/bytes.Reader/
+// bytes.Buffer bodies used throughout this file, letting each attempt start
+// from a fresh, unconsumed reader. A body without GetBody falls back to a
+// single attempt rather than risk sending a partial or empty body.
+func doWithTransientNetworkRetry(client *http.Client, req *http.Request) (*http.Response, error) {
+	attempts := javDBTransientNetworkAttempts
+	if req.Body != nil && req.GetBody == nil {
+		attempts = 1
+	}
+	var resp *http.Response
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			if req.GetBody != nil {
+				body, bodyErr := req.GetBody()
+				if bodyErr != nil {
+					return nil, bodyErr
+				}
+				req.Body = body
+			}
+			timer := time.NewTimer(time.Duration(attempt) * javDBTransientRetryDelay)
+			select {
+			case <-req.Context().Done():
+				timer.Stop()
+				return nil, err
+			case <-timer.C:
+			}
+		}
+		resp, err = client.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+	}
+	return nil, err
+}
+
 func (p *pikPakClient) request(ctx context.Context, path string, q url.Values) (pikPakResponse, error) {
 	action := "GET:" + path
 	if p.captchaToken == "" {
@@ -1932,7 +1982,7 @@ func discoverPikPakShareID(ctx context.Context, client *http.Client, sourceURL s
 		return "", err
 	}
 	req.Header.Set("User-Agent", publicShareUserAgent)
-	resp, err := noPlayer.Do(req)
+	resp, err := doWithTransientNetworkRetry(&noPlayer, req)
 	if err != nil {
 		return "", err
 	}
