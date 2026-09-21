@@ -7,6 +7,19 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.192] - 2026-09-21
+
+### Added
+
+- Release Library now has a persistent Hide Monitored toggle with an eye-off
+  icon. Its state survives browser/app restarts and is included in saved filter
+  sets.
+
+### Fixed
+
+- Hide Monitored in Notifications now works with PostgreSQL instead of failing
+  with an integer-versus-boolean SQL operator error.
+
 ## [1.0.191] - 2026-09-21
 
 ### Fixed

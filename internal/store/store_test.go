@@ -1622,6 +1622,42 @@ func TestExplicitMonitoringIsClearedWhenReleaseBecomesLocal(t *testing.T) {
 	}
 }
 
+func TestReleaseFilterCanHideMonitoredReleases(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "hide-monitored.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "Hide monitored", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "VISIBLE-1", Title: "Visible", Source: "JavLibrary"})
+	_, _ = s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "MONITORED-1", Title: "Monitored", Source: "JavLibrary", MonitorDownload: true, MonitorReason: "manual"})
+	all, err := s.Releases(ctx, domain.ReleaseFilter{Limit: 10, ShowNonPreferred: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, release := range all {
+		if _, err := s.CreateNotification(ctx, release.ID, "new_release", release.VideoID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{HideMonitored: true, Limit: 10, ShowNonPreferred: true})
+	if err != nil || len(rows) != 1 || rows[0].VideoID != "VISIBLE-1" {
+		t.Fatalf("hide monitored rows=%+v err=%v", rows, err)
+	}
+	count, err := s.ReleasesCount(ctx, domain.ReleaseFilter{HideMonitored: true, ShowNonPreferred: true})
+	if err != nil || count != 1 {
+		t.Fatalf("hide monitored count=%d err=%v", count, err)
+	}
+	notifications, err := s.NotificationsPage(ctx, "new_release", domain.ReleaseFilter{ShowNonPreferred: true}, true, "release", "desc", 10, 0)
+	if err != nil || notifications.Total != 1 || len(notifications.Items) != 1 || notifications.Items[0].Release == nil || notifications.Items[0].Release.VideoID != "VISIBLE-1" {
+		t.Fatalf("hide monitored notifications=%+v err=%v", notifications, err)
+	}
+}
+
 func TestSiteMonitoringRedesignMigration(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "site-monitoring-migration.db"))
