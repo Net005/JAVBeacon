@@ -2617,10 +2617,13 @@ func TestWildcardSearchFieldsStayCompactAndExposeLogic(t *testing.T) {
 	styles := string(stylesheet)
 	for _, marker := range []string{
 		".toolbar .search>.genericWildcardField{flex:1 1 auto;width:100%;min-width:0;max-width:none}",
-		".releaseFiltersBody>.toolbar>.search{flex:1 1 360px;min-width:280px;max-width:520px}",
-		".notificationToolbar>.search{flex:1 1 360px;min-width:280px;max-width:520px}",
-		"@media(min-width:1501px){.notificationToolbar{align-items:center;flex-wrap:nowrap}",
+		".releaseFiltersBody>.toolbar>.search{flex:1 1 300px;min-width:240px;max-width:340px}",
+		".releaseFiltersBody>.toolbar>.genericWildcardField{flex:1 1 190px;min-width:140px;max-width:280px}",
+		".notificationToolbar>.search{flex:1 1 300px;min-width:240px;max-width:340px}",
+		".notificationToolbar>.check{flex:0 0 auto;min-width:140px;min-height:42px",
+		"@media(min-width:2000px){.releaseFiltersBody>.toolbar,.notificationToolbar{align-items:center;flex-wrap:nowrap}",
 		".wildcardLogic{flex:0 0 68px!important;width:68px!important",
+		".wildcardLogicToggle{display:grid;flex:0 0 42px!important",
 		".genericWildcardBadges button span{max-width:min(420px,60vw)}",
 	} {
 		if !strings.Contains(styles, marker) {
@@ -2631,7 +2634,7 @@ func TestWildcardSearchFieldsStayCompactAndExposeLogic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{"releaseWildcardLogic", "notificationWildcardLogic", "discoveryWildcardLogic", "wildcard_logic", "OR matches any comma-separated"} {
+	for _, marker := range []string{"wildcardLogicToggle('releaseWildcardLogic')", "wildcardLogicToggle('notificationWildcardLogic')", "discoveryWildcardLogic", "wildcard_logic", "&amp; matches all wildcard values"} {
 		if !strings.Contains(string(script), marker) {
 			t.Fatalf("Wildcard logic UI is missing %q", marker)
 		}

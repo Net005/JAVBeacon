@@ -1677,16 +1677,18 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
 
 /* Wildcard searches stay compact and expose their comma-value match mode. */
 .toolbar .search>.genericWildcardField{flex:1 1 auto;width:100%;min-width:0;max-width:none}
-.releaseFiltersBody>.toolbar>.search{flex:1 1 360px;min-width:280px;max-width:520px}
-.releaseFiltersBody>.toolbar>.genericWildcardField{flex:1 1 260px;max-width:420px}
+.releaseFiltersBody>.toolbar>.search{flex:1 1 300px;min-width:240px;max-width:340px}
+.releaseFiltersBody>.toolbar>.genericWildcardField{flex:1 1 190px;min-width:140px;max-width:280px}
 .wildcardLogic{flex:0 0 68px!important;width:68px!important;min-width:68px;padding-inline:9px;font-weight:800;text-align:center}
+.wildcardLogicToggle{display:grid;flex:0 0 42px!important;width:42px!important;min-width:42px;height:42px;padding:0;place-items:center;font:900 18px/1 ui-monospace,SFMono-Regular,Consolas,monospace}.wildcardLogicToggle .logicAll{display:none}.wildcardLogicToggle[value="and"]{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 18%,var(--surface2));color:#ffd7dd}.wildcardLogicToggle[value="and"] .logicAny{display:none}.wildcardLogicToggle[value="and"] .logicAll{display:inline}
 .wildcardValueLogic{width:68px!important;min-width:68px;padding-inline:8px;font-size:11px;font-weight:800;text-align:center}
 .notificationToolbar{display:flex;align-items:flex-start;flex-wrap:wrap}
-.notificationToolbar>.search{flex:1 1 360px;min-width:280px;max-width:520px}
-.notificationToolbar>.check{flex:0 0 auto}
-.notificationToolbar>select:not(.wildcardLogic),.notificationToolbar>.genericWildcardField{flex:1 1 210px;width:auto;max-width:380px}
+.notificationToolbar>.search{flex:1 1 300px;min-width:240px;max-width:340px}
+.notificationToolbar>.check{flex:0 0 auto;min-width:140px;min-height:42px;gap:4px;padding-left:10px;border:1px solid var(--line);border-radius:7px;background:#0d1016;color:var(--muted)}
+.notificationToolbar>.check>select{width:64px;min-width:64px;height:40px;padding-inline:8px;border:0;background:transparent}
+.notificationToolbar>select:not(.wildcardLogic),.notificationToolbar>.genericWildcardField{flex:1 1 190px;width:auto;max-width:280px}.notificationToolbar>#notificationCategory,.notificationToolbar>#notificationStatus,.notificationToolbar>#notificationSort{max-width:165px}
 .notificationToolbar>.zoom{flex:2 1 250px;min-width:210px}
 .notificationToolbar>#notificationSort{flex:2 1 220px}
 .genericWildcardBadges button span{max-width:min(420px,60vw)}
-@media(min-width:1501px){.notificationToolbar{align-items:center;flex-wrap:nowrap}.notificationToolbar>.search{flex:0 1 360px;width:360px;min-width:280px}.notificationToolbar>.check{flex:0 0 105px}.notificationToolbar>#notificationCategory{flex:0 1 120px;width:120px}.notificationToolbar>.genericWildcardField{flex:0 1 220px;width:220px;min-width:160px}.notificationToolbar>#notificationStatus{flex:0 1 140px;width:140px}.notificationToolbar>.zoom{flex:0 1 150px;min-width:130px}.notificationToolbar>#notificationSort{flex:0 1 170px;width:170px}.notificationToolbar>.toolbarIcon,.notificationToolbar>.toolbarToggleIcon,.notificationToolbar>.presetMenu,.notificationToolbar>#notificationSortDirection{flex:0 0 40px}}
+@media(min-width:2000px){.releaseFiltersBody>.toolbar,.notificationToolbar{align-items:center;flex-wrap:nowrap}.notificationToolbar>.search,.releaseFiltersBody>.toolbar>.search{flex:0 1 290px;width:290px;min-width:230px}.notificationToolbar>.check{flex:0 0 140px}.notificationToolbar>#notificationCategory,.releaseFiltersBody>.toolbar>#categoryFilter{flex:0 1 115px;width:115px}.notificationToolbar>.genericWildcardField,.releaseFiltersBody>.toolbar>.genericWildcardField{flex:0 1 170px;width:170px;min-width:135px}.notificationToolbar>#notificationStatus{flex:0 1 130px;width:130px}.notificationToolbar>.zoom,.releaseFiltersBody>.toolbar>.zoom{flex:0 1 145px;min-width:125px}.notificationToolbar>#notificationSort,.releaseFiltersBody>.toolbar>#sortField{flex:0 1 155px;width:155px}.notificationToolbar>.toolbarIcon,.notificationToolbar>.toolbarToggleIcon,.notificationToolbar>.presetMenu,.notificationToolbar>#notificationSortDirection,.releaseFiltersBody>.toolbar>.toolbarIcon,.releaseFiltersBody>.toolbar>.toolbarToggleIcon,.releaseFiltersBody>.toolbar>.presetMenu,.releaseFiltersBody>.toolbar>#sortDirection{flex:0 0 40px}.notificationToolbar>.wildcardLogicToggle,.releaseFiltersBody>.toolbar>.wildcardLogicToggle{flex-basis:42px}}
 @media(max-width:700px){.releaseFiltersBody>.toolbar>.search,.notificationToolbar>.search{flex-basis:100%;min-width:100%;max-width:none}.releaseFiltersBody>.toolbar>.genericWildcardField,.notificationToolbar>.genericWildcardField,.notificationToolbar>select:not(.wildcardLogic){flex:1 1 100%;width:100%;max-width:none}.notificationToolbar>.zoom{flex-basis:100%;min-width:0}}
