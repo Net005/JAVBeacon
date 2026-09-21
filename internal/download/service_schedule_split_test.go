@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -202,6 +203,46 @@ func TestStartSearchOlderOnlyChecksOlderReleases(t *testing.T) {
 	// schedule.
 	if recent := service.SearchStatus(); recent.Checked != 0 || recent.Running {
 		t.Fatalf("expected the recent schedule's job to be untouched, got %+v", recent)
+	}
+}
+
+func TestMonitoredReleasesLoadsEveryStorePage(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "all-monitored-pages.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 1211; i++ {
+		if _, err := st.UpsertRelease(ctx, domain.Release{
+			SiteID:          site.ID,
+			VideoID:         fmt.Sprintf("OLD-%04d", i),
+			Title:           "Older monitored release",
+			Source:          "JavLibrary",
+			Released:        true,
+			MonitorDownload: true,
+			ReleaseDate:     "2020-01-01",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := New(st, 2*time.Second, slog.Default())
+	rows, err := service.monitoredReleases(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1211 {
+		t.Fatalf("loaded %d monitored releases, want all 1211", len(rows))
+	}
+	for _, release := range rows {
+		if !isOlderRelease(time.Now(), release, 60) {
+			t.Fatalf("release %s was not in the older-than-60-days bucket", release.VideoID)
+		}
 	}
 }
 

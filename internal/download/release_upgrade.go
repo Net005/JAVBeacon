@@ -143,9 +143,8 @@ func (s *Service) eligibleReleaseUpgrades(ctx context.Context) ([]releaseUpgrade
 	filter := domain.ReleaseFilter{
 		MinReleaseDate: now.AddDate(0, 0, -releaseUpgradeWindowDays).Format("2006-01-02"),
 		MaxReleaseDate: now.AddDate(0, 0, releaseUpgradeWindowDays).Format("2006-01-02"),
-		Limit:          5000,
 	}
-	releases, err := s.store.Releases(ctx, filter)
+	releases, err := s.allReleasePages(ctx, filter)
 	if err != nil {
 		return nil, patterns, err
 	}

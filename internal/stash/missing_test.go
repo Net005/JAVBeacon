@@ -2,6 +2,7 @@ package stash
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -88,6 +89,29 @@ func TestMissingScanRecordsMissingScenesAndMatchesExisting(t *testing.T) {
 	}
 	if matched == nil || matched.ReleaseVideoID != "DEF-456" {
 		t.Fatalf("matched scene wrong: %+v", matched)
+	}
+}
+
+func TestMissingSceneBackgroundSnapshotLoadsEveryPage(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "missing-pages.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for i := 1; i <= 501; i++ {
+		if _, err := st.UpsertStashMissingScene(ctx, domain.StashMissingScene{StashSceneID: fmt.Sprintf("scene-%04d", i), Title: "Missing"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := New(st, time.Second, slog.Default(), nil, nil)
+	rows, err := service.allMissingScenePages(ctx, domain.StashMissingFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 501 {
+		t.Fatalf("missing-scene snapshot = %d, want all 501", len(rows))
 	}
 }
 

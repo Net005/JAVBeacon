@@ -3166,7 +3166,7 @@ func (s *Service) runMonitoredSearch(ctx context.Context, schedule string, getJo
 		}
 		s.log.Info(logLabel+" completed", "checked", job.Checked, "found", job.Found, "downloaded", job.Downloaded, "skipped", job.Skipped, "failed", job.Failed, "error", job.Error)
 	}()
-	rows, e := s.store.Releases(ctx, domain.ReleaseFilter{MonitorDownload: true, Limit: 5000})
+	rows, e := s.monitoredReleases(ctx)
 	if e != nil {
 		job.Error = e.Error()
 		return
@@ -3218,6 +3218,36 @@ func (s *Service) runMonitoredSearch(ctx context.Context, schedule string, getJo
 			job.Downloaded++
 		} else {
 			job.Skipped++
+		}
+	}
+}
+
+// monitoredReleases snapshots every actively monitored release before a
+// scheduled search starts processing them. Store.Releases deliberately caps a
+// page at 500 rows; asking it for a larger one-shot limit falls back to 100,
+// which previously made both schedules inspect only the newest 100 monitored
+// releases. Loading every page up front also keeps offsets stable if processing
+// a release changes its monitoring state.
+func (s *Service) monitoredReleases(ctx context.Context) ([]domain.Release, error) {
+	return s.allReleasePages(ctx, domain.ReleaseFilter{MonitorDownload: true})
+}
+
+// allReleasePages is the shared whole-collection reader for background jobs.
+// The store intentionally bounds individual pages at 500 rows, so schedulers
+// must page until exhaustion instead of inventing a supposedly-large limit.
+func (s *Service) allReleasePages(ctx context.Context, filter domain.ReleaseFilter) ([]domain.Release, error) {
+	const pageSize = 500
+	all := make([]domain.Release, 0, pageSize)
+	for offset := 0; ; offset += pageSize {
+		filter.Limit = pageSize
+		filter.Offset = offset
+		page, err := s.store.Releases(ctx, filter)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if len(page) < pageSize {
+			return all, nil
 		}
 	}
 }
