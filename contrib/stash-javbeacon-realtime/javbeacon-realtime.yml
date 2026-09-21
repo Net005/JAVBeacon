@@ -1,6 +1,6 @@
 name: JAVBeacon Realtime Sync + Subtitles
-description: Sends changed scenes to JAVBeacon, requests subtitles from JAVBeacon-Subs, and adds scene-card Watchlist controls.
-version: 1.9.3
+description: Syncs changed scenes, links scene pages to JAVBeacon releases, requests subtitles, and adds scene-card Watchlist controls.
+version: 1.10.0
 ui:
   javascript:
     - javbeacon_subtitles.js
@@ -10,6 +10,10 @@ settings:
   javbeacon_url:
     displayName: JAVBeacon URL
     description: Base URL reachable from the Stash server, for example http://javbeacon:8080. Do not include /api/hooks/stash.
+    type: STRING
+  javbeacon_browser_url:
+    displayName: JAVBeacon browser URL
+    description: Optional public URL opened by the scene-page JAVBeacon button, for example https://jav.example.com. Defaults to JAVBeacon URL.
     type: STRING
   webhook_secret:
     displayName: JAVBeacon webhook secret

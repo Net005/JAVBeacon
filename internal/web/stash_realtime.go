@@ -3,8 +3,11 @@ package web
 import (
 	"crypto/subtle"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Net005/JAVBeacon/internal/domain"
 )
 
 func (s *Server) authenticateStashRealtime(w http.ResponseWriter, r *http.Request) bool {
@@ -72,4 +75,38 @@ func (s *Server) stashRealtimeEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Debug("Stash plugin event accepted", "request_id", strings.TrimSpace(payload.RequestID), "scene_id", strings.TrimSpace(payload.SceneID), "event", strings.TrimSpace(payload.Event), "remote", r.RemoteAddr, "elapsed", time.Since(started))
 	s.json(w, http.StatusAccepted, map[string]any{"state": "accepted", "request_id": strings.TrimSpace(payload.RequestID), "scene_id": strings.TrimSpace(payload.SceneID)})
+}
+
+func (s *Server) stashReleaseLink(w http.ResponseWriter, r *http.Request) {
+	if !s.authenticateStashRealtime(w, r) {
+		return
+	}
+	var payload struct {
+		SceneID string `json:"scene_id"`
+	}
+	if !s.decode(w, r, &payload) {
+		return
+	}
+	payload.SceneID = strings.TrimSpace(payload.SceneID)
+	if payload.SceneID == "" {
+		s.problem(w, http.StatusBadRequest, "scene ID is required")
+		return
+	}
+	releases, err := s.store.Releases(r.Context(), domain.ReleaseFilter{
+		StashSceneID: payload.SceneID,
+		Limit:        1,
+	})
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(releases) == 0 {
+		s.problem(w, http.StatusNotFound, "no JAVBeacon release is linked to this Stash scene")
+		return
+	}
+	s.json(w, http.StatusOK, map[string]any{
+		"release_id":   releases[0].ID,
+		"release_path": "/release/" + strconv.FormatInt(releases[0].ID, 10),
+		"video_id":     releases[0].VideoID,
+	})
 }

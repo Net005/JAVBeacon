@@ -2539,6 +2539,87 @@ func TestHideMonitoredFiltersArePersistentAndPortable(t *testing.T) {
 	}
 }
 
+func TestNotificationsUseInfiniteScroll(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	markup, err := assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(javascript)
+	for _, marker := range []string{
+		"notificationOffset=0,notificationHasMore=false,notificationLoading=false,notificationRequest=0",
+		"if(append&&(!notificationHasMore||notificationLoading))return",
+		"offset:String(notificationOffset)",
+		"notificationRows=append?notificationRows.concat(added):added",
+		"function loadMoreNotifications(){return loadNotifications(false,true)}",
+		"function fillNotificationViewport(){if(!notificationHasMore||notificationLoading||notificationsView.hidden)return",
+		"new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting)&&!notificationsView.hidden)loadMoreNotifications()",
+	} {
+		if !strings.Contains(script, marker) {
+			t.Fatalf("Notifications infinite scroll is missing %q", marker)
+		}
+	}
+	page := string(markup)
+	if !strings.Contains(page, `id="notificationListSentinel"`) || !strings.Contains(page, `id="notificationListLoadingMore"`) {
+		t.Fatal("Notifications infinite-scroll sentinel/loading state is missing")
+	}
+	if strings.Contains(page, `id="notificationPagination"`) {
+		t.Fatal("Notifications still renders the old page navigation")
+	}
+}
+
+func TestNotificationsShareReleaseLibraryFilterSets(t *testing.T) {
+	javascript, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	markup, err := assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(javascript)
+	for _, marker := range []string{
+		"function currentNotificationFilterState(overrides={})",
+		"function applyNotificationPreset(id)",
+		"function renderNotificationPresetMenu()",
+		"state:currentNotificationFilterState(overrides)",
+		"show_non_preferred:String(!!prefs.showNonPreferred)",
+		"notificationLocalDim.onclick",
+		"notificationShowNonPreferred.onclick",
+	} {
+		if !strings.Contains(script, marker) {
+			t.Fatalf("Notifications shared filters are missing %q", marker)
+		}
+	}
+	page := string(markup)
+	for _, id := range []string{`id="notificationPresetMenu"`, `id="notificationPresetMenuItems"`, `id="saveCurrentNotificationFilter"`} {
+		if !strings.Contains(page, id) {
+			t.Fatalf("Notifications shared filter UI is missing %s", id)
+		}
+	}
+}
+
+func TestWildcardSearchFieldsKeepUsefulWidth(t *testing.T) {
+	stylesheet, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles := string(stylesheet)
+	for _, marker := range []string{
+		".toolbar .search>.genericWildcardField{flex:1 1 auto;width:100%;min-width:0;max-width:none}",
+		".releaseFiltersBody>.toolbar>.search{flex:5 1 560px;min-width:min(560px,100%)}",
+		".notificationToolbar>.search{flex:5 1 560px;min-width:min(560px,100%)}",
+		".genericWildcardBadges button span{max-width:min(420px,60vw)}",
+	} {
+		if !strings.Contains(styles, marker) {
+			t.Fatalf("Wildcard search layout is missing %q", marker)
+		}
+	}
+}
+
 func TestDiscoveriesPreserveScrollDuringPagingAndDetailReturn(t *testing.T) {
 	raw, err := assets.ReadFile("static/app.js")
 	if err != nil {

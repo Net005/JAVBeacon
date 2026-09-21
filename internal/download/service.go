@@ -44,6 +44,10 @@ type Service struct {
 	// replacementJob is the current or most recently completed bulk
 	// Download Activity delete/replacement operation.
 	replacementJob domain.DownloadReplacementJob
+	// replacementCleanupTimeout bounds the wait for an active transfer to
+	// acknowledge cancellation. Provider/network code must never leave the
+	// singleton bulk replacement job locked in Running forever.
+	replacementCleanupTimeout time.Duration
 	// releaseUpgradeJob is the current or most recently completed Release
 	// Upgrade Schedule run - see ReleaseUpgradeStatus/RunReleaseUpgradeSchedule
 	// in release_upgrade.go.
@@ -319,7 +323,7 @@ func (s *Service) httpFallbackDue(downloadID int64) bool {
 }
 
 func New(st store.Store, timeout time.Duration, log *slog.Logger) *Service {
-	s := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, pipelineJobs: make(chan pipelineJob, 64), scheduleNextAttempt: map[string]time.Time{}, httpRuns: map[int64]*httpDownloadRun{}, httpSolverPool: scraper.NewSolverPool()}
+	s := &Service{store: st, client: &http.Client{Timeout: timeout}, log: log, replacementCleanupTimeout: 30 * time.Second, pipelineJobs: make(chan pipelineJob, 64), scheduleNextAttempt: map[string]time.Time{}, httpRuns: map[int64]*httpDownloadRun{}, httpSolverPool: scraper.NewSolverPool()}
 	if rows, err := st.DownloadSearchRuns(context.Background(), "recent", 1); err == nil && len(rows) > 0 {
 		s.job = searchJobFromRun(rows[0])
 	}
@@ -2689,12 +2693,18 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 		for _, item := range items {
 			job.CurrentItem = item.query
 			s.setReplacementJob(job)
+			cleanupTimeout := s.replacementCleanupTimeout
+			if cleanupTimeout <= 0 {
+				cleanupTimeout = 30 * time.Second
+			}
+			cleanupCtx, cleanupCancel := context.WithTimeout(background, cleanupTimeout)
 			var removeErr error
 			if item.transport == "http" {
-				_, removeErr = s.removeHTTPReleaseDownloads(background, item.downloadID, item.id, item.query)
+				_, removeErr = s.removeHTTPReleaseDownloads(cleanupCtx, item.downloadID, item.id, item.query)
 			} else {
-				_, removeErr = s.removeReleaseDownloads(background, item.id, item.query, true)
+				_, removeErr = s.removeReleaseDownloads(cleanupCtx, item.id, item.query, true)
 			}
+			cleanupCancel()
 			if removeErr != nil {
 				s.log.Error("bulk download removal failed", "release_id", item.id, "video_id", item.query, "transport", item.transport, "error", removeErr)
 				job.Failed++

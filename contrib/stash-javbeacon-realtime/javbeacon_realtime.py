@@ -260,12 +260,57 @@ def request_realtime_sync(payload, args):
     return {"mode": mode, "request_id": request_id, "queued_scene_id": scene_id or None, "javbeacon": result}
 
 
+def request_release_link(payload, args):
+    scene_id = str(args.get("scene_id") or "").strip()
+    if not scene_id:
+        raise RuntimeError("release link request did not include a scene ID")
+    settings = _plugin_settings(payload)
+    base_url = str(settings.get("javbeacon_url") or "").strip().rstrip("/")
+    browser_url = str(settings.get("javbeacon_browser_url") or base_url).strip().rstrip("/")
+    secret = str(settings.get("webhook_secret") or "").strip()
+    timeout = max(1, int(_setting(settings, "timeout_seconds", 10)))
+    for name, value in (("JAVBeacon URL", base_url), ("JAVBeacon browser URL", browser_url)):
+        parsed = urllib.parse.urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password:
+            raise RuntimeError(f"configure a valid {name} in Settings > Plugins")
+    if not secret:
+        raise RuntimeError("configure the JAVBeacon webhook secret in Settings > Plugins")
+
+    request = urllib.request.Request(
+        base_url + "/api/hooks/stash/release-link",
+        data=json.dumps({"scene_id": scene_id}).encode(),
+        headers={"Authorization": "Bearer " + secret, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            result = _read_json_response(response)
+    except urllib.error.HTTPError as error:
+        detail = _http_error_detail(error)
+        raise RuntimeError(f"JAVBeacon release lookup returned HTTP {error.code}: {detail}") from error
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"could not reach JAVBeacon: {error.reason}") from error
+
+    release_path = str(result.get("release_path") or "").strip()
+    if not release_path.startswith("/release/"):
+        raise RuntimeError("JAVBeacon returned an invalid release link")
+    return {
+        "mode": "release_link",
+        "scene_id": scene_id,
+        "release_id": result.get("release_id"),
+        "video_id": result.get("video_id"),
+        "url": browser_url + release_path,
+    }
+
+
 def main():
     payload = json.load(sys.stdin)
     args = payload.get("args") or {}
     mode = str(args.get("mode") or "hook").strip().lower()
     if mode == "subtitles":
         output = request_subtitles(payload, args)
+    elif mode == "release_link":
+        output = request_release_link(payload, args)
     else:
         output = request_realtime_sync(payload, args)
     return {"output": output}
