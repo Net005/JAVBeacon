@@ -3,16 +3,18 @@ package discovery
 import "time"
 
 type Config struct {
-	Enabled               bool
-	OllamaURL             string
-	OllamaModel           string
-	RequestTimeout        time.Duration
-	HealthTimeout         time.Duration
-	OpenAIFallbackEnabled bool
-	OpenAIAPIKey          string
-	OpenAIBaseURL         string
-	OpenAIModel           string
-	OpenAITimeout         time.Duration
+	Enabled                bool
+	PrimaryProvider        string
+	OllamaURL              string
+	OllamaModel            string
+	RequestTimeout         time.Duration
+	HealthTimeout          time.Duration
+	OpenAIFallbackEnabled  bool
+	OpenAIAPIKey           string
+	OpenAIBaseURL          string
+	OpenAIModel            string
+	OpenAITimeout          time.Duration
+	OpenAIIncludeSubtitles bool
 }
 
 type Candidate struct {
@@ -56,8 +58,16 @@ type OllamaStatus struct {
 }
 
 type Result struct {
-	Ranks    []Rank
-	Provider string
-	Skipped  bool
-	Status   string
+	Ranks             []Rank
+	Provider          string
+	AttemptedProvider string
+	Usage             Usage
+	Skipped           bool
+	Status            string
+}
+
+type Usage struct {
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
+	TotalTokens  int64 `json:"total_tokens"`
 }

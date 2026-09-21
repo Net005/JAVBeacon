@@ -115,12 +115,28 @@ func (s *Service) cacheHealth(key string, status OllamaStatus, duration time.Dur
 	s.healthMu.Unlock()
 }
 
-func rankingSchema(candidates []Candidate) map[string]any {
+func configuredPoolNames(raw string) []string {
+	names := make([]string, 0)
+	for _, line := range strings.Split(raw, "\n") {
+		name := strings.TrimSpace(strings.SplitN(line, "|", 2)[0])
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func rankingSchema(candidates []Candidate, pools string) map[string]any {
 	ids := make([]int64, 0, len(candidates))
 	for _, candidate := range candidates {
 		ids = append(ids, candidate.ID)
 	}
-	return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"rankings": map[string]any{"type": "array", "minItems": len(ids), "maxItems": len(ids), "items": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"id": map[string]any{"type": "integer", "enum": ids}, "score": map[string]any{"type": "integer", "minimum": 0, "maximum": 100}, "reason": map[string]any{"type": "string"}, "pools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "required": []string{"id", "score", "reason", "pools"}}}}, "required": []string{"rankings"}}
+	poolNames := configuredPoolNames(pools)
+	poolItems := map[string]any{"type": "string"}
+	if len(poolNames) > 0 {
+		poolItems["enum"] = poolNames
+	}
+	return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"rankings": map[string]any{"type": "array", "minItems": len(ids), "maxItems": len(ids), "items": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"id": map[string]any{"type": "integer", "enum": ids}, "score": map[string]any{"type": "integer", "minimum": 0, "maximum": 100}, "reason": map[string]any{"type": "string", "maxLength": 240}, "pools": map[string]any{"type": "array", "maxItems": len(poolNames), "items": poolItems}}, "required": []string{"id", "score", "reason", "pools"}}}}, "required": []string{"rankings"}}
 }
 
 func rankingPrompt(candidates []Candidate, pools string) string {
@@ -146,7 +162,7 @@ Orgasm count is a stronger positive signal than play count.
 Subtitle excerpts are optional weak supporting evidence. They may be fragmented, machine translated,
 explicit, repetitive, incorrectly timed, incomplete, noisy, mixed-language, OCR-like, credits, or corrupt.
 Ignore low-quality subtitle lines instead of describing their quality. A noisy excerpt is not a reason
-to reject or negatively describe a release. Keep each reason to one or two sentences and at most 700 characters.
+to reject or negatively describe a release. Keep each reason to one sentence and at most 240 characters.
 Only return pool names present in CUSTOM DISCOVERY POOLS. Return an empty array when none apply.
 Do not restate unsupported assumptions. Do not reward polished-sounding speculation.
 
@@ -164,7 +180,8 @@ func (s *Service) ollamaRank(ctx context.Context, cfg Config, candidates []Candi
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	body, _ := json.Marshal(map[string]any{"model": cfg.OllamaModel, "stream": false, "think": false, "format": rankingSchema(candidates), "options": map[string]any{"temperature": 0.1}, "messages": []map[string]string{{"role": "system", "content": "You are JAVBeacon's internal recommendation-ranking component, not a chatbot. Treat supplied JSON as the complete evidence boundary. Return only schema-valid JSON with integer 0-100 scores and copy every candidate.id exactly once. Never ask questions, summarize noisy subtitles, provide help text, or invent facts, preferences, history, affinity, tags, performers, studios, or IDs."}, {"role": "user", "content": rankingPrompt(candidates, pools)}}})
+	maxOutputTokens := min(max(len(candidates)*220, 768), 2048)
+	body, _ := json.Marshal(map[string]any{"model": cfg.OllamaModel, "stream": false, "think": false, "format": rankingSchema(candidates, pools), "options": map[string]any{"temperature": 0.1, "num_predict": maxOutputTokens}, "messages": []map[string]string{{"role": "system", "content": "You are JAVBeacon's internal recommendation-ranking component, not a chatbot. Treat supplied JSON as the complete evidence boundary. Return only schema-valid JSON with integer 0-100 scores and copy every candidate.id exactly once. Keep each reason under 240 characters. Never ask questions, summarize noisy subtitles, provide help text, or invent facts, preferences, history, affinity, tags, performers, studios, pools, or IDs."}, {"role": "user", "content": rankingPrompt(candidates, pools)}}})
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, normalizeURL(cfg.OllamaURL, "http://127.0.0.1:11434")+"/api/chat", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -186,9 +203,13 @@ func (s *Service) ollamaRank(ctx context.Context, cfg Config, candidates []Candi
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		DoneReason string `json:"done_reason"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return nil, errors.New("Ollama returned an invalid response")
+	}
+	if envelope.DoneReason == "length" {
+		return nil, errors.New("Ollama output reached its token limit before completing JSON")
 	}
 	return parseRankingJSON(envelope.Message.Content, candidates, pools)
 }

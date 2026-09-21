@@ -7,6 +7,39 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.190] - 2026-09-21
+
+### Changed
+
+- AI Discovery can now use either remote Ollama with the existing optional
+  OpenAI fallback rules, or OpenAI as the explicit primary provider.
+- OpenAI enrichment records actual input/output token usage and shows a live,
+  persisted cost estimate for recognized models in both progress panels.
+- The OpenAI settings include a fast local cost dry run for both the configured
+  enrichment run and the full library, without contacting or billing OpenAI.
+- OpenAI Discovery can exclude subtitle excerpts independently while retaining
+  title, story, cast, tags, history, pool and other metadata evidence.
+- Discoveries jobs now show detailed live progress in Settings and on the
+  Discoveries page: active stage and release IDs, batch progress, completed
+  and remaining counts, elapsed time, throughput, batch duration, and ETA.
+- AI enrichment now processes at most five releases per Ollama request, limits
+  weak subtitle evidence and model output, and saves each small batch as soon
+  as it completes so useful results and progress appear sooner.
+- Structured ranking schemas now constrain recommendation reasons to a concise
+  length and pool values to configured pool names, preventing small models
+  from rambling until JSON is truncated or inventing an unknown pool.
+- Discovery settings now show the active AI batch and use request-size limits
+  suited to remote 4B-class models without limiting the total releases that
+  can be enriched.
+
+### Fixed
+
+- Repeated Discoveries refreshes can no longer launch overlapping enrichment
+  workers while a slow Ollama request is still running, preventing duplicate
+  GPU work that could keep progress stuck at zero.
+- Token-limit, timeout, HTTP and validation failures now produce a safe,
+  specific status instead of the generic “Ollama inference failed” message.
+
 ## [1.0.189] - 2026-09-21
 
 ### Fixed

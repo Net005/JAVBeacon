@@ -27,9 +27,9 @@ func responseText(response map[string]any) string {
 	return ""
 }
 
-func (s *Service) openAIRank(ctx context.Context, cfg Config, candidates []Candidate, pools string) ([]Rank, error) {
+func (s *Service) openAIRank(ctx context.Context, cfg Config, candidates []Candidate, pools string) ([]Rank, Usage, error) {
 	if strings.TrimSpace(cfg.OpenAIAPIKey) == "" {
-		return nil, errors.New("OpenAI fallback API key is not configured")
+		return nil, Usage{}, errors.New("OpenAI API key is not configured")
 	}
 	timeout := cfg.OpenAITimeout
 	if timeout <= 0 {
@@ -41,30 +41,63 @@ func (s *Service) openAIRank(ctx context.Context, cfg Config, candidates []Candi
 	if model == "" {
 		model = "gpt-5-mini"
 	}
-	body, _ := json.Marshal(map[string]any{"model": model, "input": rankingPrompt(candidates, pools), "max_output_tokens": min(max(len(candidates)*160, 2048), 32768), "truncation": "auto", "store": false, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "discovery_rankings", "strict": true, "schema": rankingSchema(candidates)}}})
+	openAICandidates := candidates
+	if !cfg.OpenAIIncludeSubtitles {
+		openAICandidates = append([]Candidate(nil), candidates...)
+		for index := range openAICandidates {
+			openAICandidates[index].Subtitle = ""
+		}
+	}
+	body, _ := json.Marshal(map[string]any{"model": model, "input": rankingPrompt(openAICandidates, pools), "max_output_tokens": min(max(len(openAICandidates)*160, 2048), 32768), "truncation": "auto", "store": false, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "discovery_rankings", "strict": true, "schema": rankingSchema(openAICandidates, pools)}}})
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, normalizeURL(cfg.OpenAIBaseURL, "https://api.openai.com/v1")+"/responses", bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, Usage{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.OpenAIAPIKey))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, Usage{}, err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil, err
+		return nil, Usage{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("OpenAI fallback returned HTTP %d", resp.StatusCode)
+		return nil, Usage{}, fmt.Errorf("OpenAI returned HTTP %d", resp.StatusCode)
 	}
 	var envelope map[string]any
 	if json.Unmarshal(data, &envelope) != nil {
-		return nil, errors.New("OpenAI fallback returned an invalid response")
+		return nil, Usage{}, errors.New("OpenAI returned an invalid response")
 	}
-	return parseRankingJSON(responseText(envelope), candidates, pools)
+	ranks, err := parseRankingJSON(responseText(envelope), candidates, pools)
+	usage := responseUsage(envelope)
+	if err != nil {
+		return nil, usage, err
+	}
+	return ranks, usage, nil
+}
+
+func responseUsage(response map[string]any) Usage {
+	raw, _ := response["usage"].(map[string]any)
+	usage := Usage{InputTokens: numberInt64(raw["input_tokens"]), OutputTokens: numberInt64(raw["output_tokens"]), TotalTokens: numberInt64(raw["total_tokens"])}
+	if usage.TotalTokens == 0 {
+		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	}
+	return usage
+}
+
+func numberInt64(value any) int64 {
+	switch number := value.(type) {
+	case float64:
+		return int64(number)
+	case json.Number:
+		result, _ := number.Int64()
+		return result
+	default:
+		return 0
+	}
 }
 
 func (s *Service) TestOpenAI(ctx context.Context, cfg Config) (time.Duration, error) {
