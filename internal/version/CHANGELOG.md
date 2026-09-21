@@ -7,6 +7,16 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Marking a release to Watchlist while it was still downloading (not yet
+  matched to a local Stash scene) no longer gets silently discarded once
+  StashApp catches up and matches it. The pending Watchlist mark is now
+  pushed to Stash as soon as the scene is matched, instead of the sync
+  process treating the untagged scene as authoritative and clearing the
+  flag - this affected both the realtime webhook match and the periodic/
+  manual "Sync local library" job.
+
 ## [1.0.206] - 2026-09-21
 
 ### Fixed
