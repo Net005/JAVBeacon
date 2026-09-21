@@ -110,18 +110,27 @@ type openAIRank struct {
 }
 
 type discoveryAICandidate struct {
-	ID        int64    `json:"id"`
-	VideoID   string   `json:"video_id"`
-	Title     string   `json:"title"`
-	Story     string   `json:"story"`
-	Actresses []string `json:"actresses"`
-	Genres    []string `json:"genres"`
-	Studio    string   `json:"studio"`
-	Local     bool     `json:"local"`
-	Played    int      `json:"play_count"`
-	Orgasms   int      `json:"orgasm_count"`
-	Evidence  []string `json:"grounding_evidence"`
-	Subtitle  string   `json:"subtitle_excerpt,omitempty"`
+	ID                int64                    `json:"id"`
+	VideoID           string                   `json:"video_id"`
+	Title             string                   `json:"title"`
+	Story             string                   `json:"story"`
+	Actresses         []string                 `json:"actresses"`
+	Genres            []string                 `json:"genres"`
+	Studio            string                   `json:"studio"`
+	Label             string                   `json:"label"`
+	Director          string                   `json:"director"`
+	ReleaseDate       string                   `json:"release_date"`
+	Duration          string                   `json:"duration"`
+	Local             bool                     `json:"local"`
+	Played            int                      `json:"play_count"`
+	Orgasms           int                      `json:"orgasm_count"`
+	BaselineScore     float64                  `json:"deterministic_score"`
+	DiscoveryState    string                   `json:"discovery_state"`
+	SubtitleAvailable bool                     `json:"subtitle_available"`
+	Evidence          []string                 `json:"-"`
+	Taste             aidiscovery.TasteSignals `json:"taste_match"`
+	EligiblePools     []string                 `json:"eligible_pools"`
+	Subtitle          string                   `json:"subtitle_excerpt,omitempty"`
 }
 
 func (s *Server) testDiscoveryOpenAI(w http.ResponseWriter, r *http.Request) {
@@ -261,6 +270,26 @@ func (s *Server) testDiscoveryOllama(w http.ResponseWriter, r *http.Request) {
 	s.json(w, http.StatusOK, status)
 }
 
+func (s *Server) clearDiscoveryAIRankings(w http.ResponseWriter, r *http.Request) {
+	discoveryAIStatus.Lock()
+	running := discoveryAIStatus.Running
+	discoveryAIStatus.Unlock()
+	if running {
+		s.problem(w, http.StatusConflict, "AI enrichment is currently running; wait for it to finish before clearing recommendations")
+		return
+	}
+	removed, err := s.store.ClearDiscoveryAIRanks(r.Context())
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, "clear AI recommendations: "+err.Error())
+		return
+	}
+	discoveryRankCache.Lock()
+	discoveryRankCache.entries = map[[32]byte]discoveryRankCacheEntry{}
+	discoveryRankCache.Unlock()
+	s.log.Info("AI Discovery recommendations cleared", "removed", removed)
+	s.json(w, http.StatusOK, map[string]any{"removed": removed})
+}
+
 var discoveryRankCache = struct {
 	sync.Mutex
 	entries map[[32]byte]discoveryRankCacheEntry
@@ -378,6 +407,30 @@ func cleanedSubtitleExcerpt(release domain.Release, maxChars int) string {
 	return out.String()
 }
 
+func discoveryTasteSignals(reasons []string) aidiscovery.TasteSignals {
+	signals := aidiscovery.TasteSignals{PreferredPerformers: []string{}, PreferredThemes: []string{}, WatchedTextThemes: []string{}}
+	for _, reason := range reasons {
+		reason = strings.TrimSpace(reason)
+		switch {
+		case strings.HasPrefix(reason, "Performer preference: "):
+			signals.PreferredPerformers = append(signals.PreferredPerformers, strings.TrimSpace(strings.TrimPrefix(reason, "Performer preference: ")))
+		case strings.HasPrefix(reason, "Theme preference: "):
+			signals.PreferredThemes = append(signals.PreferredThemes, strings.TrimSpace(strings.TrimPrefix(reason, "Theme preference: ")))
+		case strings.HasPrefix(reason, "Studio preference: "):
+			signals.PreferredStudio = strings.TrimSpace(strings.TrimPrefix(reason, "Studio preference: "))
+		case strings.HasPrefix(reason, "Label preference: "):
+			signals.PreferredLabel = strings.TrimSpace(strings.TrimPrefix(reason, "Label preference: "))
+		case strings.HasPrefix(reason, "Title matches a watched theme: "):
+			signals.WatchedTextThemes = append(signals.WatchedTextThemes, strings.TrimSpace(strings.TrimPrefix(reason, "Title matches a watched theme: ")))
+		case strings.HasPrefix(reason, "Story matches a watched theme: "):
+			signals.WatchedTextThemes = append(signals.WatchedTextThemes, strings.TrimSpace(strings.TrimPrefix(reason, "Story matches a watched theme: ")))
+		case reason == "A fresh release outside your usual history":
+			signals.FreshDiscovery = true
+		}
+	}
+	return signals
+}
+
 func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit, batchSize, maxInputChars int) ([][]discoveryAICandidate, [][]byte) {
 	items = items[:min(limit, len(items))]
 	poolsSize := len(settings["discoveries_pools"])
@@ -389,6 +442,7 @@ func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit
 	// prompt evaluation time on small local models without improving ranking
 	// quality, so each candidate receives a compact cleaned sample.
 	configuredSubtitleChars := min(max(discoveryInt(settings, "discoveries_subtitle_max_chars", 4000), 0), 4000)
+	configuredPools := discoveryPools(settings["discoveries_pools"])
 	batches, payloads := make([][]discoveryAICandidate, 0, (len(items)+batchSize-1)/batchSize), make([][]byte, 0, (len(items)+batchSize-1)/batchSize)
 	for start := 0; start < len(items); start += batchSize {
 		end := min(start+batchSize, len(items))
@@ -397,7 +451,17 @@ func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit
 		for _, item := range items[start:end] {
 			story := item.Story
 			story = aidiscovery.TruncateUTF8(story, 1200)
-			batch = append(batch, discoveryAICandidate{ID: item.ID, VideoID: item.VideoID, Title: item.Title, Story: story, Actresses: item.Actresses, Genres: item.Genres, Studio: item.Studio, Local: item.Local, Played: item.PlayCount, Orgasms: item.OCounter, Evidence: slices.Clone(item.Reasons)})
+			eligiblePools := []string{}
+			for name, keywords := range configuredPools {
+				for _, keyword := range keywords {
+					if discoveryTextMatches(item.Release, keyword) {
+						eligiblePools = append(eligiblePools, name)
+						break
+					}
+				}
+			}
+			sort.Strings(eligiblePools)
+			batch = append(batch, discoveryAICandidate{ID: item.ID, VideoID: item.VideoID, Title: item.Title, Story: story, Actresses: item.Actresses, Genres: item.Genres, Studio: item.Studio, Label: item.Label, Director: item.Director, ReleaseDate: item.ReleaseDate, Duration: item.Duration, Local: item.Local, Played: item.PlayCount, Orgasms: item.OCounter, BaselineScore: item.Score, DiscoveryState: item.Category, SubtitleAvailable: item.HasSubtitle, Evidence: slices.Clone(item.Reasons), Taste: discoveryTasteSignals(item.Reasons), EligiblePools: eligiblePools})
 			if subtitleEnabled && item.HasSubtitle {
 				eligible++
 			}
@@ -565,7 +629,7 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 			discoveryAIStatus.Unlock()
 			aiCandidates := make([]aidiscovery.Candidate, 0, len(batch))
 			for _, candidate := range batch {
-				aiCandidates = append(aiCandidates, aidiscovery.Candidate{ID: candidate.ID, VideoID: candidate.VideoID, Title: candidate.Title, Story: candidate.Story, Actresses: candidate.Actresses, Genres: candidate.Genres, Studio: candidate.Studio, Local: candidate.Local, Played: candidate.Played, Orgasms: candidate.Orgasms, Evidence: candidate.Evidence, Subtitle: candidate.Subtitle})
+				aiCandidates = append(aiCandidates, aidiscovery.Candidate{ID: candidate.ID, VideoID: candidate.VideoID, Title: candidate.Title, Story: candidate.Story, Actresses: candidate.Actresses, Genres: candidate.Genres, Studio: candidate.Studio, Label: candidate.Label, Director: candidate.Director, ReleaseDate: candidate.ReleaseDate, Duration: candidate.Duration, Local: candidate.Local, Played: candidate.Played, Orgasms: candidate.Orgasms, BaselineScore: candidate.BaselineScore, DiscoveryState: candidate.DiscoveryState, SubtitleAvailable: candidate.SubtitleAvailable, Evidence: candidate.Evidence, Taste: candidate.Taste, EligiblePools: candidate.EligiblePools, Subtitle: candidate.Subtitle})
 			}
 			result := s.discoveryAI.Rank(context.Background(), discoveryAIConfig(settingsCopy), aiCandidates, pools)
 			resultModel := model
@@ -1231,7 +1295,9 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	// enrichment. Every catalog row remains reachable without blocking the UI
 	// on a full-library scoring pass.
 	candidateLimit := requestedLimit
+	aiOnly := q.Get("ai_only") == "true"
 	filter, pools, pool := discoveryFilterFromQuery(q, settings, category)
+	filter.AIEnhanced = aiOnly
 	filter.Offset = offset
 	fullTotal, err := s.store.ReleasesCount(r.Context(), filter)
 	if err != nil {
@@ -1284,7 +1350,6 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	if category != "random" && category != "new" {
 		items, enhanced = s.enhanceDiscoveries(r, settings, items)
 	}
-	aiOnly := q.Get("ai_only") == "true"
 	aiTextEntries := ""
 	if strings.EqualFold(strings.TrimSpace(q.Get("filter_category")), "AI text") {
 		aiTextEntries = q.Get("entries")

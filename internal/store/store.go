@@ -106,6 +106,7 @@ type Store interface {
 	AllDiscoveryAIRanks(context.Context) ([]domain.DiscoveryAIRank, error)
 	SaveDiscoveryAIRanks(context.Context, []domain.DiscoveryAIRank) error
 	DeleteDiscoveryAIRanks(context.Context, []int64) (int64, error)
+	ClearDiscoveryAIRanks(context.Context) (int64, error)
 	DeleteNotifications(context.Context, string, []int64) (int64, error)
 	CreateNotification(context.Context, int64, string, string) (bool, error)
 	WatchlistSynced(context.Context, int64, string, string) (bool, error)
@@ -1510,6 +1511,9 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 	if f.StashSceneID != "" {
 		q += ` AND r.stash_scene_id=?`
 		a = append(a, f.StashSceneID)
+	}
+	if f.AIEnhanced {
+		q += ` AND EXISTS (SELECT 1 FROM discovery_ai_ranks dar WHERE dar.release_id=r.id)`
 	}
 	if f.Source != "" {
 		q += ` AND LOWER(r.source)=LOWER(?)`
@@ -3967,6 +3971,13 @@ func (s *SQLite) DeleteDiscoveryAIRanks(ctx context.Context, releaseIDs []int64)
 		return 0, nil
 	}
 	result, err := s.db.ExecContext(ctx, `DELETE FROM discovery_ai_ranks WHERE release_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+func (s *SQLite) ClearDiscoveryAIRanks(ctx context.Context) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM discovery_ai_ranks`)
 	if err != nil {
 		return 0, err
 	}

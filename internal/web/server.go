@@ -535,6 +535,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/discoveries/ollama/test", s.testDiscoveryOllama)
 	s.mux.HandleFunc("POST /api/discoveries/openai/test", s.testDiscoveryOpenAI)
 	s.mux.HandleFunc("POST /api/discoveries/openai/estimate", s.estimateDiscoveryOpenAI)
+	s.mux.HandleFunc("DELETE /api/discoveries/ai-rankings", s.clearDiscoveryAIRankings)
 	s.mux.HandleFunc("GET /api/jobs/discoveries", s.discoveryJob)
 	s.mux.HandleFunc("POST /api/jobs/discoveries", s.discoveryJob)
 	s.mux.HandleFunc("GET /api/stash/history/export", s.exportStashHistory)

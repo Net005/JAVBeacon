@@ -34,7 +34,7 @@ func (s *repairStore) DeleteDiscoveryAIRanks(_ context.Context, ids []int64) (in
 func TestExistingInvalidAIRankingRepair(t *testing.T) {
 	st := &repairStore{ranks: map[int64]domain.DiscoveryAIRank{
 		1: {ReleaseID: 1, Score: 70, Reason: actualBadReason, Fingerprint: "unsafe-v1", GeneratedAt: time.Now()},
-		2: {ReleaseID: 2, Score: 88, Reason: "Strong sci-fi match with preferred tags.", Pools: []string{"Sci-Fi"}, Fingerprint: "valid", GeneratedAt: time.Now()},
+		2: {ReleaseID: 2, Score: 88, Reason: "Match: Its science-fiction setting aligns strongly with the established preference for related themes.", Pools: []string{"Sci-Fi"}, Fingerprint: "valid", GeneratedAt: time.Now()},
 	}}
 	removed, err := RepairStoredRanks(context.Background(), st, "Sci-Fi | space", nil)
 	if err != nil || removed != 1 {

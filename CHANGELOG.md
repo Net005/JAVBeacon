@@ -7,6 +7,37 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.203] - 2026-09-21
+
+### Changed
+
+- AI Discovery now sends Ollama and OpenAI structured taste signals instead of
+  internal scoring labels, together with richer release metadata, discovery
+  state, subtitle availability, and the deterministic recommendation score.
+- Ranking prompts now include an explicit scoring rubric and require a natural,
+  evidence-led explanation that combines the strongest relevant signals.
+- AI ranking fingerprints now use schema version 5, making results from the
+  older prompt eligible for fresh enrichment.
+
+### Fixed
+
+- Ollama can no longer copy internal phrases such as `Performer preference:` or
+  emit pool-configuration commentary as a recommendation reason. Candidate pool
+  eligibility is calculated by JAVBeacon and unsupported model assignments are
+  rejected before persistence.
+- Preference and history grounding validation now recognizes relationships in
+  natural sentences without confusing unrelated nearby words for unsupported
+  performer, studio, or theme claims.
+- The **AI enhanced** Discovery filter now applies before counting and
+  pagination, so its total matches the visible results.
+
+### Added
+
+- Discovery settings now include a confirmed **Clear all AI recommendations**
+  action. It removes stored AI scores and reasons without changing releases,
+  history, tags, subtitles, or deterministic recommendations, allowing a clean
+  re-enrichment run.
+
 ## [1.0.202] - 2026-09-21
 
 ### Fixed

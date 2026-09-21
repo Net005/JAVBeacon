@@ -194,7 +194,7 @@ func TestMissingOllamaModelNeverCallsOpenAI(t *testing.T) {
 }
 
 func TestQwenSuccessNeverCallsOpenAI(t *testing.T) {
-	ollama := ollamaServer(t, []string{"qwen3:8b"}, http.StatusOK, `{"rankings":[{"id":7,"score":94,"reason":"supplied title match","pools":[]}]}`, 0)
+	ollama := ollamaServer(t, []string{"qwen3:8b"}, http.StatusOK, `{"rankings":[{"id":7,"score":94,"reason":"Match: Its supplied title, story, and science-fiction tag provide strong recommendation evidence.","pools":[]}]}`, 0)
 	defer ollama.Close()
 	var openAICalls atomic.Int32
 	openAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { openAICalls.Add(1) }))
@@ -215,7 +215,7 @@ func TestOpenAIPrimarySkipsOllamaAndReportsUsage(t *testing.T) {
 	defer ollama.Close()
 	openAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		openAICalls.Add(1)
-		content := `{"rankings":[{"id":7,"score":91,"reason":"Strong story and preferred studio match.","pools":[]}]}`
+		content := `{"rankings":[{"id":7,"score":91,"reason":"Match: Its supplied story and familiar studio align with established viewing preferences.","pools":[]}]}`
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"output": []any{map[string]any{"content": []any{map[string]any{"text": content}}}},
 			"usage":  map[string]any{"input_tokens": 1234, "output_tokens": 56, "total_tokens": 1290},
@@ -328,7 +328,7 @@ func TestOpenAICanExcludeSubtitleEvidence(t *testing.T) {
 		if strings.Contains(string(body), subtitle) {
 			t.Errorf("OpenAI request contained excluded subtitle evidence: %s", body)
 		}
-		content := `{"rankings":[{"id":7,"score":88,"reason":"Strong title and studio match.","pools":[]}]}`
+		content := `{"rankings":[{"id":7,"score":88,"reason":"Match: Its supplied title and studio provide clear metadata support for this recommendation.","pools":[]}]}`
 		_ = json.NewEncoder(w).Encode(map[string]any{"output": []any{map[string]any{"content": []any{map[string]any{"text": content}}}}})
 	}))
 	defer openAI.Close()
@@ -372,7 +372,7 @@ func TestInvalidQwenResponseMayFallbackOnlyWhenOllamaWasReachable(t *testing.T) 
 	var openAICalls atomic.Int32
 	openAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		openAICalls.Add(1)
-		content := `{"rankings":[{"id":7,"score":86,"reason":"Strong story match with preferred studio signals.","pools":[]}]}`
+		content := `{"rankings":[{"id":7,"score":86,"reason":"Match: Its supplied story and familiar studio align with established viewing preferences.","pools":[]}]}`
 		_ = json.NewEncoder(w).Encode(map[string]any{"output": []any{map[string]any{"content": []any{map[string]any{"text": content}}}}})
 	}))
 	defer openAI.Close()
@@ -392,7 +392,7 @@ func TestUnknownCandidateIDMayFallbackOnlyWhenEnabled(t *testing.T) {
 	var openAICalls atomic.Int32
 	openAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		openAICalls.Add(1)
-		content := `{"rankings":[{"id":7,"score":86,"reason":"Strong supplied title and story match.","pools":[]}]}`
+		content := `{"rankings":[{"id":7,"score":86,"reason":"Match: Its supplied title and story provide clear thematic support for this recommendation.","pools":[]}]}`
 		_ = json.NewEncoder(w).Encode(map[string]any{"output": []any{map[string]any{"content": []any{map[string]any{"text": content}}}}})
 	}))
 	defer openAI.Close()
@@ -475,7 +475,7 @@ func TestQwenInferenceErrorCanUseEnabledOpenAIFallback(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		content := `{"rankings":[{"id":7,"score":80,"reason":"fallback match","pools":[]}]}`
+		content := `{"rankings":[{"id":7,"score":80,"reason":"Match: Its supplied title, story, and metadata provide clear support for this recommendation.","pools":[]}]}`
 		_ = json.NewEncoder(w).Encode(map[string]any{"output": []any{map[string]any{"content": []any{map[string]any{"text": content}}}}})
 	}))
 	defer openAI.Close()
