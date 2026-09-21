@@ -2010,7 +2010,7 @@ func TestStashHistoryUsesNavigableCalendarScopes(t *testing.T) {
 			`function rememberStashHistoryType()`,
 			`historyBarPair`,
 			`function historyScope()`,
-			`for(let i=0;i<5;i++)`,
+			`for(let i=0;i<7;i++)`,
 			`for(let i=0;i<4;i++)`,
 			`for(let i=0;i<12;i++)`,
 			`Math.max(2000,endYear-11)`,
