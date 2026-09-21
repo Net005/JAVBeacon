@@ -1858,8 +1858,12 @@ function historyCurrentLabel(){return{day:'Current week',week:'Current month',mo
 function historyScope(){
   const a=new Date(stashHistoryAnchor),now=new Date(),buckets=[];let from,to,label;
   if(stashHistoryPeriod==='day'){
-    from=historyMonday(a);to=new Date(from);to.setDate(to.getDate()+5);label=`${from.toLocaleDateString(undefined,{month:'short',day:'numeric'})} – ${new Date(to.getFullYear(),to.getMonth(),to.getDate()-1).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}`;
-    for(let i=0;i<5;i++){const d=new Date(from);d.setDate(d.getDate()+i);const end=new Date(d);end.setDate(end.getDate()+1);buckets.push({...historyRangeDates(d,end),key:historyISO(d),label:d.toLocaleDateString(undefined,{weekday:'short',day:'numeric'})})}
+    // A full calendar week is 7 days. This previously stopped at Friday
+    // (+5 days, 5 buckets), so Saturday/Sunday playback was silently
+    // excluded from both the chart and the from/to range sent to
+    // /stash/history - not just hidden from the bars, but never fetched.
+    from=historyMonday(a);to=new Date(from);to.setDate(to.getDate()+7);label=`${from.toLocaleDateString(undefined,{month:'short',day:'numeric'})} – ${new Date(to.getFullYear(),to.getMonth(),to.getDate()-1).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}`;
+    for(let i=0;i<7;i++){const d=new Date(from);d.setDate(d.getDate()+i);const end=new Date(d);end.setDate(end.getDate()+1);buckets.push({...historyRangeDates(d,end),key:historyISO(d),label:d.toLocaleDateString(undefined,{weekday:'short',day:'numeric'})})}
   }else if(stashHistoryPeriod==='week'){
     from=historyDate(a.getFullYear(),a.getMonth(),1);to=historyDate(a.getFullYear(),a.getMonth()+1,1);label=from.toLocaleDateString(undefined,{month:'long',year:'numeric'});
     for(let i=0;i<4;i++){const start=historyDate(from.getFullYear(),from.getMonth(),1+i*7),end=i===3?new Date(to):historyDate(from.getFullYear(),from.getMonth(),8+i*7);buckets.push({...historyRangeDates(start,end),key:`${historyISO(from)}-w${i+1}`,label:`Week ${i+1}`})}
