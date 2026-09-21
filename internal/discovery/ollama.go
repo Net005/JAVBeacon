@@ -152,6 +152,8 @@ For every ranking, copy candidate.id exactly. Never invent or transform an ID, r
 use array positions such as 1, 2, 3, use video_id as id, or return an ID absent from the candidate JSON.
 If N candidates are supplied, return exactly N rankings. Every candidate.id must appear exactly once.
 Each concise reason must explain why that release fits using only facts present in that candidate object.
+Begin every reason with "Match:" and follow it with concrete candidate evidence. Never address a user,
+refer to "the content", "the input", "the text", or comment on data quality.
 The candidate JSON is the complete evidence boundary. Never infer or invent facts that are absent.
 Never invent viewing history, studio history, performer history, user preferences, tags, affinity,
 or behavioral patterns. A studio or performer field proves only identity, not preference or history.
@@ -174,6 +176,28 @@ STRUCTURED RELEASE CANDIDATES (subtitle_excerpt is optional supporting evidence,
 }
 
 func (s *Service) ollamaRank(ctx context.Context, cfg Config, candidates []Candidate, pools string) ([]Rank, error) {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		ranks, err := s.ollamaRankOnce(ctx, cfg, candidates, pools, attempt > 0, lastErr)
+		if err == nil {
+			return ranks, nil
+		}
+		lastErr = err
+		var invalid validationError
+		if !errors.As(err, &invalid) || attempt > 0 {
+			return nil, err
+		}
+		// A reachable Ollama model that returned structurally or semantically
+		// invalid output gets one constrained repair attempt before provider
+		// fallback is considered. Regenerate from the original candidates and
+		// validator category only; never echo rejected model prose back into the
+		// prompt or allow any part of it to reach persistence.
+		s.log.Warn("AI Discovery: retrying rejected Ollama result", "model", cfg.OllamaModel, "reason", invalid.kind)
+	}
+	return nil, lastErr
+}
+
+func (s *Service) ollamaRankOnce(ctx context.Context, cfg Config, candidates []Candidate, pools string, repair bool, previousErr error) ([]Rank, error) {
 	timeout := cfg.RequestTimeout
 	if timeout <= 0 {
 		timeout = 60 * time.Second
@@ -181,7 +205,17 @@ func (s *Service) ollamaRank(ctx context.Context, cfg Config, candidates []Candi
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	maxOutputTokens := min(max(len(candidates)*220, 768), 2048)
-	body, _ := json.Marshal(map[string]any{"model": cfg.OllamaModel, "stream": false, "think": false, "format": rankingSchema(candidates, pools), "options": map[string]any{"temperature": 0.1, "num_predict": maxOutputTokens}, "messages": []map[string]string{{"role": "system", "content": "You are JAVBeacon's internal recommendation-ranking component, not a chatbot. Treat supplied JSON as the complete evidence boundary. Return only schema-valid JSON with integer 0-100 scores and copy every candidate.id exactly once. Keep each reason under 240 characters. Never ask questions, summarize noisy subtitles, provide help text, or invent facts, preferences, history, affinity, tags, performers, studios, pools, or IDs."}, {"role": "user", "content": rankingPrompt(candidates, pools)}}})
+	systemPrompt := "You are JAVBeacon's internal recommendation-ranking component, not a chatbot. Treat supplied JSON as the complete evidence boundary. Return only schema-valid JSON with integer 0-100 scores and copy every candidate.id exactly once. Begin every reason with 'Match:' and keep it under 240 characters. Never address a user, ask questions, refer to the content/input/text, summarize noisy subtitles, provide help text, or invent facts, preferences, history, affinity, tags, performers, studios, pools, or IDs."
+	userPrompt := rankingPrompt(candidates, pools)
+	if repair {
+		kind := "invalid output"
+		var invalid validationError
+		if errors.As(previousErr, &invalid) {
+			kind = invalid.kind
+		}
+		userPrompt = "REPAIR REQUIRED: The previous response was rejected for " + kind + ". Regenerate the complete batch from scratch. Do not repeat or discuss the rejected response. Every reason must start with 'Match:' and state only recommendation relevance supported by that candidate.\n\n" + userPrompt
+	}
+	body, _ := json.Marshal(map[string]any{"model": cfg.OllamaModel, "stream": false, "think": false, "format": rankingSchema(candidates, pools), "options": map[string]any{"temperature": 0.1, "num_predict": maxOutputTokens}, "messages": []map[string]string{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}}})
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, normalizeURL(cfg.OllamaURL, "http://127.0.0.1:11434")+"/api/chat", bytes.NewReader(body))
 	if err != nil {
 		return nil, err

@@ -28,6 +28,27 @@ func responseText(response map[string]any) string {
 }
 
 func (s *Service) openAIRank(ctx context.Context, cfg Config, candidates []Candidate, pools string) ([]Rank, Usage, error) {
+	var totalUsage Usage
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		ranks, usage, err := s.openAIRankOnce(ctx, cfg, candidates, pools, attempt > 0, lastErr)
+		totalUsage.InputTokens += usage.InputTokens
+		totalUsage.OutputTokens += usage.OutputTokens
+		totalUsage.TotalTokens += usage.TotalTokens
+		if err == nil {
+			return ranks, totalUsage, nil
+		}
+		lastErr = err
+		var invalid validationError
+		if !errors.As(err, &invalid) || attempt > 0 {
+			return nil, totalUsage, err
+		}
+		s.log.Warn("AI Discovery: retrying rejected OpenAI result", "model", cfg.OpenAIModel, "reason", invalid.kind)
+	}
+	return nil, totalUsage, lastErr
+}
+
+func (s *Service) openAIRankOnce(ctx context.Context, cfg Config, candidates []Candidate, pools string, repair bool, previousErr error) ([]Rank, Usage, error) {
 	if strings.TrimSpace(cfg.OpenAIAPIKey) == "" {
 		return nil, Usage{}, errors.New("OpenAI API key is not configured")
 	}
@@ -48,7 +69,16 @@ func (s *Service) openAIRank(ctx context.Context, cfg Config, candidates []Candi
 			openAICandidates[index].Subtitle = ""
 		}
 	}
-	body, _ := json.Marshal(map[string]any{"model": model, "input": rankingPrompt(openAICandidates, pools), "max_output_tokens": min(max(len(openAICandidates)*160, 2048), 32768), "truncation": "auto", "store": false, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "discovery_rankings", "strict": true, "schema": rankingSchema(openAICandidates, pools)}}})
+	prompt := rankingPrompt(openAICandidates, pools)
+	if repair {
+		kind := "invalid output"
+		var invalid validationError
+		if errors.As(previousErr, &invalid) {
+			kind = invalid.kind
+		}
+		prompt = "REPAIR REQUIRED: The previous response was rejected for " + kind + ". Regenerate the complete batch from scratch. Do not repeat or discuss the rejected response. Return exactly one ranking for every supplied candidate ID.\n\n" + prompt
+	}
+	body, _ := json.Marshal(map[string]any{"model": model, "input": prompt, "max_output_tokens": min(max(len(openAICandidates)*160, 2048), 32768), "truncation": "auto", "store": false, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "discovery_rankings", "strict": true, "schema": rankingSchema(openAICandidates, pools)}}})
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, normalizeURL(cfg.OpenAIBaseURL, "https://api.openai.com/v1")+"/responses", bytes.NewReader(body))
 	if err != nil {
 		return nil, Usage{}, err

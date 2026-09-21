@@ -97,10 +97,36 @@ func TestOllamaLengthStopReportsUsefulFailure(t *testing.T) {
 
 func TestPromptRequiresExactCandidateIDCoverage(t *testing.T) {
 	prompt := rankingPrompt([]Candidate{{ID: 41}, {ID: 907}}, "")
-	for _, text := range []string{"copy candidate.id exactly", "Never invent or transform an ID", "return exactly N rankings", "must appear exactly once"} {
+	for _, text := range []string{"copy candidate.id exactly", "Never invent or transform an ID", "return exactly N rankings", "must appear exactly once", `Begin every reason with "Match:"`} {
 		if !strings.Contains(prompt, text) {
 			t.Fatalf("prompt missing ID rule %q", text)
 		}
+	}
+}
+
+func TestRejectedConversationalOllamaResultGetsOneLocalRepairAttempt(t *testing.T) {
+	var chatCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "qwen3:8b"}}})
+		case "/api/chat":
+			body, _ := io.ReadAll(r.Body)
+			call := chatCalls.Add(1)
+			if call == 1 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": `{"rankings":[{"id":7,"score":40,"reason":"Please provide more context so I can help you.","pools":[]}]}`}})
+				return
+			}
+			if !strings.Contains(string(body), "REPAIR REQUIRED") || strings.Contains(string(body), "Please provide more context") {
+				t.Errorf("repair request did not use safe regeneration instructions: %s", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": `{"rankings":[{"id":7,"score":88,"reason":"Match: supplied story and Sci-Fi tag align with configured evidence.","pools":[]}]}`}})
+		}
+	}))
+	defer server.Close()
+	result := New(nil).Rank(context.Background(), baseConfig(server.URL), testCandidates(), "")
+	if result.Provider != "ollama" || len(result.Ranks) != 1 || chatCalls.Load() != 2 {
+		t.Fatalf("local repair failed: %+v calls=%d", result, chatCalls.Load())
 	}
 }
 
@@ -205,6 +231,35 @@ func TestOpenAIPrimarySkipsOllamaAndReportsUsage(t *testing.T) {
 	}
 	if result.Usage.InputTokens != 1234 || result.Usage.OutputTokens != 56 || result.Usage.TotalTokens != 1290 {
 		t.Fatalf("OpenAI usage was not returned: %+v", result.Usage)
+	}
+}
+
+func TestEmptyOpenAIResultGetsOneStrictRegenerationAttempt(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		call := calls.Add(1)
+		content := `{"rankings":[]}`
+		if call == 2 {
+			if !strings.Contains(string(body), "REPAIR REQUIRED") || !strings.Contains(string(body), "empty AI result") {
+				t.Errorf("second request did not explain the safe regeneration requirement: %s", body)
+			}
+			content = `{"rankings":[{"id":7,"score":87,"reason":"Match: supplied story and Sci-Fi tag support this recommendation.","pools":[]}]}`
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"output": []any{map[string]any{"content": []any{map[string]any{"text": content}}}},
+			"usage":  map[string]any{"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+		})
+	}))
+	defer server.Close()
+	cfg := baseConfig("")
+	cfg.PrimaryProvider, cfg.OpenAIAPIKey, cfg.OpenAIBaseURL = "openai", "secret", server.URL
+	result := New(nil).Rank(context.Background(), cfg, testCandidates(), "")
+	if result.Provider != "openai" || len(result.Ranks) != 1 || calls.Load() != 2 {
+		t.Fatalf("OpenAI regeneration failed: %+v calls=%d", result, calls.Load())
+	}
+	if result.Usage.InputTokens != 200 || result.Usage.OutputTokens != 40 || result.Usage.TotalTokens != 240 {
+		t.Fatalf("retry usage was not accumulated: %+v", result.Usage)
 	}
 }
 
