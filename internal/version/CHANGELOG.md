@@ -7,6 +7,8 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.207] - 2026-09-21
+
 ### Fixed
 
 - Marking a release to Watchlist while it was still downloading (not yet
