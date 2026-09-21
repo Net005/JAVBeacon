@@ -1901,7 +1901,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	for _, key := range []string{"javdb_url", "http_download_directory", "http_download_concurrency", "http_download_connections", "http_fallback_delay", "default_download_method", "prefer_http_equivalent", "pikpak_username", "pikpak_password", "pikpak_cleanup_restored", "pikpak_release_id_folder_fallback", "pikpak_check_enabled", "pikpak_check_interval", "pikpak_notify_success", "pikpak_notify_failure", "pushover_app_token", "pushover_user_key"} {
+	for _, key := range []string{"javdb_url", "javdb_request_timeout_seconds", "pikpak_resolution_timeout_seconds", "http_download_directory", "http_download_concurrency", "http_download_connections", "http_fallback_delay", "default_download_method", "prefer_http_equivalent", "pikpak_username", "pikpak_password", "pikpak_cleanup_restored", "pikpak_release_id_folder_fallback", "pikpak_check_enabled", "pikpak_check_interval", "pikpak_notify_success", "pikpak_notify_failure", "pushover_app_token", "pushover_user_key"} {
 		allowed[key] = true
 	}
 	for _, key := range []string{"javdb_gluetun_rotation_enabled", "gluetun_control_url", "gluetun_control_api_key", "gluetun_rotation_attempts", "gluetun_rotation_wait_seconds", "gluetun_rotation_poll_milliseconds", "gluetun_rotation_settle_seconds", "gluetun_require_ip_change"} {
@@ -2357,6 +2357,15 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		if err != nil || connections < 1 || connections > 32 {
 			s.problem(w, http.StatusUnprocessableEntity, "connections per HTTP download must be a whole number from 1 to 32")
 			return
+		}
+	}
+	for key, bounds := range map[string][2]int{"javdb_request_timeout_seconds": {15, 600}, "pikpak_resolution_timeout_seconds": {60, 3600}} {
+		if raw, ok := x[key]; ok && strings.TrimSpace(raw) != "" {
+			seconds, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil || seconds < bounds[0] || seconds > bounds[1] {
+				s.problem(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s must be a whole number from %d to %d seconds", key, bounds[0], bounds[1]))
+				return
+			}
 		}
 	}
 	if raw, ok := x["accepted_patterns"]; ok {

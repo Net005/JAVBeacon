@@ -25,6 +25,43 @@ type pikPakRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f pikPakRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
+func TestJavDBProviderUsesDedicatedConfigurableTimeouts(t *testing.T) {
+	baseClient := &http.Client{Timeout: 30 * time.Second}
+	providers := httpSourceProviders(baseClient, map[string]string{
+		"javdb_request_timeout_seconds":     "125",
+		"pikpak_resolution_timeout_seconds": "900",
+	}, slog.Default(), nil, nil, &sync.Mutex{})
+	provider, ok := providers[0].(*javDBProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *javDBProvider", providers[0])
+	}
+	if provider.client == baseClient {
+		t.Fatal("provider must clone the shared HTTP client")
+	}
+	if provider.client.Timeout != 125*time.Second {
+		t.Fatalf("JavDB timeout = %s, want 125s", provider.client.Timeout)
+	}
+	if provider.resolutionTimeout != 15*time.Minute {
+		t.Fatalf("PikPak resolution timeout = %s, want 15m", provider.resolutionTimeout)
+	}
+	if baseClient.Timeout != 30*time.Second {
+		t.Fatalf("shared client timeout changed to %s", baseClient.Timeout)
+	}
+}
+
+func TestJavDBProviderTimeoutSettingsUseSafeDefaults(t *testing.T) {
+	provider := httpSourceProviders(&http.Client{Timeout: 30 * time.Second}, map[string]string{
+		"javdb_request_timeout_seconds":     "not-a-number",
+		"pikpak_resolution_timeout_seconds": "30",
+	}, nil, nil, nil, &sync.Mutex{})[0].(*javDBProvider)
+	if provider.client.Timeout != defaultJavDBRequestTimeout {
+		t.Fatalf("JavDB timeout = %s, want default %s", provider.client.Timeout, defaultJavDBRequestTimeout)
+	}
+	if provider.resolutionTimeout != defaultPikPakResolutionTimeout {
+		t.Fatalf("PikPak resolution timeout = %s, want default %s", provider.resolutionTimeout, defaultPikPakResolutionTimeout)
+	}
+}
+
 func pikPakJSONResponse(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
 }
