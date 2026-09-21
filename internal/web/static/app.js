@@ -1038,7 +1038,7 @@ function initializeAppHistory(){
 let releaseOpenRequest=0;
 function closeReleaseDetails(){releaseOpenRequest++;const state=history.state||{},releaseDepth=Math.max(0,Number(state.releaseDepth)||0);if(releaseDialog.open)releaseDialog.close();if(state.javbeacon&&state.releaseID&&releaseDepth>0){history.go(-releaseDepth);return}const view=appHistoryViews.has(state.view)?state.view:(prefs.activeMenu||'releases');history.replaceState({javbeacon:true,view},'',appViewURL(view))}
 function animateReleaseDetailSwap(){if(matchMedia('(prefers-reduced-motion:reduce)').matches)return;releaseDetail.getAnimations?.().forEach(animation=>animation.cancel());releaseDetail.animate?.([{opacity:.96},{opacity:1}],{duration:90,easing:'ease-out'})}
-async function openRelease(id,navigable=false,navigationIDs=null,recordHistory=true,navigationSource=''){
+async function openRelease(id,navigable=false,navigationIDs=null,recordHistory=true,navigationSource='',waitForAssets=true){
   id=Number(id);
   const request=++releaseOpenRequest,wasOpen=releaseDialog.open,previousID=activeReleaseID,previousData=activeReleaseData;
   activeReleaseID=id;
@@ -1078,10 +1078,13 @@ async function openRelease(id,navigable=false,navigationIDs=null,recordHistory=t
   try{
     const x=await fetchReleaseDetail(id);
     if(request!==releaseOpenRequest||activeReleaseID!==id)return;
-    await preloadReleaseAssets(x);
-    if(request!==releaseOpenRequest||activeReleaseID!==id)return;
+    if(waitForAssets){
+      await preloadReleaseAssets(x);
+      if(request!==releaseOpenRequest||activeReleaseID!==id)return
+    }
     activeReleaseData=x;document.title=releaseDocumentTitle(x);
     releaseDetail.classList.remove('releaseSwapPending');renderReleaseDetail(x);animateReleaseDetailSwap();updateReleaseNav();
+    if(!waitForAssets)preloadReleaseAssets(x).catch(()=>{});
     prefetchReleaseNavigation()
   }catch(error){
     if(request!==releaseOpenRequest||activeReleaseID!==id)return;
@@ -1717,7 +1720,15 @@ downloadSortDirection.onclick=()=>{prefs.downloadDirection=prefs.downloadDirecti
 downloadPageSize.onchange=()=>{downloadPage=0;loadDownloads()};
 notificationPageSize.onchange=()=>{notificationPage=0;prefs.notificationPageSize=Number(notificationPageSize.value)||25;savePreferences();loadNotifications()};
 downloadSearchHistoryLimit.onchange=loadDownloadSearchHistory;
-async function loadAll(){try{await loadPreferences();if(!applyTemporaryLibrarySearch())applyTemporaryMetadataFilter();initializeAppHistory();await Promise.all([loadVersion(),loadStats(),loadSites(),loadPresets(),loadIntegrationConfig(),loadAccount(),loadDbStatus()]);applyMonitoringSiteTarget();await loadSettings();await loadReleases();if(directReleaseID)await openRelease(directReleaseID,false,null,false);await showPendingChangelog();pollJob();pollStash();pollHeaderDownloadQueue()}catch(e){toast(e.message)}}
+async function loadAll(){
+  const directReleaseLoad=directReleaseID?openRelease(directReleaseID,false,null,false,'',false):null;
+  try{
+    await loadPreferences();if(!applyTemporaryLibrarySearch())applyTemporaryMetadataFilter();initializeAppHistory();
+    const backgroundLoad=(async()=>{await Promise.all([loadVersion(),loadStats(),loadSites(),loadPresets(),loadIntegrationConfig(),loadAccount(),loadDbStatus()]);applyMonitoringSiteTarget();await loadSettings();await loadReleases();await showPendingChangelog();pollJob();pollStash();pollHeaderDownloadQueue()})();
+    if(directReleaseLoad){await directReleaseLoad;backgroundLoad.catch(e=>toast(e.message));return}
+    await backgroundLoad
+  }catch(e){toast(e.message)}
+}
 function connectStream(){const ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/ws`);ws.onmessage=e=>{try{const x=JSON.parse(e.data);if(x.type==='release'){handleStreamRelease(x.release);loadStats()}}catch{}};ws.onclose=()=>setTimeout(connectStream,3000)}
 autoRefreshDownloads.checked=localStorage.getItem('javbeacon.autoRefreshDownloads')!=='false';refreshDownloadActivity.onclick=()=>loadDownloads(true);autoRefreshDownloads.onchange=()=>{localStorage.setItem('javbeacon.autoRefreshDownloads',String(autoRefreshDownloads.checked));toast(autoRefreshDownloads.checked?'Download activity auto-refresh enabled':'Download activity auto-refresh paused')};document.querySelector('[data-view="activity"] svg').innerHTML='<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M9 7V5h6v2M3 12h18M10 12v2h4v-2"/>';advancedSearch.title='Advanced filter conditions';loadAll();connectStream();setInterval(()=>{if(!logsView.hidden)pollLogsTail()},3000);setInterval(()=>{if(autoRefreshDownloads.checked&&!monitoringView.hidden&&!downloadLoading)loadDownloads()},2000);setInterval(pollHeaderDownloadQueue,2000);
 

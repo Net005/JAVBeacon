@@ -7,6 +7,19 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.191] - 2026-09-21
+
+### Fixed
+
+- Opening a `/release/:id` link directly now fetches and renders that release
+  immediately instead of waiting for settings, statistics, the Release Library
+  page, and release media preloading; the remaining app data and media continue
+  loading in the background.
+- PikPak parallel downloads now briefly hold off and retry three times at the
+  current connection count before reducing it. Retry windows are coordinated
+  across active downloads so simultaneous failures cannot create overlapping
+  retry bursts.
+
 ## [1.0.190] - 2026-09-21
 
 ### Changed

@@ -443,6 +443,14 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if loadSites < 0 || loadSettings < 0 || loadSites >= loadSettings {
 		t.Fatal("startup must load monitoring sites before rendering site group schedules")
 	}
+	directOpen := strings.Index(script[loadAll:], "directReleaseID?openRelease(directReleaseID,false,null,false,'',false)")
+	backgroundLoad := strings.Index(script[loadAll:], "const backgroundLoad=")
+	if directOpen < 0 || backgroundLoad < 0 || directOpen >= backgroundLoad {
+		t.Fatal("direct release links must begin rendering before background startup work")
+	}
+	if !strings.Contains(script, "if(!waitForAssets)preloadReleaseAssets(x).catch(()=>{})") {
+		t.Fatal("direct release rendering must leave media preloading in the background")
+	}
 	serializerStart := strings.Index(script, "function siteGroupSchedulesFromForm()")
 	if serializerStart < 0 {
 		t.Fatal("embedded app.js is missing the site group schedule serializer")

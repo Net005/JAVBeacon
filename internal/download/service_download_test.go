@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -417,6 +418,78 @@ func TestDownloadHTTPToFileReducesConnectionsAfterGatewayFailures(t *testing.T) 
 	got, _ := os.ReadFile(out.Name())
 	if !bytes.Equal(got, content) || transferred.Load() != int64(len(content)) {
 		t.Fatalf("single-stream fallback differs: bytes=%d transferred=%d", len(got), transferred.Load())
+	}
+}
+
+func TestDownloadHTTPToFileRetriesThreeTimesBeforeReducingConnections(t *testing.T) {
+	content := bytes.Repeat([]byte("retry-before-reduce"), 2*1024*1024)
+	var parallelAttempts atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") == "bytes=0-0" {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-0/%d", len(content)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(content[:1])
+			return
+		}
+		raw := strings.TrimPrefix(r.Header.Get("Range"), "bytes=")
+		parts := strings.Split(raw, "-")
+		start, _ := strconv.ParseInt(parts[0], 10, 64)
+		end, _ := strconv.ParseInt(parts[1], 10, 64)
+		attempt := parallelAttempts.Add(1)
+		if attempt <= 3 {
+			http.Error(w, "temporary PikPak gateway pressure", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(content)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(content[start : end+1])
+	}))
+	defer server.Close()
+	out, err := os.Create(filepath.Join(t.TempDir(), "held-connections.part"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	oldDelay := httpRangeRetryBaseDelay
+	httpRangeRetryBaseDelay = time.Millisecond
+	defer func() { httpRangeRetryBaseDelay = oldDelay }()
+	var transferred atomic.Int64
+	var downgrades atomic.Int64
+	connections, err := downloadHTTPToFile(context.Background(), server.Client(), resolvedHTTPFile{URL: server.URL}, out, int64(len(content)), 2, &transferred, func(_, _ int, _ error) { downgrades.Add(1) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connections != 2 || downgrades.Load() != 0 || parallelAttempts.Load() < 4 {
+		t.Fatalf("connections=%d downgrades=%d attempts=%d", connections, downgrades.Load(), parallelAttempts.Load())
+	}
+}
+
+func TestPikPakRangeRetryWindowsWaitForEachOther(t *testing.T) {
+	oldDelay := httpRangeRetryBaseDelay
+	httpRangeRetryBaseDelay = time.Millisecond
+	defer func() { httpRangeRetryBaseDelay = oldDelay }()
+	var gate sync.Mutex
+	var orderMu sync.Mutex
+	var order []string
+	start := make(chan struct{})
+	run := func(label string) {
+		<-start
+		_ = runCoordinatedHTTPRangeRetries(context.Background(), &gate, func(attempt int) error {
+			orderMu.Lock()
+			order = append(order, fmt.Sprintf("%s%d", label, attempt))
+			orderMu.Unlock()
+			return errors.New("temporary failure")
+		})
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); run("a") }()
+	go func() { defer wg.Done(); run("b") }()
+	close(start)
+	wg.Wait()
+	joined := strings.Join(order, ",")
+	if joined != "a1,a2,a3,b1,b2,b3" && joined != "b1,b2,b3,a1,a2,a3" {
+		t.Fatalf("retry windows overlapped: %s", joined)
 	}
 }
 
