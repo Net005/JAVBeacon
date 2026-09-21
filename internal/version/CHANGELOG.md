@@ -7,6 +7,42 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- AI Discovery cards now show reasons as flowing text instead of tightly
+  padded pill badges, which could visually pinch longer badge text against
+  the rounded ends.
+
+### Added
+
+- Discovery cards show a "Subtitle used" badge when a release's subtitle
+  dialogue actually reached the AI ranking prompt, distinct from the
+  existing "CC ready" badge which only means a subtitle file exists on
+  disk - large discovery runs can still leave an eligible release's excerpt
+  out if the shared per-request character budget runs out first.
+- Settings → Discovery → Subtitle Analysis now shows a one-line subtitle
+  index overview (how many scanned releases have subtitles, plus whether
+  any media folders couldn't be read or still have no file path on
+  record), so it's visible at a glance whether subtitle analysis is
+  finding anything at all.
+- Ollama AI Discovery rejections now log a truncated snippet of the
+  model's raw response, to make repeated validation failures easier to
+  diagnose.
+
+### Fixed
+
+- The Discovery status poller kept refetching and re-rendering progress
+  every second even while the browser tab was backgrounded, unlike the
+  similar download-queue poller. On devices that don't throttle background
+  timers as aggressively as desktop Chrome, this could compete with the
+  foreground tab for CPU during a long AI indexing run. Polling now pauses
+  while the tab is hidden and eases off to every 2.5s during the AI
+  ranking stage, which normally takes much longer than a second per batch
+  anyway.
+- Stash History's "day" view (one bar per day, labeled "Current week")
+  only ever showed Monday through Friday and never fetched Saturday or
+  Sunday playback at all. It now covers the full 7-day week.
+
 ## [1.0.207] - 2026-09-21
 
 ### Fixed
