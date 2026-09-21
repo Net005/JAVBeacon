@@ -487,7 +487,7 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 			t.Fatalf("embedded app.css is missing %q", marker)
 		}
 	}
-	for _, marker := range []string{`#search::placeholder,#notificationSearch::placeholder,#entryFilter::placeholder,#notificationEntry::placeholder{font-size:10px}`, `@media(min-width:701px){`, `.releaseFiltersBody>.toolbar,.notificationToolbar{align-items:center;gap:4px;flex-wrap:nowrap!important;overflow-x:auto;overflow-y:hidden;padding:8px;scrollbar-width:thin}`, `.releaseFiltersBody>.toolbar>.search,.notificationToolbar>.search{flex:0 1 clamp(120px,15vw,240px);width:clamp(120px,15vw,240px);min-width:110px!important;max-width:240px}`} {
+	for _, marker := range []string{`#search::placeholder,#notificationSearch::placeholder,#entryFilter::placeholder,#notificationEntry::placeholder{font-size:10px}`, `@media(min-width:701px){`, `.releaseFiltersBody>.toolbar,.notificationToolbar{align-items:center;gap:8px;flex-wrap:nowrap!important;overflow-x:auto;overflow-y:hidden;padding:8px;scrollbar-width:thin}`, `.releaseFiltersBody>.toolbar>.search,.notificationToolbar>.search{flex:0 1 clamp(120px,15vw,240px);width:clamp(120px,15vw,240px);min-width:110px!important;max-width:240px}`} {
 		if !strings.Contains(string(stylesheet), marker) {
 			t.Fatalf("iPad filter-toolbar styling is missing %q", marker)
 		}
@@ -2629,7 +2629,7 @@ func TestWildcardSearchFieldsStayCompactAndExposeLogic(t *testing.T) {
 		".releaseFiltersBody>.toolbar>.genericWildcardField{flex:1 1 190px;min-width:140px;max-width:280px}",
 		".notificationToolbar>.search{flex:1 1 300px;min-width:240px;max-width:340px}",
 		".notificationToolbar>.check{flex:0 0 auto;min-width:64px;min-height:42px",
-		"@media(min-width:2000px){.releaseFiltersBody>.toolbar,.notificationToolbar{align-items:center;flex-wrap:nowrap}",
+		"@media(min-width:2000px){.releaseFiltersBody>.toolbar,.notificationToolbar{align-items:center;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}",
 		".wildcardLogic{flex:0 0 68px!important;width:68px!important",
 		".wildcardLogicToggle{display:grid;flex:0 0 40px!important",
 		".genericWildcardBadges button span{max-width:min(420px,60vw)}",
