@@ -61,8 +61,11 @@ func conversationalReason(reason string) bool {
 			}
 		}
 	}
-	// Reject generic data-quality commentary even if it avoids the common
-	// assistant phrases above. Valid reasons describe match/relevance.
+	// Reject data-quality commentary even if it avoids the common assistant
+	// phrases above. Do not require a fixed ranking vocabulary here: natural
+	// explanations can cite concrete titles, names and metadata without using
+	// words such as "match", "preference" or "recommendation". Grounding,
+	// length and structural validation are enforced separately.
 	// "subtitle text"/"subtitle lines" were deliberately removed from this
 	// list: the prompt explicitly allows subtitle excerpts as supporting
 	// evidence, so a grounded reason that legitimately cites "subtitle
@@ -72,15 +75,11 @@ func conversationalReason(reason string) bool {
 	// about subtitles is still caught below via corrupt/incoherent/random
 	// phrases/unrelated text/incomplete data.
 	qualityTerms := []string{"corrupt", "incoherent", "unrelated text", "random phrases", "incomplete data"}
-	relevanceTerms := []string{"match", "preference", "preferred", "history", "rewatch", "performer", "studio", "genre", "tag", "pool", "story", "recommend", "affinity", "overlap", "signal", " fit", "similar"}
-	quality, relevance := false, false
+	quality := false
 	for _, term := range qualityTerms {
 		quality = quality || strings.Contains(lower, term)
 	}
-	for _, term := range relevanceTerms {
-		relevance = relevance || strings.Contains(lower, term)
-	}
-	return !relevance || quality
+	return quality
 }
 
 func poolNames(raw string) map[string]bool {
