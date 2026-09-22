@@ -7,6 +7,25 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.216] - 2026-09-22
+
+### Added
+
+- Recent and older monitored-release searches now support the same Basic,
+  Advanced, and Cron schedule modes used elsewhere in JAVBeacon.
+- Basic schedules can use an interval and optional start time; Advanced
+  schedules add weekdays and a time of day with minimum run spacing; Cron
+  schedules accept standard five-field expressions.
+- Both schedule cards display their configured timing and forecast the next
+  run from the active schedule mode.
+
+### Fixed
+
+- Schedule settings are validated before saving, including intervals, local
+  start times, weekday lists, and cron expressions.
+- Existing interval-only monitored-search settings continue working as Basic
+  schedules without requiring migration.
+
 ## [1.0.215] - 2026-09-22
 
 ### Fixed

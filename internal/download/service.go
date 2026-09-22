@@ -25,6 +25,7 @@ import (
 
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"github.com/Net005/JAVBeacon/internal/logging"
+	"github.com/Net005/JAVBeacon/internal/monitor"
 	"github.com/Net005/JAVBeacon/internal/scraper"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
@@ -3252,41 +3253,14 @@ func (s *Service) allReleasePages(ctx context.Context, filter domain.ReleaseFilt
 	}
 }
 
+type monitoredSearchSchedule struct {
+	id, enabledKey, intervalKey, modeKey, startTimeKey, weekdaysKey, cronKey string
+	fallback                                                                 time.Duration
+	run                                                                      func(context.Context) error
+}
+
 func (s *Service) SearchSchedule(ctx context.Context) {
-	lastAttempt := time.Now()
-	for {
-		settings, _ := s.store.Settings(ctx)
-		wait := time.Hour
-		if parsed, err := domain.ParseScheduleDuration(settings["download_search_interval"]); err == nil && parsed >= time.Minute {
-			wait = parsed
-		}
-		now := time.Now()
-		remaining := wait - now.Sub(lastAttempt)
-		if remaining <= 0 {
-			lastAttempt = now
-			if settings["download_search_enabled"] == "true" {
-				_ = s.StartSearch(ctx)
-			}
-			remaining = wait
-		}
-		s.mu.Lock()
-		if s.scheduleNextAttempt == nil {
-			s.scheduleNextAttempt = map[string]time.Time{}
-		}
-		s.scheduleNextAttempt["search"] = now.Add(remaining)
-		s.mu.Unlock()
-		sleep := remaining
-		if sleep <= 0 || sleep > scheduleMaxSleepChunk {
-			sleep = scheduleMaxSleepChunk
-		}
-		timer := time.NewTimer(sleep)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
-	}
+	s.runMonitoredSearchSchedule(ctx, monitoredSearchSchedule{id: "search", enabledKey: "download_search_enabled", intervalKey: "download_search_interval", modeKey: "download_search_schedule_mode", startTimeKey: "download_search_start_time", weekdaysKey: "download_search_weekdays", cronKey: "download_search_cron", fallback: time.Hour, run: s.StartSearch})
 }
 
 // OlderSearchSchedule is SearchSchedule's counterpart for the "older
@@ -3295,29 +3269,70 @@ func (s *Service) SearchSchedule(ctx context.Context) {
 // stop re-searching old, unlikely-to-appear releases as often as brand new
 // ones and overloading the download provider, e.g. NYAA).
 func (s *Service) OlderSearchSchedule(ctx context.Context) {
-	lastAttempt := time.Now()
+	s.runMonitoredSearchSchedule(ctx, monitoredSearchSchedule{id: "older_search", enabledKey: "download_search_older_enabled", intervalKey: "download_search_older_interval", modeKey: "download_search_older_schedule_mode", startTimeKey: "download_search_older_start_time", weekdaysKey: "download_search_older_weekdays", cronKey: "download_search_older_cron", fallback: 24 * time.Hour, run: s.StartSearchOlder})
+}
+
+func monitoredScheduleInterval(settings map[string]string, schedule monitoredSearchSchedule) time.Duration {
+	interval := schedule.fallback
+	if parsed, err := domain.ParseScheduleDuration(settings[schedule.intervalKey]); err == nil && parsed >= time.Minute {
+		interval = parsed
+	}
+	return interval
+}
+
+func nextMonitoredScheduleRuns(now time.Time, settings map[string]string, schedule monitoredSearchSchedule, count int) (string, []time.Time) {
+	interval := monitoredScheduleInterval(settings, schedule)
+	mode := monitor.NormalizeScheduleMode(settings[schedule.modeKey], settings[schedule.startTimeKey], settings[schedule.weekdaysKey], settings[schedule.cronKey])
+	switch mode {
+	case "cron":
+		return "cron: " + strings.TrimSpace(settings[schedule.cronKey]), monitor.NextCalendarRuns(now, "", "", settings[schedule.cronKey], count)
+	case "advanced":
+		return "advanced: " + interval.String(), monitor.NextAdvancedRuns(now, settings[schedule.startTimeKey], settings[schedule.weekdaysKey], interval, count)
+	default:
+		runs := make([]time.Time, 0, count)
+		next := monitor.NextBasicRun(now, interval, settings[schedule.startTimeKey])
+		for len(runs) < count {
+			runs = append(runs, next)
+			next = next.Add(interval)
+		}
+		return "basic: " + interval.String(), runs
+	}
+}
+
+func (s *Service) runMonitoredSearchSchedule(ctx context.Context, schedule monitoredSearchSchedule) {
+	var signature string
+	var next time.Time
 	for {
 		settings, _ := s.store.Settings(ctx)
-		wait := 24 * time.Hour
-		if parsed, err := domain.ParseScheduleDuration(settings["download_search_older_interval"]); err == nil && parsed >= time.Minute {
-			wait = parsed
-		}
 		now := time.Now()
-		remaining := wait - now.Sub(lastAttempt)
-		if remaining <= 0 {
-			lastAttempt = now
-			if settings["download_search_older_enabled"] == "true" {
-				_ = s.StartSearchOlder(ctx)
+		currentSignature := strings.Join([]string{settings[schedule.modeKey], settings[schedule.intervalKey], settings[schedule.startTimeKey], settings[schedule.weekdaysKey], settings[schedule.cronKey]}, "|")
+		if currentSignature != signature || next.IsZero() {
+			signature = currentSignature
+			_, runs := nextMonitoredScheduleRuns(now, settings, schedule, 1)
+			if len(runs) > 0 {
+				next = runs[0]
+			} else {
+				next = now.Add(scheduleMaxSleepChunk)
 			}
-			remaining = wait
+		}
+		if !now.Before(next) {
+			if settings[schedule.enabledKey] == "true" {
+				_ = schedule.run(ctx)
+			}
+			_, runs := nextMonitoredScheduleRuns(now, settings, schedule, 1)
+			if len(runs) > 0 {
+				next = runs[0]
+			} else {
+				next = now.Add(scheduleMaxSleepChunk)
+			}
 		}
 		s.mu.Lock()
 		if s.scheduleNextAttempt == nil {
 			s.scheduleNextAttempt = map[string]time.Time{}
 		}
-		s.scheduleNextAttempt["older_search"] = now.Add(remaining)
+		s.scheduleNextAttempt[schedule.id] = next
 		s.mu.Unlock()
-		sleep := remaining
+		sleep := time.Until(next)
 		if sleep <= 0 || sleep > scheduleMaxSleepChunk {
 			sleep = scheduleMaxSleepChunk
 		}
@@ -3444,12 +3459,23 @@ const scheduleForecastRunCount = 3
 // so it can never drift from what those loops will actually do next.
 func (s *Service) SearchScheduleForecast(ctx context.Context) []domain.ScheduleForecast {
 	settings, _ := s.store.Settings(ctx)
+	recent := monitoredSearchSchedule{id: "search", enabledKey: "download_search_enabled", intervalKey: "download_search_interval", modeKey: "download_search_schedule_mode", startTimeKey: "download_search_start_time", weekdaysKey: "download_search_weekdays", cronKey: "download_search_cron", fallback: time.Hour}
+	older := monitoredSearchSchedule{id: "older_search", enabledKey: "download_search_older_enabled", intervalKey: "download_search_older_interval", modeKey: "download_search_older_schedule_mode", startTimeKey: "download_search_older_start_time", weekdaysKey: "download_search_older_weekdays", cronKey: "download_search_older_cron", fallback: 24 * time.Hour}
 	forecasts := []domain.ScheduleForecast{
-		s.intervalScheduleForecast("search", "Monitored releases · recent", settings["download_search_enabled"] == "true", settings["download_search_interval"], time.Hour),
-		s.intervalScheduleForecast("older_search", "Monitored releases · older", settings["download_search_older_enabled"] == "true", settings["download_search_older_interval"], 24*time.Hour),
+		s.monitoredSearchScheduleForecast(settings, recent, "Monitored releases · recent"),
+		s.monitoredSearchScheduleForecast(settings, older, "Monitored releases · older"),
 		s.PikPakScheduleForecast(ctx),
 	}
 	return forecasts
+}
+
+func (s *Service) monitoredSearchScheduleForecast(settings map[string]string, schedule monitoredSearchSchedule, name string) domain.ScheduleForecast {
+	description, runs := nextMonitoredScheduleRuns(time.Now(), settings, schedule, scheduleForecastRunCount)
+	forecast := domain.ScheduleForecast{Group: "Download monitoring", Name: name, Enabled: settings[schedule.enabledKey] == "true", Interval: description}
+	if forecast.Enabled {
+		forecast.NextRuns = runs
+	}
+	return forecast
 }
 
 // intervalScheduleForecast builds one ScheduleForecast entry for a

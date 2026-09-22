@@ -81,6 +81,28 @@ func TestMonitoredDaysSettingFallsBackWhenUnsetOrInvalid(t *testing.T) {
 	}
 }
 
+func TestNextMonitoredScheduleRunsSupportsBasicAdvancedAndCron(t *testing.T) {
+	now := time.Date(2026, 9, 22, 10, 15, 0, 0, time.Local)
+	schedule := monitoredSearchSchedule{
+		intervalKey: "interval", modeKey: "mode", startTimeKey: "start", weekdaysKey: "weekdays", cronKey: "cron", fallback: time.Hour,
+	}
+
+	description, runs := nextMonitoredScheduleRuns(now, map[string]string{"mode": "basic", "interval": "2h"}, schedule, 3)
+	if description != "basic: 2h0m0s" || len(runs) != 3 || !runs[0].Equal(now.Add(2*time.Hour)) || !runs[1].Equal(now.Add(4*time.Hour)) {
+		t.Fatalf("basic forecast = %q %+v", description, runs)
+	}
+
+	description, runs = nextMonitoredScheduleRuns(now, map[string]string{"mode": "advanced", "interval": "24h", "start": "11:30", "weekdays": "Tue,Thu"}, schedule, 2)
+	if description != "advanced: 24h0m0s" || len(runs) != 2 || runs[0].Weekday() != time.Tuesday || runs[0].Hour() != 11 || runs[0].Minute() != 30 || runs[1].Weekday() != time.Thursday {
+		t.Fatalf("advanced forecast = %q %+v", description, runs)
+	}
+
+	description, runs = nextMonitoredScheduleRuns(now, map[string]string{"mode": "cron", "cron": "0 3 * * 1-5"}, schedule, 2)
+	if description != "cron: 0 3 * * 1-5" || len(runs) != 2 || runs[0].Hour() != 3 || runs[0].Minute() != 0 || runs[0].Weekday() == time.Saturday || runs[0].Weekday() == time.Sunday {
+		t.Fatalf("cron forecast = %q %+v", description, runs)
+	}
+}
+
 // TestStartSearchOnlyChecksRecentReleases and
 // TestStartSearchOlderOnlyChecksOlderReleases are the end-to-end proof for
 // the two-schedule split: each schedule's own job (StartSearch/
