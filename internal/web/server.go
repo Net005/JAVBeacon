@@ -1872,6 +1872,11 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "byparr_request_timeout_seconds": true, "byparr_solve_timeout_seconds": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "api_key": true, "stash_watchlist_tag_id": true, "stash_watchlist_sync_enabled": true, "stash_watchlist_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "blacklisted_filename_patterns": true, "search_auto_close_seconds": true, "search_download_background": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
+	for _, prefix := range []string{"download_search", "download_search_older"} {
+		for _, suffix := range []string{"schedule_mode", "start_time", "weekdays", "cron"} {
+			allowed[prefix+"_"+suffix] = true
+		}
+	}
 	for _, key := range []string{"stash_realtime_enabled", "stash_realtime_secret", "stash_realtime_debounce_seconds", "stash_realtime_retry_attempts", "stash_realtime_retry_delay_seconds"} {
 		allowed[key] = true
 	}
@@ -2146,16 +2151,44 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// download_search_interval/download_search_older_interval (Monitored
-	// releases) and stash_sync_interval/stash_watchlist_sync_interval
-	// (StashApp) are plain "Run every" duration strings, same shape as
-	// refresh_interval/full_refresh_interval above but without a
-	// corresponding calendar/cron override - validated the same way (only
-	// when submitted and non-blank, so a save of other settings never fails
-	// because one of these was left at its default) so a typo is rejected
-	// up front instead of silently falling back to that schedule's default
-	// interval downstream, which used to look exactly like the schedule
-	// hadn't picked up the change at all.
+	for _, prefix := range []string{"download_search", "download_search_older"} {
+		if _, submitted := x[prefix+"_schedule_mode"]; !submitted {
+			continue
+		}
+		mode := strings.ToLower(strings.TrimSpace(x[prefix+"_schedule_mode"]))
+		if mode == "" {
+			mode = "basic"
+		}
+		if mode != "basic" && mode != "advanced" && mode != "cron" {
+			s.problem(w, http.StatusUnprocessableEntity, prefix+": schedule mode must be Basic, Advanced, or Cron")
+			return
+		}
+		if mode != "cron" {
+			if err := monitor.ValidateCalendarSchedule(x[prefix+"_start_time"], x[prefix+"_weekdays"]); err != nil {
+				s.problem(w, http.StatusUnprocessableEntity, prefix+": "+err.Error())
+				return
+			}
+		}
+		if mode == "advanced" && strings.TrimSpace(x[prefix+"_start_time"]) == "" {
+			s.problem(w, http.StatusUnprocessableEntity, prefix+": Advanced mode requires a start time")
+			return
+		}
+		if mode == "cron" {
+			if strings.TrimSpace(x[prefix+"_cron"]) == "" {
+				s.problem(w, http.StatusUnprocessableEntity, prefix+": Cron mode requires a five-field cron expression")
+				return
+			}
+			if err := monitor.ValidateCronSchedule(x[prefix+"_cron"]); err != nil {
+				s.problem(w, http.StatusUnprocessableEntity, prefix+": "+err.Error())
+				return
+			}
+		}
+	}
+	// Validate non-blank interval settings when submitted so typos fail visibly
+	// instead of silently falling back, without blocking unrelated settings
+	// saves. Advanced monitored-search schedules use this duration as the
+	// minimum spacing between eligible calendar runs; legacy interval-only
+	// configurations continue to normalize to Basic mode.
 	for _, key := range []string{"download_search_interval", "download_search_older_interval", "stash_sync_interval", "stash_watchlist_sync_interval", "stash_history_writeback_interval", "discoveries_refresh_interval", "discoveries_subtitle_refresh_interval", "discoveries_openai_cache_interval"} {
 		if raw, ok := x[key]; ok && strings.TrimSpace(raw) != "" {
 			if parsed, err := domain.ParseScheduleDuration(strings.TrimSpace(raw)); err != nil || parsed < time.Minute {
