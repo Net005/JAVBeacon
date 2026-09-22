@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	SchemaVersion   = "5"
+	SchemaVersion   = "6"
 	MaxReasonLength = 700
 	maxPoolNameLen  = 120
 )
@@ -28,7 +28,7 @@ var conversationalReasonFragments = []string{
 	"i cannot assist", "i can't assist", "as an ai", "i need more information",
 	"if you are referring to", "there is no clear", "no coherent narrative",
 	"appears to be a mix of", "it appears that", "how can i help", "let me know if",
-	"i'm sorry", "i am sorry", "unable to assist",
+	"i'm sorry", "i am sorry", "unable to assist", "strong title match", "recommendation relevance",
 }
 
 func conciseText(value string, max int) bool {
@@ -107,10 +107,13 @@ func validateRank(rank Rank, allowedIDs map[int64]bool, allowedPools map[string]
 	if conversationalReason(rank.Reason) {
 		return validationError{"conversational/non-ranking reason"}
 	}
-	if !strings.HasPrefix(strings.TrimSpace(rank.Reason), "Match:") {
-		return validationError{"recommendation reason must begin with Match:"}
+	naturalReason := strings.TrimSpace(rank.Reason)
+	// Accept the old prefix while schema-version-5 rows age out, but no longer
+	// require or generate it. Explanations should read as ordinary prose.
+	if strings.HasPrefix(strings.ToLower(naturalReason), "match:") {
+		naturalReason = strings.TrimSpace(naturalReason[len("Match:"):])
 	}
-	wordCount := len(strings.Fields(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rank.Reason), "Match:"))))
+	wordCount := len(strings.Fields(naturalReason))
 	if wordCount < 8 || wordCount > 36 {
 		return validationError{"recommendation reason is not sufficiently descriptive"}
 	}

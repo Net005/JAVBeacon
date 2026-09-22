@@ -367,7 +367,9 @@ func applyOpenAIRanks(items []discoveryItem, ranks []openAIRank) []discoveryItem
 			items[i].Score = math.Round((items[i].Score*.35+rank.Score*.65)*10) / 10
 			items[i].Pools = append(items[i].Pools, rank.Pools...)
 			if strings.TrimSpace(rank.Reason) != "" {
-				items[i].Reasons = append([]string{rank.Reason}, items[i].Reasons...)
+				// The AI sentence already combines the strongest signals. Appending
+				// labelled internal evidence makes the card dense and repetitive.
+				items[i].Reasons = []string{rank.Reason}
 			}
 		}
 	}

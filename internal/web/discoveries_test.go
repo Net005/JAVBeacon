@@ -363,9 +363,12 @@ func TestDiscoveryAITextFilteringIsPartialAndCaseInsensitive(t *testing.T) {
 }
 
 func TestApplyOpenAIRanksRetainsGeneratedTextForFiltering(t *testing.T) {
-	items := applyOpenAIRanks([]discoveryItem{{Release: domain.Release{ID: 42}}}, []openAIRank{{ID: 42, Score: 91, Reason: "Matches the title and story"}})
-	if len(items) != 1 || !items[0].AIEnhanced || items[0].AIText != "Matches the title and story" {
+	items := applyOpenAIRanks([]discoveryItem{{Release: domain.Release{ID: 42}, Reasons: []string{"Theme preference: drama", "Studio preference: S1"}}}, []openAIRank{{ID: 42, Score: 91, Reason: "Its title and studio make this a strong fit."}})
+	if len(items) != 1 || !items[0].AIEnhanced || items[0].AIText != "Its title and studio make this a strong fit." {
 		t.Fatalf("AI enrichment was not retained: %#v", items)
+	}
+	if len(items[0].Reasons) != 1 || items[0].Reasons[0] != "Its title and studio make this a strong fit." {
+		t.Fatalf("AI explanation still includes labelled deterministic evidence: %#v", items[0].Reasons)
 	}
 }
 

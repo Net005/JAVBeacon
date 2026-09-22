@@ -7,6 +7,25 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.214] - 2026-09-22
+
+### Changed
+
+- AI Discovery now requests concise, natural-language recommendations without
+  mechanical `Match:` or metadata-field labels.
+- AI-enhanced recommendation cards separate the affinity score from a readable
+  "Why it fits" explanation instead of combining signals into a wall of text.
+
+### Fixed
+
+- Story-based recommendation claims are now requested only when a release has
+  actual story metadata, preventing otherwise valid OpenAI batches from being
+  rejected as unsupported story claims.
+- AI-enhanced cards no longer append raw deterministic scoring labels to the
+  generated explanation, and legacy labels are presented as natural prose.
+- Existing AI rankings are refreshed under grounding schema version 6 so older
+  explanations are replaced by the improved format.
+
 ## [1.0.213] - 2026-09-22
 
 ### Fixed

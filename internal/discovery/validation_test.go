@@ -49,6 +49,11 @@ func TestValidConciseRecommendationReasonAccepted(t *testing.T) {
 	if err := validateRanks([]Rank{validRank()}, testCandidates(), "Sci-Fi | space, heroine"); err != nil {
 		t.Fatalf("valid rank rejected: %v", err)
 	}
+	rank := validRank()
+	rank.Reason = "Its science-fiction theme, preferred performer, and familiar studio make this a strong recommendation."
+	if err := validateRanks([]Rank{rank}, testCandidates(), "Sci-Fi | space, heroine"); err != nil {
+		t.Fatalf("natural unlabelled reason rejected: %v", err)
+	}
 }
 
 func TestRankingValidationRejectsUnsafeStructures(t *testing.T) {

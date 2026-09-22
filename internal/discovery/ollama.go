@@ -155,7 +155,8 @@ For every ranking, copy candidate.id exactly. Never invent or transform an ID, r
 use array positions such as 1, 2, 3, use video_id as id, or return an ID absent from the candidate JSON.
 If N candidates are supplied, return exactly N rankings. Every candidate.id must appear exactly once.
 Each concise reason must explain why that release is a worthwhile recommendation using only facts present in that candidate object.
-Begin every reason with "Match:" and write one natural, specific sentence of roughly 12-30 words.
+Write one natural, specific sentence of roughly 12-30 words. Start directly with the explanation: never add
+"Match:", "Reason:", field names followed by colons, headings, bullet points, or other machine-style labels.
 Prioritize the strongest useful evidence: story themes, exact tags, performers, studio, explicit taste/history
 signals, and subtitle-derived themes when the excerpt clearly supports them. The taste_match object contains
 deterministic signals derived from actual watch history. Turn those signals into fluent prose instead of listing
@@ -167,6 +168,8 @@ or behavioral patterns. A studio or performer field proves only identity, not pr
 Only taste_match may support preference, affinity, or historical claims. If the relevant taste_match
 value is empty, false, or absent, do not make that claim. Empty and zero values mean no evidence.
 Title, story, performers, studio, label, director, tags, counts, release context and availability are primary evidence.
+Use the word "story" only when that candidate's story field is non-empty. A title, tag, subtitle excerpt, or
+taste signal may describe a theme, but it does not prove that a missing story field contains that theme.
 Orgasm count is a stronger positive signal than play count.
 Subtitle excerpts are optional weak supporting evidence. They may be fragmented, machine translated,
 explicit, repetitive, incorrectly timed, incomplete, noisy, mixed-language, OCR-like, credits, or corrupt.
@@ -193,10 +196,10 @@ subtitle_available proves only that subtitles exist. subtitle_excerpt may suppor
 its meaning is clear, but never let dialogue override contradictory structured metadata.
 
 GOOD REASON STYLE:
-"Match: Its psychological story and drug-related themes align with established genre interests, while the familiar performer adds another strong preference signal."
+"Its psychological story and drug-related themes align with established interests, while the familiar performer adds another strong signal."
 BAD REASON STYLE:
 "Match: Performer preference: A, Theme preference: drugs."
-"Match: No relevant tags or pools are present."
+"No relevant tags or pools are present."
 
 AVAILABLE POOL NAMES (candidate eligibility still controls selection):
 ` + string(poolData) + `
