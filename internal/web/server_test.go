@@ -469,6 +469,12 @@ func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	if strings.Contains(serializer, "if(!chosenSites.length)return null") {
 		t.Fatal("site group schedule serializer must not silently discard schedules without rendered site choices")
 	}
+	if strings.Contains(script, `addSiteGroupSchedule.onclick=()=>{if(siteGroupScheduleList.querySelector('.muted'))`) {
+		t.Fatal("adding a site group schedule must not mistake an existing card's muted forecast for the empty-state placeholder")
+	}
+	if !strings.Contains(script, `addSiteGroupSchedule.onclick=()=>{if(!siteGroupScheduleList.querySelector('.siteGroupScheduleCard'))`) || !strings.Contains(script, `const cardID=g.id||++siteGroupScheduleDraftID`) {
+		t.Fatal("site group schedule add action must append uniquely identified cards without replacing existing schedules")
+	}
 	clearStart := strings.Index(string(javascript), "function clearReleaseFilterState()")
 	clearEnd := strings.Index(string(javascript), "async function loadPresets()")
 	if clearStart < 0 || clearEnd <= clearStart {

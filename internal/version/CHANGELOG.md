@@ -7,6 +7,15 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.213] - 2026-09-22
+
+### Fixed
+
+- Adding a site group schedule now appends a separate schedule without
+  clearing or overwriting existing saved or unsaved schedule cards.
+- Newly added site group schedules receive unique draft IDs even when several
+  are created in rapid succession.
+
 ## [1.0.212] - 2026-09-21
 
 ### Added
