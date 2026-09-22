@@ -7,6 +7,17 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.215] - 2026-09-22
+
+### Fixed
+
+- AI Discovery no longer rejects natural, grounded explanations merely because
+  they omit a predefined ranking keyword such as `match` or `recommendation`.
+- Ollama's initial and repair prompts now consistently request the same natural
+  explanation format without the retired `Match:` prefix.
+- Conversational replies, unsupported claims, malformed output, excessive
+  length, and data-quality commentary remain protected by dedicated checks.
+
 ## [1.0.214] - 2026-09-22
 
 ### Changed

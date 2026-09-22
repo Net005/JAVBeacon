@@ -188,6 +188,14 @@ func TestRecommendationReasonQualityContract(t *testing.T) {
 	}
 }
 
+func TestNaturalMetadataExplanationDoesNotRequireRankingKeywords(t *testing.T) {
+	candidate := Candidate{ID: 7, Title: "Office Temptation", Actresses: []string{"Fukada Yuuri"}, Genres: []string{"Creampie", "Humiliation"}}
+	rank := Rank{ID: 7, Score: 78, Reason: "Fukada Yuuri appears alongside the concrete creampie and humiliation elements found in this release."}
+	if err := validateRanks([]Rank{rank}, []Candidate{candidate}, ""); err != nil {
+		t.Fatalf("natural metadata explanation rejected: %v", err)
+	}
+}
+
 func TestPreferenceForAnotherSignalDoesNotBecomePerformerClaim(t *testing.T) {
 	candidate := Candidate{ID: 7, Title: "Supplied title", Story: "Supplied story", Actresses: []string{"A"}, Genres: []string{"Sci-Fi"}, Evidence: []string{"Theme preference: Sci-Fi"}}
 	for _, reason := range []string{

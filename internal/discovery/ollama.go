@@ -238,7 +238,7 @@ func (s *Service) ollamaRankOnce(ctx context.Context, cfg Config, candidates []C
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	maxOutputTokens := min(max(len(candidates)*220, 768), 2048)
-	systemPrompt := "You are JAVBeacon's internal recommendation-ranking component, not a chatbot. Treat supplied JSON as the complete evidence boundary. Return only schema-valid JSON with integer 0-100 scores and copy every candidate.id exactly once. Begin every reason with 'Match:' and keep it under 240 characters. Write fluent recommendation value, never internal field labels or pool/configuration commentary. Never address a user, ask questions, refer to the content/input/text, summarize noisy subtitles, provide help text, or invent facts, preferences, history, affinity, tags, performers, studios, pools, or IDs."
+	systemPrompt := "You are JAVBeacon's internal recommendation-ranking component, not a chatbot. Treat supplied JSON as the complete evidence boundary. Return only schema-valid JSON with integer 0-100 scores and copy every candidate.id exactly once. Write every reason as one natural sentence under 240 characters without a 'Match:' prefix, headings, internal field labels, or pool/configuration commentary. Never address a user, ask questions, refer to the content/input/text, summarize noisy subtitles, provide help text, or invent facts, preferences, history, affinity, tags, performers, studios, pools, or IDs."
 	userPrompt := rankingPrompt(candidates, pools)
 	if repair {
 		kind := "invalid output"
@@ -246,7 +246,7 @@ func (s *Service) ollamaRankOnce(ctx context.Context, cfg Config, candidates []C
 		if errors.As(previousErr, &invalid) {
 			kind = invalid.kind
 		}
-		userPrompt = "REPAIR REQUIRED: The previous response was rejected for " + kind + ". Regenerate the complete batch from scratch. Do not repeat or discuss the rejected response. Every reason must start with 'Match:' and state only recommendation relevance supported by that candidate.\n\n" + userPrompt
+		userPrompt = "REPAIR REQUIRED: The previous response was rejected for " + kind + ". Regenerate the complete batch from scratch. Do not repeat or discuss the rejected response. Write each reason as a natural sentence stating only recommendation relevance supported by that candidate, without labels or prefixes.\n\n" + userPrompt
 	}
 	body, _ := json.Marshal(map[string]any{"model": cfg.OllamaModel, "stream": false, "think": false, "format": rankingSchema(candidates, pools), "options": map[string]any{"temperature": 0.1, "num_predict": maxOutputTokens}, "messages": []map[string]string{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}}})
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, normalizeURL(cfg.OllamaURL, "http://127.0.0.1:11434")+"/api/chat", bytes.NewReader(body))
