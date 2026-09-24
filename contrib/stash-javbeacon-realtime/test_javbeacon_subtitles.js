@@ -9,6 +9,10 @@ let captionQueryResult = {
   loading: false,
 };
 const mutationCalls = [];
+const confirmationCalls = [];
+let confirmResult = true;
+let confirmQueue = [];
+let subtitleStatusResult = null;
 const queryCalls = [];
 const lazyQueryCalls = [];
 let settingsQueryResult = {
@@ -43,6 +47,10 @@ const React = {
 };
 
 global.window = {
+  confirm(message) {
+    confirmationCalls.push(message);
+    return confirmQueue.length ? confirmQueue.shift() : confirmResult;
+  },
   PluginApi: {
     React,
     ReactDOM: { createPortal(element) { return element; } },
@@ -56,6 +64,9 @@ global.window = {
           return [
             async (options) => {
               mutationCalls.push({ options, query });
+              if (options?.variables?.args?.mode === "subtitle_status") {
+                return { data: { runPluginOperation: subtitleStatusResult } };
+              }
               return { data: {} };
             },
           ];
@@ -306,6 +317,70 @@ assert.equal(stopped, true);
 const completedCardAction = renderCardAction(cardActions, 2);
 assert.equal(completedCardAction.props.className, "javbeacon-subs-card-action");
 assert.equal(completedCardAction.props.children.props.completed, true);
+const completedSubtitleButton = completedCardAction.props.children.type(
+  completedCardAction.props.children.props
+);
+assert.equal(completedSubtitleButton.props.disabled, false);
+function subtitleModeCalls(mode) {
+  return mutationCalls.filter((call) => call.options?.variables?.args?.mode === mode);
+}
+
+// No sidecar/status info available (subtitleStatusResult stays null): the
+// original plain "replace subtitles?" confirmation still gates the request,
+// but a subtitle_status check now always runs first.
+const subtitleRequestsBeforeCancel = subtitleModeCalls("subtitles").length;
+const statusRequestsBeforeCancel = subtitleModeCalls("subtitle_status").length;
+confirmResult = false;
+await completedSubtitleButton.props.onClick({ preventDefault() {}, stopPropagation() {} });
+assert.equal(subtitleModeCalls("subtitle_status").length, statusRequestsBeforeCancel + 1);
+assert.equal(confirmationCalls.length, 1);
+assert.equal(subtitleModeCalls("subtitles").length, subtitleRequestsBeforeCancel);
+confirmResult = true;
+await completedSubtitleButton.props.onClick({ preventDefault() {}, stopPropagation() {} });
+assert.deepEqual(mutationCalls.at(-1).options.variables.args, {
+  mode: "subtitles", scene_id: "39382", overwrite: true,
+});
+
+// A sidecar exists but is older than JAVBeacon-Subs's current backend: one
+// confirmation naming both backends gates the request.
+subtitleStatusResult = {
+  sidecar_found: true,
+  up_to_date: false,
+  reason: "outdated",
+  sidecar_backends: { transcription_backend: "whisper-large-v2", translation_backend: "gpt-4o-mini" },
+  current_backends: { transcription_backend: "Qwen/Qwen3-ASR-1.7B", translation_backend: "gpt-5.6-luna" },
+};
+const confirmationsBeforeOutdated = confirmationCalls.length;
+confirmResult = true;
+await completedSubtitleButton.props.onClick({ preventDefault() {}, stopPropagation() {} });
+assert.equal(confirmationCalls.length, confirmationsBeforeOutdated + 1);
+assert.match(confirmationCalls.at(-1), /whisper-large-v2 \/ gpt-4o-mini/);
+assert.match(confirmationCalls.at(-1), /Qwen\/Qwen3-ASR-1\.7B \/ gpt-5\.6-luna/);
+assert.deepEqual(mutationCalls.at(-1).options.variables.args, {
+  mode: "subtitles", scene_id: "39382", overwrite: true,
+});
+
+// A sidecar already matches the current backend: overwriting requires TWO
+// confirmations, the second an explicit force-overwrite warning. Declining
+// either one sends no subtitle request.
+subtitleStatusResult = {
+  sidecar_found: true,
+  up_to_date: true,
+  reason: "up_to_date",
+  sidecar_backends: { transcription_backend: "Qwen/Qwen3-ASR-1.7B", translation_backend: "gpt-5.6-luna" },
+  current_backends: { transcription_backend: "Qwen/Qwen3-ASR-1.7B", translation_backend: "gpt-5.6-luna" },
+};
+const subtitleRequestsBeforeUpToDate = subtitleModeCalls("subtitles").length;
+confirmQueue = [true, false];
+await completedSubtitleButton.props.onClick({ preventDefault() {}, stopPropagation() {} });
+assert.match(confirmationCalls.at(-1), /FORCE OVERWRITE/);
+assert.equal(subtitleModeCalls("subtitles").length, subtitleRequestsBeforeUpToDate);
+confirmQueue = [true, true];
+await completedSubtitleButton.props.onClick({ preventDefault() {}, stopPropagation() {} });
+assert.deepEqual(mutationCalls.at(-1).options.variables.args, {
+  mode: "subtitles", scene_id: "39382", overwrite: true,
+});
+subtitleStatusResult = null;
 const completedWatchlistAction = renderCardAction(cardActions, 3);
 assert.equal(
   completedWatchlistAction.props.children.props.children.props.children,
@@ -334,6 +409,20 @@ assert.equal(
   renderCardAction(knownCompletedActions, 2).props.children.props.completed,
   true
 );
+
+const sceneWithoutCaptions = afterPatches["SceneCard.Popovers"](
+  { scene: { id: "39400", captions: [], tags: [], details: "", files: [{ path: "/Collections/JAV/TEST-001.mp4" }] } },
+  legacyContext,
+  renderedPopovers
+);
+const noCaptionAction = renderCardAction(renderCardActions(sceneWithoutCaptions), 2);
+const noCaptionButton = noCaptionAction.props.children.type(noCaptionAction.props.children.props);
+const confirmationsBeforeNew = confirmationCalls.length;
+await noCaptionButton.props.onClick({ preventDefault() {}, stopPropagation() {} });
+assert.equal(confirmationCalls.length, confirmationsBeforeNew);
+assert.deepEqual(mutationCalls.at(-1).options.variables.args, {
+  mode: "subtitles", scene_id: "39400", overwrite: false,
+});
 
 console.log("Scene page and card patches preserve results after legacy context");
 })().catch((error) => {

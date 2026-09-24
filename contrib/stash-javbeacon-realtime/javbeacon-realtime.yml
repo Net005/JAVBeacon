@@ -1,6 +1,6 @@
 name: JAVBeacon Realtime Sync + Subtitles
 description: Syncs changed scenes, links scene pages to JAVBeacon releases, requests subtitles, and adds scene-card Watchlist controls.
-version: 1.10.1
+version: 1.11.0
 ui:
   javascript:
     - javbeacon_subtitles.js
@@ -49,7 +49,7 @@ settings:
     type: BOOLEAN
   subs_overwrite:
     displayName: Overwrite
-    description: Replace subtitle files that already exist. Defaults to false.
+    description: Default for non-interactive subtitle requests. The scene button asks before replacing existing subtitles and passes that choice for each request.
     type: BOOLEAN
   subs_auto_detect_release:
     displayName: Auto-detect release

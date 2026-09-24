@@ -107,6 +107,155 @@ class SubtitleRequestTests(unittest.TestCase):
             "https://subs.example.com/api/v1/jobs",
         )
 
+    def test_backends_endpoint_accepts_base_jobs_or_full_endpoint(self):
+        self.assertEqual(
+            plugin._backends_endpoint("https://subs.example.com/"),
+            "https://subs.example.com/api/v1/backends",
+        )
+        self.assertEqual(
+            plugin._backends_endpoint("https://subs.example.com/api/v1/jobs"),
+            "https://subs.example.com/api/v1/backends",
+        )
+        self.assertEqual(
+            plugin._backends_endpoint("https://subs.example.com/api/v1/backends"),
+            "https://subs.example.com/api/v1/backends",
+        )
+
+    def test_sidecar_json_path_replaces_video_extension(self):
+        self.assertEqual(
+            plugin._sidecar_json_path("/collections/jav/NSPS-642.mp4"),
+            "/collections/jav/NSPS-642.en.srt.json",
+        )
+
+    @mock.patch.object(plugin, "_current_subtitle_backends")
+    @mock.patch.object(plugin, "_read_subtitle_sidecar")
+    @mock.patch.object(plugin, "_scene_and_subs_settings")
+    def test_subtitle_status_treats_missing_sidecar_as_outdated(
+        self, scene_settings, read_sidecar, current_backends
+    ):
+        scene_settings.return_value = ("/collections/jav/NSPS-642.mp4", {})
+        read_sidecar.return_value = None
+
+        result = plugin.subtitle_status({}, {"scene_id": "39381"})
+
+        self.assertEqual(
+            result,
+            {
+                "mode": "subtitle_status",
+                "scene_id": "39381",
+                "sidecar_found": False,
+                "up_to_date": False,
+                "reason": "no_sidecar",
+            },
+        )
+        current_backends.assert_not_called()
+
+    @mock.patch.object(plugin, "_current_subtitle_backends")
+    @mock.patch.object(plugin, "_read_subtitle_sidecar")
+    @mock.patch.object(plugin, "_scene_and_subs_settings")
+    def test_subtitle_status_reports_outdated_when_backends_differ(
+        self, scene_settings, read_sidecar, current_backends
+    ):
+        scene_settings.return_value = ("/collections/jav/NSPS-642.mp4", {})
+        read_sidecar.return_value = {
+            "transcription_backend": "whisper-large-v2",
+            "translation_backend": "gpt-4o-mini",
+        }
+        current_backends.return_value = {
+            "transcription_backend": "Qwen/Qwen3-ASR-1.7B",
+            "translation_backend": "gpt-5.6-luna",
+        }
+
+        result = plugin.subtitle_status({}, {"scene_id": "39381"})
+
+        self.assertFalse(result["up_to_date"])
+        self.assertEqual(result["reason"], "outdated")
+        self.assertTrue(result["sidecar_found"])
+        self.assertEqual(
+            result["current_backends"],
+            {
+                "transcription_backend": "Qwen/Qwen3-ASR-1.7B",
+                "translation_backend": "gpt-5.6-luna",
+            },
+        )
+
+    @mock.patch.object(plugin, "_current_subtitle_backends")
+    @mock.patch.object(plugin, "_read_subtitle_sidecar")
+    @mock.patch.object(plugin, "_scene_and_subs_settings")
+    def test_subtitle_status_reports_up_to_date_when_backends_match(
+        self, scene_settings, read_sidecar, current_backends
+    ):
+        scene_settings.return_value = ("/collections/jav/NSPS-642.mp4", {})
+        read_sidecar.return_value = {
+            "transcription_backend": "Qwen/Qwen3-ASR-1.7B",
+            "translation_backend": "gpt-5.6-luna",
+        }
+        current_backends.return_value = {
+            "transcription_backend": "Qwen/Qwen3-ASR-1.7B",
+            "translation_backend": "gpt-5.6-luna",
+        }
+
+        result = plugin.subtitle_status({}, {"scene_id": "39381"})
+
+        self.assertTrue(result["up_to_date"])
+        self.assertEqual(result["reason"], "up_to_date")
+
+    @mock.patch.object(plugin, "_current_subtitle_backends")
+    @mock.patch.object(plugin, "_read_subtitle_sidecar")
+    @mock.patch.object(plugin, "_scene_and_subs_settings")
+    def test_subtitle_status_when_current_backend_cannot_be_determined(
+        self, scene_settings, read_sidecar, current_backends
+    ):
+        scene_settings.return_value = ("/collections/jav/NSPS-642.mp4", {})
+        read_sidecar.return_value = {
+            "transcription_backend": "whisper-large-v2",
+            "translation_backend": "gpt-4o-mini",
+        }
+        current_backends.return_value = None
+
+        result = plugin.subtitle_status({}, {"scene_id": "39381"})
+
+        self.assertIsNone(result["up_to_date"])
+        self.assertEqual(result["reason"], "current_backend_unknown")
+
+    @mock.patch.object(plugin.urllib.request, "urlopen")
+    def test_current_subtitle_backends_returns_none_on_http_error(self, urlopen):
+        urlopen.side_effect = plugin.urllib.error.HTTPError(
+            "https://subs.example.com/api/v1/backends", 404, "Not Found", {}, None
+        )
+
+        result = plugin._current_subtitle_backends(
+            {"subs_base_url": "https://subs.example.com", "subs_api_token": "secret-token"},
+            10,
+        )
+
+        self.assertIsNone(result)
+
+    @mock.patch.object(plugin.urllib.request, "urlopen")
+    def test_current_subtitle_backends_parses_a_valid_response(self, urlopen):
+        urlopen.return_value = FakeResponse(
+            {
+                "transcription_backend": "Qwen/Qwen3-ASR-1.7B",
+                "translation_backend": "gpt-5.6-luna",
+            }
+        )
+
+        result = plugin._current_subtitle_backends(
+            {"subs_base_url": "https://subs.example.com", "subs_api_token": "secret-token"},
+            10,
+        )
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://subs.example.com/api/v1/backends")
+        self.assertEqual(request.get_header("Authorization"), "Bearer secret-token")
+        self.assertEqual(
+            result,
+            {
+                "transcription_backend": "Qwen/Qwen3-ASR-1.7B",
+                "translation_backend": "gpt-5.6-luna",
+            },
+        )
+
     def test_scene_path_filters_are_partial_and_case_insensitive(self):
         settings = {
             "subs_scene_path_filters": "/OTHER/PATH; /collections/JAV\n/archive"
@@ -158,6 +307,29 @@ class SubtitleRequestTests(unittest.TestCase):
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 12)
         self.assertEqual(result["filename"], "NSPS-642.mp4")
         self.assertEqual(result["javbeacon_subs"], {"id": "job-123"})
+
+    @mock.patch.object(plugin, "_scene_and_subs_settings")
+    @mock.patch.object(plugin.urllib.request, "urlopen")
+    def test_confirmed_overwrite_takes_precedence_over_job_defaults(self, urlopen, scene_settings):
+        scene_settings.return_value = (
+            "/collections/jav/NSPS-642.mp4",
+            {
+                "subs_base_url": "https://subs.example.com",
+                "subs_api_token": "secret-token",
+                "subs_job_options": '{"overwrite": false}',
+            },
+        )
+        urlopen.return_value = FakeResponse({"id": "job-123"})
+
+        plugin.request_subtitles({}, {"scene_id": "39381", "overwrite": True})
+        self.assertTrue(json.loads(urlopen.call_args.args[0].data)["overwrite"])
+
+        plugin.request_subtitles({}, {"scene_id": "39381", "overwrite": False})
+        self.assertFalse(json.loads(urlopen.call_args.args[0].data)["overwrite"])
+
+        with self.assertRaisesRegex(RuntimeError, "overwrite choice"):
+            plugin.request_subtitles({}, {"scene_id": "39381", "overwrite": "true"})
+        self.assertEqual(urlopen.call_count, 2)
 
     @mock.patch.object(plugin, "_plugin_settings")
     @mock.patch.object(plugin.urllib.request, "urlopen")

@@ -139,6 +139,69 @@
     return Array.isArray(scene?.captions) && scene.captions.length > 0;
   }
 
+  // Asks the server-side plugin whether the scene's existing .en.srt.json
+  // sidecar (if any) already matches JAVBeacon-Subs's current transcription
+  // and translation backend, then confirms with wording appropriate to that
+  // answer instead of a single generic "replace subtitles?" prompt:
+  //   - no sidecar found: subtitles predate version tracking, treated as
+  //     outdated (an older subtitle translator).
+  //   - sidecar found but older than the current backend: a normal upgrade
+  //     prompt naming both backends.
+  //   - sidecar already matches the current backend: subtitles are up to
+  //     date and overwriting is discouraged, but a second, explicitly
+  //     labeled "force overwrite" confirmation still allows it.
+  //   - freshness could not be determined (older JAVBeacon-Subs release
+  //     without the status endpoint, or a failed request): falls back to
+  //     the original plain confirmation so nothing regresses.
+  async function confirmSubtitleOverwrite(sceneId, runPluginOperation) {
+    let status = null;
+    try {
+      const response = await runPluginOperation({
+        variables: {
+          pluginId: PLUGIN_ID,
+          args: { mode: "subtitle_status", scene_id: String(sceneId) },
+        },
+      });
+      status = response.data?.runPluginOperation || null;
+    } catch (_) {
+      status = null;
+    }
+
+    const backendLabel = (backends) =>
+      `${backends?.transcription_backend || "unknown"} / ${backends?.translation_backend || "unknown"}`;
+
+    if (!status || !status.sidecar_found) {
+      return window.confirm(
+        "This scene's existing subtitles predate JAVBeacon-Subs version tracking (an older subtitle translator). Replace them with a new result?"
+      );
+    }
+
+    if (status.up_to_date === false) {
+      return window.confirm(
+        `A newer subtitle backend is available (${backendLabel(status.sidecar_backends)} → ${backendLabel(status.current_backends)}). Replace the existing subtitles with a new JAVBeacon-Subs result?`
+      );
+    }
+
+    if (status.up_to_date === true) {
+      if (
+        !window.confirm(
+          `Subtitles already use JAVBeacon-Subs's current backend (${backendLabel(status.current_backends)}). Regenerating them is not recommended.`
+        )
+      ) {
+        return false;
+      }
+      return window.confirm(
+        "⚠ FORCE OVERWRITE: this discards the up-to-date subtitles and regenerates them with the SAME backend. This is not recommended. Continue?"
+      );
+    }
+
+    // status.up_to_date === null: a sidecar exists but JAVBeacon-Subs did
+    // not report its current backend (older release, or the check failed).
+    return window.confirm(
+      "This scene already has subtitles. Replace the existing subtitles with a new JAVBeacon-Subs result?"
+    );
+  }
+
   function sceneMatchesPathFilters(scene, settings) {
     const filters = String(settings?.subs_scene_path_filters || "")
       .split(/[\n,;]+/)
@@ -170,20 +233,21 @@
     const onClick = async (event) => {
       event?.preventDefault();
       event?.stopPropagation();
-      if (loading || completed) return;
+      if (loading) return;
       setLoading(true);
       try {
+        let overwrite = completed;
         if (resolveScene) {
           const scene = await resolveScene();
-          if (hasLinkedSubtitles(scene)) {
-            Toast.success("Subtitle already linked to this scene");
-            return;
-          }
+          overwrite = hasLinkedSubtitles(scene);
+        }
+        if (overwrite && !(await confirmSubtitleOverwrite(sceneId, runPluginOperation))) {
+          return;
         }
         const response = await runPluginOperation({
           variables: {
             pluginId: PLUGIN_ID,
-            args: { mode: "subtitles", scene_id: String(sceneId) },
+            args: { mode: "subtitles", scene_id: String(sceneId), overwrite },
           },
         });
         const result = response.data?.runPluginOperation;
@@ -204,18 +268,18 @@
       Button,
       {
         "aria-label": completed
-          ? "Subtitle linked to this scene"
+          ? "Request replacement subtitles for this scene"
           : "Request subtitles from JAVBeacon-Subs",
         className: `minimal javbeacon-subs-button${
           completed ? " javbeacon-subs-complete" : ""
         }`,
-        disabled: loading || completed,
-        onClick: completed ? undefined : onClick,
+        disabled: loading,
+        onClick,
         onMouseDown: (event) => event.stopPropagation(),
-        title: completed
-          ? "Subtitle linked to this scene"
-          : loading
-            ? "Sending subtitle request…"
+        title: loading
+          ? "Sending subtitle request…"
+          : completed
+            ? "Request replacement subtitles (confirmation required)"
             : "Request subtitles from JAVBeacon-Subs",
         variant: "secondary",
       },
