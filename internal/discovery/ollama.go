@@ -187,7 +187,7 @@ SCORING RUBRIC:
 - 75-89: strong fit supported by a clear preference plus relevant story, tag, performer, or studio context.
 - 55-74: plausible fit with useful metadata relevance but limited personalized evidence.
 - 35-54: weak or generic fit with little preference overlap.
-- 0-34: almost no supported recommendation relevance.
+- 0-34: little grounded connection to the supplied evidence.
 Use deterministic_score as JAVBeacon's prior, then refine it using the structured context. Do not award a high
 score merely because metadata or subtitles exist. Scores must distinguish stronger candidates from weaker ones.
 discovery_state describes whether the release is new, unwatched, watched, or a rewatch candidate; use it only
@@ -246,7 +246,7 @@ func (s *Service) ollamaRankOnce(ctx context.Context, cfg Config, candidates []C
 		if errors.As(previousErr, &invalid) {
 			kind = invalid.kind
 		}
-		userPrompt = "REPAIR REQUIRED: The previous response was rejected for " + kind + ". Regenerate the complete batch from scratch. Do not repeat or discuss the rejected response. Write each reason as a natural sentence stating only recommendation relevance supported by that candidate, without labels or prefixes.\n\n" + userPrompt
+		userPrompt = "REPAIR REQUIRED: The previous response was rejected for " + kind + ". Regenerate the complete batch from scratch. Do not repeat or discuss the rejected response. Write each reason as a natural sentence citing specific grounded evidence for that candidate, without labels or prefixes.\n\n" + userPrompt
 	}
 	body, _ := json.Marshal(map[string]any{"model": cfg.OllamaModel, "stream": false, "think": false, "format": rankingSchema(candidates, pools), "options": map[string]any{"temperature": 0.1, "num_predict": maxOutputTokens}, "messages": []map[string]string{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}}})
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, normalizeURL(cfg.OllamaURL, "http://127.0.0.1:11434")+"/api/chat", bytes.NewReader(body))

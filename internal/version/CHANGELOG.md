@@ -7,6 +7,28 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.217] - 2026-09-24
+
+### Fixed
+
+- The saved filter sets menu on the Release Library and Notifications toolbars
+  no longer renders behind release covers - it now establishes its own
+  stacking context while open so it always paints above the grid, regardless
+  of browser zoom/interface scaling.
+- AI Discovery's scoring rubric and Ollama repair prompt no longer use the
+  exact wording ("recommendation relevance") that the response validator
+  rejects as a conversational, non-ranking reason, which could cause valid
+  OpenAI and Ollama rankings to be rejected on both the initial attempt and
+  the repair attempt.
+- The JAVBeacon Stash plugin's subtitle button now checks a scene's existing
+  `.en.srt.json` sidecar against JAVBeacon-Subs's current transcription and
+  translation backend before asking to replace subtitles, instead of a single
+  generic confirmation. Missing sidecars are treated as outdated; sidecars
+  already on the current backend show an "up to date, not recommended" notice
+  with a separate, explicitly labeled force-overwrite confirmation. Requires
+  a new `/api/v1/backends` endpoint on JAVBeacon-Subs; falls back to the
+  original confirmation when that endpoint is absent or unreachable.
+
 ## [1.0.216] - 2026-09-22
 
 ### Added

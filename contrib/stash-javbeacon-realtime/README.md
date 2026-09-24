@@ -63,9 +63,29 @@ card pages.
 For matching scene paths, the action appears in the scene action row and at
 the bottom-right of cards on the scene overview. **+ CC** requests subtitles
 when Stash reports no linked caption or subtitle tracks. When subtitles are
-already linked, it changes to a disabled **✓ CC** completion indicator.
-Selecting **+ CC** resolves the scene's first full file path from Stash on the
-server and submits:
+already linked, it changes to **✓ CC**. Selecting it when subtitles already
+exist first checks the scene's `.en.srt.json` sidecar (written by
+JAVBeacon-Subs next to the video) against JAVBeacon-Subs's current
+transcription/translation backend, then confirms with wording matching what
+it found:
+
+- **No sidecar file** - the existing subtitles predate version tracking (an
+  older subtitle translator). Treated as outdated; a normal confirmation
+  offers to replace them.
+- **Sidecar found, backend outdated** - a normal confirmation names both the
+  sidecar's recorded backend and JAVBeacon-Subs's current one and offers to
+  replace them.
+- **Sidecar found, backend already current** - a confirmation states the
+  subtitles are already up to date and that regenerating them is **not**
+  recommended. Only a second, explicitly labeled "FORCE OVERWRITE" warning
+  confirmation proceeds past that point.
+- **Freshness could not be determined** (JAVBeacon-Subs has no
+  `/api/v1/backends` endpoint yet, or the check failed) - falls back to the
+  original plain "replace the existing subtitles?" confirmation so nothing
+  regresses on older JAVBeacon-Subs deployments.
+
+Cancelling at any point sends no request. Selecting **+ CC** resolves the
+scene's first full file path from Stash on the server and submits:
 
 ```json
 {
@@ -88,9 +108,27 @@ Every request option shown above is available separately in the plugin
 settings, with the values above used as server-side defaults. **Job options
 (JSON)** can override those fields or add fields supported by JAVBeacon-Subs.
 For safety, `inputs` is always replaced with the current scene's full path.
+The button sends an explicit `overwrite: false` for new subtitles or
+`overwrite: true` after replacement is confirmed. This choice takes precedence
+over the plugin default and JSON job options for that request.
 When **Scene path filters** is configured, the action is shown only when the
 first scene file path contains at least one configured fragment. The same
 check is enforced by the server when the request is submitted.
+
+The backend-freshness check above calls `GET <JAVBeacon-Subs base
+URL>/api/v1/backends` with the same bearer token as job submission, expecting
+a JSON object naming the backends JAVBeacon-Subs currently uses for new jobs:
+
+```json
+{
+  "transcription_backend": "Qwen/Qwen3-ASR-1.7B",
+  "translation_backend": "gpt-5.6-luna"
+}
+```
+
+This endpoint does not need to exist for the plugin to work: a missing
+endpoint, a non-2xx response, or a malformed body are all treated as
+"freshness unknown" and fall back to the plain confirmation prompt.
 
 On scene detail pages, the yellow beacon icon appears to the right of **+ CC**
 with extra separation between the two actions. It securely resolves the

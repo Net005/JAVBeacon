@@ -170,6 +170,127 @@ def _subtitle_body(scene_path, settings):
     return body
 
 
+def _sidecar_json_path(scene_path):
+    base, _ext = os.path.splitext(str(scene_path or ""))
+    return base + ".en.srt.json"
+
+
+def _read_subtitle_sidecar(scene_path):
+    """Reads the .en.srt.json sidecar JAVBeacon-Subs writes next to a scene's
+    video file, if any. A missing file, an unreadable file, or one that is
+    not valid JSON are all treated the same as "no sidecar" by the caller:
+    an older or manually placed subtitle JAVBeacon-Subs never version-
+    stamped."""
+    path = _sidecar_json_path(scene_path)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _backends_endpoint(base_url):
+    value = str(base_url or "").strip().rstrip("/")
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise RuntimeError("configure a valid JAVBeacon-Subs base URL in Settings > Plugins")
+    if parsed.username or parsed.password:
+        raise RuntimeError("JAVBeacon-Subs base URL must not contain credentials")
+    if value.endswith("/api/v1/backends"):
+        return value
+    if value.endswith("/api/v1/jobs"):
+        value = value[: -len("/api/v1/jobs")]
+    return value + "/api/v1/backends"
+
+
+def _current_subtitle_backends(settings, timeout):
+    """Asks JAVBeacon-Subs which transcription/translation backend it
+    currently runs new jobs with, so an existing sidecar's recorded backend
+    can be compared against it. Returns None - never raises - when the
+    request fails for any reason: an older JAVBeacon-Subs release built
+    before this endpoint existed, a network hiccup, or an unexpected
+    response shape. Callers treat a None result as "freshness unknown" and
+    fall back to the plain confirmation prompt instead of blocking the
+    subtitle request on an optional check."""
+    token = str(settings.get("subs_api_token") or "").strip()
+    if not token:
+        return None
+    try:
+        endpoint = _backends_endpoint(settings.get("subs_base_url"))
+    except RuntimeError:
+        return None
+    request = urllib.request.Request(
+        endpoint,
+        headers={"Authorization": "Bearer " + token},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            result = _read_json_response(response)
+    except (urllib.error.HTTPError, urllib.error.URLError, RuntimeError):
+        return None
+    if not isinstance(result, dict):
+        return None
+    transcription = str(result.get("transcription_backend") or "").strip()
+    translation = str(result.get("translation_backend") or "").strip()
+    if not transcription or not translation:
+        return None
+    return {"transcription_backend": transcription, "translation_backend": translation}
+
+
+def subtitle_status(payload, args):
+    """Compares a scene's existing .en.srt.json sidecar (if any) against the
+    transcription/translation backend JAVBeacon-Subs currently uses for new
+    jobs, so the scene button can ask a version-aware overwrite question
+    instead of a blind confirmation. See the README for the three cases this
+    produces (no sidecar, outdated sidecar, up-to-date sidecar)."""
+    scene_id = str(args.get("scene_id") or "").strip()
+    if not scene_id:
+        raise RuntimeError("subtitle status check did not include a scene ID")
+    scene_path, settings = _scene_and_subs_settings(payload, scene_id)
+    timeout = max(1, int(_setting(settings, "subs_timeout_seconds", 30)))
+
+    sidecar = _read_subtitle_sidecar(scene_path)
+    if sidecar is None:
+        return {
+            "mode": "subtitle_status",
+            "scene_id": scene_id,
+            "sidecar_found": False,
+            "up_to_date": False,
+            "reason": "no_sidecar",
+        }
+
+    sidecar_backends = {
+        "transcription_backend": str(sidecar.get("transcription_backend") or "").strip(),
+        "translation_backend": str(sidecar.get("translation_backend") or "").strip(),
+    }
+    current = _current_subtitle_backends(settings, timeout)
+    if current is None:
+        return {
+            "mode": "subtitle_status",
+            "scene_id": scene_id,
+            "sidecar_found": True,
+            "up_to_date": None,
+            "reason": "current_backend_unknown",
+            "sidecar_backends": sidecar_backends,
+        }
+
+    up_to_date = (
+        sidecar_backends["transcription_backend"] == current["transcription_backend"]
+        and sidecar_backends["translation_backend"] == current["translation_backend"]
+    )
+    return {
+        "mode": "subtitle_status",
+        "scene_id": scene_id,
+        "sidecar_found": True,
+        "up_to_date": up_to_date,
+        "reason": "up_to_date" if up_to_date else "outdated",
+        "sidecar_backends": sidecar_backends,
+        "current_backends": current,
+    }
+
+
 def request_subtitles(payload, args):
     scene_id = str(args.get("scene_id") or "").strip()
     if not scene_id:
@@ -183,6 +304,10 @@ def request_subtitles(payload, args):
         raise RuntimeError("configure the JAVBeacon-Subs API token in Settings > Plugins")
     timeout = max(1, int(_setting(settings, "subs_timeout_seconds", 30)))
     body = _subtitle_body(scene_path, settings)
+    if "overwrite" in args:
+        if not isinstance(args["overwrite"], bool):
+            raise RuntimeError("subtitle overwrite choice must be true or false")
+        body["overwrite"] = args["overwrite"]
     request_id = uuid.uuid4().hex[:12]
     request = urllib.request.Request(
         endpoint,
@@ -316,6 +441,8 @@ def main():
     mode = str(args.get("mode") or "hook").strip().lower()
     if mode == "subtitles":
         output = request_subtitles(payload, args)
+    elif mode == "subtitle_status":
+        output = subtitle_status(payload, args)
     elif mode == "release_link":
         output = request_release_link(payload, args)
     else:
