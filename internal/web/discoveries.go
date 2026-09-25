@@ -40,6 +40,63 @@ type discoveryItem struct {
 	// shared character budget across a batch, so an eligible release can
 	// still receive no subtitle excerpt at all if the budget ran out first.
 	SubtitleUsed bool `json:"subtitle_used"`
+	// PoolMatches mirrors Pools with, for each pool, the share of that
+	// pool's own configured keywords which actually matched this release's
+	// metadata - a deterministic, zero-cost "how well does this fit that
+	// pool" figure computed locally, never sent to or returned by an AI
+	// provider.
+	PoolMatches []discoveryPoolMatch `json:"discovery_pool_matches,omitempty"`
+}
+
+type discoveryPoolMatch struct {
+	Name         string `json:"name"`
+	MatchPercent int    `json:"match_percent"`
+}
+
+// discoveryPoolMatchPercent scores how strongly release matches one pool's
+// configured keyword list: the percentage of that pool's own keywords which
+// are actually present in the release's metadata. A pool with no keywords
+// (name-only) always matches fully, matching discoveryPools' own fallback of
+// treating the pool name itself as its sole keyword.
+func discoveryPoolMatchPercent(release domain.Release, keywords []string) int {
+	if len(keywords) == 0 {
+		return 100
+	}
+	matched := 0
+	for _, keyword := range keywords {
+		if discoveryTextMatches(release, keyword) {
+			matched++
+		}
+	}
+	return int(math.Round(float64(matched) / float64(len(keywords)) * 100))
+}
+
+// discoveryAttachPoolMatches computes PoolMatches for every item already
+// carrying one or more pool names, ordered strongest match first. It must
+// run after AI enhancement, since an AI-enhanced item's Pools can include
+// pools the model selected in addition to any deterministic pool filter.
+func discoveryAttachPoolMatches(items []discoveryItem, pools map[string][]string) {
+	for i := range items {
+		if len(items[i].Pools) == 0 {
+			continue
+		}
+		seen := make(map[string]bool, len(items[i].Pools))
+		matches := make([]discoveryPoolMatch, 0, len(items[i].Pools))
+		for _, name := range items[i].Pools {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			matches = append(matches, discoveryPoolMatch{Name: name, MatchPercent: discoveryPoolMatchPercent(items[i].Release, pools[name])})
+		}
+		sort.SliceStable(matches, func(a, b int) bool {
+			if matches[a].MatchPercent == matches[b].MatchPercent {
+				return matches[a].Name < matches[b].Name
+			}
+			return matches[a].MatchPercent > matches[b].MatchPercent
+		})
+		items[i].PoolMatches = matches
+	}
 }
 
 type affinityProfile struct {
@@ -444,6 +501,43 @@ func discoveryTasteSignals(reasons []string) aidiscovery.TasteSignals {
 	return signals
 }
 
+// discoveryAIPromptOverheadChars reserves room for the static ranking
+// instructions, JSON framing, and character escaping inside maxInputChars.
+// It used to be a flat 12000 characters - roughly double the actual
+// instructions text (~6.5k characters) - which silently zeroed out
+// perSubtitle for entire batches (SubtitleUsed=false) even though most of
+// that reserve went unused. Tightening it to match reality does not raise
+// maxInputChars or per-request cost; it only stops wasting budget that was
+// already being paid for, freeing real room for subtitle excerpts, which
+// are the strongest signal once a release actually has them.
+const discoveryAIPromptOverheadChars = 6500
+
+// discoveryAIMinSubtitleChars is the smallest excerpt worth sending once a
+// release is eligible. Below this a subtitle-analysis excerpt reads as
+// noise to the model, so it is worth reclaiming a little room from the
+// story field (already backed by other structured metadata) rather than
+// silently sending no subtitle at all.
+const discoveryAIMinSubtitleChars = 300
+
+func discoveryAICandidateBatch(items []discoveryItem, configuredPools map[string][]string, storyCap int) []discoveryAICandidate {
+	batch := make([]discoveryAICandidate, 0, len(items))
+	for _, item := range items {
+		story := aidiscovery.TruncateUTF8(item.Story, storyCap)
+		eligiblePools := []string{}
+		for name, keywords := range configuredPools {
+			for _, keyword := range keywords {
+				if discoveryTextMatches(item.Release, keyword) {
+					eligiblePools = append(eligiblePools, name)
+					break
+				}
+			}
+		}
+		sort.Strings(eligiblePools)
+		batch = append(batch, discoveryAICandidate{ID: item.ID, VideoID: item.VideoID, Title: item.Title, Story: story, Actresses: item.Actresses, Genres: item.Genres, Studio: item.Studio, Label: item.Label, Director: item.Director, ReleaseDate: item.ReleaseDate, Duration: item.Duration, Local: item.Local, Played: item.PlayCount, Orgasms: item.OCounter, BaselineScore: item.Score, DiscoveryState: item.Category, SubtitleAvailable: item.HasSubtitle, Evidence: slices.Clone(item.Reasons), Taste: discoveryTasteSignals(item.Reasons), EligiblePools: eligiblePools})
+	}
+	return batch
+}
+
 func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit, batchSize, maxInputChars int) ([][]discoveryAICandidate, [][]byte) {
 	items = items[:min(limit, len(items))]
 	poolsSize := len(settings["discoveries_pools"])
@@ -459,36 +553,39 @@ func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit
 	batches, payloads := make([][]discoveryAICandidate, 0, (len(items)+batchSize-1)/batchSize), make([][]byte, 0, (len(items)+batchSize-1)/batchSize)
 	for start := 0; start < len(items); start += batchSize {
 		end := min(start+batchSize, len(items))
-		batch := make([]discoveryAICandidate, 0, end-start)
+		window := items[start:end]
 		eligible := 0
-		for _, item := range items[start:end] {
-			story := item.Story
-			story = aidiscovery.TruncateUTF8(story, 1200)
-			eligiblePools := []string{}
-			for name, keywords := range configuredPools {
-				for _, keyword := range keywords {
-					if discoveryTextMatches(item.Release, keyword) {
-						eligiblePools = append(eligiblePools, name)
-						break
-					}
-				}
-			}
-			sort.Strings(eligiblePools)
-			batch = append(batch, discoveryAICandidate{ID: item.ID, VideoID: item.VideoID, Title: item.Title, Story: story, Actresses: item.Actresses, Genres: item.Genres, Studio: item.Studio, Label: item.Label, Director: item.Director, ReleaseDate: item.ReleaseDate, Duration: item.Duration, Local: item.Local, Played: item.PlayCount, Orgasms: item.OCounter, BaselineScore: item.Score, DiscoveryState: item.Category, SubtitleAvailable: item.HasSubtitle, Evidence: slices.Clone(item.Reasons), Taste: discoveryTasteSignals(item.Reasons), EligiblePools: eligiblePools})
+		for _, item := range window {
 			if subtitleEnabled && item.HasSubtitle {
 				eligible++
 			}
 		}
+		batch := discoveryAICandidateBatch(window, configuredPools, 1200)
 		base, _ := json.Marshal(batch)
-		// Reserve room for the instructions, custom pools, JSON framing, and
-		// character escaping. Subtitle excerpts share whatever remains.
 		perSubtitle := 0
 		if eligible > 0 {
-			remaining := maxInputChars - len(base) - poolsSize - 12000
+			remaining := maxInputChars - len(base) - poolsSize - discoveryAIPromptOverheadChars
 			perSubtitle = min(configuredSubtitleChars, max(remaining/eligible, 0))
+			target := min(discoveryAIMinSubtitleChars, configuredSubtitleChars)
+			if perSubtitle < target {
+				// Reclaim story-field room from eligible candidates only, so a
+				// subtitle excerpt is not silently dropped in favor of an
+				// already-well-covered story field. This reallocates the
+				// existing per-batch budget between two fields - it never
+				// raises maxInputChars or the number/size of requests sent.
+				batch = discoveryAICandidateBatch(window, configuredPools, 1200)
+				for i, item := range window {
+					if subtitleEnabled && item.HasSubtitle {
+						batch[i].Story = aidiscovery.TruncateUTF8(batch[i].Story, 400)
+					}
+				}
+				base, _ = json.Marshal(batch)
+				remaining = maxInputChars - len(base) - poolsSize - discoveryAIPromptOverheadChars
+				perSubtitle = min(configuredSubtitleChars, max(remaining/eligible, 0))
+			}
 		}
 		if perSubtitle > 0 {
-			for i, item := range items[start:end] {
+			for i, item := range window {
 				if !subtitleEnabled || !item.HasSubtitle {
 					continue
 				}
@@ -497,7 +594,7 @@ func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit
 			}
 		}
 		payload, _ := json.Marshal(batch)
-		target := max(maxInputChars-poolsSize-12000, 1000)
+		target := max(maxInputChars-poolsSize-discoveryAIPromptOverheadChars, 1000)
 		for len(payload) > target {
 			changed := false
 			for i := range batch {
@@ -1421,6 +1518,7 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	if category != "random" && category != "new" {
 		items, enhanced = s.enhanceDiscoveries(r, settings, items)
 	}
+	discoveryAttachPoolMatches(items, pools)
 	aiTextEntries := ""
 	if strings.EqualFold(strings.TrimSpace(q.Get("filter_category")), "AI text") {
 		aiTextEntries = q.Get("entries")

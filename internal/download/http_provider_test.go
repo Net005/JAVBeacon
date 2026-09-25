@@ -1222,6 +1222,34 @@ func TestPikPakFileSelectionUsesPreferredPatternsThenLargestFallback(t *testing.
 	}
 }
 
+// TestPikPakFileSelectionSkipsNonVideoFiles guards against selecting an
+// archive (or any other non-video file) that happens to carry the release
+// ID in its filename alongside the actual video, and would otherwise win
+// on size or pattern priority - it downloads successfully but then fails
+// ffprobe verification. selectPikPakFolderFallback already applied this
+// same pikPakVideoFile check; selectPikPakFile (the strict, non-fallback
+// path) previously did not.
+func TestPikPakFileSelectionSkipsNonVideoFiles(t *testing.T) {
+	files := []pikPakFile{
+		{ID: "archive", Name: "ADN-803.rar", Size: "9000"},
+		{ID: "video", Name: "ADN-803.mp4", Size: "3000"},
+	}
+	selected, found := selectPikPakFile(files, "ADN-803", nil)
+	if !found || selected.ID != "video" {
+		t.Fatalf("archive was selected over the actual video: %+v, found=%v", selected, found)
+	}
+
+	onlyArchive := []pikPakFile{{ID: "archive", Name: "ADN-803.rar", Size: "9000"}}
+	if selected, found := selectPikPakFile(onlyArchive, "ADN-803", nil); found {
+		t.Fatalf("a share with no video file should not resolve to an archive: %+v", selected)
+	}
+
+	byMimeType := []pikPakFile{{ID: "mime-video", Name: "ADN-803.dat", MimeType: "video/mp4", Size: "3000"}}
+	if selected, found := selectPikPakFile(byMimeType, "ADN-803", nil); !found || selected.ID != "mime-video" {
+		t.Fatalf("a video/* mime type without a recognized extension should still be selected: %+v, found=%v", selected, found)
+	}
+}
+
 func TestPikPakFileSelectionUsesPatternPriorityBeforeFileSize(t *testing.T) {
 	files := []pikPakFile{
 		{ID: "priority-ten", Name: "large@ADN-803.mp4", Size: "9000"},

@@ -2039,7 +2039,13 @@ func selectPikPakFile(files []pikPakFile, releaseID string, preferredPatterns []
 	found := false
 	for i := range files {
 		f := files[i]
-		if f.Kind == "drive#folder" || !releaseIDMatchesText(f.Name, releaseID) {
+		// A share's video file and an accompanying archive (subtitles,
+		// screenshots, an alternate cut, and so on) both commonly carry the
+		// release ID in their filename. Without the video-extension check
+		// here, an archive could outrank or stand in for the actual video,
+		// download successfully, and only then fail ffprobe verification -
+		// selectPikPakFolderFallback already applies this same check.
+		if f.Kind == "drive#folder" || !releaseIDMatchesText(f.Name, releaseID) || !pikPakVideoFile(f) {
 			continue
 		}
 		size, _ := strconv.ParseInt(f.Size, 10, 64)

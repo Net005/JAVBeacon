@@ -32,9 +32,9 @@ func openAIResponseStateError(response map[string]any) error {
 	if status == "incomplete" {
 		details, _ := response["incomplete_details"].(map[string]any)
 		if reason, _ := details["reason"].(string); reason == "max_output_tokens" {
-			return validationError{"incomplete OpenAI response: output token limit reached"}
+			return validationError{kind: "incomplete OpenAI response: output token limit reached"}
 		}
-		return validationError{"incomplete OpenAI response"}
+		return validationError{kind: "incomplete OpenAI response"}
 	}
 	if status == "failed" || status == "cancelled" {
 		return fmt.Errorf("OpenAI response %s", status)
@@ -46,7 +46,7 @@ func openAIResponseStateError(response map[string]any) error {
 		for _, partRaw := range content {
 			part, _ := partRaw.(map[string]any)
 			if refusal, _ := part["refusal"].(string); strings.TrimSpace(refusal) != "" {
-				return validationError{"OpenAI refused the ranking request"}
+				return validationError{kind: "OpenAI refused the ranking request"}
 			}
 		}
 	}
@@ -76,7 +76,7 @@ func (s *Service) openAIRank(ctx context.Context, cfg Config, candidates []Candi
 		if !errors.As(err, &invalid) || attempt > 0 {
 			return nil, totalUsage, err
 		}
-		s.log.Warn("AI Discovery: retrying rejected OpenAI result", "model", cfg.OpenAIModel, "reason", invalid.kind)
+		s.log.Warn("AI Discovery: retrying rejected OpenAI result", "model", cfg.OpenAIModel, "reason", invalid.kind, "detail", invalid.detail)
 	}
 	return nil, totalUsage, lastErr
 }

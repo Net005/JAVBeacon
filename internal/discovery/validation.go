@@ -18,16 +18,34 @@ const (
 	maxPoolNameLen  = 120
 )
 
-type validationError struct{ kind string }
+// validationError optionally carries detail: a short, truncated snippet of
+// the actual model output that triggered the rejection. Earlier rejections
+// were only ever logged as a bare kind string (e.g. "conversational/non-
+// ranking reason"), which made repeat false-positive rejections impossible
+// to root-cause from logs alone - this is surfaced through Error() so every
+// existing "error", err log call site gets it for free.
+type validationError struct {
+	kind   string
+	detail string
+}
 
-func (e validationError) Error() string { return e.kind }
+func (e validationError) Error() string {
+	if e.detail == "" {
+		return e.kind
+	}
+	return e.kind + ": " + e.detail
+}
+
+func reasonRejection(kind, reason string) validationError {
+	return validationError{kind: kind, detail: TruncateUTF8(strings.TrimSpace(reason), 160)}
+}
 
 var conversationalReasonFragments = []string{
 	"the content you provided", "the text you provided", "please provide more context",
 	"please clarify", "clarify your request", "i cannot determine", "i can't determine",
 	"i cannot assist", "i can't assist", "as an ai", "i need more information",
 	"if you are referring to", "there is no clear", "no coherent narrative",
-	"appears to be a mix of", "it appears that", "how can i help", "let me know if",
+	"appears to be a mix of", "how can i help", "let me know if",
 	"i'm sorry", "i am sorry", "unable to assist", "strong title match", "recommendation relevance",
 }
 
@@ -38,7 +56,14 @@ func conciseText(value string, max int) bool {
 
 func conversationalReason(reason string) bool {
 	lower := strings.ToLower(strings.TrimSpace(reason))
-	if containsWord(lower, "pool", "pools") || strings.Contains(lower, "custom discovery pool") || strings.Contains(lower, "pool tags") ||
+	// A bare "pool"/"pools" word check used to live here and rejected any
+	// reason mentioning the word at all - including entirely legitimate
+	// content, since JAV releases can literally be set at or tagged with a
+	// "pool" (e.g. a swimming-pool scene). The specific phrases below
+	// ("custom discovery pool", "pool tags", the "no ... present" prefix)
+	// already catch genuine meta-commentary about the discovery-pool
+	// *feature* without that false-positive risk.
+	if strings.Contains(lower, "custom discovery pool") || strings.Contains(lower, "pool tags") ||
 		(strings.HasPrefix(lower, "match: no ") && strings.Contains(lower, "present")) ||
 		containsAny(lower, "performer preference:", "theme preference:", "studio preference:", "studio history:") {
 		return true
@@ -95,16 +120,16 @@ func poolNames(raw string) map[string]bool {
 
 func validateRank(rank Rank, allowedIDs map[int64]bool, allowedPools map[string]bool) error {
 	if allowedIDs != nil && !allowedIDs[rank.ID] {
-		return validationError{"unknown candidate ID"}
+		return validationError{kind: "unknown candidate ID"}
 	}
 	if math.IsNaN(rank.Score) || math.IsInf(rank.Score, 0) || rank.Score < 0 || rank.Score > 100 || math.Trunc(rank.Score) != rank.Score {
-		return validationError{"score outside accepted range"}
+		return validationError{kind: "score outside accepted range"}
 	}
 	if !conciseText(rank.Reason, MaxReasonLength) {
-		return validationError{"empty, invalid, or overly long reason"}
+		return reasonRejection("empty, invalid, or overly long reason", rank.Reason)
 	}
 	if conversationalReason(rank.Reason) {
-		return validationError{"conversational/non-ranking reason"}
+		return reasonRejection("conversational/non-ranking reason", rank.Reason)
 	}
 	naturalReason := strings.TrimSpace(rank.Reason)
 	// Accept the old prefix while schema-version-5 rows age out, but no longer
@@ -114,19 +139,19 @@ func validateRank(rank Rank, allowedIDs map[int64]bool, allowedPools map[string]
 	}
 	wordCount := len(strings.Fields(naturalReason))
 	if wordCount < 8 || wordCount > 36 {
-		return validationError{"recommendation reason is not sufficiently descriptive"}
+		return reasonRejection("recommendation reason is not sufficiently descriptive", rank.Reason)
 	}
 	if len(rank.Pools) > 20 {
-		return validationError{"too many pools"}
+		return validationError{kind: "too many pools"}
 	}
 	seenPools := map[string]bool{}
 	for _, pool := range rank.Pools {
 		key := strings.ToLower(strings.TrimSpace(pool))
 		if !conciseText(pool, maxPoolNameLen) || strings.ContainsAny(pool, "\r\n`<>") || seenPools[key] {
-			return validationError{"structurally invalid pool"}
+			return validationError{kind: "structurally invalid pool"}
 		}
 		if allowedPools != nil && !allowedPools[key] {
-			return validationError{"unknown discovery pool"}
+			return validationError{kind: "unknown discovery pool"}
 		}
 		seenPools[key] = true
 	}
@@ -215,54 +240,54 @@ func validateGrounding(rank Rank, candidate Candidate) error {
 	studioPreferenceClaim := containsGroundedClaim(reason, []string{"studio", "studios"}, []string{"preference", "preferred", "affinity"})
 	if (studioHistoryClaim && !groundedEvidence(candidate, []string{"studio"}, historySignals)) ||
 		(studioPreferenceClaim && !groundedEvidence(candidate, []string{"studio"}, preferenceSignals)) {
-		return validationError{"unsupported studio preference/history claim"}
+		return validationError{kind: "unsupported studio preference/history claim"}
 	}
 	performerSubjects := []string{"performer", "performers", "actress", "actresses", "cast"}
 	performerHistoryClaim := containsGroundedClaim(reason, performerSubjects, []string{"history", "frequently watched"})
 	performerPreferenceClaim := containsGroundedClaim(reason, performerSubjects, []string{"preference", "preferred", "affinity"})
 	if (performerHistoryClaim && !groundedEvidence(candidate, []string{"performer", "actress"}, historySignals)) ||
 		(performerPreferenceClaim && !groundedEvidence(candidate, []string{"performer", "actress"}, preferenceSignals)) {
-		return validationError{"unsupported performer preference/history claim"}
+		return validationError{kind: "unsupported performer preference/history claim"}
 	}
 	themePreferenceClaim := containsGroundedClaim(reason, []string{"genre", "genres", "theme", "themes", "tag", "tags"}, []string{"user preference", "user's preference", "preferred", "preference", "affinity"})
 	if themePreferenceClaim &&
 		!groundedEvidence(candidate, []string{"theme", "genre", "tag"}, preferenceSignals) {
-		return validationError{"unsupported user preference claim"}
+		return validationError{kind: "unsupported user preference claim"}
 	}
 	if containsAny(reason, "viewing history", "watch history", "play history", "previous play", "rewatch candidate") && candidate.Played <= 0 && candidate.Orgasms <= 0 &&
 		!groundedEvidence(candidate, []string{"history", "play", "rewatch", "watch"}, historySignals) {
-		return validationError{"unsupported viewing history claim"}
+		return validationError{kind: "unsupported viewing history claim"}
 	}
 	if containsAny(reason, "orgasm count", "orgasm history") && candidate.Orgasms <= 0 {
-		return validationError{"unsupported orgasm history claim"}
+		return validationError{kind: "unsupported orgasm history claim"}
 	}
 	if containsAny(reason, "play count") && candidate.Played <= 0 {
-		return validationError{"unsupported play count claim"}
+		return validationError{kind: "unsupported play count claim"}
 	}
 	if containsWord(reason, "subtitle", "subtitles") && !candidate.SubtitleAvailable && strings.TrimSpace(candidate.Subtitle) == "" {
-		return validationError{"unsupported subtitle claim"}
+		return validationError{kind: "unsupported subtitle claim"}
 	}
 	if containsWord(reason, "story", "stories") && strings.TrimSpace(candidate.Story) == "" {
-		return validationError{"unsupported story claim"}
+		return validationError{kind: "unsupported story claim"}
 	}
 	if strings.Contains(reason, "studio") && strings.TrimSpace(candidate.Studio) == "" {
-		return validationError{"unsupported studio claim"}
+		return validationError{kind: "unsupported studio claim"}
 	}
 	if containsAny(reason, "performer", "actress", "cast") && len(candidate.Actresses) == 0 {
-		return validationError{"unsupported performer claim"}
+		return validationError{kind: "unsupported performer claim"}
 	}
 	if containsAny(reason, "genre", " tag", "tags") && len(candidate.Genres) == 0 {
-		return validationError{"unsupported tag/genre claim"}
+		return validationError{kind: "unsupported tag/genre claim"}
 	}
 	return nil
 }
 
 func validateRanks(ranks []Rank, candidates []Candidate, pools string) error {
 	if len(ranks) == 0 {
-		return validationError{"empty AI result"}
+		return validationError{kind: "empty AI result"}
 	}
 	if len(ranks) != len(candidates) {
-		return validationError{"incomplete candidate coverage"}
+		return validationError{kind: "incomplete candidate coverage"}
 	}
 	allowed := make(map[int64]bool, len(candidates))
 	byID := make(map[int64]Candidate, len(candidates))
@@ -273,7 +298,7 @@ func validateRanks(ranks []Rank, candidates []Candidate, pools string) error {
 	seen := map[int64]bool{}
 	for _, rank := range ranks {
 		if seen[rank.ID] {
-			return validationError{"duplicate candidate ID"}
+			return validationError{kind: "duplicate candidate ID"}
 		}
 		if err := validateRank(rank, allowed, poolNames(pools)); err != nil {
 			return err
@@ -289,7 +314,7 @@ func validateRanks(ranks []Rank, candidates []Candidate, pools string) error {
 			}
 			for _, pool := range rank.Pools {
 				if !eligible[strings.ToLower(strings.TrimSpace(pool))] {
-					return validationError{"pool unsupported by candidate evidence"}
+					return validationError{kind: "pool unsupported by candidate evidence"}
 				}
 			}
 		}
@@ -297,7 +322,7 @@ func validateRanks(ranks []Rank, candidates []Candidate, pools string) error {
 	}
 	for _, candidate := range candidates {
 		if !seen[candidate.ID] {
-			return validationError{"incomplete candidate coverage"}
+			return validationError{kind: "incomplete candidate coverage"}
 		}
 	}
 	return nil
@@ -305,7 +330,7 @@ func validateRanks(ranks []Rank, candidates []Candidate, pools string) error {
 
 func parseRankingJSON(content string, candidates []Candidate, pools string) ([]Rank, error) {
 	if strings.TrimSpace(content) == "" {
-		return nil, validationError{"empty AI result"}
+		return nil, validationError{kind: "empty AI result"}
 	}
 	var envelope struct {
 		Rankings []Rank `json:"rankings"`
@@ -313,14 +338,14 @@ func parseRankingJSON(content string, candidates []Candidate, pools string) ([]R
 	decoder := json.NewDecoder(bytes.NewBufferString(content))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&envelope); err != nil {
-		return nil, validationError{"invalid structured output"}
+		return nil, validationError{kind: "invalid structured output"}
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return nil, validationError{"unexpected trailing output"}
+			return nil, validationError{kind: "unexpected trailing output"}
 		}
-		return nil, validationError{"invalid structured output"}
+		return nil, validationError{kind: "invalid structured output"}
 	}
 	if err := validateRanks(envelope.Rankings, candidates, pools); err != nil {
 		return nil, err
@@ -333,7 +358,7 @@ func parseRankingJSON(content string, candidates []Candidate, pools string) ([]R
 // foreign-key release ID, score, reason and pools are validated.
 func ValidateStoredRank(rank domain.DiscoveryAIRank, pools string) error {
 	if rank.ReleaseID <= 0 {
-		return validationError{"invalid release ID"}
+		return validationError{kind: "invalid release ID"}
 	}
 	return validateRank(Rank{ID: rank.ReleaseID, Score: rank.Score, Reason: rank.Reason, Pools: rank.Pools}, nil, poolNames(pools))
 }
