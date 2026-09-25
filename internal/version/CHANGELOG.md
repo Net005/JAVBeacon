@@ -7,6 +7,41 @@ and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.218] - 2026-09-25
+
+### Added
+
+- AI-enhanced Discovery cards now show, for every matched discovery pool, the
+  percentage of that pool's own configured keywords found in the release -
+  computed locally at zero additional AI cost - as a "Matched pools" row with
+  a small fill-bar chip per pool.
+
+### Fixed
+
+- JavDB/PikPak downloads no longer select an archive file (or anything else
+  without a recognized video extension or `video/*` MIME type) just because
+  its filename carries the release ID and it happens to be the largest or
+  highest-priority match. This previously downloaded successfully and only
+  failed afterward, at ffprobe verification. The folder-fallback selection
+  path already applied this check; the strict release-ID selection path now
+  does too.
+- AI Discovery no longer wrongly rejects valid rankings as a "conversational/
+  non-ranking reason": a bare "pool"/"pools" word check rejected ANY reason
+  that mentioned the word at all, including entirely legitimate content (a
+  release literally set at, or tagged with, a swimming pool). Only genuine
+  meta-commentary about the discovery-pool feature is rejected now.
+- Rejected AI Discovery reasons are now logged with a short snippet of the
+  actual rejected text (in addition to the rejection category), so a
+  recurring false-positive rejection can be root-caused from logs instead of
+  guessed at blind.
+- The Release Library and Notifications "CC ready" hover no longer means a
+  release's subtitles are silently skipped as often: AI Discovery's per-batch
+  subtitle character budget used to reserve a flat 12,000-character overhead
+  buffer - roughly double the actual prompt instructions - which routinely
+  zeroed out subtitle inclusion even when real room existed; the buffer now
+  matches reality and, when still tight, reclaims room from the story field
+  first, all within the same request budget (no added OpenAI cost).
+
 ## [1.0.217] - 2026-09-24
 
 ### Fixed

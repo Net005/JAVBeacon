@@ -235,12 +235,67 @@ func TestDiscoveryAIBatchesBoundInputAndAdaptSubtitleExcerpt(t *testing.T) {
 		t.Fatalf("unexpected batches: %#v", []int{len(batches), len(batches[0]), len(batches[2])})
 	}
 	for i, payload := range payloads {
-		if len(payload)+12000 > 50000 {
+		if len(payload)+discoveryAIPromptOverheadChars > 50000 {
 			t.Fatalf("batch %d exceeds character budget: %d", i+1, len(payload))
 		}
 	}
 	if len(batches[0][0].Subtitle) == 0 || len(batches[0][0].Subtitle) >= 16000 {
 		t.Fatalf("subtitle excerpt was not adaptively reduced: %d", len(batches[0][0].Subtitle))
+	}
+}
+
+// TestDiscoveryAIBatchesDoesNotStarveSubtitlesWithModestStories guards
+// against an overcautious prompt-overhead reserve zeroing out perSubtitle
+// for a whole batch (every candidate's Subtitle left empty, surfaced to the
+// user as "CC ready" with no subtitle actually reaching the model) even
+// though there is real room once the reserve matches the instructions text.
+func TestDiscoveryAIBatchesDoesNotStarveSubtitlesWithModestStories(t *testing.T) {
+	dir := t.TempDir()
+	items := make([]discoveryItem, 5)
+	for i := range items {
+		path := filepath.Join(dir, "SCENE-"+strconv.Itoa(i)+".mp4")
+		content := strings.Repeat(fmt.Sprintf("unique dialogue line %d\n", i), 40)
+		if err := os.WriteFile(strings.TrimSuffix(path, ".mp4")+".en.srt", []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		items[i] = discoveryItem{Release: domain.Release{ID: int64(i + 1), VideoID: "SCENE", Title: "Title", Story: strings.Repeat("story ", 50), StashFilePath: path}, HasSubtitle: true}
+	}
+	settings := map[string]string{"discoveries_subtitle_analysis_enabled": "true", "discoveries_subtitle_max_chars": "2000"}
+	batches, _ := discoveryAIBatches(items, settings, len(items), 5, 25000)
+	if len(batches) != 1 || len(batches[0]) != 5 {
+		t.Fatalf("unexpected batches: %#v", batches)
+	}
+	for i, candidate := range batches[0] {
+		if candidate.Subtitle == "" {
+			t.Fatalf("candidate %d received no subtitle excerpt despite a reasonable budget", i)
+		}
+	}
+}
+
+func TestDiscoveryAttachPoolMatchesScoresKeywordCoverage(t *testing.T) {
+	pools := map[string][]string{
+		"Brainwashing / Drugs": {"drug", "brainwashing"},
+		"Office Lady":          {"office lady"},
+	}
+	items := []discoveryItem{
+		{Release: domain.Release{ID: 1, Genres: []string{"Drug"}}, Pools: []string{"Brainwashing / Drugs", "Brainwashing / Drugs"}},
+		{Release: domain.Release{ID: 2, Genres: []string{"Drug", "Brainwashing"}}, Pools: []string{"Brainwashing / Drugs"}},
+		{Release: domain.Release{ID: 3, Title: "Office Lady Seduction"}, Pools: []string{"Office Lady"}},
+		{Release: domain.Release{ID: 4}},
+	}
+	discoveryAttachPoolMatches(items, pools)
+
+	if got := items[0].PoolMatches; len(got) != 1 || got[0].Name != "Brainwashing / Drugs" || got[0].MatchPercent != 50 {
+		t.Fatalf("partial keyword coverage = %#v, want a single 50%% match (duplicate pool name deduplicated)", got)
+	}
+	if got := items[1].PoolMatches; len(got) != 1 || got[0].MatchPercent != 100 {
+		t.Fatalf("full keyword coverage = %#v, want 100%%", got)
+	}
+	if got := items[2].PoolMatches; len(got) != 1 || got[0].MatchPercent != 100 {
+		t.Fatalf("single-keyword pool match = %#v, want 100%%", got)
+	}
+	if got := items[3].PoolMatches; got != nil {
+		t.Fatalf("item with no pools should have nil PoolMatches, got %#v", got)
 	}
 }
 

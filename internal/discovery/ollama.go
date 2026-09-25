@@ -225,7 +225,7 @@ func (s *Service) ollamaRank(ctx context.Context, cfg Config, candidates []Candi
 		// fallback is considered. Regenerate from the original candidates and
 		// validator category only; never echo rejected model prose back into the
 		// prompt or allow any part of it to reach persistence.
-		s.log.Warn("AI Discovery: retrying rejected Ollama result", "model", cfg.OllamaModel, "reason", invalid.kind)
+		s.log.Warn("AI Discovery: retrying rejected Ollama result", "model", cfg.OllamaModel, "reason", invalid.kind, "detail", invalid.detail)
 	}
 	return nil, lastErr
 }

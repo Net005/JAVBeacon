@@ -77,7 +77,7 @@ func (s *Service) Rank(ctx context.Context, cfg Config, candidates []Candidate, 
 	}
 	var invalid validationError
 	if errors.As(err, &invalid) {
-		s.log.Warn("AI Discovery: Ollama result rejected", "model", status.Model, "reason", invalid.kind)
+		s.log.Warn("AI Discovery: Ollama result rejected", "model", status.Model, "reason", invalid.kind, "detail", invalid.detail)
 	} else {
 		s.log.Warn("Ollama inference failed", "model", status.Model, "error", err)
 	}

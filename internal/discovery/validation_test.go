@@ -196,6 +196,38 @@ func TestNaturalMetadataExplanationDoesNotRequireRankingKeywords(t *testing.T) {
 	}
 }
 
+// TestGenuinePoolContentIsNotRejectedAsMetaCommentary guards against a bare
+// "pool"/"pools" word check that used to live in conversationalReason and
+// rejected ANY reason mentioning the word at all - including entirely
+// legitimate content, since a JAV release can literally be set at, or
+// tagged with, a swimming pool. Only meta-commentary about the discovery-
+// pool *feature* ("custom discovery pool", "pool tags" phrasing, still
+// covered by TestInvalidConversationalReasonRejected) should be rejected.
+func TestGenuinePoolContentIsNotRejectedAsMetaCommentary(t *testing.T) {
+	candidate := Candidate{ID: 7, Title: "Poolside Encounter", Story: "A steamy afternoon by the pool leads to an unexpected encounter.", Genres: []string{"Pool"}}
+	rank := Rank{ID: 7, Score: 74, Reason: "Its poolside story and pool setting align closely with the tags found in this release."}
+	if err := validateRanks([]Rank{rank}, []Candidate{candidate}, ""); err != nil {
+		t.Fatalf("genuine pool content rejected as meta-commentary: %v", err)
+	}
+}
+
+// TestValidationErrorSurfacesRejectedReasonDetail guards the diagnostic
+// detail attached to a rejected reason. Rejections used to log only a bare
+// category like "conversational/non-ranking reason" with no way to see what
+// the model actually wrote, making repeat false-positive rejections
+// impossible to root-cause from logs alone.
+func TestValidationErrorSurfacesRejectedReasonDetail(t *testing.T) {
+	candidate := Candidate{ID: 7, Title: "Supplied title"}
+	rank := Rank{ID: 7, Score: 60, Reason: "I'm sorry, I cannot determine a meaningful recommendation from this data."}
+	err := validateRanks([]Rank{rank}, []Candidate{candidate}, "")
+	if err == nil {
+		t.Fatal("expected a conversational reason rejection")
+	}
+	if !strings.Contains(err.Error(), "I'm sorry") {
+		t.Fatalf("rejected-reason detail missing from error: %v", err)
+	}
+}
+
 func TestPreferenceForAnotherSignalDoesNotBecomePerformerClaim(t *testing.T) {
 	candidate := Candidate{ID: 7, Title: "Supplied title", Story: "Supplied story", Actresses: []string{"A"}, Genres: []string{"Sci-Fi"}, Evidence: []string{"Theme preference: Sci-Fi"}}
 	for _, reason := range []string{
