@@ -19,6 +19,17 @@
   opacity: 1;
 }
 
+/* While the overlay is showing a scrubbed frame (seek-bar hover or
+   cover-area cycling), hide the underlying static poster/cover image so it
+   never shows through outside the overlay's letterboxed crop. This is a
+   stylesheet rule keyed off a body-level class the plugin toggles itself
+   (see showOverlay/hideOverlay in javbeacon_scrubber.js) rather than an
+   imperative style/class mutation on the player-owned .vjs-poster element -
+   consistent with never writing directly into Stash/video.js-owned nodes. */
+.javbeacon-scrubbing .vjs-poster {
+  opacity: 0;
+}
+
 /* Stash's small fixed-size seek-bar thumbnail preview (the
    videojs-vtt-thumbnails plugin, confirmed live: the player root itself
    carries a "vjs-vtt-thumbnails" feature-flag class, and the actual preview

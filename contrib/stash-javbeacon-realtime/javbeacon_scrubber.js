@@ -320,12 +320,18 @@
 
   window.__javbeaconScrubberInternals.positionOverlay = positionOverlay;
 
+  // Hides the underlying static poster/cover image while the overlay shows
+  // a scrubbed frame, via a body-level class the CSS keys off (see
+  // javbeacon_scrubber.css) rather than writing directly to the
+  // player-owned .vjs-poster element's own style or classList.
   function showOverlay(overlay) {
     overlay.classList.add("is-visible");
+    document.body.classList.add("javbeacon-scrubbing");
   }
 
   function hideOverlay(overlay) {
     overlay.classList.remove("is-visible");
+    document.body.classList.remove("javbeacon-scrubbing");
   }
 
   // Confirmed live against a running Stash instance: the player root itself
@@ -451,6 +457,7 @@
       poster?.removeEventListener("mouseleave", onPosterLeave);
       progress?.removeEventListener("mousemove", onSeekMove);
       progress?.removeEventListener("mouseleave", onSeekLeave);
+      document.body.classList.remove("javbeacon-scrubbing");
       overlay.remove();
     };
   }
