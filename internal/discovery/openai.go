@@ -102,7 +102,7 @@ func (s *Service) openAIRankOnce(ctx context.Context, cfg Config, candidates []C
 			openAICandidates[index].Subtitle = ""
 		}
 	}
-	prompt := rankingPrompt(openAICandidates, pools)
+	prompt := rankingPrompt(openAICandidates, pools, resolveSubtitleWeights(cfg))
 	if repair {
 		kind := "invalid output"
 		var invalid validationError

@@ -96,7 +96,7 @@ func TestOllamaLengthStopReportsUsefulFailure(t *testing.T) {
 }
 
 func TestPromptRequiresExactCandidateIDCoverage(t *testing.T) {
-	prompt := rankingPrompt([]Candidate{{ID: 41}, {ID: 907}}, "")
+	prompt := rankingPrompt([]Candidate{{ID: 41}, {ID: 907}}, "", defaultSubtitleWeights())
 	for _, text := range []string{"copy candidate.id exactly", "Never invent or transform an ID", "return exactly N rankings", "must appear exactly once", `never add
 "Match:"`, `Use the word "story" only when that candidate's story field is non-empty`} {
 		if !strings.Contains(prompt, text) {

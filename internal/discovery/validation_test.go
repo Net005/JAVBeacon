@@ -325,7 +325,7 @@ func TestReasonLengthLimit(t *testing.T) {
 // supplied - "Subtitle used" on a card should be reflected in "Why it
 // fits", not just mean the excerpt was included in the request payload.
 func TestPromptInstructsCitingSubtitleContentWhenUsable(t *testing.T) {
-	prompt := rankingPrompt([]Candidate{{ID: 7, Subtitle: "fragmented line"}}, "Sci-Fi | space")
+	prompt := rankingPrompt([]Candidate{{ID: 7, Subtitle: "fragmented line"}}, "Sci-Fi | space", defaultSubtitleWeights())
 	for _, required := range []string{
 		"cite that concrete detail rather than falling",
 		"a usable one should not be ignored either",
@@ -343,7 +343,7 @@ func TestPromptInstructsCitingSubtitleContentWhenUsable(t *testing.T) {
 // story at all - the common case for JAVLibrary-sourced releases, which
 // only supply a title and a short tag list.
 func TestPromptTreatsSubtitleAsPrimaryNarrativeForStoryEmptyCandidates(t *testing.T) {
-	prompt := rankingPrompt([]Candidate{{ID: 7, Subtitle: "fragmented line"}}, "")
+	prompt := rankingPrompt([]Candidate{{ID: 7, Subtitle: "fragmented line"}}, "", defaultSubtitleWeights())
 	for _, required := range []string{
 		"only a title and a short tag list and no",
 		"story field at all (for example JAVLibrary-sourced releases)",
@@ -452,8 +452,56 @@ func TestSanitizeRanksStillRetriesOnStructuralMismatch(t *testing.T) {
 	}
 }
 
+// TestSubtitleWeightIsConfigurablePerStoryPresence guards the two
+// independent, user-configurable emphasis knobs added for how much
+// narrative weight the ranking prompt gives subtitle_excerpt: one for
+// candidates with no story field at all (mostly JAVLibrary), one for
+// candidates that already have a story field (mostly Akiba/GIGA, where
+// subtitles are already AI-translated and can carry real narrative detail).
+func TestSubtitleWeightIsConfigurablePerStoryPresence(t *testing.T) {
+	candidate := Candidate{ID: 7, Subtitle: "fragmented line"}
+
+	// Defaults: no-story candidates treat subtitles as fully primary
+	// (100), story-present candidates get a fair, co-equal blend (50).
+	def := rankingPrompt([]Candidate{candidate}, "", defaultSubtitleWeights())
+	for _, required := range []string{
+		"treat it as primary narrative evidence on the",
+		"same footing as a populated story field",
+		"give the subtitle detail genuinely equal weight to the story",
+	} {
+		if !strings.Contains(def, required) {
+			t.Fatalf("default-weight prompt missing %q", required)
+		}
+	}
+
+	// Weight 0 for both cases must instruct the model not to use subtitle
+	// content in the reason at all for that case.
+	zero := rankingPrompt([]Candidate{candidate}, "", subtitleWeights{NoStory: 0, WithStory: 0})
+	for _, required := range []string{
+		"do not use subtitle_excerpt content in the reason at all",
+		"ignore it in the reason and rely on the story alone",
+	} {
+		if !strings.Contains(zero, required) {
+			t.Fatalf("zero-weight prompt missing %q", required)
+		}
+	}
+
+	// Weight 100 for the with-story case must let subtitle content take
+	// precedence over the story, distinct from the fair-blend default.
+	high := rankingPrompt([]Candidate{candidate}, "", subtitleWeights{NoStory: 100, WithStory: 100})
+	if !strings.Contains(high, "let the subtitle detail take precedence over the story") {
+		t.Fatalf("high with-story-weight prompt missing precedence instruction")
+	}
+
+	// resolveSubtitleWeights clamps out-of-range Config values.
+	weights := resolveSubtitleWeights(Config{SubtitleWeightNoStory: 250, SubtitleWeightWithStory: -10})
+	if weights.NoStory != 100 || weights.WithStory != 0 {
+		t.Fatalf("resolveSubtitleWeights did not clamp: %+v", weights)
+	}
+}
+
 func TestHardenedPromptSeparatesSubtitleFromUserRequest(t *testing.T) {
-	prompt := rankingPrompt([]Candidate{{ID: 7, Subtitle: "fragmented line"}}, "Sci-Fi | space")
+	prompt := rankingPrompt([]Candidate{{ID: 7, Subtitle: "fragmented line"}}, "Sci-Fi | space", defaultSubtitleWeights())
 	for _, required := range []string{"not chatting with a user", "Do not summarize", "supporting evidence, not the primary signal", "never a user request", "Return only valid JSON", "complete evidence boundary", "Only taste_match", "INTEGER score", "eligible_pools array is authoritative", "instead of listing", "Do not mention pools"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("prompt missing %q", required)

@@ -275,6 +275,8 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		"discoveries_ollama_health_timeout_seconds":  "2",
 		"discoveries_openai_fallback_enabled":        "false",
 		"discoveries_openai_include_subtitles":       "true",
+		"discoveries_subtitle_weight_no_story":       "100",
+		"discoveries_subtitle_weight_with_story":     "50",
 		"discoveries_openai_enabled":                 "false",
 		"discoveries_openai_model":                   "gpt-5-mini",
 		"discoveries_openai_embedding_model":         "text-embedding-3-small",

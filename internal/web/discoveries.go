@@ -890,6 +890,13 @@ func discoveryAIConfig(settings map[string]string) aidiscovery.Config {
 		OpenAIModel:            strings.TrimSpace(settings["discoveries_openai_model"]),
 		OpenAITimeout:          time.Duration(min(max(discoveryInt(settings, "discoveries_openai_timeout_seconds", 120), 15), 600)) * time.Second,
 		OpenAIIncludeSubtitles: settings["discoveries_openai_include_subtitles"] != "false",
+		// 0-100 emphasis given to subtitle_excerpt for story-empty candidates
+		// (mostly JAVLibrary) vs. story-present ones (mostly Akiba/GIGA).
+		// discoveryInt's clamp lower bound is 0, not 1, so an explicit 0
+		// (user wants subtitles ignored entirely for that case) is honored
+		// rather than silently floored back up - see resolveSubtitleWeights.
+		SubtitleWeightNoStory:   min(max(discoveryInt(settings, "discoveries_subtitle_weight_no_story", 100), 0), 100),
+		SubtitleWeightWithStory: min(max(discoveryInt(settings, "discoveries_subtitle_weight_with_story", 50), 0), 100),
 	}
 }
 
