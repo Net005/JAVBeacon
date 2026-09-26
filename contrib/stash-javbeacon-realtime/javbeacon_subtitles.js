@@ -172,33 +172,45 @@
 
     if (!status || !status.sidecar_found) {
       return window.confirm(
-        "This scene's existing subtitles predate JAVBeacon-Subs version tracking (an older subtitle translator). Replace them with a new result?"
+        "🕰️ Old subtitles\n" +
+          "These predate JAVBeacon-Subs version tracking.\n\n" +
+          "Replace them with a new result?"
       );
     }
 
     if (status.up_to_date === false) {
       return window.confirm(
-        `A newer subtitle backend is available (${backendLabel(status.sidecar_backends)} → ${backendLabel(status.current_backends)}). Replace the existing subtitles with a new JAVBeacon-Subs result?`
+        "🆕 Newer backend available\n" +
+          `Sidecar:   ${backendLabel(status.sidecar_backends)}\n` +
+          `Current: ${backendLabel(status.current_backends)}\n\n` +
+          "Replace the existing subtitles with a new JAVBeacon-Subs result?"
       );
     }
 
     if (status.up_to_date === true) {
       if (
         !window.confirm(
-          `Subtitles already use JAVBeacon-Subs's current backend (${backendLabel(status.current_backends)}). Regenerating them is not recommended.`
+          "✅ Already up to date\n" +
+            `Backend: ${backendLabel(status.current_backends)}\n\n` +
+            "Regenerating is not recommended. Continue anyway?"
         )
       ) {
         return false;
       }
       return window.confirm(
-        "⚠ FORCE OVERWRITE: this discards the up-to-date subtitles and regenerates them with the SAME backend. This is not recommended. Continue?"
+        "⚠️ FORCE OVERWRITE\n" +
+          "This discards up-to-date subtitles and regenerates\n" +
+          "them with the SAME backend. Not recommended.\n\n" +
+          "Continue?"
       );
     }
 
     // status.up_to_date === null: a sidecar exists but JAVBeacon-Subs did
     // not report its current backend (older release, or the check failed).
     return window.confirm(
-      "This scene already has subtitles. Replace the existing subtitles with a new JAVBeacon-Subs result?"
+      "🎬 Existing subtitles\n" +
+        "This scene already has subtitles.\n\n" +
+        "Replace them with a new JAVBeacon-Subs result?"
     );
   }
 
