@@ -615,6 +615,13 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		`CREATE INDEX IF NOT EXISTS idx_releases_stash_file_path_ci ON releases(LOWER(stash_file_path)) WHERE stash_file_path<>''`,
 		`CREATE INDEX IF NOT EXISTS idx_releases_scraper_id_trgm ON releases USING gin(scraper_id gin_trgm_ops)`,
 		`CREATE INDEX IF NOT EXISTS idx_releases_product_url_trgm ON releases USING gin(product_url gin_trgm_ops)`,
+		// director was searched (free-text search, and via PoolSearch for
+		// discovery pool filtering) without a matching trigram index - every
+		// other free-text column here already had one. A leading-wildcard
+		// LIKE against director forced a sequential scan, which is one
+		// contributor to discovery pool filtering being slow on a large
+		// library.
+		`CREATE INDEX IF NOT EXISTS idx_releases_director_trgm ON releases USING gin(director gin_trgm_ops)`,
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err

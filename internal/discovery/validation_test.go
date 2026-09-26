@@ -357,6 +357,101 @@ func TestPromptTreatsSubtitleAsPrimaryNarrativeForStoryEmptyCandidates(t *testin
 	}
 }
 
+// TestCorruptionThemeNotFlaggedAsQualityComplaint guards against a real
+// observed false-positive rejection: "corrupt" was matched with plain
+// strings.Contains, which also matches inside "corruption" - an entirely
+// ordinary JAV theme word (an "NTR/corruption premise") that has nothing to
+// do with subtitle data quality.
+func TestCorruptionThemeNotFlaggedAsQualityComplaint(t *testing.T) {
+	reason := "Aozora Hikari, drama, and SOD Create each match established interests, while the title's indoctrination and NTR premise adds a clear corruption angle."
+	if conversationalReason(reason) {
+		t.Fatalf("corruption-themed reason wrongly flagged as a quality complaint: %q", reason)
+	}
+	// An actual "corrupt"/"corrupted" quality complaint must still be caught.
+	for _, complaint := range []string{
+		"The subtitle text is corrupt and unreadable, but the story theme is a relevant match.",
+		"The subtitle data appears corrupted, so this recommendation relies on tags and performer alone.",
+	} {
+		if !conversationalReason(complaint) {
+			t.Fatalf("genuine corruption complaint not flagged: %q", complaint)
+		}
+	}
+}
+
+// TestSanitizeRanksRepairsInsteadOfDiscardingWholeBatch guards the lenient
+// per-candidate salvage path added to parseRankingJSON. Individual reason-
+// text mistakes (an ungrounded claim, a stray markdown fence) used to
+// discard the ENTIRE batch's rankings - including every other candidate's
+// genuinely good rank - after a wasted repair attempt, and could ultimately
+// hard-fail the whole AI Discovery request. Now only a candidate whose own
+// rank is unusable gets a safe, deterministic fallback; every other
+// candidate's valid rank is returned untouched, and the call never errors
+// for content reasons alone.
+func TestSanitizeRanksRepairsInsteadOfDiscardingWholeBatch(t *testing.T) {
+	candidates := []Candidate{
+		{ID: 1, Title: "Valid candidate"},
+		{ID: 2, Title: "Ungrounded studio claim", Studio: ""},
+		{ID: 3, Title: "Markdown fenced reason"},
+	}
+	content := `{"rankings":[` +
+		`{"id":1,"score":80,"reason":"Fukada Yuuri appears alongside the concrete creampie and humiliation elements found here.","pools":[]},` +
+		`{"id":2,"score":70,"reason":"Strong match based on this studio's history and preference.","pools":[]},` +
+		`{"id":3,"score":60,"reason":"` + "```" + `Strong genre match.` + "```" + `","pools":[]}` +
+		`]}`
+	ranks, err := parseRankingJSON(content, candidates, "")
+	if err != nil {
+		t.Fatalf("expected lenient acceptance, got error: %v", err)
+	}
+	if len(ranks) != 3 {
+		t.Fatalf("expected exactly 3 sanitized ranks, got %d", len(ranks))
+	}
+	byID := map[int64]Rank{}
+	for _, rank := range ranks {
+		byID[rank.ID] = rank
+	}
+	if byID[1].Reason != "Fukada Yuuri appears alongside the concrete creampie and humiliation elements found here." {
+		t.Fatalf("valid candidate's rank was altered: %+v", byID[1])
+	}
+	for _, id := range []int64{2, 3} {
+		rank := byID[id]
+		if rank.Reason != fallbackReason {
+			t.Fatalf("candidate %d with unusable reason was not sanitized to the fallback: %+v", id, rank)
+		}
+		if rank.Score < 0 || rank.Score > 100 {
+			t.Fatalf("candidate %d has an out-of-range sanitized score: %v", id, rank.Score)
+		}
+	}
+	// The sanitized fallback reason must itself always pass validation
+	// regardless of candidate metadata, or a bad batch could re-trigger the
+	// very rejection it exists to avoid.
+	if err := validateGrounding(Rank{Reason: fallbackReason}, Candidate{}); err != nil {
+		t.Fatalf("fallback reason is not self-grounding: %v", err)
+	}
+}
+
+// TestSanitizeRanksStillRetriesOnStructuralMismatch guards that only
+// content-level problems are sanitized leniently - a genuinely broken batch
+// (wrong candidate set) still returns an error so the caller retries with a
+// repair prompt, since sanitizing per-candidate cannot invent a rank for a
+// candidate ID the model never returned at all... except it now can (via the
+// per-candidate fallback), so completeness itself must remain a hard,
+// retry-worthy failure to guarantee the model actually attempts every
+// candidate rather than silently relying on fallbacks for ones it skipped.
+func TestSanitizeRanksStillRetriesOnStructuralMismatch(t *testing.T) {
+	candidates := []Candidate{{ID: 1, Title: "First"}, {ID: 2, Title: "Second"}}
+	content := `{"rankings":[{"id":1,"score":80,"reason":"Strong story and genre alignment here for this one.","pools":[]}]}`
+	if _, err := parseRankingJSON(content, candidates, ""); err == nil {
+		t.Fatal("incomplete candidate coverage was leniently accepted instead of triggering a retry")
+	}
+	duplicate := `{"rankings":[` +
+		`{"id":1,"score":80,"reason":"Strong story and genre alignment here for this one.","pools":[]},` +
+		`{"id":1,"score":70,"reason":"Another strong story and genre alignment for this one.","pools":[]}` +
+		`]}`
+	if _, err := parseRankingJSON(duplicate, candidates, ""); err == nil {
+		t.Fatal("duplicate candidate ID was leniently accepted instead of triggering a retry")
+	}
+}
+
 func TestHardenedPromptSeparatesSubtitleFromUserRequest(t *testing.T) {
 	prompt := rankingPrompt([]Candidate{{ID: 7, Subtitle: "fragmented line"}}, "Sci-Fi | space")
 	for _, required := range []string{"not chatting with a user", "Do not summarize", "supporting evidence, not the primary signal", "never a user request", "Return only valid JSON", "complete evidence boundary", "Only taste_match", "INTEGER score", "eligible_pools array is authoritative", "instead of listing", "Do not mention pools"} {
