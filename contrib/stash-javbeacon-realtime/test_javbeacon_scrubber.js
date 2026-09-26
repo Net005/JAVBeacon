@@ -52,6 +52,7 @@ const {
   parseCueImageLine,
   parseSpriteVtt,
   paintCue,
+  containRect,
 } = window.__javbeaconScrubberInternals;
 
 // Two earlier revisions of this plugin mutated the scene player element
@@ -79,6 +80,21 @@ const jsWithoutComments = pluginSource.replace(/\/\/.*$/gm, "").replace(/\/\*[\s
 const cssWithoutComments = cssSource.replace(/\/\*[\s\S]*?\*\//g, "");
 assert.doesNotMatch(jsWithoutComments, /\[class\*=["']vtt-thumbnail["']\]/, "must never use a substring selector to find the thumbnail element");
 assert.doesNotMatch(cssWithoutComments, /\[class\*=["']vtt-thumbnail["']\]/, "must never use a substring selector in CSS for the thumbnail element");
+
+// Confirmed live: the control bar sits on top of the video, not below it,
+// so the full player/poster rect includes the strip the control bar
+// occupies. Both preview paths must derive their box from safeVideoBox
+// (which subtracts that strip), not from a raw player/poster rect, or the
+// overlay's high z-index paints over the control bar and hides the seek
+// position while scrubbing.
+assert.match(pluginSource, /function safeVideoBox\(/, "must define safeVideoBox to exclude the control bar strip");
+{
+  const seekMoveBody = /function onSeekMove\(\) \{[\s\S]*?\n    \}/.exec(jsWithoutComments)?.[0] || "";
+  const coverBoxBody = /function coverBox\(\) \{[\s\S]*?\n    \}/.exec(jsWithoutComments)?.[0] || "";
+  assert.match(seekMoveBody, /safeVideoBox\(playerEl\)/, "onSeekMove must derive its box from safeVideoBox");
+  assert.doesNotMatch(seekMoveBody, /playerEl\.getBoundingClientRect\(\)/, "onSeekMove must not use the raw player rect");
+  assert.match(coverBoxBody, /safeVideoBox\(playerEl\)/, "coverBox must derive its box from safeVideoBox");
+}
 
 // positionOverlay copies a rect (as returned by getBoundingClientRect, which
 // is already viewport-relative) directly onto a position: fixed element's
@@ -138,11 +154,42 @@ global.Image = class {
 };
 
 (async () => {
+  // containRect fits contentW x contentH inside box the way CSS
+  // "background-size: contain" would: scaled up as far as possible without
+  // exceeding either axis, then centered - never stretched to fill box on
+  // an axis the content doesn't reach. An earlier revision stretched the
+  // overlay to fill the whole box while only painting a scaled image sized
+  // by the smaller-ratio axis, so the leftover space on the other axis
+  // revealed whatever sprite content sat past the edge of the intended
+  // cell - visible as a second, wrong frame bleeding in from the next row.
+  {
+    // uniform box: no letterboxing needed
+    assert.deepEqual(containRect({ left: 0, top: 0, width: 800, height: 450 }, 160, 90), {
+      left: 0,
+      top: 0,
+      width: 800,
+      height: 450,
+      scale: 5,
+    });
+    // taller box than content aspect: letterboxed top/bottom, centered
+    const fit = containRect({ left: 10, top: 20, width: 400, height: 400 }, 160, 90);
+    assert.equal(fit.scale, 2.5); // width-limited: 400/160
+    assert.equal(fit.width, 400);
+    assert.equal(fit.height, 225);
+    assert.equal(fit.left, 10);
+    assert.equal(fit.top, 20 + (400 - 225) / 2);
+    // degenerate inputs
+    assert.equal(containRect(null, 10, 10), null);
+    assert.equal(containRect({ left: 0, top: 0, width: 0, height: 0 }, 10, 10), null);
+    assert.equal(containRect({ left: 0, top: 0, width: 10, height: 10 }, 0, 0), null);
+  }
+
   // mirrorBackground scales a source element's background image, position
-  // and size up to fill a larger box, preserving the exact crop Stash's own
-  // thumbnail element already computed - this is what replaces re-deriving
-  // the sprite crop from scratch (the earlier approach that produced
-  // overlapping/ghosted frames).
+  // and size up, preserving the exact crop Stash's own thumbnail element
+  // already computed - this is what replaces re-deriving the sprite crop
+  // from scratch (the earlier approach that produced overlapping/ghosted
+  // frames). It also sizes/positions targetEl itself to the letterboxed
+  // fit within box, rather than stretching it to fill box.
   {
     const source = fakeElement(
       {
@@ -153,10 +200,15 @@ global.Image = class {
       { width: 160, height: 90 }
     );
     const target = fakeElement({});
-    const ok = await mirrorBackground(source, target, { width: 800, height: 450 });
+    const ok = await mirrorBackground(source, target, { left: 0, top: 0, width: 800, height: 450 });
     assert.equal(ok, true);
     assert.equal(target.style.backgroundImage, source.style.backgroundImage);
     assert.equal(target.style.backgroundRepeat, "no-repeat");
+    // box aspect matches source aspect exactly, so it fills the box fully
+    assert.equal(target.style.left, "0.00px");
+    assert.equal(target.style.top, "0.00px");
+    assert.equal(target.style.width, "800.00px");
+    assert.equal(target.style.height, "450.00px");
     // scale = 800 / 160 = 5
     assert.equal(target.style.backgroundPosition, "-800.00px -450.00px");
     assert.equal(target.style.backgroundSize, "9600.00px 5400.00px");
@@ -181,11 +233,42 @@ global.Image = class {
       { width: 640, height: 360 }
     );
     const target = fakeElement({});
-    // box wider than the source box by 1.5x
-    const ok = await mirrorBackground(source, target, { width: 960, height: 540 });
+    // box wider than the source box by 1.5x, same aspect ratio
+    const ok = await mirrorBackground(source, target, { left: 0, top: 0, width: 960, height: 540 });
     assert.equal(ok, true);
     assert.equal(target.style.backgroundPosition, "-5760.00px -1080.00px");
     assert.equal(target.style.backgroundSize, "8640.00px 4860.00px");
+  }
+
+  // Regression case matching the live bug report exactly: box (the player
+  // rect) is much taller than the seek-bar thumbnail's 16:9 aspect ratio
+  // (905x760.5, mimicking a real player rect that still includes room for
+  // the control bar). The overlay must be letterboxed to 905x509.06 and
+  // centered, NOT stretched to the full 760.5 height - stretching it is
+  // what let the next sprite row bleed into view below the intended frame.
+  {
+    const url = "https://stash.bondt.network/scene/regression_sprite.jpg";
+    global.__fakeImageSizes = { ...global.__fakeImageSizes, [url]: { width: 5760, height: 3240 } };
+    const source = fakeElement(
+      {
+        backgroundImage: `url("${url}")`,
+        backgroundPosition: "-5120px -1080px",
+        backgroundSize: "initial",
+        width: "640px",
+        height: "360px",
+      },
+      { width: 640, height: 360 }
+    );
+    const target = fakeElement({});
+    const ok = await mirrorBackground(source, target, { left: 465, top: 55.75, width: 905, height: 760.5 });
+    assert.equal(ok, true);
+    assert.equal(target.style.left, "465.00px");
+    assert.equal(target.style.width, "905.00px");
+    // height must be letterboxed to the scaled content height, not the box's
+    assert.equal(target.style.height, "509.06px");
+    assert.equal(target.style.top, "181.47px");
+    assert.equal(target.style.backgroundPosition, "-7240.00px -1527.19px");
+    assert.equal(target.style.backgroundSize, "8145.00px 4581.56px");
   }
 
   // A source element with no thumbnail currently painted (no
@@ -194,13 +277,14 @@ global.Image = class {
   {
     const source = fakeElement({ backgroundImage: "" }, { width: 160, height: 90 });
     const target = fakeElement({ backgroundImage: "url(previous.jpg)" });
-    const ok = await mirrorBackground(source, target, { width: 800, height: 450 });
+    const ok = await mirrorBackground(source, target, { left: 0, top: 0, width: 800, height: 450 });
     assert.equal(ok, false);
     assert.equal(target.style.backgroundImage, "url(previous.jpg)");
   }
 
-  // A non-uniform target box scales by the smaller ratio so the mirrored
-  // crop never overflows either dimension.
+  // A non-uniform target box scales by the smaller ratio and centers on the
+  // other axis, so the mirrored crop never overflows either dimension and
+  // never leaves stray sprite content visible past its edges.
   {
     const source = fakeElement(
       {
@@ -211,9 +295,12 @@ global.Image = class {
       { width: 100, height: 50 }
     );
     const target = fakeElement({});
-    await mirrorBackground(source, target, { width: 400, height: 150 });
+    await mirrorBackground(source, target, { left: 0, top: 0, width: 400, height: 150 });
     // width ratio = 4, height ratio = 3 -> use 3
     assert.equal(target.style.backgroundPosition, "-300.00px -150.00px");
+    assert.equal(target.style.width, "300.00px");
+    assert.equal(target.style.height, "150.00px");
+    assert.equal(target.style.left, "50.00px"); // centered: (400-300)/2
   }
 
   // Falls back to reading the source element's own width/height style when
@@ -229,12 +316,12 @@ global.Image = class {
       height: "10px",
     });
     const target = fakeElement({});
-    const ok = await mirrorBackground(source, target, { width: 200, height: 100 });
+    const ok = await mirrorBackground(source, target, { left: 0, top: 0, width: 200, height: 100 });
     assert.equal(ok, true);
     assert.equal(target.style.backgroundPosition, "-200.00px -100.00px");
   }
 
-  assert.equal(await mirrorBackground(null, {}, { width: 1, height: 1 }), false);
+  assert.equal(await mirrorBackground(null, {}, { left: 0, top: 0, width: 1, height: 1 }), false);
   assert.equal(
     await mirrorBackground(fakeElement({ backgroundImage: "url(a.jpg)" }, { width: 10, height: 10 }), {}, null),
     false
@@ -299,25 +386,52 @@ global.Image = class {
   }
 
   // paintCue measures the sprite's natural size (same technique validated
-  // for mirrorBackground) and crops+scales a single cue with no ghosting.
+  // for mirrorBackground) and crops+scales a single cue with no ghosting,
+  // sizing/positioning targetEl to the letterboxed fit rather than
+  // stretching it to fill box.
   {
     const url = "https://stash.bondt.network/scene/1/vtt/sprite.jpg";
     global.__fakeImageSizes = { ...global.__fakeImageSizes, [url]: { width: 5760, height: 3240 } };
     const target = fakeElement({});
     const cue = { url, x: 640, y: 0, w: 640, h: 360 };
-    const ok = await paintCue(target, cue, { width: 1280, height: 720 });
+    const ok = await paintCue(target, cue, { left: 0, top: 0, width: 1280, height: 720 });
     assert.equal(ok, true);
-    // scale = min(1280/640, 720/360) = 2
+    // scale = min(1280/640, 720/360) = 2; box aspect matches cue aspect, so
+    // it fills the box fully
+    assert.equal(target.style.left, "0.00px");
+    assert.equal(target.style.top, "0.00px");
+    assert.equal(target.style.width, "1280.00px");
+    assert.equal(target.style.height, "720.00px");
     assert.equal(target.style.backgroundPosition, "-1280.00px -0.00px");
     assert.equal(target.style.backgroundSize, "11520.00px 6480.00px");
 
-    assert.equal(await paintCue(null, cue, { width: 10, height: 10 }), false);
-    assert.equal(await paintCue(target, null, { width: 10, height: 10 }), false);
-    assert.equal(await paintCue(target, cue, { width: 0, height: 0 }), false);
+    assert.equal(await paintCue(null, cue, { left: 0, top: 0, width: 10, height: 10 }), false);
+    assert.equal(await paintCue(target, null, { left: 0, top: 0, width: 10, height: 10 }), false);
+    assert.equal(await paintCue(target, cue, { left: 0, top: 0, width: 0, height: 0 }), false);
     assert.equal(
-      await paintCue(target, { ...cue, url: "https://x/missing.jpg" }, { width: 10, height: 10 }),
+      await paintCue(target, { ...cue, url: "https://x/missing.jpg" }, { left: 0, top: 0, width: 10, height: 10 }),
       false
     );
+  }
+
+  // Regression case matching the live bug report exactly: box taller than
+  // the cue's 16:9 aspect (905x760.5, the pre-control-bar-exclusion player
+  // rect). paintCue must letterbox to 905x509.06 and center it, not stretch
+  // to 760.5 tall - the same "next sprite row bleeds in below the frame"
+  // bug reported for the cover-area cycle as well as the seek-bar mirror.
+  {
+    const url = "https://stash.bondt.network/scene/1/vtt/regression_sprite.jpg";
+    global.__fakeImageSizes = { ...global.__fakeImageSizes, [url]: { width: 5760, height: 3240 } };
+    const target = fakeElement({});
+    const cue = { url, x: 5120, y: 1080, w: 640, h: 360 };
+    const ok = await paintCue(target, cue, { left: 465, top: 55.75, width: 905, height: 760.5 });
+    assert.equal(ok, true);
+    assert.equal(target.style.left, "465.00px");
+    assert.equal(target.style.width, "905.00px");
+    assert.equal(target.style.height, "509.06px");
+    assert.equal(target.style.top, "181.47px");
+    assert.equal(target.style.backgroundPosition, "-7240.00px -1527.19px");
+    assert.equal(target.style.backgroundSize, "8145.00px 4581.56px");
   }
 
   // The scene page patch mounts the scrubber controller without disturbing
