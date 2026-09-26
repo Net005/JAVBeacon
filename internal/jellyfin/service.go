@@ -580,9 +580,15 @@ func parseRuntime(raw string) int64 {
 }
 
 type PlaybackEvent struct {
-	Event           string    `json:"event"`
-	SessionID       string    `json:"session_id"`
-	ReleaseID       int64     `json:"release_id"`
+	Event     string `json:"event"`
+	SessionID string `json:"session_id"`
+	ReleaseID int64  `json:"release_id"`
+	// StashSceneID lets a playback event be reported for a StashApp scene
+	// JAVBeacon never scraped into a release row at all (no ReleaseID exists
+	// yet). Either ReleaseID or StashSceneID is required; when both are given,
+	// ReleaseID wins and is trusted to already be linked to that scene (the
+	// normal Jellyfin/Silo path, where the item was matched to a release).
+	StashSceneID    string    `json:"stash_scene_id,omitempty"`
 	JellyfinItemID  string    `json:"jellyfin_item_id"`
 	JellyfinUserID  string    `json:"jellyfin_user_id"`
 	PositionSeconds float64   `json:"position_seconds"`
@@ -627,15 +633,24 @@ func (s *Service) Playback(ctx context.Context, event PlaybackEvent) (PlaybackRe
 	if event.Event != "start" && event.Event != "progress" && event.Event != "stop" {
 		return PlaybackResult{}, errors.New("event must be start, progress, or stop")
 	}
-	if strings.TrimSpace(event.SessionID) == "" || event.ReleaseID < 1 {
-		return PlaybackResult{}, errors.New("session_id and release_id are required")
+	stashSceneID := strings.TrimSpace(event.StashSceneID)
+	if strings.TrimSpace(event.SessionID) == "" || (event.ReleaseID < 1 && stashSceneID == "") {
+		return PlaybackResult{}, errors.New("session_id and either release_id or stash_scene_id are required")
 	}
-	r, err := s.store.Release(ctx, event.ReleaseID)
-	if err != nil {
-		return PlaybackResult{}, err
-	}
-	if r.StashSceneID == "" {
-		return PlaybackResult{}, errors.New("release is not mapped to a StashApp scene")
+	// releaseID stays 0 for a Stash-only scene JAVBeacon never scraped into a
+	// release row - the session and every Stash write below are keyed by
+	// stashSceneID alone in that case, bypassing store.Release entirely (see
+	// migrateJellyfinPlaybackReleaseNullable for why the column allows this).
+	releaseID := int64(0)
+	if event.ReleaseID > 0 {
+		r, err := s.store.Release(ctx, event.ReleaseID)
+		if err != nil {
+			return PlaybackResult{}, err
+		}
+		if r.StashSceneID == "" {
+			return PlaybackResult{}, errors.New("release is not mapped to a StashApp scene")
+		}
+		releaseID, stashSceneID = r.ID, r.StashSceneID
 	}
 	now := event.OccurredAt.UTC()
 	if now.IsZero() {
@@ -644,10 +659,10 @@ func (s *Service) Playback(ctx context.Context, event PlaybackEvent) (PlaybackRe
 	p := s.policy(ctx)
 	x, err := s.repo.JellyfinPlaybackSession(ctx, event.SessionID)
 	if errors.Is(err, sql.ErrNoRows) {
-		x = domain.JellyfinPlaybackSession{SessionID: event.SessionID, ReleaseID: r.ID, StashSceneID: r.StashSceneID, JellyfinItemID: event.JellyfinItemID, JellyfinUserID: event.JellyfinUserID, StartedAt: now, LastEventAt: now, RuntimeSeconds: event.RuntimeSeconds, Status: "active"}
+		x = domain.JellyfinPlaybackSession{SessionID: event.SessionID, ReleaseID: releaseID, StashSceneID: stashSceneID, JellyfinItemID: event.JellyfinItemID, JellyfinUserID: event.JellyfinUserID, StartedAt: now, LastEventAt: now, RuntimeSeconds: event.RuntimeSeconds, Status: "active"}
 	} else if err != nil {
 		return PlaybackResult{}, err
-	} else if x.ReleaseID != event.ReleaseID {
+	} else if x.StashSceneID != stashSceneID {
 		return PlaybackResult{}, errors.New("session_id is already bound to another release")
 	} else if now.Before(x.LastEventAt) {
 		// Jellyfin event callbacks are forwarded asynchronously and may arrive
