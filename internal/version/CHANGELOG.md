@@ -5,6 +5,24 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.232] - 2026-09-26
+
+### Fixed
+
+- Fixed both Jellyfin scheduled tasks ("Resync JAVBeacon collections
+  (catch-up)" and "Sync watched status from StashApp") getting reported as
+  "(Cancelled)" shortly after running. `LibrarySync()` - the endpoint both
+  tasks call - recomputed every saved filter preset's full release list
+  inline, on every single call, with no caching: the exact same
+  O(number of presets x full library scan) cost already found and fixed for
+  `Metadata()` in 1.0.230, just left unpatched in this sibling code path.
+  With several saved presets and a real-size library, that per-call cost
+  was slow enough to exceed the Jellyfin plugin's own HTTP client timeout
+  (15s); .NET reports a timed-out request as `TaskCanceledException`, which
+  Jellyfin's task scheduler surfaces as "(Cancelled)" rather than a timeout
+  or a failure. `LibrarySync()` now reuses the same revision-gated
+  collection-membership cache `Metadata()` already relies on.
+
 ## [1.0.231] - 2026-09-26
 
 ### Fixed
