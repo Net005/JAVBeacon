@@ -8,6 +8,10 @@
   const DEFAULT_HOVER_DELAY_MS = 400;
   const DEFAULT_CYCLE_INTERVAL_MS = 700;
   const MIN_CYCLE_INTERVAL_MS = 100;
+  // How many evenly-spaced points across the seek bar the cover-area
+  // auto-cycle walks through. Not user-configurable: it only controls how
+  // finely the cycle samples the video, not the requested timings.
+  const CYCLE_STEPS = 24;
   // video.js mounts its player element asynchronously after the scene query
   // resolves. Poll briefly instead of relying on a single lookup right after
   // the scene page patch runs.
@@ -40,122 +44,87 @@
     return raw === true || raw === "true";
   }
 
-  // ---- WebVTT sprite sheet parsing -----------------------------------
+  // ---- Mirroring Stash's own seek-bar thumbnail ------------------------
   //
-  // Stash's generated sprite VTT files follow the standard "media fragment"
-  // convention also used by e.g. Plex and video.js's own thumbnail plugins:
-  // each cue's payload line is an image URL (usually relative to the VTT
-  // file itself) with a #xywh=x,y,w,h fragment identifying the crop of a
-  // larger sprite sheet that represents that cue's time range. These
-  // functions are pure and DOM-free so they can run under a plain Node test.
+  // Earlier versions of this plugin fetched and parsed the scene's sprite
+  // VTT file itself, then computed its own crop math to paint a frame. That
+  // duplicated logic Stash (via the standard videojs-vtt-thumbnails style
+  // plugin) already implements correctly, and getting the crop math wrong
+  // produced visible artifacts (overlapping/ghosted frames) instead of a
+  // single clean crop.
+  //
+  // Stash already renders a small, correctly-cropped preview into a
+  // thumbnail element (conventionally `.vjs-vtt-thumbnail-display`) whenever
+  // the pointer moves over the seek bar; this plugin hides that small
+  // element with CSS and instead mirrors its computed background image,
+  // position and size onto a large overlay covering the cover/video area,
+  // scaled up proportionally. This guarantees the crop is always identical
+  // to what Stash itself computed - correctness comes from reusing Stash's
+  // own result rather than re-deriving it - and the only resolution ceiling
+  // left is the sprite sheet's own source resolution, which scaling cannot
+  // improve.
+  //
+  // The cover-area "hover to preview" cycle reuses the exact same mirroring:
+  // it dispatches synthetic mousemove events at evenly-spaced points along
+  // the seek bar, which makes Stash's own listener update the same
+  // thumbnail element, and mirrors the result each time. This is why the
+  // cover-area preview only requires this element and the seek bar to exist;
+  // it never touches the sprite/VTT data directly.
 
-  const TIMESTAMP_RE = /(\d{2,}):(\d{2}):(\d{2})[.,](\d{3})/;
+  const PX_RE = /(-?\d+(?:\.\d+)?)px/;
 
-  function parseVttTimestamp(value) {
-    const match = TIMESTAMP_RE.exec(String(value || ""));
-    if (!match) return null;
-    const [, hours, minutes, seconds, millis] = match;
-    return (
-      Number(hours) * 3600 +
-      Number(minutes) * 60 +
-      Number(seconds) +
-      Number(millis) / 1000
-    );
+  function extractPx(value) {
+    const match = PX_RE.exec(String(value == null ? "" : value));
+    return match ? Number(match[1]) : null;
   }
 
-  function parseCueImageLine(line, baseUrl) {
-    const trimmed = String(line || "").trim();
-    if (!trimmed) return null;
-    const hashIndex = trimmed.indexOf("#xywh=");
-    const path = hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed;
-    let url = path;
-    try {
-      url = new URL(path, baseUrl || undefined).href;
-    } catch (_) {
-      // Relative path with no usable base: fall back to the raw string, the
-      // way a plain <img src> would if it could not be resolved either.
+  // Pure aside from writing to targetEl.style: takes plain {style,
+  // getBoundingClientRect?} shaped objects so it can run against a real DOM
+  // element or a fake one in a Node test. Returns false (leaving targetEl
+  // untouched) whenever sourceEl currently has no thumbnail painted, so
+  // callers can decide whether to keep showing the previous frame.
+  function mirrorBackground(sourceEl, targetEl, box) {
+    if (!sourceEl || !targetEl || !box || box.width <= 0 || box.height <= 0) {
+      return false;
     }
-    if (hashIndex < 0) return { url, x: 0, y: 0, w: 0, h: 0, whole: true };
-    const parts = trimmed
-      .slice(hashIndex + 6)
-      .split(",")
-      .map((part) => Number(part.trim()));
-    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
-    const [x, y, w, h] = parts;
-    if (w <= 0 || h <= 0) return null;
-    return { url, x, y, w, h, whole: false };
-  }
+    const style = sourceEl.style || {};
+    const image = style.backgroundImage;
+    if (!image) return false;
 
-  function parseSpriteVtt(text, baseUrl) {
-    const lines = String(text || "").split(/\r\n|\n|\r/);
-    const cues = [];
-    for (let i = 0; i < lines.length; i++) {
-      if (!lines[i].includes("-->")) continue;
-      const [startRaw, endRaw] = lines[i].split("-->");
-      const start = parseVttTimestamp(startRaw);
-      const end = parseVttTimestamp(endRaw);
-      let payload = i + 1 < lines.length ? lines[i + 1] : "";
-      while (payload !== undefined && payload.trim() === "" && i + 1 < lines.length) {
-        i++;
-        payload = i + 1 < lines.length ? lines[i + 1] : "";
-      }
-      if (start == null || end == null || end <= start) continue;
-      const image = parseCueImageLine(payload, baseUrl);
-      if (image) cues.push({ start, end, ...image });
-    }
-    cues.sort((a, b) => a.start - b.start);
-    return cues;
-  }
+    const rect =
+      typeof sourceEl.getBoundingClientRect === "function"
+        ? sourceEl.getBoundingClientRect()
+        : null;
+    const baseWidth = (rect && rect.width) || extractPx(style.width);
+    const baseHeight = (rect && rect.height) || extractPx(style.height);
+    if (!baseWidth || !baseHeight) return false;
 
-  // Cues are contiguous and sorted, so a binary search finds the cue whose
-  // [start, end) range contains the requested time in O(log n). Falls back
-  // to the first/last cue for times just outside the covered range (e.g. the
-  // last fraction of a second before a video's exact duration).
-  function findCueAtTime(cues, time) {
-    if (!Array.isArray(cues) || cues.length === 0 || !Number.isFinite(time)) {
-      return null;
-    }
-    let lo = 0;
-    let hi = cues.length - 1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      const cue = cues[mid];
-      if (time < cue.start) hi = mid - 1;
-      else if (time >= cue.end) lo = mid + 1;
-      else return cue;
-    }
-    if (time <= cues[0].start) return cues[0];
-    if (time >= cues[cues.length - 1].end) return cues[cues.length - 1];
-    return null;
+    const scale = Math.min(box.width / baseWidth, box.height / baseHeight);
+    if (!Number.isFinite(scale) || scale <= 0) return false;
+
+    const positionParts = String(style.backgroundPosition || "0px 0px").split(/\s+/);
+    const posX = extractPx(positionParts[0]) ?? 0;
+    const posY = extractPx(positionParts[1]) ?? 0;
+    const sizeParts = String(style.backgroundSize || "").split(/\s+/);
+    const sizeW = extractPx(sizeParts[0]);
+    const sizeH = extractPx(sizeParts[1]);
+
+    targetEl.style.backgroundImage = image;
+    targetEl.style.backgroundRepeat = "no-repeat";
+    targetEl.style.backgroundPosition = `${(posX * scale).toFixed(2)}px ${(posY * scale).toFixed(2)}px`;
+    targetEl.style.backgroundSize =
+      sizeW != null && sizeH != null
+        ? `${(sizeW * scale).toFixed(2)}px ${(sizeH * scale).toFixed(2)}px`
+        : style.backgroundSize || "auto";
+    return true;
   }
 
   // Exposed for the Node-based unit test harness only; production code paths
   // never read this. Mirrors how the rest of this plugin is tested by
   // requiring the browser file against a faked `window`.
-  window.__javbeaconScrubberInternals = {
-    parseVttTimestamp,
-    parseCueImageLine,
-    parseSpriteVtt,
-    findCueAtTime,
-  };
+  window.__javbeaconScrubberInternals = { extractPx, mirrorBackground };
 
-  // ---- Sprite sheet natural size, cached per URL ----------------------
-
-  const spriteSizeCache = new Map();
-
-  function loadSpriteNaturalSize(url) {
-    if (spriteSizeCache.has(url)) return spriteSizeCache.get(url);
-    const promise = new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
-      img.onerror = () => resolve(null);
-      img.src = url;
-    });
-    spriteSizeCache.set(url, promise);
-    return promise;
-  }
-
-  // ---- Overlay painting -------------------------------------------------
+  // ---- DOM wiring --------------------------------------------------------
 
   function ensureOverlay(playerEl) {
     let overlay = playerEl.querySelector(":scope > .javbeacon-scrub-overlay");
@@ -175,29 +144,13 @@
     overlay.classList.remove("is-visible");
   }
 
-  // Crops the cue's region out of its sprite sheet and scales that crop up
-  // (or down) to fill the current player box, using the sprite's real pixel
-  // dimensions so the result stays as sharp as the source sprite allows -
-  // this is what replaces Stash's small fixed-size seek-bar thumbnail.
-  async function paintCue(overlay, cue, box) {
-    if (!cue || !box || box.width <= 0 || box.height <= 0) return;
-    if (cue.whole) {
-      overlay.style.backgroundImage = `url("${cue.url}")`;
-      overlay.style.backgroundPosition = "center";
-      overlay.style.backgroundSize = "cover";
-      return;
-    }
-    const natural = await loadSpriteNaturalSize(cue.url);
-    if (!natural) return;
-    const scale = box.width / cue.w;
-    overlay.style.backgroundImage = `url("${cue.url}")`;
-    overlay.style.backgroundPosition = `-${(cue.x * scale).toFixed(2)}px -${(cue.y * scale).toFixed(2)}px`;
-    overlay.style.backgroundSize = `${(natural.width * scale).toFixed(2)}px ${(natural.height * scale).toFixed(2)}px`;
-  }
-
-  function playerDurationSeconds(playerEl) {
-    const duration = playerEl.querySelector("video")?.duration;
-    return Number.isFinite(duration) && duration > 0 ? duration : null;
+  function findThumbnailElement(playerEl) {
+    const known = playerEl.querySelector(".vjs-vtt-thumbnail-display");
+    if (known) return known;
+    // Defensive fallback in case Stash's build uses a differently-named
+    // class for the same feature; matches anything containing
+    // "vtt-thumbnail" rather than requiring the exact conventional name.
+    return playerEl.querySelector("[class*='vtt-thumbnail']");
   }
 
   function findPlayerElement() {
@@ -213,16 +166,25 @@
     return null;
   }
 
-  // ---- Wiring hover/seek behaviour onto one attached player -------------
-
-  function attachScrubber(playerEl, cuesPromise, options) {
+  function attachScrubber(playerEl, options) {
     const { hoverDelayMs, cycleIntervalMs, coverEnabled, seekEnabled } = options;
     const overlay = ensureOverlay(playerEl);
-    let cues = null;
-    let disposed = false;
-    cuesPromise.then((resolved) => {
-      if (!disposed) cues = resolved;
-    });
+    const poster = playerEl.querySelector(".vjs-poster");
+    const progress = playerEl.querySelector(".vjs-progress-control");
+
+    function playerHasStarted() {
+      return playerEl.classList.contains("vjs-has-started");
+    }
+
+    function coverBox() {
+      const box = poster || playerEl;
+      return box.getBoundingClientRect();
+    }
+
+    function mirrorFromThumbnail(box) {
+      const thumbnail = findThumbnailElement(playerEl);
+      if (thumbnail) mirrorBackground(thumbnail, overlay, box);
+    }
 
     let hoverTimer = null;
     let cycleTimer = null;
@@ -234,26 +196,39 @@
       cycleTimer = null;
     }
 
-    function playerHasStarted() {
-      return playerEl.classList.contains("vjs-has-started");
-    }
-
-    function coverBox() {
-      const poster = playerEl.querySelector(".vjs-poster") || playerEl;
-      return poster.getBoundingClientRect();
+    function dispatchSyntheticHover(ratio) {
+      if (!progress) return;
+      const rect = progress.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      progress.dispatchEvent(
+        new MouseEvent("mousemove", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + rect.width * ratio,
+          clientY: rect.top + rect.height / 2,
+        })
+      );
     }
 
     function onPosterEnter() {
-      if (!coverEnabled || !cues || cues.length === 0 || playerHasStarted()) return;
+      if (!coverEnabled || !progress || playerHasStarted()) return;
       stopCycle();
       hoverTimer = setTimeout(() => {
         let index = 0;
         showOverlay(overlay);
-        paintCue(overlay, cues[index], coverBox());
-        cycleTimer = setInterval(() => {
-          index = (index + 1) % cues.length;
-          paintCue(overlay, cues[index], coverBox());
-        }, cycleIntervalMs);
+        const step = () => {
+          const ratio = (index % CYCLE_STEPS) / CYCLE_STEPS;
+          index++;
+          dispatchSyntheticHover(ratio);
+          const box = coverBox();
+          // requestAnimationFrame runs after the current synchronous event
+          // dispatch (including Stash's own mousemove listener) finishes,
+          // regardless of listener registration order, so the thumbnail
+          // element is guaranteed to already reflect this ratio's frame.
+          requestAnimationFrame(() => mirrorFromThumbnail(box));
+        };
+        step();
+        cycleTimer = setInterval(step, cycleIntervalMs);
       }, hoverDelayMs);
     }
 
@@ -262,33 +237,24 @@
       hideOverlay(overlay);
     }
 
-    function onSeekMove(event) {
-      if (!seekEnabled || !cues || cues.length === 0) return;
-      const rect = event.currentTarget.getBoundingClientRect();
-      if (rect.width <= 0) return;
-      const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
-      const duration = playerDurationSeconds(playerEl);
-      if (!duration) return;
-      const cue = findCueAtTime(cues, ratio * duration);
-      if (!cue) return;
+    function onSeekMove() {
+      if (!seekEnabled) return;
       stopCycle();
       showOverlay(overlay);
-      paintCue(overlay, cue, playerEl.getBoundingClientRect());
+      const box = playerEl.getBoundingClientRect();
+      requestAnimationFrame(() => mirrorFromThumbnail(box));
     }
 
     function onSeekLeave() {
       hideOverlay(overlay);
     }
 
-    const poster = playerEl.querySelector(".vjs-poster");
-    const progress = playerEl.querySelector(".vjs-progress-control");
     poster?.addEventListener("mouseenter", onPosterEnter);
     poster?.addEventListener("mouseleave", onPosterLeave);
     progress?.addEventListener("mousemove", onSeekMove);
     progress?.addEventListener("mouseleave", onSeekLeave);
 
     return function detach() {
-      disposed = true;
       stopCycle();
       poster?.removeEventListener("mouseenter", onPosterEnter);
       poster?.removeEventListener("mouseleave", onPosterLeave);
@@ -298,18 +264,10 @@
     };
   }
 
-  function fetchCues(vttUrl) {
-    return fetch(vttUrl, { credentials: "same-origin" })
-      .then((response) => (response.ok ? response.text() : Promise.reject(new Error("sprite VTT request failed"))))
-      .then((text) => parseSpriteVtt(text, vttUrl))
-      .catch(() => []);
-  }
-
   function setupScrubberForScene(scene, settings) {
-    const vttUrl = scene?.paths?.vtt;
     const coverEnabled = boolSetting(settings, "scrubber_cover_enabled", true);
     const seekEnabled = boolSetting(settings, "scrubber_seek_preview_enabled", true);
-    if (!vttUrl || (!coverEnabled && !seekEnabled)) return () => {};
+    if (!coverEnabled && !seekEnabled) return () => {};
 
     const hoverDelayMs = numberSetting(settings, "scrubber_hover_delay_ms", DEFAULT_HOVER_DELAY_MS, 0);
     const cycleIntervalMs = numberSetting(
@@ -322,7 +280,6 @@
     let cancelled = false;
     let attempts = 0;
     let detach = null;
-    const cuesPromise = fetchCues(vttUrl);
 
     const tryAttach = () => {
       if (cancelled) return;
@@ -333,12 +290,7 @@
         }
         return;
       }
-      detach = attachScrubber(playerEl, cuesPromise, {
-        coverEnabled,
-        cycleIntervalMs,
-        hoverDelayMs,
-        seekEnabled,
-      });
+      detach = attachScrubber(playerEl, { coverEnabled, cycleIntervalMs, hoverDelayMs, seekEnabled });
     };
     tryAttach();
 
@@ -352,10 +304,10 @@
     const settings = usePluginSettings();
 
     React.useEffect(() => {
-      if (!scene?.id || !scene?.paths?.vtt) return undefined;
+      if (!scene?.id) return undefined;
       return setupScrubberForScene(scene, settings);
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [scene?.id, scene?.paths?.vtt, settings]);
+    }, [scene?.id, settings]);
 
     return null;
   }
