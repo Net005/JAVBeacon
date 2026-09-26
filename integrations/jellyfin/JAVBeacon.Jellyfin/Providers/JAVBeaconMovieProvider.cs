@@ -1,6 +1,7 @@
 using System.Globalization;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.JAVBeacon.Models;
+using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Providers;
@@ -23,7 +24,17 @@ public sealed class JAVBeaconMovieProvider(JAVBeaconClient client) : IRemoteMeta
         if (dto is null) return new();
         var item = Map(dto);
         var result = new MetadataResult<Movie> { HasMetadata = true, Item = item, QueriedById = info.ProviderIds.ContainsKey("JAVBeacon") };
-        foreach (var name in dto.Performers.Where(x => !string.IsNullOrWhiteSpace(x))) result.AddPerson(new() { Name = name, Type = PersonKind.Actor });
+        // dto.PerformerImages is only populated on this single-release fetch
+        // (never on search results), and only for performers StashApp itself
+        // has a photo for - JAVBeacon never scrapes performer photos, so this
+        // is the only source Jellyfin's Person pages get one from.
+        foreach (var name in dto.Performers.Where(x => !string.IsNullOrWhiteSpace(x)))
+        {
+            var person = new PersonInfo { Name = name, Type = PersonKind.Actor };
+            if (dto.PerformerImages.TryGetValue(name, out var imagePath) && !string.IsNullOrWhiteSpace(imagePath))
+                person.ImageUrl = client.Absolute(imagePath);
+            result.AddPerson(person);
+        }
         foreach (var name in dto.Directors.Where(x => !string.IsNullOrWhiteSpace(x))) result.AddPerson(new() { Name = name, Type = PersonKind.Director });
         return result;
     }

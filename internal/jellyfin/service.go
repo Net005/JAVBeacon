@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -102,7 +103,14 @@ type Metadata struct {
 	// surface collection membership as a genre/tag since Silo has no
 	// collection-management plugin capability) - never by Search, to avoid
 	// running the filter-preset engine once per bulk search result.
-	CollectionNames []string          `json:"collection_names,omitempty"`
+	CollectionNames []string `json:"collection_names,omitempty"`
+	// PerformerImages maps a performer's display name (as it appears in
+	// Performers) to a JAVBeacon-proxied StashApp portrait URL, for whichever
+	// performers on the linked Stash scene have one - JAVBeacon itself never
+	// scrapes performer photos. Only populated by Metadata (a single-release
+	// fetch); never by Search, for the same bulk-cost reason as
+	// CollectionNames.
+	PerformerImages map[string]string `json:"performer_images,omitempty"`
 	ProviderIDs     map[string]string `json:"provider_ids"`
 }
 
@@ -275,7 +283,34 @@ func (s *Service) Metadata(ctx context.Context, releaseID int64) (Metadata, erro
 	}
 	m := s.enrichFromStash(ctx, r, s.metadata(r))
 	m.CollectionNames = s.collectionNamesForRelease(ctx, releaseID)
+	s.populatePerformerImages(ctx, r, &m)
 	return m, nil
+}
+
+// populatePerformerImages attaches a JAVBeacon-proxied StashApp portrait URL
+// to every performer name already on m (from JAVBeacon's own scrape or from
+// enrichFromStash) that StashApp has a photo for, matching by name. It is
+// unconditional - unlike enrichFromStash's gap-fill, JAVBeacon never has its
+// own performer photos to prefer, so this always runs when a Stash scene is
+// linked, not just when other metadata is missing.
+func (s *Service) populatePerformerImages(ctx context.Context, r domain.Release, m *Metadata) {
+	if s.stash == nil || r.StashSceneID == "" {
+		return
+	}
+	scene, err := s.stash.StashSceneMetadata(ctx, r.StashSceneID)
+	if err != nil || len(scene.Performers) == 0 {
+		return
+	}
+	images := make(map[string]string, len(scene.Performers))
+	for _, p := range scene.Performers {
+		if p.Name == "" || p.ImagePath == "" || p.ID == "" {
+			continue
+		}
+		images[p.Name] = fmt.Sprintf("/api/v1/integrations/performers/%s/image", url.PathEscape(p.ID))
+	}
+	if len(images) > 0 {
+		m.PerformerImages = images
+	}
 }
 
 // collectionNamesForRelease resolves every saved filter set that currently
@@ -343,7 +378,7 @@ func (s *Service) enrichFromStash(ctx context.Context, r domain.Release, m Metad
 		m.Studio = scene.Studio
 	}
 	if len(r.Actresses) == 0 && len(scene.Performers) > 0 {
-		m.Performers = scene.Performers
+		m.Performers = scene.PerformerNames()
 	}
 	if len(r.Genres) == 0 && len(scene.Tags) > 0 {
 		m.Genres = scene.Tags

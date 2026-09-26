@@ -150,6 +150,17 @@ overrides anything JAVBeacon already has. The Stash screenshot, when used, is
 proxied through JAVBeacon (`/api/v1/integrations/jellyfin/releases/{id}/stash-cover`)
 so the Stash base URL and API key never reach Jellyfin.
 
+## Performer photos
+
+JAVBeacon never scrapes performer photos itself, so on the single-release
+metadata fetch (not on search results), every performer StashApp has a photo
+for gets one attached automatically - looked up by name against that
+release's linked Stash scene and proxied through JAVBeacon
+(`/api/v1/integrations/performers/{performerId}/image`, shared with the Silo
+integration) so the Stash base URL and API key never reach Jellyfin here
+either. Performers StashApp has no photo for are added with a name only, same
+as before.
+
 ## API smoke tests
 
 Use placeholders; do not commit keys:

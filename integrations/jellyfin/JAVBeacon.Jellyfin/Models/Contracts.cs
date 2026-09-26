@@ -26,6 +26,19 @@ public sealed record MetadataDto
     // JAVBeacon-proxied StashApp scene screenshot, offered as an additional
     // image candidate rather than a replacement for CoverPath/BackdropUrls.
     [JsonPropertyName("stash_screenshot_url")] public string? StashScreenshotUrl { get; init; }
+    // Every saved filter set (JAVBeacon Release Library) this release
+    // currently belongs to - only populated on the single-release GET, never
+    // on search results. Unused by the Jellyfin plugin itself (it already
+    // gets real Jellyfin collections from LibrarySyncDto.FilterPresets); kept
+    // here only so this DTO stays a complete mirror of the server's Metadata
+    // shape for anything else that deserializes it.
+    [JsonPropertyName("collection_names")] public string[] CollectionNames { get; init; } = [];
+    // Maps a performer's display name (as it appears in Performers) to a
+    // JAVBeacon-proxied StashApp portrait URL - JAVBeacon itself never
+    // scrapes performer photos, so this is the only source for them. Only
+    // populated on the single-release GET (see JAVBeaconMovieProvider, which
+    // sets PersonInfo.ImageUrl from this).
+    [JsonPropertyName("performer_images")] public Dictionary<string, string> PerformerImages { get; init; } = [];
     [JsonPropertyName("provider_ids")] public Dictionary<string, string> ProviderIds { get; init; } = [];
 }
 
