@@ -5,6 +5,22 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.221] - 2026-09-26
+
+### Added
+
+- AI Discovery's subtitle narrative weight is now configurable in Settings →
+  AI Discovery, as two separate 0-100 emphasis sliders: one for candidates
+  with no story field at all (mostly JAVLibrary-sourced), one for candidates
+  that already have a story field (mostly Akiba/GIGA). 0 means never use
+  subtitle dialogue in the reason for that case; 100 means treat it as the
+  primary narrative source. Applies to both Ollama and OpenAI. Defaults:
+  100 for story-empty candidates (unchanged from before this was
+  configurable - subtitles are often the only narrative evidence available)
+  and 50 for story-present candidates (a fair, co-equal blend with the
+  story, since subtitles are already AI-translated and can carry real
+  narrative detail rather than being a minor supplement).
+
 ## [1.0.220] - 2026-09-26
 
 ### Changed

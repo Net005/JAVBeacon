@@ -15,6 +15,25 @@ type Config struct {
 	OpenAIModel            string
 	OpenAITimeout          time.Duration
 	OpenAIIncludeSubtitles bool
+	// SubtitleWeightNoStory and SubtitleWeightWithStory control how heavily
+	// the ranking prompt tells the model to lean on subtitle_excerpt versus
+	// the story field, as an explicit 0-100 emphasis: 0 means "ignore
+	// subtitles for this case", 100 means "treat subtitles as the primary/
+	// equal narrative source". They are configured separately because the
+	// two situations are different: SubtitleWeightNoStory applies to
+	// candidates with no story field at all (mostly JAVLibrary-sourced),
+	// where subtitles are often the only narrative evidence available;
+	// SubtitleWeightWithStory applies to candidates that already have a
+	// story field (mostly Akiba/GIGA), where subtitles - already
+	// AI-translated and often carrying real narrative detail - can be
+	// weighted anywhere from a minor supplement up to a fully fair, co-equal
+	// source alongside the story. The production caller (discoveryAIConfig)
+	// always resolves these from settings with the documented 100/50
+	// fallback already applied, so these fields carry no separate "unset"
+	// state - a bare zero-value Config (as some tests use) resolves to 0/0,
+	// which only affects prompt phrasing, never validation.
+	SubtitleWeightNoStory   int
+	SubtitleWeightWithStory int
 }
 
 type TasteSignals struct {

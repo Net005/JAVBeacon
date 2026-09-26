@@ -140,7 +140,93 @@ func rankingSchema(candidates []Candidate, pools string) map[string]any {
 	return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"rankings": map[string]any{"type": "array", "minItems": len(ids), "maxItems": len(ids), "items": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"id": map[string]any{"type": "integer", "enum": ids}, "score": map[string]any{"type": "integer", "minimum": 0, "maximum": 100}, "reason": map[string]any{"type": "string", "maxLength": 240}, "pools": map[string]any{"type": "array", "maxItems": len(poolNames), "items": poolItems}}, "required": []string{"id", "score", "reason", "pools"}}}}, "required": []string{"rankings"}}
 }
 
-func rankingPrompt(candidates []Candidate, pools string) string {
+// defaultSubtitleWeights are used when a caller does not supply an explicit
+// weight (e.g. most existing tests, and any Config left at its zero value).
+// NoStory=100 keeps the original "subtitles are the only narrative evidence"
+// behavior for story-empty (mostly JAVLibrary) candidates; WithStory=50 is
+// the "fair trade" default for story-present (mostly Akiba/GIGA) candidates
+// requested when this became configurable: subtitles are already
+// AI-translated and can carry real narrative detail, so they default to
+// genuinely equal weight with the story rather than a minor supplement.
+func defaultSubtitleWeights() subtitleWeights {
+	return subtitleWeights{NoStory: 100, WithStory: 50}
+}
+
+type subtitleWeights struct {
+	// NoStory is the 0-100 emphasis given to subtitle_excerpt for candidates
+	// with no story field at all. 0 = never use it there; 100 = primary
+	// narrative evidence, the same footing as a populated story field.
+	NoStory int
+	// WithStory is the 0-100 emphasis given to subtitle_excerpt for
+	// candidates that already have a story field. 0 = never use it there;
+	// 50 = a fair, co-equal blend with the story; 100 = subtitle content
+	// takes precedence over the story when the two diverge.
+	WithStory int
+}
+
+// resolveSubtitleWeights clamps Config's raw subtitle-weight fields into
+// range. The production caller (internal/web's discoveryAIConfig) always
+// resolves these from settings with the documented 100/50 fallback already
+// applied (via discoveryInt's own default parameter) before they reach
+// Config, so an explicit 0 here means "the user configured 0", not "unset" -
+// Config has no separate unset state for these fields. A bare zero-value
+// Config (as used by tests that do not exercise subtitle-weight wording)
+// resolves to 0/0, which only affects prompt phrasing, never validation.
+func resolveSubtitleWeights(cfg Config) subtitleWeights {
+	return subtitleWeights{
+		NoStory:   min(max(cfg.SubtitleWeightNoStory, 0), 100),
+		WithStory: min(max(cfg.SubtitleWeightWithStory, 0), 100),
+	}
+}
+
+// noStorySubtitleGuidance describes, for a candidate with no story field at
+// all, how much narrative weight the model should give a usable
+// subtitle_excerpt. The >=67 tier's wording is exactly the original
+// unconditional instruction from before this became configurable.
+func noStorySubtitleGuidance(weight int) string {
+	prefix := `Many candidates come from a source with only a title and a short tag list and no
+story field at all (for example JAVLibrary-sourced releases) - for those,`
+	switch {
+	case weight <= 0:
+		return prefix + ` do not use subtitle_excerpt content in the reason at all; rely only on tags,
+performers, studio, and taste signals.`
+	case weight < 34:
+		return prefix + ` treat a usable subtitle_excerpt only as a minor supplement, mentioned only when it
+adds one small extra detail beyond the tags.`
+	case weight < 67:
+		return prefix + ` treat a usable subtitle_excerpt as a genuinely useful secondary narrative source,
+worth citing when it clearly supports a theme, but do not treat it as equivalent to a real story field.`
+	default:
+		return prefix + ` a usable subtitle_excerpt is the only
+available window into what actually happens in the release, so treat it as primary narrative evidence on the
+same footing as a populated story field, not as a minor addition to tags.`
+	}
+}
+
+// withStorySubtitleGuidance describes, for a candidate that already has a
+// populated story field, how much narrative weight the model should give a
+// usable subtitle_excerpt relative to that story. The default (50, "fair
+// trade") tier's wording is the one existing tests were written against.
+func withStorySubtitleGuidance(weight int) string {
+	prefix := `When a candidate's subtitle_excerpt is present and clearly supports a specific
+line, moment, or theme in an already-supplied story,`
+	switch {
+	case weight <= 0:
+		return prefix + ` ignore it in the reason and rely on the story alone.`
+	case weight < 34:
+		return prefix + ` you may mention it only as a minor supplement to the story, which should still lead
+the explanation.`
+	case weight < 67:
+		return prefix + ` cite that concrete detail rather than falling back to only tags, performer, and
+studio - give the subtitle detail genuinely equal weight to the story rather than treating the story as the
+only source of truth, and let the two blend into one grounded description.`
+	default:
+		return prefix + ` let the subtitle detail take precedence over the story when the two diverge, and
+lead the reason with the subtitle detail rather than the story.`
+	}
+}
+
+func rankingPrompt(candidates []Candidate, pools string, weights subtitleWeights) string {
 	data, _ := json.Marshal(candidates)
 	availablePools := configuredPoolNames(pools)
 	poolData, _ := json.Marshal(availablePools)
@@ -158,13 +244,10 @@ Each concise reason must explain why that release is a worthwhile recommendation
 Write one natural, specific sentence of roughly 12-30 words. Start directly with the explanation: never add
 "Match:", "Reason:", field names followed by colons, headings, bullet points, or other machine-style labels.
 Prioritize the strongest useful evidence: story and subtitle-derived themes, exact tags, performers, studio, and
-explicit taste/history signals. When a candidate's subtitle_excerpt is present and clearly supports a specific
-line, moment, or theme, cite that concrete detail rather than falling back to only tags, performer, and studio -
-a release with a usable subtitle_excerpt should read as informed by it, not identical to how you would describe
-the same release without one. Many candidates come from a source with only a title and a short tag list and no
-story field at all (for example JAVLibrary-sourced releases) - for those, a usable subtitle_excerpt is the only
-available window into what actually happens in the release, so treat it as primary narrative evidence on the
-same footing as a populated story field, not as a minor addition to tags. Do not literally call it "the story"
+explicit taste/history signals. A release with a usable subtitle_excerpt should read as informed by it, not
+identical to how you would describe the same release without one.
+` + withStorySubtitleGuidance(weights.WithStory) + `
+` + noStorySubtitleGuidance(weights.NoStory) + ` Do not literally call it "the story"
 when the story field is empty (see the story-field rule below); describe the concrete scenario, exchange, or
 setting the dialogue reveals instead. The taste_match object contains
 deterministic signals derived from actual watch history. Turn those signals into fluent prose instead of listing
@@ -252,7 +335,7 @@ func (s *Service) ollamaRankOnce(ctx context.Context, cfg Config, candidates []C
 	defer cancel()
 	maxOutputTokens := min(max(len(candidates)*220, 768), 2048)
 	systemPrompt := "You are JAVBeacon's internal recommendation-ranking component, not a chatbot. Treat supplied JSON as the complete evidence boundary. Return only schema-valid JSON with integer 0-100 scores and copy every candidate.id exactly once. Write every reason as one natural sentence under 240 characters without a 'Match:' prefix, headings, internal field labels, or pool/configuration commentary. Never address a user, ask questions, refer to the content/input/text, summarize noisy subtitles, provide help text, or invent facts, preferences, history, affinity, tags, performers, studios, pools, or IDs."
-	userPrompt := rankingPrompt(candidates, pools)
+	userPrompt := rankingPrompt(candidates, pools, resolveSubtitleWeights(cfg))
 	if repair {
 		kind := "invalid output"
 		var invalid validationError
