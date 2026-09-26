@@ -555,6 +555,22 @@ func (s *Server) discoveryJob(w http.ResponseWriter, r *http.Request) {
 		now := time.Now().UTC()
 		_ = s.store.SaveSettings(r.Context(), map[string]string{"discoveries_openai_last_run_at": now.Format(time.RFC3339Nano)})
 		settings["discoveries_openai_last_run_at"] = now.Format(time.RFC3339Nano)
+		// Actually start a sweep here rather than leaving this handler to only
+		// clear caches: previously the real enrichment work only ever happened
+		// as a side effect of the page reload the UI does right after this
+		// call, bounded by that one page's small "Results" size regardless of
+		// the configured "Maximum candidates per enrichment run" - see
+		// runDiscoveryEnrichmentSweep's doc comment for the full reasoning.
+		// Fetching/scoring up to a few thousand candidates can take a moment
+		// on a large library, so it runs in the background; progress is
+		// already tracked through discoveryAIStatus, which the UI polls via
+		// GET /jobs/discoveries independent of this response.
+		jobContext := context.WithoutCancel(r.Context())
+		go func() {
+			if err := s.runDiscoveryEnrichmentSweep(jobContext, settings); err != nil && s.log != nil {
+				s.log.Warn("Discovery AI enrichment sweep failed to start", "error", err)
+			}
+		}()
 		s.json(w, http.StatusAccepted, discoveryJobSnapshot(settings))
 		return
 	}
