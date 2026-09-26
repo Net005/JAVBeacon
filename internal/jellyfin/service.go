@@ -528,7 +528,16 @@ func (s *Service) collectionIndexAndPresets(ctx context.Context) (map[int64][]st
 		return nil, nil, err
 	}
 	index := map[int64][]string{}
-	var collections []FilterPresetCollection
+	// Never left nil: with zero saved filter presets (or none currently
+	// resolving to a valid filter), this stays [] rather than nil - a nil
+	// slice here serializes as JSON null (no omitempty on
+	// LibrarySyncSnapshot.FilterPresets), and the Jellyfin plugin's DTO
+	// default-initializes that field to an empty array only when the JSON
+	// key is absent; an explicit null overwrites that default instead,
+	// crashing ReconcileFilterPresetCollections's very next line
+	// (NullReferenceException on "foreach (var preset in presets)").
+	// Confirmed live.
+	collections := []FilterPresetCollection{}
 	for _, preset := range presets {
 		filter, ok := filterFromPresetState(preset.State, settings)
 		if !ok {

@@ -5,6 +5,35 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.236] - 2026-09-26
+
+### Fixed
+
+- Fixed the Jellyfin "Sync collections" scheduled task crashing outright
+  with `System.NullReferenceException` in `ReconcileFilterPresetCollections`
+  whenever LibrarySync had zero saved filter presets currently resolving to
+  a valid filter. `LibrarySyncSnapshot.FilterPresets` had no `omitempty` and
+  was left as a nil slice in that case, which Go serializes as JSON `null`
+  rather than `[]` - and the Jellyfin plugin's `LibrarySyncDto.FilterPresets`
+  default-initializes to an empty array only when the JSON key is absent, so
+  the explicit `null` overwrote that default and crashed the very next
+  `foreach`. `collectionIndexAndPresets` now always builds a non-nil slice,
+  matching the pattern `Watchlist`/`Watched` already used; the Jellyfin
+  plugin also now defensively null-coalesces the list itself as a second
+  layer of protection.
+- Fixed a Jellyfin "Watchlist"/filter-preset collection's cover image
+  failing to set with `System.Net.Http.HttpRequestException: Request
+  returned 'text/html' instead of an image type`. Every other JAVBeacon
+  image (movie/person provider images) reaches Jellyfin through
+  `GetImageResponse`, which carries the plugin's bearer token; a
+  collection's cover has no such hook - `EnsureCollectionImage` hands the
+  bare image URL straight to Jellyfin's `ProviderManager.SaveImage`, which
+  fetches it itself with an unauthenticated client, and JAVBeacon correctly
+  401'd it (returned as an HTML error page). The plugin now embeds
+  `?api_key=` in that one URL instead - the same fix already used by the
+  Silo plugin's `ImageURL` for the identical problem - which JAVBeacon's own
+  `security()` middleware already accepts.
+
 ## [1.0.235] - 2026-09-26
 
 ### Added
