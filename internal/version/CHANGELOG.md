@@ -5,6 +5,26 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.235] - 2026-09-26
+
+### Added
+
+- Jellyfin (and, via a new shared JAVBeacon endpoint, Silo) cast/performer
+  pages now carry StashApp's full performer bio, not just the name and
+  photo they already had: gender, birthdate, country, ethnicity, hair/eye
+  colour, height, weight, measurements, fake tits, career length, tattoos,
+  piercings, and any linked Stash IDs (StashDB, TPDB, etc.), whenever
+  StashApp itself has that data for the performer. Metadata now also hands
+  back each performer's StashApp id (`performer_ids`, independent of
+  whether they have a photo), which JAVBeaconMovieProvider attaches as
+  that person's own "JAVBeacon" provider id - this is what lets Jellyfin
+  route a Person page's own metadata refresh to a new
+  JAVBeaconPersonProvider instead of leaving it with nothing but a name and
+  a picture. Jellyfin's Person entity has no dedicated fields for most of
+  this data (gender, ethnicity, measurements, etc. have no equivalent
+  property), so those are folded into the Person's Overview text alongside
+  StashApp's own performer details, rather than being silently dropped.
+
 ## [1.0.234] - 2026-09-26
 
 ### Fixed

@@ -53,6 +53,12 @@ public sealed class JAVBeaconClient(IHttpClientFactory clients)
         response.EnsureSuccessStatusCode();
     }
 
+    public async Task<PerformerBioDto?> PerformerBio(string performerId, CancellationToken ct)
+    {
+        using var client = Client();
+        return await client.GetFromJsonAsync<PerformerBioDto>($"api/v1/integrations/performer-bio/{Uri.EscapeDataString(performerId)}", Json, ct).ConfigureAwait(false);
+    }
+
     public async Task<ActivityDto?> Activity(long id, CancellationToken ct)
     {
         using var client = Client();

@@ -69,6 +69,26 @@ func (s *Server) jellyfinMetadata(w http.ResponseWriter, r *http.Request) {
 	s.json(w, http.StatusOK, value)
 }
 
+// jellyfinPerformerBio serves a StashApp performer's full bio (gender,
+// birthdate, country, ethnicity, measurements, etc.) to the Jellyfin/Silo
+// integrations, looked up by the same StashApp performer id Metadata already
+// hands out via PerformerIDs. Kept authenticated (unlike performerImage's
+// image proxy) since it is fetched by the plugin's own authenticated client,
+// not the host's generic unauthenticated image loader.
+func (s *Server) jellyfinPerformerBio(w http.ResponseWriter, r *http.Request) {
+	performerID := r.PathValue("performerId")
+	if performerID == "" {
+		s.problem(w, http.StatusBadRequest, "invalid performer id")
+		return
+	}
+	value, err := s.jellyfin.PerformerBio(r.Context(), performerID)
+	if err != nil {
+		s.problem(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, value)
+}
+
 func (s *Server) jellyfinLibrarySync(w http.ResponseWriter, r *http.Request) {
 	value, err := s.jellyfin.LibrarySync(r.Context())
 	if err != nil {

@@ -38,6 +38,7 @@ type stashBridge interface {
 	AddJellyfinO(context.Context, string, time.Time) (int, error)
 	JellyfinActivity(context.Context, string) (stash.JellyfinActivity, error)
 	StashSceneMetadata(context.Context, string) (stash.StashSceneMetadata, error)
+	PerformerDetails(context.Context, string) (stash.StashPerformerDetails, error)
 }
 
 type Service struct {
@@ -118,7 +119,17 @@ type Metadata struct {
 	// fetch); never by Search, for the same bulk-cost reason as
 	// CollectionNames.
 	PerformerImages map[string]string `json:"performer_images,omitempty"`
-	ProviderIDs     map[string]string `json:"provider_ids"`
+	// PerformerIDs maps a performer's display name (as it appears in
+	// Performers) to their StashApp performer id, for whichever performers on
+	// the linked Stash scene StashApp actually has a record for. The Jellyfin
+	// plugin attaches this as each PersonInfo's own "JAVBeacon" provider id,
+	// which is what lets Jellyfin route that person's own metadata refresh to
+	// JAVBeaconPersonProvider (see PerformerBio) instead of leaving the
+	// Person page with just a name and photo. Only populated by Metadata (a
+	// single-release fetch); never by Search, for the same bulk-cost reason
+	// as CollectionNames.
+	PerformerIDs map[string]string `json:"performer_ids,omitempty"`
+	ProviderIDs  map[string]string `json:"provider_ids"`
 }
 
 type MatchResult struct {
@@ -348,15 +359,92 @@ func applyPerformerImages(scene stash.StashSceneMetadata, m *Metadata) {
 		return
 	}
 	images := make(map[string]string, len(scene.Performers))
+	ids := make(map[string]string, len(scene.Performers))
 	for _, p := range scene.Performers {
-		if p.Name == "" || p.ImagePath == "" || p.ID == "" {
+		if p.Name == "" || p.ID == "" {
 			continue
 		}
-		images[p.Name] = fmt.Sprintf("/api/v1/integrations/performers/%s/image", url.PathEscape(p.ID))
+		// PerformerIDs is populated whenever StashApp has a record for this
+		// performer at all, independent of whether a photo exists - a
+		// performer's bio can be worth fetching even with no portrait.
+		ids[p.Name] = p.ID
+		if p.ImagePath != "" {
+			images[p.Name] = fmt.Sprintf("/api/v1/integrations/performers/%s/image", url.PathEscape(p.ID))
+		}
 	}
 	if len(images) > 0 {
 		m.PerformerImages = images
 	}
+	if len(ids) > 0 {
+		m.PerformerIDs = ids
+	}
+}
+
+// PerformerStashID is one linked database's identifier for a performer, as
+// StashApp itself tracks them - kept structured (rather than flattened into
+// one string) so a Jellyfin Person page can label each one by its source.
+type PerformerStashID struct {
+	Endpoint string `json:"endpoint"`
+	StashID  string `json:"stash_id"`
+}
+
+// PerformerBio is the small, stable, provider-agnostic bio contract exposed
+// to the Jellyfin/Silo integrations for a Person page - everything StashApp
+// holds about a performer beyond the name/photo already covered by
+// Metadata.PerformerImages. Every field is left empty/zero when StashApp
+// itself doesn't have it, never guessed; Jellyfin has no first-class fields
+// for most of these (gender/ethnicity/measurements/etc. have no equivalent
+// on its own Person entity), so JAVBeaconPersonProvider folds them into the
+// Person's Overview text instead of dropping them.
+type PerformerBio struct {
+	ID           string             `json:"id"`
+	Name         string             `json:"name"`
+	Gender       string             `json:"gender,omitempty"`
+	Birthdate    string             `json:"birthdate,omitempty"`
+	DeathDate    string             `json:"death_date,omitempty"`
+	Ethnicity    string             `json:"ethnicity,omitempty"`
+	Country      string             `json:"country,omitempty"`
+	EyeColor     string             `json:"eye_color,omitempty"`
+	HairColor    string             `json:"hair_color,omitempty"`
+	HeightCM     int                `json:"height_cm,omitempty"`
+	WeightKG     int                `json:"weight_kg,omitempty"`
+	Measurements string             `json:"measurements,omitempty"`
+	FakeTits     string             `json:"fake_tits,omitempty"`
+	CareerLength string             `json:"career_length,omitempty"`
+	Tattoos      string             `json:"tattoos,omitempty"`
+	Piercings    string             `json:"piercings,omitempty"`
+	Details      string             `json:"details,omitempty"`
+	URLs         []string           `json:"urls,omitempty"`
+	StashIDs     []PerformerStashID `json:"stash_ids,omitempty"`
+}
+
+// PerformerBio fetches performerID's full bio from StashApp. Unlike Metadata,
+// this is looked up directly by StashApp performer id (already resolved once
+// via Metadata.PerformerIDs and stored on the Jellyfin/Silo side as that
+// person's own "JAVBeacon" provider id), so it needs no release context.
+func (s *Service) PerformerBio(ctx context.Context, performerID string) (PerformerBio, error) {
+	performerID = strings.TrimSpace(performerID)
+	if s.stash == nil || performerID == "" {
+		return PerformerBio{}, errors.New("StashApp is not linked")
+	}
+	boundedCtx, cancel := context.WithTimeout(ctx, stashLookupTimeout)
+	defer cancel()
+	details, err := s.stash.PerformerDetails(boundedCtx, performerID)
+	if err != nil {
+		return PerformerBio{}, err
+	}
+	out := PerformerBio{
+		ID: details.ID, Name: details.Name, Gender: details.Gender, Birthdate: details.Birthdate,
+		DeathDate: details.DeathDate, Ethnicity: details.Ethnicity, Country: details.Country,
+		EyeColor: details.EyeColor, HairColor: details.HairColor, HeightCM: details.HeightCM,
+		WeightKG: details.WeightKG, Measurements: details.Measurements, FakeTits: details.FakeTits,
+		CareerLength: details.CareerLength, Tattoos: details.Tattoos, Piercings: details.Piercings,
+		Details: details.Details, URLs: details.URLs,
+	}
+	for _, id := range details.StashIDs {
+		out.StashIDs = append(out.StashIDs, PerformerStashID{Endpoint: id.Endpoint, StashID: id.StashID})
+	}
+	return out, nil
 }
 
 // collectionNamesForRelease resolves every saved filter set that currently

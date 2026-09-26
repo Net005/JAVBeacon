@@ -17,14 +17,17 @@ import (
 )
 
 type fakeStash struct {
-	saves          []struct{ resume, duration float64 }
-	plays          int
-	os             int
-	failNextPlay   bool
-	sceneMeta      stash.StashSceneMetadata
-	sceneMetaErr   error
-	sceneMetaCalls int
-	sceneMetaDelay time.Duration
+	saves             []struct{ resume, duration float64 }
+	plays             int
+	os                int
+	failNextPlay      bool
+	sceneMeta         stash.StashSceneMetadata
+	sceneMetaErr      error
+	sceneMetaCalls    int
+	sceneMetaDelay    time.Duration
+	performerDetails  stash.StashPerformerDetails
+	performerDetailID string
+	performerErr      error
 }
 
 func (f *fakeStash) SaveJellyfinActivity(_ context.Context, _ string, resume, duration float64) error {
@@ -45,6 +48,18 @@ func (f *fakeStash) AddJellyfinO(context.Context, string, time.Time) (int, error
 }
 func (f *fakeStash) JellyfinActivity(context.Context, string) (stash.JellyfinActivity, error) {
 	return stash.JellyfinActivity{OCount: f.os, PlayCount: f.plays}, nil
+}
+func (f *fakeStash) PerformerDetails(_ context.Context, performerID string) (stash.StashPerformerDetails, error) {
+	if f.performerErr != nil {
+		return stash.StashPerformerDetails{}, f.performerErr
+	}
+	if f.performerDetailID != "" && f.performerDetailID != performerID {
+		return stash.StashPerformerDetails{}, errors.New("not configured in this test")
+	}
+	if f.performerDetails.ID == "" {
+		return stash.StashPerformerDetails{}, errors.New("not configured in this test")
+	}
+	return f.performerDetails, nil
 }
 func (f *fakeStash) StashSceneMetadata(ctx context.Context, _ string) (stash.StashSceneMetadata, error) {
 	f.sceneMetaCalls++
@@ -110,6 +125,14 @@ func TestMetadataPopulatesPerformerImagesFromStashByName(t *testing.T) {
 	if _, ok := m.PerformerImages["No Photo"]; ok {
 		t.Fatalf("performer with no image path should not appear: %+v", m.PerformerImages)
 	}
+	// PerformerIDs is populated whenever StashApp has a record at all, even
+	// with no photo - a bio can still be worth fetching for "No Photo".
+	if got := m.PerformerIDs["One"]; got != "p1" {
+		t.Fatalf("PerformerIDs[One] = %q", got)
+	}
+	if got := m.PerformerIDs["No Photo"]; got != "p2" {
+		t.Fatalf("PerformerIDs[No Photo] = %q, want p2 even without a photo", got)
+	}
 	// Search must never pay for this - it's Metadata-only, same policy as
 	// CollectionNames, to keep bulk search cheap.
 	rows, err := svc.Search(context.Background(), "ABC-123", 10)
@@ -118,6 +141,37 @@ func TestMetadataPopulatesPerformerImagesFromStashByName(t *testing.T) {
 	}
 	if rows[0].PerformerImages != nil {
 		t.Fatalf("Search must not populate PerformerImages: %+v", rows[0].PerformerImages)
+	}
+}
+
+// TestPerformerBioMapsStashDetails guards the Jellyfin/Silo Person page bio
+// gap-fill: a real report showed Jellyfin's cast page carrying only a
+// performer's name/photo while the same performer's StashApp page had
+// gender, birthdate, country, ethnicity, height, measurements, career
+// length, and linked Stash IDs. PerformerBio is the small, provider-agnostic
+// shape JAVBeaconPersonProvider (Jellyfin) maps onto a Person entity for
+// exactly that data.
+func TestPerformerBioMapsStashDetails(t *testing.T) {
+	svc, st, bridge, _ := testService(t)
+	defer st.Close()
+	bridge.performerDetails = stash.StashPerformerDetails{
+		ID: "p1", Name: "Hikaru Konno", Gender: "FEMALE", Birthdate: "1994-01-16",
+		Country: "Japan", Ethnicity: "asian", HairColor: "Brunette", EyeColor: "Brown",
+		HeightCM: 165, Measurements: "38B-23-34", FakeTits: "Natural", CareerLength: "2013-",
+		StashIDs: []stash.StashStashID{{Endpoint: "https://stashdb.org/graphql", StashID: "abc-123"}},
+	}
+	bio, err := svc.PerformerBio(context.Background(), "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bio.Name != "Hikaru Konno" || bio.Birthdate != "1994-01-16" || bio.Country != "Japan" || bio.HeightCM != 165 {
+		t.Fatalf("unexpected bio: %+v", bio)
+	}
+	if len(bio.StashIDs) != 1 || bio.StashIDs[0].StashID != "abc-123" {
+		t.Fatalf("expected one mapped StashID, got %+v", bio.StashIDs)
+	}
+	if _, err := svc.PerformerBio(context.Background(), ""); err == nil {
+		t.Fatal("expected an error for an empty performer id")
 	}
 }
 
