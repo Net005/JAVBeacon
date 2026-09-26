@@ -315,35 +315,62 @@
 
   // ---- DOM wiring --------------------------------------------------------
   //
-  // The overlay (backdrop + frame) is appended to document.body, never into
-  // .video-js or any other Stash/video.js-owned element, and every
-  // interaction with the player element itself is read-only (querySelector,
-  // getBoundingClientRect, classList.contains). Two earlier versions of this
-  // plugin instead appended the overlay as a child of .video-js and, in one
-  // revision, wrote to its inline style - both broke the entire player.
-  // video.js and/or Stash's own React wrapper around it manage that
-  // element's DOM directly; an externally added child or mutated style can
-  // conflict with that ownership in ways that are very hard to predict
-  // without the actual running app to test against. Positioning a fully
-  // independent, fixed overlay on top of the player's on-screen rect avoids
-  // touching that ownership at all.
+  // Two elements, not one: backdropEl (opaque, sized to the full player box)
+  // blocks the native <video poster> from showing through, and frameEl (a
+  // child of backdropEl, sized to exactly the scaled cue dimensions) paints
+  // the actual crop with no room for an adjacent sprite row/column to bleed
+  // in. See containFit's comment above for why a single element cannot
+  // satisfy both requirements.
   //
-  // Two elements, not one: backdropEl (opaque, sized to the full safe video
-  // box) blocks the native <video poster> from showing through, and frameEl
-  // (a child of backdropEl, sized to exactly the scaled cue dimensions)
-  // paints the actual crop with no room for an adjacent sprite row/column
-  // to bleed in. See containFit's comment above for why a single element
-  // cannot satisfy both requirements.
-
-  function createOverlay() {
+  // backdropEl is inserted as a child of playerEl itself now - specifically
+  // via insertBefore(backdrop, controlBar), never appendChild and never
+  // touching playerEl's own style or any of its EXISTING children. Two
+  // earlier versions of this plugin broke the entire player by mutating
+  // .video-js more invasively (appending as an uncontrolled additional
+  // child with no defined position, and separately writing to .video-js's
+  // own inline style), which is why every version since kept the overlay
+  // entirely outside the player, positioned with `position: fixed` and
+  // copied coordinates. That approach turned out to have its own
+  // unavoidable flaw, confirmed live: an ancestor of .video-js establishes
+  // its own stacking context (an explicit z-index on a wrapper several
+  // levels up), so an element living outside that ancestor - like an
+  // overlay on document.body - can only ever render entirely above or
+  // entirely below the WHOLE player at once. There is no z-index that
+  // sandwiches it between the video and the control bar, which is exactly
+  // where it needs to be: above the native poster/video, but below the
+  // control bar and seek bar so those stay visible and usable. The only
+  // way to achieve that layering is to become a sibling within the
+  // player's own stacking context, positioned earlier in DOM order than
+  // the control bar. Confirmed live, including through play/pause and
+  // repeated hover cycles, that inserting one single, inert
+  // (pointer-events: none), never-removed-and-recreated-except-by-us
+  // element this way does not disturb video.js's own children or its
+  // control bar's functionality.
+  function createOverlay(playerEl) {
     const backdrop = document.createElement("div");
     backdrop.className = "javbeacon-scrub-overlay";
     backdrop.setAttribute("aria-hidden", "true");
     const frame = document.createElement("div");
     frame.className = "javbeacon-scrub-frame";
     backdrop.appendChild(frame);
-    document.body.appendChild(backdrop);
+    const controlBar = playerEl.querySelector(".vjs-control-bar");
+    if (controlBar) {
+      playerEl.insertBefore(backdrop, controlBar);
+    } else {
+      playerEl.appendChild(backdrop);
+    }
     return { backdrop, frame };
+  }
+
+  // backdropEl is positioned absolutely within playerEl's own box (playerEl
+  // itself is position: absolute, so it is the containing block), so the
+  // box passed to mirrorBackground/paintCue is simply playerEl's own local
+  // dimensions - no getBoundingClientRect or control-bar-height math
+  // needed, since backdropEl sitting behind the control bar in DOM order
+  // (see createOverlay above) is what keeps the control bar and seek bar
+  // visible now, not the box excluding their area.
+  function playerBox(playerEl) {
+    return { left: 0, top: 0, width: playerEl.clientWidth, height: playerEl.clientHeight };
   }
 
   // Hides the underlying static poster/cover image while the overlay shows
@@ -384,32 +411,9 @@
     return null;
   }
 
-  // Confirmed live: the control bar is absolutely positioned over the
-  // bottom of the video, not below it, so playerEl's own rect (or the
-  // poster's, which matches it exactly) includes the strip the control bar
-  // sits on. An earlier revision used that full rect as the preview box,
-  // so the overlay's very high z-index painted over the control bar,
-  // hiding the seek position the user needs to see while scrubbing. This
-  // returns the player rect with that bottom strip subtracted, read-only
-  // (getBoundingClientRect only, never mutating the control bar).
-  function safeVideoBox(playerEl) {
-    const rect = playerEl.getBoundingClientRect();
-    const controlBar = playerEl.querySelector(".vjs-control-bar");
-    const controlRect = controlBar ? controlBar.getBoundingClientRect() : null;
-    if (controlRect && controlRect.height > 0 && controlRect.top > rect.top) {
-      return {
-        left: rect.left,
-        top: rect.top,
-        width: rect.width,
-        height: Math.max(0, controlRect.top - rect.top),
-      };
-    }
-    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
-  }
-
   function attachScrubber(playerEl, cuesPromise, options) {
     const { hoverDelayMs, cycleIntervalMs, coverEnabled, seekEnabled } = options;
-    const { backdrop, frame } = createOverlay();
+    const { backdrop, frame } = createOverlay(playerEl);
     const poster = playerEl.querySelector(".vjs-poster");
     const progress = playerEl.querySelector(".vjs-progress-control");
     let cues = null;
@@ -422,7 +426,7 @@
     }
 
     function coverBox() {
-      return safeVideoBox(playerEl);
+      return playerBox(playerEl);
     }
 
     function mirrorFromThumbnail(box) {
@@ -464,7 +468,7 @@
       if (!seekEnabled) return;
       stopCycle();
       showOverlay(backdrop);
-      const box = safeVideoBox(playerEl);
+      const box = playerBox(playerEl);
       requestAnimationFrame(() => mirrorFromThumbnail(box));
     }
 
