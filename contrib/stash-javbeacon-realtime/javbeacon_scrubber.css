@@ -1,9 +1,3 @@
-.video-js {
-  /* video.js already sets this in its own core CSS; reinforced defensively
-     since the scrubber overlay below is positioned relative to this box. */
-  position: relative;
-}
-
 .javbeacon-scrub-overlay {
   background-color: #000;
   background-repeat: no-repeat;

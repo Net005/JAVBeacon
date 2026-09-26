@@ -129,6 +129,18 @@
   function ensureOverlay(playerEl) {
     let overlay = playerEl.querySelector(":scope > .javbeacon-scrub-overlay");
     if (overlay) return overlay;
+    // The overlay is positioned absolutely relative to the nearest
+    // positioned ancestor. video.js sets its own .video-js element to
+    // position: relative (or Stash may use position: absolute to fill an
+    // aspect-ratio wrapper) - either already works as a containing block, so
+    // this only forces a position when the element is still the default
+    // "static" and would otherwise silently fail to contain the overlay. It
+    // deliberately never overrides an existing non-static position (doing
+    // that with a blanket CSS rule previously broke the player entirely by
+    // fighting Stash's own absolute-fill layout).
+    if (window.getComputedStyle(playerEl).position === "static") {
+      playerEl.style.position = "relative";
+    }
     overlay = document.createElement("div");
     overlay.className = "javbeacon-scrub-overlay";
     overlay.setAttribute("aria-hidden", "true");
