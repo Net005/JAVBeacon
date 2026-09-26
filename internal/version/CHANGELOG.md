@@ -5,6 +5,24 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.233] - 2026-09-26
+
+### Fixed
+
+- Fixed discovery pool filtering still hitting the 20-second timeout for a
+  pool with many keyword synonyms (e.g. "Corruption"), even after the
+  earlier fix that trimmed the searched column set down to match
+  `discoveryTextMatches`. The remaining cost driver: the SQL filter built
+  one full "5 direct columns OR 2 correlated EXISTS subqueries" clause PER
+  KEYWORD, then OR'd all of those together - so a pool with N keyword
+  synonyms issued 2*N separate correlated subqueries against
+  `release_actresses`/`release_tags`, not 2. Folding every keyword's
+  condition into the OR list inside a single EXISTS per table (a free,
+  logically equivalent rewrite - both existential quantifiers range over
+  the same correlated subquery regardless of which keyword is being
+  tested) collapses that to exactly 2 subqueries total, no matter how many
+  keyword synonyms a pool has, so query cost stops scaling with pool size.
+
 ## [1.0.232] - 2026-09-26
 
 ### Fixed

@@ -1796,11 +1796,7 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 // and displayed match results consistent by construction.
 func releasePoolSearchWhere(d Dialect, keywordsCSV string) (string, []any) {
 	terms := splitWildcardValues(keywordsCSV)
-	if len(terms) == 0 {
-		return "", nil
-	}
-	var a []any
-	clauses := make([]string, 0, len(terms))
+	patterns := make([]string, 0, len(terms))
 	for _, term := range terms {
 		term = strings.TrimSpace(term)
 		if term == "" {
@@ -1824,19 +1820,59 @@ func releasePoolSearchWhere(d Dialect, keywordsCSV string) (string, []any) {
 		if len([]rune(term)) < 3 {
 			continue
 		}
-		clause := `(` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.story") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name_normalized") + `))`
-		v := genericSearchLikePattern(term)
-		a = append(a, v, v, v, v, v, v, v)
-		clauses = append(clauses, clause)
+		patterns = append(patterns, term)
 	}
-	if len(clauses) == 0 {
+	if len(patterns) == 0 {
 		return "", nil
 	}
+
+	// It used to build one full "(5 direct columns OR 2 EXISTS subqueries)"
+	// clause PER KEYWORD, then OR all of those together - which meant a pool
+	// with many keyword synonyms (the normal case: "Corruption" and similar
+	// pools list many word-form variants) issued two correlated EXISTS
+	// subqueries against release_actresses/release_tags for EVERY keyword,
+	// i.e. 2*N separate subplans Postgres has to evaluate per candidate row.
+	// That is what was still slow enough to hit the 20s timeout even after
+	// trimming the searched column set down to match discoveryTextMatches.
+	//
+	// "EXISTS(match keyword A) OR EXISTS(match keyword B) OR ..." and
+	// "EXISTS(match keyword A OR match keyword B OR ...)" are logically
+	// equivalent here - both existential quantifiers range over the exact
+	// same correlated subquery (release_actresses/release_tags rows for
+	// this release), independent of which keyword is being tested - so
+	// folding every keyword's condition into the OR list INSIDE one EXISTS
+	// is a free rewrite, not an approximation. It collapses 2*N correlated
+	// subqueries down to exactly 2 total, each a single bitmap-OR scan
+	// across that column's trigram index (idx_release_actresses_name_trgm /
+	// idx_release_tags_name_trgm) instead of N separate per-row subplans -
+	// so query cost no longer scales with how many keyword synonyms a pool
+	// has at all.
+	var a []any
+	directClauses := make([]string, 0, len(patterns))
+	for _, term := range patterns {
+		v := genericSearchLikePattern(term)
+		directClauses = append(directClauses, `(`+d.CaseInsensitiveLike("r.video_id")+` OR `+d.CaseInsensitiveLike("r.title")+` OR `+d.CaseInsensitiveLike("r.story")+` OR `+d.CaseInsensitiveLike("r.studio")+` OR `+d.CaseInsensitiveLike("r.label")+`)`)
+		a = append(a, v, v, v, v, v)
+	}
+	actressLikes := make([]string, len(patterns))
+	for i, term := range patterns {
+		actressLikes[i] = d.CaseInsensitiveLike("rsa.name_normalized")
+		a = append(a, genericSearchLikePattern(term))
+	}
+	tagLikes := make([]string, len(patterns))
+	for i, term := range patterns {
+		tagLikes[i] = d.CaseInsensitiveLike("rst.name_normalized")
+		a = append(a, genericSearchLikePattern(term))
+	}
+
 	// Keywords within one pool are alternatives ("drug, brainwash,
 	// hypnosis"), never a required combination, so they are always OR'd -
 	// unlike the free-text Search box, this has no user-facing AND/OR
 	// toggle to respect.
-	return strings.Join(clauses, " OR "), a
+	clause := `(` + strings.Join(directClauses, " OR ") + `)` +
+		` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND (` + strings.Join(actressLikes, " OR ") + `))` +
+		` OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND (` + strings.Join(tagLikes, " OR ") + `))`
+	return clause, a
 }
 
 func (s *SQLite) Releases(ctx context.Context, f domain.ReleaseFilter) ([]domain.Release, error) {

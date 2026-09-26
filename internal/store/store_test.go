@@ -3348,6 +3348,53 @@ func TestPoolSearchExcludesUltraShortKeywordsFromSQLPrefilter(t *testing.T) {
 	}
 }
 
+// TestReleasePoolSearchWhereUsesConstantSubqueryCount guards the actual fix
+// for a live report: filtering by a real discovery pool ("Corruption") with
+// many keyword synonyms was still hitting the 20s discovery timeout even
+// after TestPoolSearchDoesNotMatchColumnsOutsideMatchScope's column-scope
+// fix. The remaining cost driver was that releasePoolSearchWhere built one
+// full "5 direct columns OR 2 correlated EXISTS subqueries" clause PER
+// KEYWORD, then OR'd all of those together - so a pool with N keyword
+// synonyms issued 2*N separate correlated EXISTS subqueries (against
+// release_actresses/release_tags), not 2. "EXISTS(match A) OR EXISTS(match
+// B)" and "EXISTS(match A OR match B)" are logically equivalent here (both
+// existential quantifiers range over the same correlated subquery,
+// independent of which keyword is tested), so folding every keyword's
+// condition into the OR list INSIDE one EXISTS is a free rewrite that
+// collapses the subquery count to exactly 2 regardless of how many keyword
+// synonyms a pool has.
+func TestReleasePoolSearchWhereUsesConstantSubqueryCount(t *testing.T) {
+	fewKeywords := "corruption,brainwash,hypnosis"
+	manyKeywords := "corruption,brainwash,hypnosis,manipulation,coercion,blackmail,threat,submission,domination,control,drug,intoxication,degradation,humiliation,exploitation,abuse,addiction,dependence,despair,ruin"
+
+	for _, dialect := range []Dialect{SQLiteDialect{}, PostgresDialect{}} {
+		fewClause, fewArgs := releasePoolSearchWhere(dialect, fewKeywords)
+		manyClause, manyArgs := releasePoolSearchWhere(dialect, manyKeywords)
+
+		fewExists := strings.Count(fewClause, "EXISTS (")
+		manyExists := strings.Count(manyClause, "EXISTS (")
+		if fewExists != 2 {
+			t.Fatalf("[%s] few-keyword clause has %d EXISTS subqueries, want exactly 2 (actresses+tags): %s", dialect.Name(), fewExists, fewClause)
+		}
+		if manyExists != 2 {
+			t.Fatalf("[%s] many-keyword clause has %d EXISTS subqueries, want exactly 2 regardless of keyword count - the whole point of the fix: %s", dialect.Name(), manyExists, manyClause)
+		}
+
+		// The argument count still scales with keyword count (each keyword
+		// still needs its own placeholder inside the single EXISTS), but the
+		// number of independently-planned/executed correlated subqueries -
+		// the actual cost driver that scaled with pool size before this fix
+		// - must not.
+		wantArgsPerKeyword := 7 // 5 direct columns + 1 actress placeholder + 1 tag placeholder
+		if got, want := len(fewArgs), 3*wantArgsPerKeyword; got != want {
+			t.Fatalf("[%s] few-keyword args = %d, want %d", dialect.Name(), got, want)
+		}
+		if got, want := len(manyArgs), 20*wantArgsPerKeyword; got != want {
+			t.Fatalf("[%s] many-keyword args = %d, want %d", dialect.Name(), got, want)
+		}
+	}
+}
+
 // TestMigrateRepairsOrphanedLocalFlagWithoutStashSceneID guards the startup
 // repair for a real observed bug: is_local=1 with an empty stash_scene_id is
 // an invariant violation (every active sync path - full StashApp sync and
