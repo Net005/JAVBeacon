@@ -173,12 +173,28 @@ GOCACHE=/tmp/javbeacon-go-cache GOFLAGS=-mod=mod go test ./...
 
 ## Optional Jellyfin Web panel
 
-`web/javbeacon-activity.js` adds O count, play count, played duration, and a
-**+1 O** button to JAVBeacon-backed item pages. Jellyfin Web has no stable
-first-party arbitrary UI-extension API, so add this file as one enabled script
-in [Jellyfin JavaScript Injector](https://github.com/n00bcodr/Jellyfin-JavaScript-Injector),
-then hard-refresh Jellyfin Web. The script accepts Jellyfin 12's snake_case API
-fields as well as camel/Pascal case and prevents concurrent MutationObserver
-renders from duplicating the panel. It calls only the plugin's authenticated
+Both files below add O count, play count, played duration, and a **+1 O**
+button to JAVBeacon-backed item pages. Jellyfin Web has no stable first-party
+arbitrary UI-extension API, so the panel has to be injected client-side by one
+of two means - pick whichever fits how you already manage your setup:
+
+- **`web/javbeacon-activity.user.js`** - a standalone
+  [Tampermonkey](https://www.tampermonkey.net/)/Violentmonkey/Greasemonkey
+  userscript. Install it directly in your browser's userscript manager (no
+  Jellyfin server plugin, no Jellyfin restart); it self-activates only on
+  pages where Jellyfin Web's own `ApiClient` global is present, so the broad
+  `@match` in its header is safe to leave as-is even in a general-purpose
+  browser profile - narrow it to your own server's origin if you'd rather it
+  never even probe other sites. This is the simpler option and needs nothing
+  installed on the Jellyfin server itself.
+- **`web/javbeacon-activity.js`** - the same script for
+  [Jellyfin JavaScript Injector](https://github.com/n00bcodr/Jellyfin-JavaScript-Injector)
+  (add it as one enabled script, then hard-refresh Jellyfin Web), for anyone
+  who wants Jellyfin Web itself to serve the panel to every browser that logs
+  in, rather than installing a userscript per browser/device.
+
+Either way, the script accepts Jellyfin 12's snake_case API fields as well as
+camel/Pascal case and prevents concurrent MutationObserver renders from
+duplicating the panel. It calls only the plugin's authenticated
 `/JAVBeacon/items/{itemId}/activity` and `/o` endpoints; it never receives the
 JAVBeacon key or any Stash credential.
