@@ -1,6 +1,6 @@
 name: JAVBeacon Realtime Sync + Subtitles
 description: Syncs changed scenes, links scene pages to JAVBeacon releases, requests subtitles, adds scene-card Watchlist controls, and replaces the scene player's cover and seek-bar previews with large sprite-based scrubbing.
-version: 1.12.9
+version: 1.12.10
 ui:
   javascript:
     - javbeacon_subtitles.js

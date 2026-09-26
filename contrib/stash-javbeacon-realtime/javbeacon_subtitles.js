@@ -10,6 +10,8 @@
   const sceneStatusCache = new Map();
   const sceneStatusRequests = new Map();
   const historySyncTimers = new Map();
+  const subtitleStatusCache = new Map();
+  const subtitleStatusRequests = new Map();
 
   // Stash's dedicated play/O/activity mutations bypass Scene.Update.Post.
   // Observe successful GraphQL mutations in the browser and invoke this
@@ -139,6 +141,32 @@
     return Array.isArray(scene?.captions) && scene.captions.length > 0;
   }
 
+  // Maps a JAVBeacon-Subs "subtitle_status" response (see
+  // confirmSubtitleOverwrite below for the same shape) to one of the four
+  // states the +CC label's text color surfaces at a glance, without
+  // requiring a click:
+  //   - "green":  a sidecar exists and matches the current transcription/
+  //               translation backend - up to date.
+  //   - "orange": a sidecar exists but predates the current backend, or its
+  //               freshness could not be determined at all (an older
+  //               JAVBeacon-Subs release with no status reporting) - either
+  //               way, worth a second look.
+  //   - "red":    captions exist in Stash but no JAVBeacon-Subs sidecar was
+  //               found - these were not produced by the AI pipeline (a
+  //               manually added or externally sourced .srt) and should be
+  //               replaced.
+  //   - null:     no color - the scene has no subtitles at all, or (status
+  //               === undefined) the subtitle_status check hasn't resolved
+  //               yet, which must not be mistaken for a confirmed "no
+  //               sidecar" (red) result just because both are falsy.
+  function subtitleStatusColor(hasSubtitles, status) {
+    if (!hasSubtitles) return null;
+    if (status === undefined) return null;
+    if (!status || !status.sidecar_found) return "red";
+    if (status.up_to_date === true) return "green";
+    return "orange";
+  }
+
   // Asks the server-side plugin whether the scene's existing .en.srt.json
   // sidecar (if any) already matches JAVBeacon-Subs's current transcription
   // and translation backend, then confirms with wording appropriate to that
@@ -237,7 +265,7 @@
     };
   }
 
-  function SubtitleButton({ sceneId, completed = false, resolveScene }) {
+  function SubtitleButton({ sceneId, completed = false, resolveScene, statusColor = null }) {
     const Toast = window.PluginApi.hooks.useToast();
     const [runPluginOperation] = useMutation(REQUEST_SUBTITLES);
     const [loading, setLoading] = React.useState(false);
@@ -303,7 +331,12 @@
           })
         : React.createElement(
             "span",
-            { className: "javbeacon-subs-label", "aria-hidden": "true" },
+            {
+              className: `javbeacon-subs-label${
+                statusColor ? ` javbeacon-subs-status-${statusColor}` : ""
+              }`,
+              "aria-hidden": "true",
+            },
             completed ? "✓ CC" : "+ CC"
           )
     );
@@ -481,10 +514,11 @@
     );
   }
 
-  function SceneCardSubtitleAction({ scene, settings, resolveScene }) {
+  function SceneCardSubtitleAction({ scene, settings, resolveScene, subtitleStatus }) {
     if (settings == null || !sceneMatchesPathFilters(scene, settings)) {
       return null;
     }
+    const completed = hasLinkedSubtitles(scene);
 
     return React.createElement(
       "div",
@@ -492,9 +526,10 @@
         className: "javbeacon-subs-card-action",
       },
       React.createElement(SubtitleButton, {
-        completed: hasLinkedSubtitles(scene),
+        completed,
         resolveScene,
         sceneId: scene.id,
+        statusColor: subtitleStatusColor(completed, subtitleStatus),
       })
     );
   }
@@ -581,6 +616,10 @@
     const [loadedScene, setLoadedScene] = React.useState(
       sceneStatusCache.get(sceneID) || null
     );
+    const [subtitleStatus, setSubtitleStatus] = React.useState(
+      subtitleStatusCache.has(sceneID) ? subtitleStatusCache.get(sceneID) : undefined
+    );
+    const [runPluginOperation] = useMutation(REQUEST_SUBTITLES);
     const captionsKnown = Object.prototype.hasOwnProperty.call(scene, "captions");
     const tagsKnown = Object.prototype.hasOwnProperty.call(scene, "tags");
     const detailsKnown = Object.prototype.hasOwnProperty.call(scene, "details");
@@ -622,6 +661,37 @@
       card.addEventListener("mouseenter", checkStatus, { once: true });
       return () => card.removeEventListener("mouseenter", checkStatus);
     }, [probe, sceneID, statusKnown, loadedScene]);
+    // The +CC label's color needs to know whether an existing subtitle is
+    // up to date, out of date, or wasn't produced by JAVBeacon-Subs at all -
+    // none of which is on the Scene object itself (it lives in a
+    // JAVBeacon-Subs-side sidecar, exposed only via the same
+    // "subtitle_status" plugin operation confirmSubtitleOverwrite already
+    // calls before a click). Piggybacks on the same hover-resolved/known
+    // caption data as the row above, rather than adding a second hover
+    // listener, so a card with no subtitles at all never triggers this
+    // request.
+    React.useEffect(() => {
+      if (!(statusKnown || loadedScene)) return undefined;
+      if (!hasLinkedSubtitles(resolvedScene)) return undefined;
+      if (subtitleStatusCache.has(sceneID) || subtitleStatusRequests.has(sceneID)) {
+        return undefined;
+      }
+      const request = runPluginOperation({
+        variables: {
+          pluginId: PLUGIN_ID,
+          args: { mode: "subtitle_status", scene_id: sceneID },
+        },
+      })
+        .then((response) => response.data?.runPluginOperation || null)
+        .catch(() => null)
+        .finally(() => subtitleStatusRequests.delete(sceneID));
+      subtitleStatusRequests.set(sceneID, request);
+      request.then((status) => {
+        subtitleStatusCache.set(sceneID, status);
+        setSubtitleStatus(status);
+      });
+      return undefined;
+    }, [statusKnown, loadedScene, sceneID, resolvedScene.captions, runPluginOperation]);
     const settings =
       settingsQuery.loading || settingsQuery.error
         ? null
@@ -648,15 +718,21 @@
       React.createElement(
         "div",
         { className: "javbeacon-card-actions-row" },
-        React.createElement(SceneCardSubtitleAction, {
-          scene: resolvedScene,
-          settings,
-          resolveScene,
-        }),
+        // Watchlist first (left), then +CC (right) - the same left/right
+        // assignment the two buttons had back when they were independently
+        // position:absolute (left: 0.55rem for Watchlist, right: 0.55rem for
+        // +CC). Wrapping them in one row for the overlap fix above
+        // accidentally reversed that order; restored here.
         React.createElement(SceneCardWatchlistAction, {
           scene: resolvedScene,
           settings,
           resolveScene,
+        }),
+        React.createElement(SceneCardSubtitleAction, {
+          scene: resolvedScene,
+          settings,
+          resolveScene,
+          subtitleStatus,
         })
       )
     );
