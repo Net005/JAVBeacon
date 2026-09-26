@@ -98,45 +98,73 @@
 
   // Computes the "background-size: contain" fit of a contentW x contentH
   // rectangle inside box - scaled up as far as possible without exceeding
-  // either dimension, then centered - without sizing anything itself.
-  // marginX/marginY are the letterbox offsets *inside* box (not absolute
-  // page coordinates), for callers that keep an element sized to the full
-  // box and only need to offset a background image within it.
+  // either dimension, then centered.
   //
-  // Confirmed live (twice) that the overlay element itself must always
-  // cover the *entire* box, opaquely, not just the letterboxed content
-  // rect: the native <video> element carries its own "poster" HTML
-  // attribute, which the browser renders independently of Stash's
-  // .vjs-poster div (our CSS hiding that div doesn't touch it). An earlier
-  // revision sized/positioned the overlay element itself to the shrunk
-  // "contain" rect, leaving the letterbox margin around it completely
-  // uncovered - exposing that native poster (or the paused video frame)
-  // through the gap. Keeping the overlay element at the full box size, with
-  // an opaque background-color, and painting the letterboxed image via
-  // background-position/background-size instead, covers the whole box so
-  // nothing behind it can show through.
+  // Confirmed live, twice, that a single element cannot satisfy both of
+  // this overlay's requirements at once:
+  //   1. It must cover the *entire* safe video box, opaquely - the native
+  //      <video> element carries its own "poster" HTML attribute, rendered
+  //      by the browser independently of Stash's .vjs-poster div (hiding
+  //      that div with CSS never touches it), so any uncovered margin
+  //      exposes it.
+  //   2. Its background-image "window" must be exactly the scaled cue
+  //      size - CSS background-position/background-size only place and
+  //      scale the (much larger) sprite sheet; they do not clip it to the
+  //      intended cell. If the element's own box is taller or wider than
+  //      the scaled cue, the extra viewport space is NOT filled with
+  //      background-color - it reveals real pixels from the adjacent
+  //      sprite row/column, because the positioned image still extends
+  //      underneath. That is what "a second frame appears below/above the
+  //      intended one" actually was, confirmed by cropping the exact same
+  //      cue with a <canvas> for comparison: the canvas crop was always
+  //      clean, proving the sprite math itself was correct and the bleed
+  //      was purely from the element's viewport being larger than the cue.
+  //
+  // Solved with two layered elements instead of one: an opaque backdrop
+  // sized to the full box (no background-image, just background-color),
+  // and a child "frame" element sized to EXACTLY the scaled cue dimensions
+  // (contentW*scale x contentH*scale), positioned absolutely within the
+  // backdrop at the centering margin. The frame's own box being exactly
+  // the cue size makes bleed impossible (no leftover viewport space to
+  // reveal adjacent content), and the backdrop being opaque and full-size
+  // makes exposure impossible (nothing behind it can show through).
   function containFit(box, contentW, contentH) {
     if (!box || box.width <= 0 || box.height <= 0 || !contentW || !contentH) return null;
     const scale = Math.min(box.width / contentW, box.height / contentH);
     if (!Number.isFinite(scale) || scale <= 0) return null;
+    const width = contentW * scale;
+    const height = contentH * scale;
     return {
-      marginX: (box.width - contentW * scale) / 2,
-      marginY: (box.height - contentH * scale) / 2,
+      marginX: (box.width - width) / 2,
+      marginY: (box.height - height) / 2,
+      width,
+      height,
       scale,
     };
   }
 
-  // Pure aside from writing to targetEl.style and (when the source has no
+  // Sizes backdropEl to the full box (opaque - see containFit above) and
+  // frameEl to the exact scaled fit, positioned absolutely within it.
+  function positionBackdropAndFrame(backdropEl, frameEl, box, fit) {
+    backdropEl.style.left = `${box.left.toFixed(2)}px`;
+    backdropEl.style.top = `${box.top.toFixed(2)}px`;
+    backdropEl.style.width = `${box.width.toFixed(2)}px`;
+    backdropEl.style.height = `${box.height.toFixed(2)}px`;
+    frameEl.style.left = `${fit.marginX.toFixed(2)}px`;
+    frameEl.style.top = `${fit.marginY.toFixed(2)}px`;
+    frameEl.style.width = `${fit.width.toFixed(2)}px`;
+    frameEl.style.height = `${fit.height.toFixed(2)}px`;
+  }
+
+  // Pure aside from writing to element styles and (when the source has no
   // explicit background-size) loading the sprite image to measure it. Takes
   // plain {style, getBoundingClientRect?} shaped objects so it can run
   // against a real DOM element or a fake one in a Node test. Resolves false
-  // (leaving targetEl untouched) whenever sourceEl currently has no
+  // (leaving the elements untouched) whenever sourceEl currently has no
   // thumbnail painted, so callers can decide whether to keep showing the
-  // previous frame. Always sizes/positions targetEl to the full box (see
-  // containFit above) - the caller does not need to call positionOverlay
-  // separately.
-  async function mirrorBackground(sourceEl, targetEl, box) {
-    if (!sourceEl || !targetEl || !box || box.width <= 0 || box.height <= 0) {
+  // previous frame.
+  async function mirrorBackground(sourceEl, backdropEl, frameEl, box) {
+    if (!sourceEl || !backdropEl || !frameEl || !box || box.width <= 0 || box.height <= 0) {
       return false;
     }
     const style = sourceEl.style || {};
@@ -169,14 +197,11 @@
       sizeH = natural.height;
     }
 
-    targetEl.style.left = `${box.left.toFixed(2)}px`;
-    targetEl.style.top = `${box.top.toFixed(2)}px`;
-    targetEl.style.width = `${box.width.toFixed(2)}px`;
-    targetEl.style.height = `${box.height.toFixed(2)}px`;
-    targetEl.style.backgroundImage = image;
-    targetEl.style.backgroundRepeat = "no-repeat";
-    targetEl.style.backgroundPosition = `${(fit.marginX + posX * fit.scale).toFixed(2)}px ${(fit.marginY + posY * fit.scale).toFixed(2)}px`;
-    targetEl.style.backgroundSize = `${(sizeW * fit.scale).toFixed(2)}px ${(sizeH * fit.scale).toFixed(2)}px`;
+    positionBackdropAndFrame(backdropEl, frameEl, box, fit);
+    frameEl.style.backgroundImage = image;
+    frameEl.style.backgroundRepeat = "no-repeat";
+    frameEl.style.backgroundPosition = `${(posX * fit.scale).toFixed(2)}px ${(posY * fit.scale).toFixed(2)}px`;
+    frameEl.style.backgroundSize = `${(sizeW * fit.scale).toFixed(2)}px ${(sizeH * fit.scale).toFixed(2)}px`;
     return true;
   }
 
@@ -254,27 +279,24 @@
       .catch(() => []);
   }
 
-  // Paints one VTT cue's crop into targetEl, using the same "measure the
-  // sprite's natural size, scale position and size together" technique as
-  // mirrorBackground above - confirmed live to reproduce a single, correctly
-  // cropped frame with no ghosting. Always sizes/positions targetEl to the
-  // full box (see containFit above) rather than shrinking it to the
-  // letterboxed content rect, so the overlay's own opaque background covers
-  // any letterbox margin instead of leaving it uncovered.
-  async function paintCue(targetEl, cue, box) {
-    if (!targetEl || !cue || !box || box.width <= 0 || box.height <= 0) return false;
+  // Paints one VTT cue's crop, using the same "measure the sprite's natural
+  // size, scale position and size together" technique as mirrorBackground
+  // above. Sizes backdropEl to the full box (opaque) and frameEl to exactly
+  // the scaled cue dimensions (see containFit above) - frameEl's own box
+  // being exactly the cue size is what makes bleed from an adjacent sprite
+  // row/column impossible, confirmed live by comparing against a <canvas>
+  // crop of the identical cue.
+  async function paintCue(backdropEl, frameEl, cue, box) {
+    if (!backdropEl || !frameEl || !cue || !box || box.width <= 0 || box.height <= 0) return false;
     const fit = containFit(box, cue.w, cue.h);
     if (!fit) return false;
     const natural = await loadNaturalSize(cue.url);
     if (!natural) return false;
-    targetEl.style.left = `${box.left.toFixed(2)}px`;
-    targetEl.style.top = `${box.top.toFixed(2)}px`;
-    targetEl.style.width = `${box.width.toFixed(2)}px`;
-    targetEl.style.height = `${box.height.toFixed(2)}px`;
-    targetEl.style.backgroundImage = `url("${cue.url}")`;
-    targetEl.style.backgroundRepeat = "no-repeat";
-    targetEl.style.backgroundPosition = `${(fit.marginX - cue.x * fit.scale).toFixed(2)}px ${(fit.marginY - cue.y * fit.scale).toFixed(2)}px`;
-    targetEl.style.backgroundSize = `${(natural.width * fit.scale).toFixed(2)}px ${(natural.height * fit.scale).toFixed(2)}px`;
+    positionBackdropAndFrame(backdropEl, frameEl, box, fit);
+    frameEl.style.backgroundImage = `url("${cue.url}")`;
+    frameEl.style.backgroundRepeat = "no-repeat";
+    frameEl.style.backgroundPosition = `-${(cue.x * fit.scale).toFixed(2)}px -${(cue.y * fit.scale).toFixed(2)}px`;
+    frameEl.style.backgroundSize = `${(natural.width * fit.scale).toFixed(2)}px ${(natural.height * fit.scale).toFixed(2)}px`;
     return true;
   }
 
@@ -293,48 +315,48 @@
 
   // ---- DOM wiring --------------------------------------------------------
   //
-  // The overlay is appended to document.body, never into .video-js or any
-  // other Stash/video.js-owned element, and every interaction with the
-  // player element itself is read-only (querySelector, getBoundingClientRect,
-  // classList.contains). Two earlier versions of this plugin instead
-  // appended the overlay as a child of .video-js and, in one revision, wrote
-  // to its inline style - both broke the entire player. video.js and/or
-  // Stash's own React wrapper around it manage that element's DOM directly;
-  // an externally added child or mutated style can conflict with that
-  // ownership in ways that are very hard to predict without the actual
-  // running app to test against. Positioning a fully independent, fixed
-  // overlay on top of the player's on-screen rect avoids touching that
-  // ownership at all.
+  // The overlay (backdrop + frame) is appended to document.body, never into
+  // .video-js or any other Stash/video.js-owned element, and every
+  // interaction with the player element itself is read-only (querySelector,
+  // getBoundingClientRect, classList.contains). Two earlier versions of this
+  // plugin instead appended the overlay as a child of .video-js and, in one
+  // revision, wrote to its inline style - both broke the entire player.
+  // video.js and/or Stash's own React wrapper around it manage that
+  // element's DOM directly; an externally added child or mutated style can
+  // conflict with that ownership in ways that are very hard to predict
+  // without the actual running app to test against. Positioning a fully
+  // independent, fixed overlay on top of the player's on-screen rect avoids
+  // touching that ownership at all.
+  //
+  // Two elements, not one: backdropEl (opaque, sized to the full safe video
+  // box) blocks the native <video poster> from showing through, and frameEl
+  // (a child of backdropEl, sized to exactly the scaled cue dimensions)
+  // paints the actual crop with no room for an adjacent sprite row/column
+  // to bleed in. See containFit's comment above for why a single element
+  // cannot satisfy both requirements.
 
   function createOverlay() {
-    const overlay = document.createElement("div");
-    overlay.className = "javbeacon-scrub-overlay";
-    overlay.setAttribute("aria-hidden", "true");
-    document.body.appendChild(overlay);
-    return overlay;
+    const backdrop = document.createElement("div");
+    backdrop.className = "javbeacon-scrub-overlay";
+    backdrop.setAttribute("aria-hidden", "true");
+    const frame = document.createElement("div");
+    frame.className = "javbeacon-scrub-frame";
+    backdrop.appendChild(frame);
+    document.body.appendChild(backdrop);
+    return { backdrop, frame };
   }
-
-  function positionOverlay(overlay, rect) {
-    if (!rect || rect.width <= 0 || rect.height <= 0) return;
-    overlay.style.left = `${rect.left}px`;
-    overlay.style.top = `${rect.top}px`;
-    overlay.style.width = `${rect.width}px`;
-    overlay.style.height = `${rect.height}px`;
-  }
-
-  window.__javbeaconScrubberInternals.positionOverlay = positionOverlay;
 
   // Hides the underlying static poster/cover image while the overlay shows
   // a scrubbed frame, via a body-level class the CSS keys off (see
   // javbeacon_scrubber.css) rather than writing directly to the
   // player-owned .vjs-poster element's own style or classList.
-  function showOverlay(overlay) {
-    overlay.classList.add("is-visible");
+  function showOverlay(backdrop) {
+    backdrop.classList.add("is-visible");
     document.body.classList.add("javbeacon-scrubbing");
   }
 
-  function hideOverlay(overlay) {
-    overlay.classList.remove("is-visible");
+  function hideOverlay(backdrop) {
+    backdrop.classList.remove("is-visible");
     document.body.classList.remove("javbeacon-scrubbing");
   }
 
@@ -387,7 +409,7 @@
 
   function attachScrubber(playerEl, cuesPromise, options) {
     const { hoverDelayMs, cycleIntervalMs, coverEnabled, seekEnabled } = options;
-    const overlay = createOverlay();
+    const { backdrop, frame } = createOverlay();
     const poster = playerEl.querySelector(".vjs-poster");
     const progress = playerEl.querySelector(".vjs-progress-control");
     let cues = null;
@@ -405,7 +427,7 @@
 
     function mirrorFromThumbnail(box) {
       const thumbnail = findThumbnailElement(playerEl);
-      if (thumbnail) mirrorBackground(thumbnail, overlay, box);
+      if (thumbnail) mirrorBackground(thumbnail, backdrop, frame, box);
     }
 
     let hoverTimer = null;
@@ -423,9 +445,9 @@
       stopCycle();
       hoverTimer = setTimeout(() => {
         let index = 0;
-        showOverlay(overlay);
+        showOverlay(backdrop);
         const step = () => {
-          paintCue(overlay, cues[index], coverBox());
+          paintCue(backdrop, frame, cues[index], coverBox());
           index = (index + 1) % cues.length;
         };
         step();
@@ -435,19 +457,19 @@
 
     function onPosterLeave() {
       stopCycle();
-      hideOverlay(overlay);
+      hideOverlay(backdrop);
     }
 
     function onSeekMove() {
       if (!seekEnabled) return;
       stopCycle();
-      showOverlay(overlay);
+      showOverlay(backdrop);
       const box = safeVideoBox(playerEl);
       requestAnimationFrame(() => mirrorFromThumbnail(box));
     }
 
     function onSeekLeave() {
-      hideOverlay(overlay);
+      hideOverlay(backdrop);
     }
 
     poster?.addEventListener("mouseenter", onPosterEnter);
@@ -462,7 +484,7 @@
       progress?.removeEventListener("mousemove", onSeekMove);
       progress?.removeEventListener("mouseleave", onSeekLeave);
       document.body.classList.remove("javbeacon-scrubbing");
-      overlay.remove();
+      backdrop.remove();
     };
   }
 

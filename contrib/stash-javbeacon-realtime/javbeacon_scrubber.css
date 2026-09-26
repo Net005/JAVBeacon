@@ -4,10 +4,19 @@
    getBoundingClientRect() (see javbeacon_scrubber.js). Two earlier versions
    of this plugin lived inside .video-js instead (as an added child, and
    separately by writing to .video-js's own inline style) and both broke the
-   scene player entirely. */
+   scene player entirely.
+
+   Two elements, not one: .javbeacon-scrub-overlay is an opaque backdrop
+   sized to the full safe video area (blocks the native <video poster>
+   underneath from showing through any letterbox margin), and its child
+   .javbeacon-scrub-frame is sized to exactly the scaled sprite cell and
+   carries the actual crop - confirmed live that a single element sized to
+   the full box cannot show a clean crop, because CSS background-position/
+   background-size only place and scale the sprite sheet, they don't clip
+   it to one cell; any extra viewport space beyond the intended cell reveals
+   real pixels from the adjacent sprite row/column instead of empty space. */
 .javbeacon-scrub-overlay {
   background-color: #000;
-  background-repeat: no-repeat;
   opacity: 0;
   pointer-events: none;
   position: fixed;
@@ -17,6 +26,11 @@
 
 .javbeacon-scrub-overlay.is-visible {
   opacity: 1;
+}
+
+.javbeacon-scrub-frame {
+  background-repeat: no-repeat;
+  position: absolute;
 }
 
 /* While the overlay is showing a scrubbed frame (seek-bar hover or
