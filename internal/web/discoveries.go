@@ -306,7 +306,7 @@ func (s *Server) estimateDiscoveryOpenAI(w http.ResponseWriter, r *http.Request)
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	runCandidates := min(max(input.CandidateLimit, 10), min(total, 1000))
+	runCandidates := min(max(input.CandidateLimit, 10), min(total, 5000))
 	_, pricingKnown := discoveryOpenAIRates(model)
 	s.json(w, http.StatusOK, map[string]any{
 		"dry_run": true, "openai_called": false, "model": model, "pricing_known": pricingKnown,
@@ -631,17 +631,20 @@ func discoveryAIProvider(settings map[string]string) string {
 }
 
 // discoveryCandidateLimit returns how many discovery items an enrichment run
-// should process. discoveries_openai_candidate_limit exists to cap per-run
-// spend against a billed API, so it only applies when OpenAI is the active
-// provider. Ollama runs against a local/self-hosted model with no per-token
-// cost, so a run enriches every eligible candidate instead of stopping early
-// at a limit that was never meant to apply to it.
+// should process, honoring "Maximum candidates per enrichment run"
+// (discoveries_openai_candidate_limit) for both providers. It used to apply
+// only to OpenAI, on the reasoning that the setting exists to cap per-run
+// spend against a billed API and Ollama has no per-token cost - but Ollama
+// still runs against a real GPU/CPU budget, and a user who explicitly raises
+// this to, say, 3000 clearly wants that many candidates enriched regardless
+// of provider. The old Ollama bypass just silently discarded that
+// configuration, so a run always stopped after whatever a single Discoveries
+// page happened to be showing (itemCount), never approaching the configured
+// number - reported directly as "AI enrichment runs very short while I set
+// it to 3000 candidates".
 func discoveryCandidateLimit(settings map[string]string, provider string, itemCount int) int {
-	if provider != "openai" {
-		return itemCount
-	}
 	limit := discoveryInt(settings, "discoveries_openai_candidate_limit", 150)
-	return min(max(limit, 10), min(itemCount, 1000))
+	return min(max(limit, 10), min(itemCount, 5000))
 }
 
 func discoveryAIRequestLimits(settings map[string]string) (int, int) {
@@ -650,7 +653,7 @@ func discoveryAIRequestLimits(settings map[string]string) (int, int) {
 	return batchSize, maxInputChars
 }
 
-func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string, items []discoveryItem) ([]discoveryItem, bool) {
+func (s *Server) enhanceDiscoveries(ctx context.Context, settings map[string]string, items []discoveryItem) ([]discoveryItem, bool) {
 	if settings["discoveries_ai_enabled"] != "true" || len(items) == 0 {
 		return items, false
 	}
@@ -681,7 +684,7 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 		}
 	}
 	persisted := make([]openAIRank, 0, limit)
-	stored, err := s.store.DiscoveryAIRanks(r.Context(), releaseIDs)
+	stored, err := s.store.DiscoveryAIRanks(ctx, releaseIDs)
 	if err == nil {
 		for _, id := range releaseIDs {
 			if rank, ok := stored[id]; ok && rank.Fingerprint == fingerprints[id] && aidiscovery.ValidateStoredRank(rank, pools) == nil {
@@ -833,6 +836,88 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 		}
 	}()
 	return applyOpenAIRanks(items, persisted), len(persisted) > 0
+}
+
+// runDiscoveryEnrichmentSweep builds a candidate set independent of whatever
+// Discoveries page/category happens to be open in the browser, then hands it
+// to enhanceDiscoveries. Without this, clicking "Run" under AI enrichment
+// (POST /jobs/discoveries with operation=openai) only cleared caches and
+// returned immediately - the actual enrichment work only ever happened as a
+// side effect of the page reload the UI performs right after, scoped to
+// that one page's small "Results" size (commonly 50-100 items). No single
+// click could ever approach a configured "Maximum candidates per enrichment
+// run" of, say, 3000, because nothing ever fetched that many candidates in
+// the first place; discoveryCandidateLimit only ever trims down, it never
+// pads a short list back up. This sweep fetches up to that configured
+// number of eligible releases (the same default candidate set an "All"/
+// "For you" browse would use: excluded tags and ignore lists applied,
+// highest-scored first) and starts the existing batch-by-batch background
+// enrichment over all of them, tracked through the same discoveryAIStatus
+// fields the UI already polls.
+func (s *Server) runDiscoveryEnrichmentSweep(ctx context.Context, settings map[string]string) error {
+	if settings["discoveries_ai_enabled"] != "true" {
+		return nil
+	}
+	discoveryAIStatus.RLock()
+	running := discoveryAIStatus.Running
+	discoveryAIStatus.RUnlock()
+	if running {
+		return errors.New("an enrichment run is already in progress")
+	}
+	provider := discoveryAIProvider(settings)
+	filter, _, _ := discoveryFilterFromQuery(url.Values{}, settings, "")
+	dbCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	fullTotal, err := s.store.ReleasesCount(dbCtx, filter)
+	if err != nil {
+		return err
+	}
+	limit := discoveryCandidateLimit(settings, provider, fullTotal)
+	if limit <= 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	excluded := discoveryExcludedTags(settings["discoveries_excluded_tags"])
+	profile, err := s.cachedDiscoveryAffinity(dbCtx, settings, now)
+	if err != nil {
+		return err
+	}
+	rewatchDays := discoveryInt(settings, "discoveries_rewatch_days", 90)
+	subtitleTTL := discoveryDuration(settings, "discoveries_subtitle_refresh_interval", 6*time.Hour)
+	pathRemaps := settings["stash_missing_path_remaps"]
+
+	items := make([]discoveryItem, 0, limit)
+	for offset := 0; len(items) < limit; offset += 500 {
+		chunkFilter := filter
+		chunkFilter.Offset = offset
+		page, err := s.discoveryReleasePage(dbCtx, chunkFilter, 500)
+		if err != nil {
+			return err
+		}
+		remapped := discoveryRemapReleases(page, pathRemaps)
+		subtitlesByRelease := cachedSubtitleAvailability(remapped, subtitleTTL)
+		for _, release := range page {
+			if discoveryHasExcludedTag(release, excluded) {
+				continue
+			}
+			hasSubtitle := subtitlesByRelease[release.ID]
+			itemCategory := discoveryCategory(release, rewatchDays, now)
+			score, reasons := scoreDiscoveryRelease(release, profile, hasSubtitle, settings, rewatchDays, now)
+			items = append(items, discoveryItem{Release: release, Score: score, Category: itemCategory, Reasons: reasons, HasSubtitle: hasSubtitle})
+			if len(items) >= limit {
+				break
+			}
+		}
+		if len(page) < 500 {
+			break
+		}
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].Score > items[j].Score })
+	_, _ = s.enhanceDiscoveries(ctx, settings, items)
+	return nil
 }
 
 func discoveryBatchLabels(batch []discoveryAICandidate) []string {
@@ -1521,20 +1606,23 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	// Filter/order/page in the database before the expensive recommendation
 	// enrichment. Every catalog row remains reachable without blocking the UI
 	// on a full-library scoring pass.
-	candidateLimit := requestedLimit
 	aiOnly := q.Get("ai_only") == "true"
 	filter, pools, pool := discoveryFilterFromQuery(q, settings, category)
 	filter.AIEnhanced = aiOnly
-	filter.Offset = offset
-	// A discovery pool with several keyword terms turns into a large OR'd
-	// LIKE/EXISTS clause across title, story, director, studio, label, tags
-	// and actresses, which - especially on a large library - can run far
-	// longer than a normal request should ever take. Previously this had no
-	// bound at all: a slow pool query just hung until the client gave up,
-	// with nothing shown in the UI to say why. Bound it explicitly so a slow
-	// query fails fast with a clear, actionable message instead of hanging
-	// indefinitely.
-	dbCtx, cancelDB := context.WithTimeout(r.Context(), 20*time.Second)
+	// This used to be a 20s bound, on the reasoning that a discovery pool
+	// with several keyword terms could turn into a query slow enough to
+	// need a hard cutoff. That reasoning no longer holds now that
+	// releasePoolSearchWhere issues a constant 2 correlated subqueries
+	// regardless of keyword count (see its doc comment) - filtering never
+	// scales with pool size anymore, so a real, legitimate discoveries
+	// request should never come anywhere close to 20s, let alone need to be
+	// cut off mid-flight. 20s was tripping on real, sizeable libraries
+	// (reported directly: "Filtering by discovery pool ... was stopped"),
+	// so this is now a much larger backstop - not a normal operating
+	// constraint - that only exists to bound a truly pathological case
+	// (a hung DB connection, a broken mount) rather than fail an otherwise
+	// legitimate, still-loading request.
+	dbCtx, cancelDB := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancelDB()
 	fullTotal, err := s.store.ReleasesCount(dbCtx, filter)
 	if err != nil {
@@ -1545,55 +1633,94 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	releases, err := s.discoveryReleasePage(dbCtx, filter, candidateLimit)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			s.problem(w, http.StatusGatewayTimeout, discoveryTimeoutMessage(pool))
-			return
-		}
-		s.problem(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	now := time.Now().UTC()
-	libraryOrder := make(map[int64]int, len(releases))
-	for index, release := range releases {
-		libraryOrder[release.ID] = index
-	}
 	excluded := discoveryExcludedTags(settings["discoveries_excluded_tags"])
 	profile, err := s.cachedDiscoveryAffinity(r.Context(), settings, now)
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, "load authoritative Stash history: "+err.Error())
 		return
 	}
-	remapped := discoveryRemapReleases(releases, settings["stash_missing_path_remaps"])
-	subtitlesByRelease := cachedSubtitleAvailability(remapped, discoveryDuration(settings, "discoveries_subtitle_refresh_interval", 6*time.Hour))
 	rewatchDays := discoveryInt(settings, "discoveries_rewatch_days", 90)
 	subtitles := strings.TrimSpace(r.URL.Query().Get("subtitles"))
-	items := make([]discoveryItem, 0, len(releases))
-	for _, release := range releases {
-		itemCategory := discoveryCategory(release, rewatchDays, now)
-		hasSubtitle := subtitlesByRelease[release.ID]
-		if !discoveryReleaseMatches(release, category, subtitles, hasSubtitle, excluded, rewatchDays, now) {
-			continue
-		}
-		score, reasons := scoreDiscoveryRelease(release, profile, hasSubtitle, settings, rewatchDays, now)
-		if keywords := pools[pool]; pool != "" {
-			for _, keyword := range keywords {
-				if discoveryTextMatches(release, keyword) {
-					reasons = append(reasons, "Discovery pool match: "+pool+" · "+keyword)
+	subtitleTTL := discoveryDuration(settings, "discoveries_subtitle_refresh_interval", 6*time.Hour)
+	pathRemaps := settings["stash_missing_path_remaps"]
+
+	// category and subtitles matching depend on discoveryCategory() and a
+	// filesystem-derived subtitle scan - neither is something SQL can
+	// filter on, so both can only be checked after fetching each
+	// candidate's row. This used to fetch exactly one bounded batch of
+	// requestedLimit raw rows and apply that check to only those: if every
+	// one of the top-scored candidates in that one batch happened to fail
+	// it (e.g. none of them had subtitles), the response came back with
+	// zero items even though plenty of matches existed further into the
+	// same filtered set - a real report ("With subtitles" always came back
+	// empty). When one of these post-fetch checks is active, keep pulling
+	// further raw chunks (still bounded by the same 20s budget as the
+	// pool-search timeout above) until enough candidates survive to fill
+	// the requested page or the full matching set is exhausted, instead of
+	// stopping after exactly one bounded fetch.
+	needsPostFetchFilter := subtitles != "" || category == "ready" || category == "needs_subtitles"
+	rawChunk := requestedLimit
+	if needsPostFetchFilter {
+		rawChunk = 500
+	}
+
+	var releases []domain.Release
+	libraryOrder := make(map[int64]int)
+	items := make([]discoveryItem, 0, requestedLimit)
+	for {
+		chunkFilter := filter
+		chunkFilter.Offset = offset + len(releases)
+		page, err := s.discoveryReleasePage(dbCtx, chunkFilter, rawChunk)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				// A slow chunk after we already collected real results is
+				// not worth failing the whole request over - show what was
+				// found; has_more/next_offset below still let the client
+				// fetch the rest on a later request.
+				if len(items) > 0 {
 					break
 				}
+				s.problem(w, http.StatusGatewayTimeout, discoveryTimeoutMessage(pool))
+				return
 			}
+			s.problem(w, http.StatusInternalServerError, err.Error())
+			return
 		}
-		itemPools := []string{}
-		if pool != "" {
-			itemPools = append(itemPools, pool)
+		for i, release := range page {
+			libraryOrder[release.ID] = len(releases) + i
 		}
-		items = append(items, discoveryItem{Release: release, Score: score, Category: itemCategory, Reasons: reasons, Pools: itemPools, HasSubtitle: hasSubtitle})
+		remapped := discoveryRemapReleases(page, pathRemaps)
+		subtitlesByRelease := cachedSubtitleAvailability(remapped, subtitleTTL)
+		for _, release := range page {
+			itemCategory := discoveryCategory(release, rewatchDays, now)
+			hasSubtitle := subtitlesByRelease[release.ID]
+			if !discoveryReleaseMatches(release, category, subtitles, hasSubtitle, excluded, rewatchDays, now) {
+				continue
+			}
+			score, reasons := scoreDiscoveryRelease(release, profile, hasSubtitle, settings, rewatchDays, now)
+			if keywords := pools[pool]; pool != "" {
+				for _, keyword := range keywords {
+					if discoveryTextMatches(release, keyword) {
+						reasons = append(reasons, "Discovery pool match: "+pool+" · "+keyword)
+						break
+					}
+				}
+			}
+			itemPools := []string{}
+			if pool != "" {
+				itemPools = append(itemPools, pool)
+			}
+			items = append(items, discoveryItem{Release: release, Score: score, Category: itemCategory, Reasons: reasons, Pools: itemPools, HasSubtitle: hasSubtitle})
+		}
+		releases = append(releases, page...)
+		if !needsPostFetchFilter || len(items) >= requestedLimit || len(page) < rawChunk {
+			break
+		}
 	}
 	enhanced := false
 	if category != "random" && category != "new" {
-		items, enhanced = s.enhanceDiscoveries(r, settings, items)
+		items, enhanced = s.enhanceDiscoveries(r.Context(), settings, items)
 	}
 	discoveryAttachPoolMatches(items, pools)
 	aiTextEntries := ""

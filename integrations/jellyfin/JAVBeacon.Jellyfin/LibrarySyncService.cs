@@ -123,13 +123,25 @@ public sealed class LibrarySyncService(
     private async Task ReconcileFilterPresetCollections(IReadOnlyList<Models.FilterPresetCollectionDto> presets, string? prefix, bool forceImageRefresh, CancellationToken ct)
     {
         prefix ??= string.Empty;
-        var existingByPresetId = library.GetItemList(new InternalItemsQuery
+        // Same defensive shape as ReconcileCollection below: guard against two
+        // BoxSets somehow carrying the same FilterPresetProviderId (a
+        // duplicate/partially-failed collection creation) crashing this
+        // entire task, rather than assuming it can never happen.
+        var existingByPresetId = new Dictionary<string, BoxSet>(StringComparer.Ordinal);
+        foreach (var group in library.GetItemList(new InternalItemsQuery
         {
             Recursive = true,
             IncludeItemTypes = [BaseItemKind.BoxSet]
         }).OfType<BoxSet>()
             .Where(x => x.ProviderIds.ContainsKey(FilterPresetProviderId))
-            .ToDictionary(x => x.ProviderIds[FilterPresetProviderId], StringComparer.Ordinal);
+            .GroupBy(x => x.ProviderIds[FilterPresetProviderId], StringComparer.Ordinal))
+        {
+            existingByPresetId[group.Key] = group.First();
+            if (group.Count() > 1)
+            {
+                logger.LogWarning("Multiple Jellyfin collections share JAVBeaconFilterPreset id {PresetId} - using one and leaving the rest untouched", group.Key);
+            }
+        }
 
         var seenPresetIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var preset in presets)
@@ -162,9 +174,26 @@ public sealed class LibrarySyncService(
             IncludeItemTypes = [BaseItemKind.Movie],
             IsVirtualItem = false
         }).Where(x => x.ProviderIds.ContainsKey("JAVBeacon")).ToArray();
-        var javItemsByReleaseId = javItems
+        // GroupBy+pick-first, not ToDictionary: two Jellyfin library items can
+        // legitimately carry the same "JAVBeacon" provider id (the same
+        // release reachable through two library paths, a duplicate scan
+        // entry, a symlink counted twice, etc.) - a real observed crash
+        // ("An item with the same key has already been added") took down
+        // this entire scheduled task over exactly that. Deterministically
+        // keeping one item per release (rather than throwing) avoids adding
+        // the same release twice into one collection; a warning is logged so
+        // the duplicate can be found and cleaned up in the library itself.
+        var javItemsByReleaseId = new Dictionary<string, BaseItem>(StringComparer.OrdinalIgnoreCase);
+        foreach (var group in javItems
             .Where(x => x.ProviderIds.TryGetValue("JAVBeacon", out var id) && desiredIdStrings.Contains(id))
-            .ToDictionary(x => x.ProviderIds["JAVBeacon"], StringComparer.OrdinalIgnoreCase);
+            .GroupBy(x => x.ProviderIds["JAVBeacon"], StringComparer.OrdinalIgnoreCase))
+        {
+            javItemsByReleaseId[group.Key] = group.First();
+            if (group.Count() > 1)
+            {
+                logger.LogWarning("Multiple Jellyfin library items share JAVBeacon release id {ReleaseId} ({Paths}) - using one and ignoring the rest for collection {CollectionName}", group.Key, string.Join(", ", group.Select(x => x.Path)), name);
+            }
+        }
         var desiredItems = desiredReleaseIds
             .Select(x => x.ToString(System.Globalization.CultureInfo.InvariantCulture))
             .Where(javItemsByReleaseId.ContainsKey)

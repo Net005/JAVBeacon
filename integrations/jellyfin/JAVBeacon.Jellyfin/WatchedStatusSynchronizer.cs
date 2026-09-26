@@ -29,14 +29,29 @@ public sealed class WatchedStatusSynchronizer(ILibraryManager library, IUserMana
     {
         if (watched.Count == 0) return 0;
         var desiredReleaseIds = watched.Select(x => x.ReleaseId.ToString(CultureInfo.InvariantCulture)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // ToLookup, not ToDictionary: two Jellyfin library items can
+        // legitimately carry the same "JAVBeacon" provider id (the same
+        // release reachable through two library paths, a duplicate scan
+        // entry, a symlink counted twice, etc.) - a real observed crash
+        // ("An item with the same key has already been added") took down
+        // this entire scheduled task over exactly that. A Lookup allows
+        // multiple items per key instead of throwing, and every duplicate
+        // gets marked watched below rather than silently leaving one behind.
         var javItemsByReleaseId = library.GetItemList(new InternalItemsQuery
         {
             Recursive = true,
             IncludeItemTypes = [BaseItemKind.Movie],
             IsVirtualItem = false
         }).Where(x => x.ProviderIds.TryGetValue("JAVBeacon", out var id) && desiredReleaseIds.Contains(id))
-          .ToDictionary(x => x.ProviderIds["JAVBeacon"], StringComparer.OrdinalIgnoreCase);
+          .ToLookup(x => x.ProviderIds["JAVBeacon"], StringComparer.OrdinalIgnoreCase);
         if (javItemsByReleaseId.Count == 0) return 0;
+        foreach (var group in javItemsByReleaseId)
+        {
+            if (group.Count() > 1)
+            {
+                logger.LogWarning("Multiple Jellyfin library items share JAVBeacon release id {ReleaseId} - marking all of them watched", group.Key);
+            }
+        }
 
         var targetUsers = (trackedUserIds is { Length: > 0 }
                 ? trackedUserIds.Select(raw => Guid.TryParse(raw, out var id) ? users.GetUserById(id) : null)
@@ -49,16 +64,18 @@ public sealed class WatchedStatusSynchronizer(ILibraryManager library, IUserMana
         var marked = 0;
         foreach (var entry in watched)
         {
-            if (!javItemsByReleaseId.TryGetValue(entry.ReleaseId.ToString(CultureInfo.InvariantCulture), out var item)) continue;
-            foreach (var user in targetUsers)
+            foreach (var item in javItemsByReleaseId[entry.ReleaseId.ToString(CultureInfo.InvariantCulture)])
             {
-                var data = userData.GetUserData(user, item);
-                if (data is null || data.Played) continue;
-                data.Played = true;
-                data.PlayCount = Math.Max(data.PlayCount, 1);
-                data.LastPlayedDate = entry.WatchedAt?.UtcDateTime ?? data.LastPlayedDate ?? DateTime.UtcNow;
-                userData.SaveUserData(user, item, data, UserDataSaveReason.Import, CancellationToken.None);
-                marked++;
+                foreach (var user in targetUsers)
+                {
+                    var data = userData.GetUserData(user, item);
+                    if (data is null || data.Played) continue;
+                    data.Played = true;
+                    data.PlayCount = Math.Max(data.PlayCount, 1);
+                    data.LastPlayedDate = entry.WatchedAt?.UtcDateTime ?? data.LastPlayedDate ?? DateTime.UtcNow;
+                    userData.SaveUserData(user, item, data, UserDataSaveReason.Import, CancellationToken.None);
+                    marked++;
+                }
             }
         }
         if (marked > 0)

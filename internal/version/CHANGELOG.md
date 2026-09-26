@@ -5,6 +5,55 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.234] - 2026-09-26
+
+### Fixed
+
+- Fixed both Jellyfin scheduled tasks crashing outright with
+  `System.ArgumentException: An item with the same key has already been
+  added` whenever two Jellyfin library items legitimately shared the same
+  "JAVBeacon" provider id (the same release reachable through two library
+  paths, a duplicate scan entry, a symlink counted twice, etc.).
+  `LibrarySyncService.ReconcileCollection`'s and `ReconcileFilterPresetCollections`'s
+  `.ToDictionary` calls, and `WatchedStatusSynchronizer.Synchronize`'s
+  `.ToDictionary` call, all threw on the first duplicate key instead of
+  tolerating it. Replaced with `ToLookup`/`GroupBy`-based construction that
+  processes every duplicate (with a logged warning) instead of crashing the
+  whole task.
+- Fixed Discoveries filtering ("With subtitles", and the "Ready to watch"/
+  "Needs subtitles" categories) coming back with zero results even when
+  plenty of matching releases existed. Subtitle presence and discovery
+  category are filesystem/computed checks applied after the database fetch,
+  but the handler only ever fetched one bounded batch of the page's own
+  result-count worth of raw rows before applying that check - if none of
+  the top-scored candidates in that one batch happened to pass, the
+  response came back empty regardless of how many matches existed further
+  into the same filtered set. The handler now keeps pulling further raw
+  chunks (500 rows at a time) until enough candidates survive to fill the
+  requested page or the full matching set is exhausted, instead of stopping
+  after exactly one fetch.
+- Removed the discoveries request's remaining 20-second hard timeout
+  entirely. It was already made mostly moot by 1.0.233's pool-search fix,
+  but a real, legitimately large library could still occasionally need
+  longer than 20 seconds for a first, cold fetch. Raised to a 10-minute
+  backstop that exists only to bound a truly pathological case (a hung
+  database connection, a broken mount), not to cut off an otherwise
+  legitimate, still-loading request.
+- Fixed AI enrichment ("Run" under Discoveries → AI enrichment) processing
+  far fewer candidates per run than the configured "Maximum candidates per
+  enrichment run" - for example stopping after a couple of small batches
+  even with the limit raised to 3000. Two compounding causes: the candidate
+  limit setting was silently ignored for Ollama (the default local
+  provider) entirely, always processing whatever a single Discoveries page
+  happened to have loaded instead; and clicking "Run" itself did no
+  enrichment work at all - it only cleared caches and relied on the
+  incidental page reload afterwards to do the real work, scoped to that
+  one page's small "Results" size (commonly 50-100) regardless of the
+  configured limit. The candidate limit now applies to both providers, and
+  "Run" starts a real background sweep that fetches and enriches up to the
+  configured number of eligible releases across the whole library,
+  independent of whatever page or filter happens to be open in the browser.
+
 ## [1.0.233] - 2026-09-26
 
 ### Fixed

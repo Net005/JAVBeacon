@@ -664,6 +664,75 @@ func TestDiscoveryAIRankSubtitleUsedPersistsAcrossReload(t *testing.T) {
 	}
 }
 
+// TestDiscoveriesSubtitleFilterScansBeyondFirstRawChunk guards a real report:
+// selecting "With subtitles" always came back empty. Root cause: the
+// discoveries handler fetched only requestedLimit raw candidate rows before
+// applying the subtitles filter, which happens after the fetch (subtitle
+// presence is a filesystem check, not a SQL column). If none of the
+// top-requestedLimit-scored candidates happened to have a subtitle sidecar,
+// the response came back with zero items no matter how many subtitle-having
+// releases existed further into the same filtered set. The fix pulls larger
+// raw chunks (bounded, not tied to the requested page size) whenever a
+// post-fetch filter like this is active, instead of stopping after exactly
+// one small bounded fetch.
+func TestDiscoveriesSubtitleFilterScansBeyondFirstRawChunk(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "subtitle-scan-beyond-chunk.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "Test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 5; i++ {
+		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: fmt.Sprintf("SUBSCAN-%d", i), Title: fmt.Sprintf("Title %d", i), Source: "Test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Limit: 10, ShowNonPreferred: true, Sort: "added", Direction: "asc"})
+	if err != nil || len(releases) != 5 {
+		t.Fatalf("setup: releases=%d err=%v", len(releases), err)
+	}
+	dir := t.TempDir()
+	local := true
+	for _, r := range releases {
+		if err := st.PatchRelease(ctx, r.ID, nil, &local, nil, nil, nil, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetStashFilePath(ctx, r.ID, filepath.Join(dir, fmt.Sprintf("SUBSCAN-%d.mp4", r.ID))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The default sort ("score", with no discovery_scores rows for any of
+	// these) ties every release and falls back to r.id DESC - so releases[0]
+	// (the lowest id, first inserted) is the LAST raw row the handler would
+	// see, well past a small requestedLimit. Only it gets a subtitle sidecar.
+	lowestID := releases[0].ID
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("SUBSCAN-%d.en.srt", lowestID)), []byte("dialogue"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{store: st, log: slog.Default()}
+	rec := httptest.NewRecorder()
+	s.discoveries(rec, httptest.NewRequest(http.MethodGet, "/discoveries?subtitles=yes&limit=2", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []struct {
+			ID int64 `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].ID != lowestID {
+		t.Fatalf("subtitles=yes&limit=2 items=%#v, want exactly the one release with a subtitle sidecar (id=%d) even though it was not among the first 2 raw candidates", resp.Items, lowestID)
+	}
+}
+
 func TestClearDiscoveryAIRankingsEndpoint(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "clear-ai-endpoint.db"))
@@ -746,19 +815,71 @@ func TestOllamaTestEndpointReportsUnreachableServer(t *testing.T) {
 	}
 }
 
-func TestDiscoveryCandidateLimitIsUncappedForOllamaButBoundedForOpenAI(t *testing.T) {
+func TestDiscoveryCandidateLimitRespectsConfiguredCapForBothProviders(t *testing.T) {
+	// Ollama used to bypass discoveries_openai_candidate_limit entirely
+	// (returning itemCount unconditionally), which silently discarded a
+	// user's configured "Maximum candidates per enrichment run" for the
+	// default/local provider - reported directly as enrichment "running very
+	// short" despite the setting being raised to 3000. The limit now applies
+	// to both providers, still never padding a short itemCount back up.
 	settings := map[string]string{"discoveries_openai_candidate_limit": "150"}
-	if got := discoveryCandidateLimit(settings, "ollama", 600); got != 600 {
-		t.Fatalf("expected Ollama enrichment to process every eligible candidate, got %d", got)
+	if got := discoveryCandidateLimit(settings, "ollama", 600); got != 150 {
+		t.Fatalf("expected Ollama enrichment to respect the configured candidate limit, got %d", got)
 	}
 	if got := discoveryCandidateLimit(settings, "ollama", 50); got != 50 {
-		t.Fatalf("expected Ollama enrichment to process every eligible candidate, got %d", got)
+		t.Fatalf("expected the limit to never exceed the available item count, got %d", got)
 	}
 	if got := discoveryCandidateLimit(settings, "openai", 600); got != 150 {
 		t.Fatalf("expected OpenAI enrichment to respect the configured candidate limit, got %d", got)
 	}
 	if got := discoveryCandidateLimit(map[string]string{}, "openai", 600); got != 150 {
 		t.Fatalf("expected default OpenAI candidate limit of 150, got %d", got)
+	}
+	large := map[string]string{"discoveries_openai_candidate_limit": "3000"}
+	if got := discoveryCandidateLimit(large, "ollama", 5000); got != 3000 {
+		t.Fatalf("expected a raised candidate limit like 3000 to actually apply, got %d", got)
+	}
+}
+
+// TestRunDiscoveryEnrichmentSweepNoopWhenAIDisabled guards the cheap early
+// exit: clicking "Run" under AI enrichment while the feature toggle itself
+// is off must not attempt any database work or touch the (here unset)
+// discoveryAI client.
+func TestRunDiscoveryEnrichmentSweepNoopWhenAIDisabled(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "sweep-ai-disabled.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{store: st, log: slog.Default()}
+	if err := s.runDiscoveryEnrichmentSweep(ctx, map[string]string{"discoveries_ai_enabled": "false"}); err != nil {
+		t.Fatalf("expected no error when AI enrichment is disabled, got %v", err)
+	}
+}
+
+// TestRunDiscoveryEnrichmentSweepRefusesConcurrentRun guards against two
+// sweeps (or a sweep overlapping the page-load-triggered enhanceDiscoveries
+// path) racing the same discoveryAIStatus/discoveryRankCache state.
+func TestRunDiscoveryEnrichmentSweepRefusesConcurrentRun(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "sweep-concurrent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{store: st, log: slog.Default()}
+	discoveryAIStatus.Lock()
+	discoveryAIStatus.Running = true
+	discoveryAIStatus.Unlock()
+	defer func() {
+		discoveryAIStatus.Lock()
+		discoveryAIStatus.Running = false
+		discoveryAIStatus.Unlock()
+	}()
+	err = s.runDiscoveryEnrichmentSweep(ctx, map[string]string{"discoveries_ai_enabled": "true"})
+	if err == nil {
+		t.Fatal("expected an error when an enrichment run is already in progress")
 	}
 }
 
