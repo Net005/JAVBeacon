@@ -675,7 +675,16 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 	if err := s.normalizeJavLibraryURLs(); err != nil {
 		return err
 	}
-	return s.normalizeReleaseTimestamps(ctx)
+	if err := s.normalizeReleaseTimestamps(ctx); err != nil {
+		return err
+	}
+	// See the matching comment in store.go's SQLite migrate(): is_local=1
+	// with an empty stash_scene_id is an invariant violation that only the
+	// legacy importer or the historical release-identity dedup migration
+	// could have produced, and it shows a broken "In StashApp" badge/link
+	// until corrected. Repair it unconditionally on every startup.
+	_, err := s.db.ExecContext(ctx, `UPDATE releases SET is_local=0 WHERE is_local=1 AND stash_scene_id=''`)
+	return err
 }
 
 // OpenPostgresStore opens a fully migrated PostgreSQL-backed Store: it
