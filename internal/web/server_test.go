@@ -200,6 +200,54 @@ func TestOpenSearchDescriptorIsAvailableWithoutAuthentication(t *testing.T) {
 	}
 }
 
+// TestPerformerImageIsAvailableWithoutAuthentication guards a fix for a
+// confirmed live bug: Jellyfin sets a performer's photo as PersonInfo.ImageUrl
+// and Silo resolves it via its own image-resolver capability - both then
+// download that URL with their host's generic, unauthenticated HTTP client,
+// with no plugin hook available to attach a bearer token the way
+// JAVBeaconImageProvider does for the release's own cover/backdrop. Requiring
+// auth on this route therefore made every performer photo 401 in both
+// integrations. This must stay exempt.
+func TestPerformerImageIsAvailableWithoutAuthentication(t *testing.T) {
+	s := &Server{mux: http.NewServeMux()}
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := s.security(next)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/integrations/performers/1656/image", nil))
+	if !called {
+		t.Fatal("performer image request was blocked by the auth middleware")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+// TestOtherIntegrationRoutesStillRequireAuthentication guards against the
+// performer-image exemption above accidentally broadening to cover other
+// /api/v1/integrations/ routes, which must stay behind the API key/session
+// check.
+func TestOtherIntegrationRoutesStillRequireAuthentication(t *testing.T) {
+	s := &Server{mux: http.NewServeMux()}
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := s.security(next)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/integrations/jellyfin/releases/1", nil))
+	if called {
+		t.Fatal("an unrelated integrations route reached the handler without authentication")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
 func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	javascript, err := assets.ReadFile("static/app.js")
 	if err != nil {

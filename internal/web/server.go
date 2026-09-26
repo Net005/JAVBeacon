@@ -1701,7 +1701,21 @@ func (s *Server) security(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "same-origin")
-		public := r.URL.Path == "/login" || r.URL.Path == "/opensearch.xml" || r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/hooks/stash/scene" || r.URL.Path == "/api/hooks/stash/test" || strings.HasPrefix(r.URL.Path, "/assets/")
+		// /api/v1/integrations/performers/ is deliberately exempt: performer
+		// photos are set as PersonInfo.ImageUrl (Jellyfin) / a resolved image
+		// URL (Silo), both of which are downloaded by the host's own generic,
+		// unauthenticated HTTP client - there is no plugin hook to attach a
+		// bearer token to that specific request the way JAVBeaconImageProvider
+		// does for the release's own cover/backdrop (via client.GetImage).
+		// Confirmed live: this is exactly why performer images 401'd while
+		// scene covers didn't. Silo's own plugin already solves the identical
+		// problem for every image it resolves by embedding ?api_key= in the
+		// URL instead (see provider/client.go's ImageURL in the Silo plugin
+		// repo) - scoping this exemption to performer photos only, rather
+		// than adopting that same embedded-key pattern here, keeps every
+		// other endpoint (including the release's own cover/backdrop) behind
+		// real auth.
+		public := r.URL.Path == "/login" || r.URL.Path == "/opensearch.xml" || r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/hooks/stash/scene" || r.URL.Path == "/api/hooks/stash/test" || strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/api/v1/integrations/performers/")
 		if !public {
 			cookie, _ := r.Cookie("javbeacon_session")
 			token := ""
