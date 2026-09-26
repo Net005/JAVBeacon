@@ -62,8 +62,11 @@ Plugin settings are read without writing the partial configuration response to
 Stash's shared Apollo cache, avoiding repeated cache-merge warnings on large
 card pages.
 
-For matching scene paths, the action appears in the scene action row and at
-the bottom-right of cards on the scene overview. **+ CC** requests subtitles
+For matching scene paths, the action appears in the scene action row and,
+on scene cards, merged directly into Stash's own popover-icon row (tag
+count, gallery count, etc.) rather than on a line of its own - Watchlist
+sits immediately left of those icons, +CC sits flush against the row's
+right edge, and the card's overall height is unchanged. **+ CC** requests subtitles
 when Stash reports no linked caption or subtitle tracks. When subtitles are
 already linked, it changes to **✓ CC**, and on scene cards its text color
 reports freshness at a glance, without a click: dark green means a
