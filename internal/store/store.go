@@ -435,9 +435,13 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 		CREATE INDEX IF NOT EXISTS idx_stash_history_events_type_time ON stash_history_events(event_type,occurred_at DESC);`)
 	}
 	if err == nil {
+		// release_id is nullable: a playback/scrobble event can be keyed only by
+		// stash_scene_id when it originates from a Stash-only scene JAVBeacon
+		// never scraped into a release row (see migrateJellyfinPlaybackReleaseNullable
+		// for the rebuild path that makes this nullable on pre-existing databases).
 		_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS jellyfin_playback_sessions (
 			session_id TEXT PRIMARY KEY,
-			release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+			release_id INTEGER REFERENCES releases(id) ON DELETE CASCADE,
 			stash_scene_id TEXT NOT NULL,
 			jellyfin_item_id TEXT NOT NULL DEFAULT '',
 			jellyfin_user_id TEXT NOT NULL DEFAULT '',
@@ -453,7 +457,11 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 			updated_at DATETIME NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_release ON jellyfin_playback_sessions(release_id,updated_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_active ON jellyfin_playback_sessions(status,updated_at);`)
+		CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_active ON jellyfin_playback_sessions(status,updated_at);
+		CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_scene ON jellyfin_playback_sessions(stash_scene_id,updated_at DESC);`)
+	}
+	if err == nil {
+		err = s.migrateJellyfinPlaybackReleaseNullable(context.Background())
 	}
 	if err == nil {
 		err = s.cleanupStoredReleaseText(context.Background())
@@ -794,6 +802,87 @@ func (s *SQLite) columnExists(ctx context.Context, table, column string) (bool, 
 		}
 	}
 	return false, rows.Err()
+}
+
+// migrateJellyfinPlaybackReleaseNullable drops the NOT NULL constraint on
+// jellyfin_playback_sessions.release_id for databases created before a
+// Stash-only scene (no matching JAVBeacon release row at all) could report
+// playback keyed purely by stash_scene_id. It is idempotent and cheap to run
+// on every startup: PostgreSQL's DROP NOT NULL is a no-op once already
+// nullable, and the SQLite path checks pragma table_info first and only pays
+// for the rebuild-and-copy once.
+func (s *SQLite) migrateJellyfinPlaybackReleaseNullable(ctx context.Context) error {
+	if s.dialect.Name() == "postgres" {
+		_, err := s.db.ExecContext(ctx, `ALTER TABLE jellyfin_playback_sessions ALTER COLUMN release_id DROP NOT NULL`)
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(jellyfin_playback_sessions)`)
+	if err != nil {
+		return err
+	}
+	nullable := false
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, dataType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "release_id" {
+			found = true
+			nullable = notNull == 0
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	if !found || nullable {
+		return nil
+	}
+	// SQLite cannot drop a column's NOT NULL constraint in place - rebuild the
+	// table under a temporary name, copy every row across unchanged, then swap
+	// it in. Runs inside one transaction so a mid-way failure leaves the
+	// original table untouched.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`CREATE TABLE jellyfin_playback_sessions_new (
+			session_id TEXT PRIMARY KEY,
+			release_id INTEGER REFERENCES releases(id) ON DELETE CASCADE,
+			stash_scene_id TEXT NOT NULL,
+			jellyfin_item_id TEXT NOT NULL DEFAULT '',
+			jellyfin_user_id TEXT NOT NULL DEFAULT '',
+			started_at DATETIME NOT NULL,
+			last_event_at DATETIME NOT NULL,
+			last_position_seconds REAL NOT NULL DEFAULT 0,
+			runtime_seconds REAL NOT NULL DEFAULT 0,
+			accumulated_seconds REAL NOT NULL DEFAULT 0,
+			forwarded_seconds REAL NOT NULL DEFAULT 0,
+			was_paused INTEGER NOT NULL DEFAULT 0,
+			play_counted INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'active',
+			updated_at DATETIME NOT NULL
+		)`,
+		`INSERT INTO jellyfin_playback_sessions_new SELECT session_id,release_id,stash_scene_id,jellyfin_item_id,jellyfin_user_id,started_at,last_event_at,last_position_seconds,runtime_seconds,accumulated_seconds,forwarded_seconds,was_paused,play_counted,status,updated_at FROM jellyfin_playback_sessions`,
+		`DROP TABLE jellyfin_playback_sessions`,
+		`ALTER TABLE jellyfin_playback_sessions_new RENAME TO jellyfin_playback_sessions`,
+		`CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_release ON jellyfin_playback_sessions(release_id,updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_active ON jellyfin_playback_sessions(status,updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_scene ON jellyfin_playback_sessions(stash_scene_id,updated_at DESC)`,
+	}
+	for _, stmt := range statements {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *SQLite) tableExists(ctx context.Context, table string) (bool, error) {

@@ -470,7 +470,7 @@ CREATE INDEX IF NOT EXISTS idx_stash_history_events_type_time ON stash_history_e
 
 CREATE TABLE IF NOT EXISTS jellyfin_playback_sessions (
 	session_id TEXT PRIMARY KEY,
-	release_id BIGINT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+	release_id BIGINT REFERENCES releases(id) ON DELETE CASCADE,
 	stash_scene_id TEXT NOT NULL,
 	jellyfin_item_id TEXT NOT NULL DEFAULT '',
 	jellyfin_user_id TEXT NOT NULL DEFAULT '',
@@ -487,6 +487,7 @@ CREATE TABLE IF NOT EXISTS jellyfin_playback_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_release ON jellyfin_playback_sessions(release_id,updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_active ON jellyfin_playback_sessions(status,updated_at);
+CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_scene ON jellyfin_playback_sessions(stash_scene_id,updated_at DESC);
 `
 
 // migratePostgres applies postgresSchemaDDL and then runs the same
@@ -546,6 +547,17 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE downloads ADD COLUMN IF NOT EXISTS seen_complete BIGINT NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	// Incremental relaxation for a PostgreSQL database created before a
+	// playback/scrobble event could be keyed purely by stash_scene_id (no
+	// matching JAVBeacon release row at all, for Stash-only scenes). DROP NOT
+	// NULL is idempotent - a no-op, no error, if the column is already
+	// nullable - so this needs no existing-state check first.
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE jellyfin_playback_sessions ALTER COLUMN release_id DROP NOT NULL`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_scene ON jellyfin_playback_sessions(stash_scene_id,updated_at DESC)`); err != nil {
 		return err
 	}
 	// Incremental addition for a PostgreSQL database created before the

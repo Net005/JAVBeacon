@@ -3392,3 +3392,97 @@ func TestMigrateRepairsOrphanedLocalFlagWithoutStashSceneID(t *testing.T) {
 		t.Fatalf("orphaned is_local=1/empty stash_scene_id was not repaired on reopen: %+v", rows[0])
 	}
 }
+
+// TestMigrateJellyfinPlaybackReleaseNullable simulates a pre-existing SQLite
+// database whose jellyfin_playback_sessions.release_id column still has the
+// original NOT NULL constraint, and asserts that reopening it (which runs
+// migrateJellyfinPlaybackReleaseNullable) both preserves an existing
+// release-bound row and allows a brand new Stash-only row (release_id NULL,
+// keyed purely by stash_scene_id) to be saved afterward.
+func TestMigrateJellyfinPlaybackReleaseNullable(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "playback-nullable.db")
+	s, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := s.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "GVH-900", Title: "Test release", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	releaseRows, err := s.Releases(ctx, domain.ReleaseFilter{Search: "GVH-900", Limit: 1})
+	if err != nil || len(releaseRows) != 1 {
+		t.Fatalf("rows=%d err=%v", len(releaseRows), err)
+	}
+	release := releaseRows[0]
+	// Rebuild the table back to its original NOT NULL shape, as if this
+	// database predated the migration, then insert a legacy release-bound row
+	// directly.
+	for _, stmt := range []string{
+		`DROP TABLE jellyfin_playback_sessions`,
+		`CREATE TABLE jellyfin_playback_sessions (
+			session_id TEXT PRIMARY KEY,
+			release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+			stash_scene_id TEXT NOT NULL,
+			jellyfin_item_id TEXT NOT NULL DEFAULT '',
+			jellyfin_user_id TEXT NOT NULL DEFAULT '',
+			started_at DATETIME NOT NULL,
+			last_event_at DATETIME NOT NULL,
+			last_position_seconds REAL NOT NULL DEFAULT 0,
+			runtime_seconds REAL NOT NULL DEFAULT 0,
+			accumulated_seconds REAL NOT NULL DEFAULT 0,
+			forwarded_seconds REAL NOT NULL DEFAULT 0,
+			was_paused INTEGER NOT NULL DEFAULT 0,
+			play_counted INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'active',
+			updated_at DATETIME NOT NULL
+		)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO jellyfin_playback_sessions(session_id,release_id,stash_scene_id,started_at,last_event_at,updated_at) VALUES(?,?,?,?,?,?)`,
+		"legacy-session", release.ID, "scene-legacy", now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopening runs migrate(), which must rebuild the table with a nullable
+	// release_id while preserving the existing legacy row.
+	s2, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+
+	legacy, err := s2.JellyfinPlaybackSession(ctx, "legacy-session")
+	if err != nil {
+		t.Fatalf("legacy row lost across migration: %v", err)
+	}
+	if legacy.ReleaseID != release.ID || legacy.StashSceneID != "scene-legacy" {
+		t.Fatalf("legacy row corrupted by migration: %+v", legacy)
+	}
+
+	// A brand new Stash-only session (no release row at all) must now save
+	// and read back with ReleaseID==0.
+	sceneOnly := domain.JellyfinPlaybackSession{
+		SessionID: "scene-only-session", StashSceneID: "scene-only", StartedAt: now, LastEventAt: now, UpdatedAt: now, Status: "active",
+	}
+	if err := s2.SaveJellyfinPlaybackSession(ctx, sceneOnly); err != nil {
+		t.Fatalf("saving a release-less playback session should succeed after migration: %v", err)
+	}
+	readBack, err := s2.JellyfinPlaybackSession(ctx, "scene-only-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readBack.ReleaseID != 0 || readBack.StashSceneID != "scene-only" {
+		t.Fatalf("scene-only session round-trip mismatch: %+v", readBack)
+	}
+}
