@@ -121,21 +121,20 @@
  * never overlap it - it simply becomes the next line down, however tall the
  * native footer turned out to be.
  *
- * justify-content was originally space-between, stretching the two buttons
- * to the row's full width - on a wide card that reproduced the two buttons'
- * old opposite-corner look, but with nothing else on that line any more (the
- * footer text they used to overlap no longer shares the row), the empty
- * middle read as a big dead gap rather than an intentional layout. flex-wrap
- * is dropped too - two small buttons never need to wrap, and space-between
- * plus wrap could put them on separate lines at some card widths. Both
- * buttons now sit together, left-aligned, with just a small gap between
- * them. */
+ * justify-content: space-between - Watchlist flush to the row's left edge,
+ * +CC flush to its right edge - restores the exact opposite-corner look the
+ * two buttons had back when they were independently position:absolute
+ * (left: 0.55rem / right: 0.55rem off .scene-card). A flex-start attempt
+ * here read as clustered/misaligned instead. No margin-top: the row is
+ * exactly one button's height, immediately below whatever Stash's own
+ * footer rendered, adding nothing beyond that to the card's total height.
+ * flex-wrap stays off - two small buttons never need to wrap, and wrap
+ * combined with space-between could put them on separate lines at some
+ * card widths. */
 .scene-card .javbeacon-card-actions-row {
   align-items: center;
-  column-gap: 0.6rem;
   display: flex;
-  justify-content: flex-start;
-  margin-top: 0.35rem;
+  justify-content: space-between;
   width: 100%;
 }
 
