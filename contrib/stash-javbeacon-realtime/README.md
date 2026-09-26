@@ -141,27 +141,29 @@ only the configured browser URL and final release path reach the page.
 
 ## Player previews
 
-Stash already renders a small seek-bar thumbnail preview (the sprite/VTT
-screenshots also used by the scene grid's hover preview) whenever the
-pointer moves over the seek bar. This plugin hides that small preview and
-mirrors its already-computed image, crop, and position onto a large overlay
-covering the cover/video area instead, scaled up proportionally:
+The scene player's cover/video area gets two large, sprite-based previews,
+built from two different sources:
 
-- **Large seek-bar preview.** Hovering the seek bar below the player paints
-  the same frame Stash would have shown in its small thumbnail into the
-  cover/video area, at a large size.
+- **Large seek-bar preview.** Stash already renders a small seek-bar
+  thumbnail preview (the sprite/VTT screenshots also used by the scene
+  grid's hover preview) whenever the pointer moves over the seek bar. This
+  plugin hides that small preview and mirrors its already-computed image,
+  crop, and position onto a large overlay covering the cover/video area
+  instead, scaled up proportionally, so the previewed frame is always
+  exactly what Stash itself would have shown for that point on the seek
+  bar - just displayed larger.
 - **Cover-area scrubbing.** Hovering the cover/poster area before playback
-  starts cycles through evenly-spaced points across the seek bar the same
-  way, so the cover area previews the scene the same way the scene grid's
-  hover preview does.
+  starts cycles through the scene's sprite screenshots in the same
+  cover/video area. This can't reuse Stash's seek-bar hover mechanism (there
+  is no real pointer continuously moving over the seek bar), so instead the
+  plugin fetches and parses the scene's own sprite VTT file directly and
+  cycles through its frames, cropping each one with the same scaling
+  technique used for the seek-bar mirror above.
 
-Both reuse Stash's own thumbnail computation rather than re-deriving the
-sprite crop independently, so the previewed frame is always exactly what
-Stash itself would have shown - just displayed larger. The one limit scaling
-cannot remove is the sprite sheet's own source resolution: Stash's generated
-sprite screenshots are intentionally low-resolution to keep the sprite sheet
-small, so the large preview is that same resolution enlarged, not a
-higher-resolution capture.
+Either way, the one limit scaling cannot remove is the sprite sheet's own
+source resolution: Stash's generated sprite screenshots are intentionally
+low-resolution to keep the sprite sheet small, so the large preview is that
+same resolution enlarged, not a higher-resolution capture.
 
 Both behaviors are on by default and can be turned off independently:
 

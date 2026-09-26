@@ -44,7 +44,15 @@ global.window = {
 
 require("./javbeacon_scrubber.js");
 
-const { extractPx, mirrorBackground, positionOverlay } = window.__javbeaconScrubberInternals;
+const {
+  extractPx,
+  mirrorBackground,
+  positionOverlay,
+  parseVttTimestamp,
+  parseCueImageLine,
+  parseSpriteVtt,
+  paintCue,
+} = window.__javbeaconScrubberInternals;
 
 // Two earlier revisions of this plugin mutated the scene player element
 // itself (.video-js) - once by appending the overlay as its child, once by
@@ -59,6 +67,18 @@ assert.match(pluginSource, /document\.body\.appendChild\(overlay\)/, "the overla
 
 const cssSource = fs.readFileSync(require.resolve("./javbeacon_scrubber.css"), "utf8");
 assert.match(cssSource, /position:\s*fixed/, "the overlay must be position: fixed, not relative to the player");
+
+// This exact CSS selector match (a substring of .video-js's own
+// "vjs-vtt-thumbnails" feature-flag class) was confirmed live to hide the
+// entire scene player, and caused three consecutive "entirely broken" bug
+// reports before being root-caused. Guard against it reappearing as an
+// actual selector or querySelector call - both source files legitimately
+// mention the string once, in a comment explaining the history, so strip
+// comments before checking.
+const jsWithoutComments = pluginSource.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+const cssWithoutComments = cssSource.replace(/\/\*[\s\S]*?\*\//g, "");
+assert.doesNotMatch(jsWithoutComments, /\[class\*=["']vtt-thumbnail["']\]/, "must never use a substring selector to find the thumbnail element");
+assert.doesNotMatch(cssWithoutComments, /\[class\*=["']vtt-thumbnail["']\]/, "must never use a substring selector in CSS for the thumbnail element");
 
 // positionOverlay copies a rect (as returned by getBoundingClientRect, which
 // is already viewport-relative) directly onto a position: fixed element's
@@ -95,89 +115,224 @@ function fakeElement(style, rect) {
   };
 }
 
-// mirrorBackground scales a source element's background image, position and
-// size up to fill a larger box, preserving the exact crop Stash's own
-// thumbnail element already computed - this is what replaces re-deriving
-// the sprite crop from scratch (the earlier approach that produced
-// overlapping/ghosted frames).
-{
-  const source = fakeElement(
-    {
-      backgroundImage: 'url("https://stash.example.com/scene/1/vtt/sprite.jpg")',
-      backgroundPosition: "-160px -90px",
-      backgroundSize: "1920px 1080px",
-    },
-    { width: 160, height: 90 }
-  );
-  const target = fakeElement({});
-  const ok = mirrorBackground(source, target, { width: 800, height: 450 });
-  assert.equal(ok, true);
-  assert.equal(target.style.backgroundImage, source.style.backgroundImage);
-  assert.equal(target.style.backgroundRepeat, "no-repeat");
-  // scale = 800 / 160 = 5
-  assert.equal(target.style.backgroundPosition, "-800.00px -450.00px");
-  assert.equal(target.style.backgroundSize, "9600.00px 5400.00px");
-}
+// Confirmed live against a running Stash instance: the thumbnail library
+// never sets an explicit two-value background-size (style.backgroundSize
+// resolves to "initial"), relying instead on the sprite image rendering at
+// its own natural pixel size, with background-position as a real pixel
+// offset into that natural-size image. global.Image here stands in for that
+// natural-size lookup.
+global.Image = class {
+  set src(value) {
+    this._src = value;
+    const size = global.__fakeImageSizes?.[value];
+    setTimeout(() => {
+      if (size) {
+        this.naturalWidth = size.width;
+        this.naturalHeight = size.height;
+        this.onload?.();
+      } else {
+        this.onerror?.();
+      }
+    }, 0);
+  }
+};
 
-// A source element with no thumbnail currently painted (no background-image
-// yet) must not overwrite whatever the target was already showing.
-{
-  const source = fakeElement({ backgroundImage: "" }, { width: 160, height: 90 });
-  const target = fakeElement({ backgroundImage: "url(previous.jpg)" });
-  const ok = mirrorBackground(source, target, { width: 800, height: 450 });
-  assert.equal(ok, false);
-  assert.equal(target.style.backgroundImage, "url(previous.jpg)");
-}
+(async () => {
+  // mirrorBackground scales a source element's background image, position
+  // and size up to fill a larger box, preserving the exact crop Stash's own
+  // thumbnail element already computed - this is what replaces re-deriving
+  // the sprite crop from scratch (the earlier approach that produced
+  // overlapping/ghosted frames).
+  {
+    const source = fakeElement(
+      {
+        backgroundImage: 'url("https://stash.example.com/scene/1/vtt/sprite.jpg")',
+        backgroundPosition: "-160px -90px",
+        backgroundSize: "1920px 1080px",
+      },
+      { width: 160, height: 90 }
+    );
+    const target = fakeElement({});
+    const ok = await mirrorBackground(source, target, { width: 800, height: 450 });
+    assert.equal(ok, true);
+    assert.equal(target.style.backgroundImage, source.style.backgroundImage);
+    assert.equal(target.style.backgroundRepeat, "no-repeat");
+    // scale = 800 / 160 = 5
+    assert.equal(target.style.backgroundPosition, "-800.00px -450.00px");
+    assert.equal(target.style.backgroundSize, "9600.00px 5400.00px");
+  }
 
-// A non-uniform target box scales by the smaller ratio so the mirrored crop
-// never overflows either dimension.
-{
-  const source = fakeElement(
-    {
+  // Real-world case: no explicit background-size at all (style.backgroundSize
+  // is "initial", as observed live), so the sprite's natural size must be
+  // measured and scaled by the same factor as the position - scaling
+  // position without also scaling an equally-sized image would point at the
+  // right offset in the wrong (unscaled) image.
+  {
+    const url = "https://stash.bondt.network/scene/test_sprite.jpg";
+    global.__fakeImageSizes = { [url]: { width: 5760, height: 3240 } };
+    const source = fakeElement(
+      {
+        backgroundImage: `url("${url}")`,
+        backgroundPosition: "-3840px -720px",
+        backgroundSize: "initial",
+        width: "640px",
+        height: "360px",
+      },
+      { width: 640, height: 360 }
+    );
+    const target = fakeElement({});
+    // box wider than the source box by 1.5x
+    const ok = await mirrorBackground(source, target, { width: 960, height: 540 });
+    assert.equal(ok, true);
+    assert.equal(target.style.backgroundPosition, "-5760.00px -1080.00px");
+    assert.equal(target.style.backgroundSize, "8640.00px 4860.00px");
+  }
+
+  // A source element with no thumbnail currently painted (no
+  // background-image yet) must not overwrite whatever the target was
+  // already showing.
+  {
+    const source = fakeElement({ backgroundImage: "" }, { width: 160, height: 90 });
+    const target = fakeElement({ backgroundImage: "url(previous.jpg)" });
+    const ok = await mirrorBackground(source, target, { width: 800, height: 450 });
+    assert.equal(ok, false);
+    assert.equal(target.style.backgroundImage, "url(previous.jpg)");
+  }
+
+  // A non-uniform target box scales by the smaller ratio so the mirrored
+  // crop never overflows either dimension.
+  {
+    const source = fakeElement(
+      {
+        backgroundImage: "url(sprite.jpg)",
+        backgroundPosition: "-100px -50px",
+        backgroundSize: "1000px 500px",
+      },
+      { width: 100, height: 50 }
+    );
+    const target = fakeElement({});
+    await mirrorBackground(source, target, { width: 400, height: 150 });
+    // width ratio = 4, height ratio = 3 -> use 3
+    assert.equal(target.style.backgroundPosition, "-300.00px -150.00px");
+  }
+
+  // Falls back to reading the source element's own width/height style when
+  // getBoundingClientRect is unavailable (defensive; real DOM elements
+  // always provide it, but keeps this function usable in more constrained
+  // contexts).
+  {
+    const source = fakeElement({
       backgroundImage: "url(sprite.jpg)",
-      backgroundPosition: "-100px -50px",
-      backgroundSize: "1000px 500px",
-    },
-    { width: 100, height: 50 }
+      backgroundPosition: "-20px -10px",
+      backgroundSize: "200px 100px",
+      width: "20px",
+      height: "10px",
+    });
+    const target = fakeElement({});
+    const ok = await mirrorBackground(source, target, { width: 200, height: 100 });
+    assert.equal(ok, true);
+    assert.equal(target.style.backgroundPosition, "-200.00px -100.00px");
+  }
+
+  assert.equal(await mirrorBackground(null, {}, { width: 1, height: 1 }), false);
+  assert.equal(
+    await mirrorBackground(fakeElement({ backgroundImage: "url(a.jpg)" }, { width: 10, height: 10 }), {}, null),
+    false
   );
-  const target = fakeElement({});
-  mirrorBackground(source, target, { width: 400, height: 150 });
-  // width ratio = 4, height ratio = 3 -> use 3
-  assert.equal(target.style.backgroundPosition, "-300.00px -150.00px");
-}
 
-// Falls back to reading the source element's own width/height style when
-// getBoundingClientRect is unavailable (defensive; real DOM elements always
-// provide it, but keeps this function usable in more constrained contexts).
-{
-  const source = fakeElement({
-    backgroundImage: "url(sprite.jpg)",
-    backgroundPosition: "-20px -10px",
-    backgroundSize: "200px 100px",
-    width: "20px",
-    height: "10px",
-  });
-  const target = fakeElement({});
-  const ok = mirrorBackground(source, target, { width: 200, height: 100 });
-  assert.equal(ok, true);
-  assert.equal(target.style.backgroundPosition, "-200.00px -100.00px");
-}
+  // parseVttTimestamp reads HH:MM:SS.mmm (confirmed live format).
+  assert.equal(parseVttTimestamp("00:01:57.484"), 117.484);
+  assert.equal(parseVttTimestamp("00:00:00.000"), 0);
+  assert.equal(parseVttTimestamp("not a timestamp"), null);
 
-assert.equal(mirrorBackground(null, {}, { width: 1, height: 1 }), false);
-assert.equal(
-  mirrorBackground(fakeElement({ backgroundImage: "url(a.jpg)" }, { width: 10, height: 10 }), {}, null),
-  false
-);
+  // parseCueImageLine reads the "<file>#xywh=x,y,w,h" media-fragment line
+  // confirmed live, resolving the sprite filename against the VTT's own URL.
+  {
+    const cue = parseCueImageLine(
+      "67ef3d000f0466e2_sprite.jpg#xywh=640,0,640,360",
+      "https://stash.bondt.network/scene/1/vtt/sprite.vtt"
+    );
+    assert.deepEqual(cue, {
+      url: "https://stash.bondt.network/scene/1/vtt/67ef3d000f0466e2_sprite.jpg",
+      x: 640,
+      y: 0,
+      w: 640,
+      h: 360,
+    });
+    assert.equal(parseCueImageLine("", "https://x/y.vtt"), null);
+    assert.equal(parseCueImageLine("sprite.jpg", "https://x/y.vtt"), null);
+    assert.equal(parseCueImageLine("sprite.jpg#xywh=0,0,0,0", "https://x/y.vtt"), null);
+  }
 
-// The scene page patch mounts the scrubber controller without disturbing
-// whatever the previous patch in the chain already rendered.
-const renderedScene = React.createElement("main", { id: "scene-page" });
-const legacyContext = {};
-const result = afterPatches.ScenePage({ scene: { id: "39382" } }, legacyContext, renderedScene);
-assert.equal(result.props.children[0], renderedScene);
-assert.equal(result.props.children[1].props.scene.id, "39382");
+  // parseSpriteVtt walks a real-shaped WEBVTT file (matching the confirmed
+  // live example: standard cues, one image line each, sorted by start time).
+  {
+    const vttText = [
+      "WEBVTT",
+      "",
+      "00:00:00.000 --> 00:01:57.484",
+      "sprite.jpg#xywh=0,0,640,360",
+      "",
+      "00:01:57.484 --> 00:03:54.968",
+      "sprite.jpg#xywh=640,0,640,360",
+      "",
+    ].join("\n");
+    const cues = parseSpriteVtt(vttText, "https://stash.bondt.network/scene/1/vtt/sprite.vtt");
+    assert.equal(cues.length, 2);
+    assert.equal(cues[0].start, 0);
+    assert.equal(cues[0].x, 0);
+    assert.equal(cues[1].start, 117.484);
+    assert.equal(cues[1].x, 640);
+    // out of order input is sorted by start time
+    const reversed = parseSpriteVtt(
+      [
+        "00:01:57.484 --> 00:03:54.968",
+        "sprite.jpg#xywh=640,0,640,360",
+        "",
+        "00:00:00.000 --> 00:01:57.484",
+        "sprite.jpg#xywh=0,0,640,360",
+      ].join("\n"),
+      "https://x/sprite.vtt"
+    );
+    assert.equal(reversed[0].start, 0);
+    assert.equal(reversed[1].start, 117.484);
+  }
 
-const withoutScene = afterPatches.ScenePage({}, legacyContext, renderedScene);
-assert.equal(withoutScene, renderedScene, "must not wrap the render when no scene is present yet");
+  // paintCue measures the sprite's natural size (same technique validated
+  // for mirrorBackground) and crops+scales a single cue with no ghosting.
+  {
+    const url = "https://stash.bondt.network/scene/1/vtt/sprite.jpg";
+    global.__fakeImageSizes = { ...global.__fakeImageSizes, [url]: { width: 5760, height: 3240 } };
+    const target = fakeElement({});
+    const cue = { url, x: 640, y: 0, w: 640, h: 360 };
+    const ok = await paintCue(target, cue, { width: 1280, height: 720 });
+    assert.equal(ok, true);
+    // scale = min(1280/640, 720/360) = 2
+    assert.equal(target.style.backgroundPosition, "-1280.00px -0.00px");
+    assert.equal(target.style.backgroundSize, "11520.00px 6480.00px");
 
-console.log("Thumbnail mirroring and scene page patch behave as expected");
+    assert.equal(await paintCue(null, cue, { width: 10, height: 10 }), false);
+    assert.equal(await paintCue(target, null, { width: 10, height: 10 }), false);
+    assert.equal(await paintCue(target, cue, { width: 0, height: 0 }), false);
+    assert.equal(
+      await paintCue(target, { ...cue, url: "https://x/missing.jpg" }, { width: 10, height: 10 }),
+      false
+    );
+  }
+
+  // The scene page patch mounts the scrubber controller without disturbing
+  // whatever the previous patch in the chain already rendered.
+  const renderedScene = React.createElement("main", { id: "scene-page" });
+  const legacyContext = {};
+  const result = afterPatches.ScenePage({ scene: { id: "39382" } }, legacyContext, renderedScene);
+  assert.equal(result.props.children[0], renderedScene);
+  assert.equal(result.props.children[1].props.scene.id, "39382");
+
+  const withoutScene = afterPatches.ScenePage({}, legacyContext, renderedScene);
+  assert.equal(withoutScene, renderedScene, "must not wrap the render when no scene is present yet");
+
+  console.log("Thumbnail mirroring and scene page patch behave as expected");
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

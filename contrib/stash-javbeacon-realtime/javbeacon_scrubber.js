@@ -8,10 +8,6 @@
   const DEFAULT_HOVER_DELAY_MS = 400;
   const DEFAULT_CYCLE_INTERVAL_MS = 700;
   const MIN_CYCLE_INTERVAL_MS = 100;
-  // How many evenly-spaced points across the seek bar the cover-area
-  // auto-cycle walks through. Not user-configurable: it only controls how
-  // finely the cycle samples the video, not the requested timings.
-  const CYCLE_STEPS = 24;
   // video.js mounts its player element asynchronously after the scene query
   // resolves. Poll briefly instead of relying on a single lookup right after
   // the scene page patch runs.
@@ -44,32 +40,26 @@
     return raw === true || raw === "true";
   }
 
-  // ---- Mirroring Stash's own seek-bar thumbnail ------------------------
+  // ---- Two independently verified sources for a preview frame -----------
   //
-  // Earlier versions of this plugin fetched and parsed the scene's sprite
-  // VTT file itself, then computed its own crop math to paint a frame. That
-  // duplicated logic Stash (via the standard videojs-vtt-thumbnails style
-  // plugin) already implements correctly, and getting the crop math wrong
-  // produced visible artifacts (overlapping/ghosted frames) instead of a
-  // single clean crop.
+  // Seek-bar hover: Stash already renders a small, correctly-cropped preview
+  // into a thumbnail element (confirmed live: ".vjs-vtt-thumbnail-display")
+  // whenever the pointer moves over the seek bar. This plugin hides that
+  // small element with CSS and mirrors its computed background image,
+  // position and size onto a large overlay instead, scaled up
+  // proportionally, so the crop is always identical to what Stash itself
+  // computed for a real hover.
   //
-  // Stash already renders a small, correctly-cropped preview into a
-  // thumbnail element (conventionally `.vjs-vtt-thumbnail-display`) whenever
-  // the pointer moves over the seek bar; this plugin hides that small
-  // element with CSS and instead mirrors its computed background image,
-  // position and size onto a large overlay covering the cover/video area,
-  // scaled up proportionally. This guarantees the crop is always identical
-  // to what Stash itself computed - correctness comes from reusing Stash's
-  // own result rather than re-deriving it - and the only resolution ceiling
-  // left is the sprite sheet's own source resolution, which scaling cannot
-  // improve.
-  //
-  // The cover-area "hover to preview" cycle reuses the exact same mirroring:
-  // it dispatches synthetic mousemove events at evenly-spaced points along
-  // the seek bar, which makes Stash's own listener update the same
-  // thumbnail element, and mirrors the result each time. This is why the
-  // cover-area preview only requires this element and the seek bar to exist;
-  // it never touches the sprite/VTT data directly.
+  // Cover-area auto-cycle: this cannot reuse the mechanism above, because it
+  // has to run without a real pointer continuously moving over the seek bar.
+  // Dispatching synthetic mousemove events to drive Stash's own listener was
+  // tried and confirmed live NOT to work - browsers do not let page script
+  // create "trusted" input events, and libraries like this commonly ignore
+  // untrusted ones. So the cover-area cycle instead fetches and parses the
+  // scene's own sprite VTT file (scene.paths.vtt) once, and paints each cue
+  // using the same "measure the sprite's natural size and scale everything
+  // together" technique as the mirror above - confirmed live to produce a
+  // single, correctly-cropped frame with no ghosting or overlap.
 
   const PX_RE = /(-?\d+(?:\.\d+)?)px/;
 
@@ -78,12 +68,42 @@
     return match ? Number(match[1]) : null;
   }
 
-  // Pure aside from writing to targetEl.style: takes plain {style,
-  // getBoundingClientRect?} shaped objects so it can run against a real DOM
-  // element or a fake one in a Node test. Returns false (leaving targetEl
-  // untouched) whenever sourceEl currently has no thumbnail painted, so
-  // callers can decide whether to keep showing the previous frame.
-  function mirrorBackground(sourceEl, targetEl, box) {
+  function extractUrl(backgroundImage) {
+    const match = /url\((['"]?)(.*?)\1\)/.exec(String(backgroundImage || ""));
+    return match ? match[2] : null;
+  }
+
+  // Confirmed live against a running Stash instance: the thumbnail element
+  // never sets an explicit background-size (it resolves to the CSS-wide
+  // keyword "initial", i.e. the image renders at its own natural pixel
+  // size), and background-position is the real negative pixel offset into
+  // that naturally-sized sprite sheet. Scaling position without also
+  // scaling the image itself would point at the right offset in the wrong
+  // (unscaled) image, cropping the wrong area - so when no explicit
+  // background-size is present, the sprite's natural size is measured
+  // directly and scaled by the same factor as the position.
+  const naturalSizeCache = new Map();
+
+  function loadNaturalSize(url) {
+    if (naturalSizeCache.has(url)) return naturalSizeCache.get(url);
+    const promise = new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+    naturalSizeCache.set(url, promise);
+    return promise;
+  }
+
+  // Pure aside from writing to targetEl.style and (when the source has no
+  // explicit background-size) loading the sprite image to measure it. Takes
+  // plain {style, getBoundingClientRect?} shaped objects so it can run
+  // against a real DOM element or a fake one in a Node test. Resolves false
+  // (leaving targetEl untouched) whenever sourceEl currently has no
+  // thumbnail painted, so callers can decide whether to keep showing the
+  // previous frame.
+  async function mirrorBackground(sourceEl, targetEl, box) {
     if (!sourceEl || !targetEl || !box || box.width <= 0 || box.height <= 0) {
       return false;
     }
@@ -105,24 +125,127 @@
     const positionParts = String(style.backgroundPosition || "0px 0px").split(/\s+/);
     const posX = extractPx(positionParts[0]) ?? 0;
     const posY = extractPx(positionParts[1]) ?? 0;
+
     const sizeParts = String(style.backgroundSize || "").split(/\s+/);
-    const sizeW = extractPx(sizeParts[0]);
-    const sizeH = extractPx(sizeParts[1]);
+    let sizeW = extractPx(sizeParts[0]);
+    let sizeH = extractPx(sizeParts[1]);
+    if (sizeW == null || sizeH == null) {
+      const url = extractUrl(image);
+      const natural = url ? await loadNaturalSize(url) : null;
+      if (!natural) return false;
+      sizeW = natural.width;
+      sizeH = natural.height;
+    }
 
     targetEl.style.backgroundImage = image;
     targetEl.style.backgroundRepeat = "no-repeat";
     targetEl.style.backgroundPosition = `${(posX * scale).toFixed(2)}px ${(posY * scale).toFixed(2)}px`;
-    targetEl.style.backgroundSize =
-      sizeW != null && sizeH != null
-        ? `${(sizeW * scale).toFixed(2)}px ${(sizeH * scale).toFixed(2)}px`
-        : style.backgroundSize || "auto";
+    targetEl.style.backgroundSize = `${(sizeW * scale).toFixed(2)}px ${(sizeH * scale).toFixed(2)}px`;
+    return true;
+  }
+
+  // ---- Sprite VTT parsing for the cover-area cycle -----------------------
+  //
+  // Confirmed live against a running Stash instance - a WEBVTT file whose
+  // cues are plain "start --> end" ranges each followed by one line of
+  // "<sprite-filename>#xywh=x,y,w,h" (the standard media-fragment
+  // convention), e.g.:
+  //   00:00:00.000 --> 00:01:57.484
+  //   67ef3d000f0466e2_sprite.jpg#xywh=0,0,640,360
+  // Pure/DOM-free so it can run under a plain Node test.
+
+  const TIMESTAMP_RE = /(\d{2,}):(\d{2}):(\d{2})[.,](\d{3})/;
+
+  function parseVttTimestamp(value) {
+    const match = TIMESTAMP_RE.exec(String(value || ""));
+    if (!match) return null;
+    const [, hours, minutes, seconds, millis] = match;
+    return (
+      Number(hours) * 3600 +
+      Number(minutes) * 60 +
+      Number(seconds) +
+      Number(millis) / 1000
+    );
+  }
+
+  function parseCueImageLine(line, baseUrl) {
+    const trimmed = String(line || "").trim();
+    if (!trimmed) return null;
+    const hashIndex = trimmed.indexOf("#xywh=");
+    if (hashIndex < 0) return null;
+    const path = trimmed.slice(0, hashIndex);
+    let url = path;
+    try {
+      url = new URL(path, baseUrl || undefined).href;
+    } catch (_) {
+      // Relative path with no usable base: fall back to the raw string.
+    }
+    const parts = trimmed
+      .slice(hashIndex + 6)
+      .split(",")
+      .map((part) => Number(part.trim()));
+    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
+    const [x, y, w, h] = parts;
+    if (w <= 0 || h <= 0) return null;
+    return { url, x, y, w, h };
+  }
+
+  function parseSpriteVtt(text, baseUrl) {
+    const lines = String(text || "").split(/\r\n|\n|\r/);
+    const cues = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].includes("-->")) continue;
+      const [startRaw, endRaw] = lines[i].split("-->");
+      const start = parseVttTimestamp(startRaw);
+      const end = parseVttTimestamp(endRaw);
+      let payload = i + 1 < lines.length ? lines[i + 1] : "";
+      while (payload !== undefined && payload.trim() === "" && i + 1 < lines.length) {
+        i++;
+        payload = i + 1 < lines.length ? lines[i + 1] : "";
+      }
+      if (start == null || end == null || end <= start) continue;
+      const image = parseCueImageLine(payload, baseUrl);
+      if (image) cues.push({ start, end, ...image });
+    }
+    cues.sort((a, b) => a.start - b.start);
+    return cues;
+  }
+
+  function fetchSpriteCues(vttUrl) {
+    return fetch(vttUrl, { credentials: "same-origin" })
+      .then((response) => (response.ok ? response.text() : Promise.reject(new Error("sprite VTT request failed"))))
+      .then((text) => parseSpriteVtt(text, vttUrl))
+      .catch(() => []);
+  }
+
+  // Paints one VTT cue's crop into targetEl, using the same "measure the
+  // sprite's natural size, scale position and size together" technique as
+  // mirrorBackground above - confirmed live to reproduce a single, correctly
+  // cropped frame with no ghosting.
+  async function paintCue(targetEl, cue, box) {
+    if (!targetEl || !cue || !box || box.width <= 0 || box.height <= 0) return false;
+    const natural = await loadNaturalSize(cue.url);
+    if (!natural) return false;
+    const scale = Math.min(box.width / cue.w, box.height / cue.h);
+    if (!Number.isFinite(scale) || scale <= 0) return false;
+    targetEl.style.backgroundImage = `url("${cue.url}")`;
+    targetEl.style.backgroundRepeat = "no-repeat";
+    targetEl.style.backgroundPosition = `-${(cue.x * scale).toFixed(2)}px -${(cue.y * scale).toFixed(2)}px`;
+    targetEl.style.backgroundSize = `${(natural.width * scale).toFixed(2)}px ${(natural.height * scale).toFixed(2)}px`;
     return true;
   }
 
   // Exposed for the Node-based unit test harness only; production code paths
   // never read this. Mirrors how the rest of this plugin is tested by
   // requiring the browser file against a faked `window`.
-  window.__javbeaconScrubberInternals = { extractPx, mirrorBackground };
+  window.__javbeaconScrubberInternals = {
+    extractPx,
+    mirrorBackground,
+    parseVttTimestamp,
+    parseCueImageLine,
+    parseSpriteVtt,
+    paintCue,
+  };
 
   // ---- DOM wiring --------------------------------------------------------
   //
@@ -165,13 +288,15 @@
     overlay.classList.remove("is-visible");
   }
 
+  // Confirmed live against a running Stash instance: the player root itself
+  // carries a "vjs-vtt-thumbnails" feature-flag class, and the actual
+  // preview element is "vjs-vtt-thumbnail-display". Do not broaden this to a
+  // substring match - "vtt-thumbnail" is itself a substring of the player
+  // root's own "vjs-vtt-thumbnails" class, so a `[class*="vtt-thumbnail"]`
+  // fallback (used in an earlier revision, in the CSS that hides this
+  // element) matched the player root and hid the entire player.
   function findThumbnailElement(playerEl) {
-    const known = playerEl.querySelector(".vjs-vtt-thumbnail-display");
-    if (known) return known;
-    // Defensive fallback in case Stash's build uses a differently-named
-    // class for the same feature; matches anything containing
-    // "vtt-thumbnail" rather than requiring the exact conventional name.
-    return playerEl.querySelector("[class*='vtt-thumbnail']");
+    return playerEl.querySelector(".vjs-vtt-thumbnail-display");
   }
 
   function findPlayerElement() {
@@ -187,11 +312,15 @@
     return null;
   }
 
-  function attachScrubber(playerEl, options) {
+  function attachScrubber(playerEl, cuesPromise, options) {
     const { hoverDelayMs, cycleIntervalMs, coverEnabled, seekEnabled } = options;
     const overlay = createOverlay();
     const poster = playerEl.querySelector(".vjs-poster");
     const progress = playerEl.querySelector(".vjs-progress-control");
+    let cues = null;
+    cuesPromise.then((resolved) => {
+      cues = resolved;
+    });
 
     function playerHasStarted() {
       return playerEl.classList.contains("vjs-has-started");
@@ -217,37 +346,17 @@
       cycleTimer = null;
     }
 
-    function dispatchSyntheticHover(ratio) {
-      if (!progress) return;
-      const rect = progress.getBoundingClientRect();
-      if (rect.width <= 0) return;
-      progress.dispatchEvent(
-        new MouseEvent("mousemove", {
-          bubbles: true,
-          cancelable: true,
-          clientX: rect.left + rect.width * ratio,
-          clientY: rect.top + rect.height / 2,
-        })
-      );
-    }
-
     function onPosterEnter() {
-      if (!coverEnabled || !progress || playerHasStarted()) return;
+      if (!coverEnabled || playerHasStarted() || !cues || cues.length === 0) return;
       stopCycle();
       hoverTimer = setTimeout(() => {
         let index = 0;
         showOverlay(overlay);
         const step = () => {
-          const ratio = (index % CYCLE_STEPS) / CYCLE_STEPS;
-          index++;
-          dispatchSyntheticHover(ratio);
           const box = coverBox();
           positionOverlay(overlay, box);
-          // requestAnimationFrame runs after the current synchronous event
-          // dispatch (including Stash's own mousemove listener) finishes,
-          // regardless of listener registration order, so the thumbnail
-          // element is guaranteed to already reflect this ratio's frame.
-          requestAnimationFrame(() => mirrorFromThumbnail(box));
+          paintCue(overlay, cues[index], box);
+          index = (index + 1) % cues.length;
         };
         step();
         cycleTimer = setInterval(step, cycleIntervalMs);
@@ -300,6 +409,14 @@
       MIN_CYCLE_INTERVAL_MS
     );
 
+    // Only the cover-area cycle needs the parsed sprite VTT (the seek-bar
+    // mirror reads Stash's own already-computed thumbnail instead), but
+    // fetching it is harmless when only seek-preview is enabled - it just
+    // goes unused.
+    const cuesPromise = coverEnabled && scene?.paths?.vtt
+      ? fetchSpriteCues(scene.paths.vtt)
+      : Promise.resolve([]);
+
     let cancelled = false;
     let attempts = 0;
     let detach = null;
@@ -313,7 +430,7 @@
         }
         return;
       }
-      detach = attachScrubber(playerEl, { coverEnabled, cycleIntervalMs, hoverDelayMs, seekEnabled });
+      detach = attachScrubber(playerEl, cuesPromise, { coverEnabled, cycleIntervalMs, hoverDelayMs, seekEnabled });
     };
     tryAttach();
 
