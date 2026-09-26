@@ -2,6 +2,7 @@ package jellyfin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -163,6 +164,77 @@ func TestMetadataBoundsSlowStashLookup(t *testing.T) {
 	}
 	if m.PerformerImages != nil {
 		t.Fatalf("expected no performer images from a timed-out Stash lookup: %+v", m.PerformerImages)
+	}
+}
+
+func TestCollectionNamesForReleaseReflectsFilterPresetMembership(t *testing.T) {
+	svc, st, _, r := testService(t)
+	defer st.Close()
+	watchlist := true
+	if err := st.PatchRelease(context.Background(), r.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveUser(context.Background(), "admin", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveFilterPreset(context.Background(), domain.FilterPreset{Name: "My Watchlist", State: json.RawMessage(`{"watchlist":true}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveSettings(context.Background(), map[string]string{"jellyfin_library_revision": "revision-1"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := svc.Metadata(context.Background(), r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.CollectionNames) != 1 || m.CollectionNames[0] != "My Watchlist" {
+		t.Fatalf("CollectionNames=%+v, want [My Watchlist]", m.CollectionNames)
+	}
+}
+
+// TestCollectionMembershipIndexCachesUntilRevisionChanges guards against
+// collectionNamesForRelease regressing back to a full per-preset library scan
+// on every single Metadata() call - confirmed live as the real cause of
+// Metadata() timing out under load (a Silo "Apply Match" click failing with a
+// gRPC deadline error, and Jellyfin's own HttpClient.Timeout tripping during
+// a full library scan): with several saved presets and a library of several
+// thousand releases, that per-request cost alone was enough to blow both
+// budgets. The index must now be rebuilt only when jellyfin_library_revision
+// moves, and reused as-is otherwise.
+func TestCollectionMembershipIndexCachesUntilRevisionChanges(t *testing.T) {
+	svc, st, _, _ := testService(t)
+	defer st.Close()
+	if err := st.SaveUser(context.Background(), "admin", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveFilterPreset(context.Background(), domain.FilterPreset{Name: "Everything", State: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveSettings(context.Background(), map[string]string{"jellyfin_library_revision": "revision-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	idx1, err := svc.collectionMembershipIndex(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx2, err := svc.collectionMembershipIndex(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprintf("%p", idx1) != fmt.Sprintf("%p", idx2) {
+		t.Fatal("expected the same cached index instance while the revision is unchanged")
+	}
+
+	if err := st.SaveSettings(context.Background(), map[string]string{"jellyfin_library_revision": "revision-2"}); err != nil {
+		t.Fatal(err)
+	}
+	idx3, err := svc.collectionMembershipIndex(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprintf("%p", idx1) == fmt.Sprintf("%p", idx3) {
+		t.Fatal("expected a freshly rebuilt index instance after the revision changed")
 	}
 }
 
