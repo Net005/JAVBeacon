@@ -4,6 +4,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Providers;
+using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -12,6 +13,7 @@ namespace Jellyfin.Plugin.JAVBeacon;
 public sealed class LibrarySyncService(
     ILibraryManager library,
     ICollectionManager collections,
+    IProviderManager providerManager,
     WatchedStatusSynchronizer watchedSync,
     JAVBeaconClient client,
     ILogger<LibrarySyncService> logger) : BackgroundService
@@ -55,11 +57,11 @@ public sealed class LibrarySyncService(
                                 .ThenByDescending(x => x.ReleaseId)
                                 .Select(x => x.ReleaseId)
                                 .ToArray();
-                            await ReconcileCollection(name, orderedWatchlist).ConfigureAwait(false);
+                            await ReconcileCollection(name, orderedWatchlist, forceImageRefresh: false, stoppingToken).ConfigureAwait(false);
                         }
                         if (config.EnableFilterPresetCollections)
                         {
-                            await ReconcileFilterPresetCollections(snapshot.FilterPresets, config.FilterPresetCollectionPrefix).ConfigureAwait(false);
+                            await ReconcileFilterPresetCollections(snapshot.FilterPresets, config.FilterPresetCollectionPrefix, forceImageRefresh: false, stoppingToken).ConfigureAwait(false);
                         }
                         if (config.SyncWatchedFromStash)
                         {
@@ -102,11 +104,15 @@ public sealed class LibrarySyncService(
                 .ThenByDescending(x => x.ReleaseId)
                 .Select(x => x.ReleaseId)
                 .ToArray();
-            await ReconcileCollection(name, orderedWatchlist).ConfigureAwait(false);
+            // forceImageRefresh: true - this path runs from the scheduled
+            // catch-up task (every 6h, or "Run Now"), which is also the
+            // occasion this plugin uses to rotate each collection's cover to
+            // a freshly-picked member image (see EnsureCollectionImage).
+            await ReconcileCollection(name, orderedWatchlist, forceImageRefresh: true, ct).ConfigureAwait(false);
         }
         if (config.EnableFilterPresetCollections)
         {
-            await ReconcileFilterPresetCollections(snapshot.FilterPresets, config.FilterPresetCollectionPrefix).ConfigureAwait(false);
+            await ReconcileFilterPresetCollections(snapshot.FilterPresets, config.FilterPresetCollectionPrefix, forceImageRefresh: true, ct).ConfigureAwait(false);
         }
         if (config.SyncWatchedFromStash)
         {
@@ -114,7 +120,7 @@ public sealed class LibrarySyncService(
         }
     }
 
-    private async Task ReconcileFilterPresetCollections(IReadOnlyList<Models.FilterPresetCollectionDto> presets, string? prefix)
+    private async Task ReconcileFilterPresetCollections(IReadOnlyList<Models.FilterPresetCollectionDto> presets, string? prefix, bool forceImageRefresh, CancellationToken ct)
     {
         prefix ??= string.Empty;
         var existingByPresetId = library.GetItemList(new InternalItemsQuery
@@ -132,7 +138,7 @@ public sealed class LibrarySyncService(
             seenPresetIds.Add(presetId);
             var name = string.IsNullOrWhiteSpace(prefix) ? preset.Name : prefix + preset.Name;
             existingByPresetId.TryGetValue(presetId, out var existing);
-            await ReconcileCollection(name, preset.ReleaseIds, existing, FilterPresetProviderId, presetId).ConfigureAwait(false);
+            await ReconcileCollection(name, preset.ReleaseIds, forceImageRefresh, ct, existing, FilterPresetProviderId, presetId).ConfigureAwait(false);
         }
 
         // A filter set that was deleted (or whose collection lost its
@@ -147,7 +153,7 @@ public sealed class LibrarySyncService(
         }
     }
 
-    private async Task ReconcileCollection(string name, IReadOnlyList<long> desiredReleaseIds, BoxSet? existing = null, string? providerIdKey = null, string? providerIdValue = null)
+    private async Task ReconcileCollection(string name, IReadOnlyList<long> desiredReleaseIds, bool forceImageRefresh, CancellationToken ct, BoxSet? existing = null, string? providerIdKey = null, string? providerIdValue = null)
     {
         var desiredIdStrings = desiredReleaseIds.Select(x => x.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var javItems = library.GetItemList(new InternalItemsQuery
@@ -184,6 +190,7 @@ public sealed class LibrarySyncService(
                 collection.ProviderIds[providerIdKey] = providerIdValue;
             }
             await ApplyOrder(collection, desiredItems, javItems).ConfigureAwait(false);
+            await EnsureCollectionImage(collection, desiredItems, force: true, ct).ConfigureAwait(false);
             logger.LogInformation("Created Jellyfin collection {CollectionName} with {Count} JAVBeacon items", name, desiredItems.Length);
             return;
         }
@@ -203,10 +210,47 @@ public sealed class LibrarySyncService(
         if (add.Length > 0) await collections.AddToCollectionAsync(collection.Id, add).ConfigureAwait(false);
         if (remove.Length > 0) await collections.RemoveFromCollectionAsync(collection.Id, remove).ConfigureAwait(false);
         var reordered = await ApplyOrder(collection, desiredItems, javItems).ConfigureAwait(false);
+        await EnsureCollectionImage(collection, desiredItems, forceImageRefresh, ct).ConfigureAwait(false);
         if (renamed || add.Length > 0 || remove.Length > 0 || reordered)
         {
             if (renamed) await collection.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None).ConfigureAwait(false);
             logger.LogInformation("Synchronized Jellyfin collection {CollectionName}: added {Added}, removed {Removed}", name, add.Length, remove.Length);
+        }
+    }
+
+    // Jellyfin no longer reliably auto-generates a stacked thumbnail for a
+    // collection from its members' own images, so a JAVBeacon-managed
+    // collection can otherwise stay imageless indefinitely. EnsureCollectionImage
+    // sets one directly: with force=false it only fills a genuinely missing
+    // Primary image (cheap, safe to call on every regular poll); with
+    // force=true (the 6-hourly/"Run Now" catch-up task) it also rotates an
+    // existing image to a freshly-picked member, so the art doesn't stay
+    // fixed on whichever release happened to be first. The pick prefers
+    // newer releases (by PremiereDate) without being strictly the newest
+    // every time - a small weighted-random pool, not a fixed pick.
+    private async Task EnsureCollectionImage(BoxSet collection, IReadOnlyList<BaseItem> desiredItems, bool force, CancellationToken ct)
+    {
+        if (desiredItems.Count == 0) return;
+        if (!force && collection.HasImage(ImageType.Primary)) return;
+
+        var candidates = desiredItems.OrderByDescending(x => x.PremiereDate ?? DateTime.MinValue).ToArray();
+        var poolSize = Math.Max(3, (int)Math.Ceiling(candidates.Length * 0.34));
+        var pool = candidates.Take(poolSize).ToArray();
+        var picked = pool[Random.Shared.Next(pool.Length)];
+        if (!picked.ProviderIds.TryGetValue("JAVBeacon", out var raw) || !long.TryParse(raw, System.Globalization.CultureInfo.InvariantCulture, out var releaseId))
+        {
+            return;
+        }
+        try
+        {
+            var dto = await client.Metadata(releaseId, ct).ConfigureAwait(false);
+            if (dto is null || string.IsNullOrWhiteSpace(dto.CoverPath)) return;
+            var url = client.Absolute(dto.CoverPath);
+            await providerManager.SaveImage(collection, url, ImageType.Primary, null, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Unable to set a cover image for Jellyfin collection {CollectionName}", collection.Name);
         }
     }
 

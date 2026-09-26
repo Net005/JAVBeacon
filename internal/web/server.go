@@ -275,6 +275,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/integrations/jellyfin/releases/{id}/stash-cover", s.jellyfinStashCover)
 	s.mux.HandleFunc("GET /api/v1/integrations/silo/search", s.siloSearch)
 	s.mux.HandleFunc("GET /api/v1/integrations/silo/releases/{id}", s.siloMetadata)
+	s.mux.HandleFunc("POST /api/v1/integrations/silo/playback", s.siloPlayback)
 	s.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -532,6 +533,7 @@ func (s *Server) routes() {
 		s.json(w, 200, x)
 	})
 	s.mux.HandleFunc("GET /api/stash/history", s.stashHistory)
+	s.mux.HandleFunc("GET /api/stash/history/scenes/{sceneId}/cover", s.stashHistorySceneCover)
 	s.mux.HandleFunc("GET /api/discoveries", s.discoveries)
 	s.mux.HandleFunc("POST /api/discoveries/ollama/test", s.testDiscoveryOllama)
 	s.mux.HandleFunc("POST /api/discoveries/openai/test", s.testDiscoveryOpenAI)

@@ -117,6 +117,13 @@ that saved filter set, with no separate sorting logic in the plugin. An
 optional prefix (for example `JAVBeacon: `) can be prepended to every such
 collection's name to tell them apart from manually-created ones.
 
+Each collection also gets a cover image set directly by the plugin (Jellyfin
+no longer reliably auto-generates a stacked thumbnail from a collection's own
+members), picked from one of its member releases' own JAVBeacon cover,
+weighted toward newer releases without being strictly the newest every time.
+It's filled in immediately if missing, and rotated to a freshly-picked member
+every time the catch-up task runs (see below).
+
 ## Catch-up scheduled tasks
 
 Two scheduled tasks appear under Jellyfin's own Scheduled Tasks page,

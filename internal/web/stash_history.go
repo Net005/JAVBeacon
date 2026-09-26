@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -89,6 +90,32 @@ func parseHistoryBound(raw string) (time.Time, error) {
 		return t, nil
 	}
 	return time.Parse("2006-01-02", raw)
+}
+
+// stashHistorySceneCover streams a StashApp scene's screenshot directly for
+// Stash History entries that never matched a JAVBeacon release (so
+// /covers/{release_id} isn't available) - filling in the "?" placeholder
+// cover the history grid otherwise shows for those rows.
+func (s *Server) stashHistorySceneCover(w http.ResponseWriter, r *http.Request) {
+	sceneID := r.PathValue("sceneId")
+	if sceneID == "" {
+		s.problem(w, http.StatusBadRequest, "invalid scene id")
+		return
+	}
+	resp, err := s.stash.FetchSceneScreenshot(r.Context(), sceneID)
+	if err != nil {
+		s.problem(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "image/jpeg"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 func (s *Server) stashHistory(w http.ResponseWriter, r *http.Request) {
