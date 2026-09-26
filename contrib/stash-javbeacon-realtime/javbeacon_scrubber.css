@@ -30,8 +30,11 @@
 }
 
 /* Stash's small fixed-size seek-bar thumbnail preview (the standard
-   videojs-vtt-thumbnails plugin) is replaced by the large preview painted
-   into .javbeacon-scrub-overlay above, so hide the original tooltip. */
-.vjs-vtt-thumbnail-display {
+   videojs-vtt-thumbnails plugin) is mirrored, scaled up, into
+   .javbeacon-scrub-overlay above, so hide the original small tooltip. The
+   attribute selector is a defensive fallback in case the exact class name
+   differs from the conventional one. */
+.vjs-vtt-thumbnail-display,
+[class*="vtt-thumbnail"] {
   display: none !important;
 }

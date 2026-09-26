@@ -141,18 +141,27 @@ only the configured browser URL and final release path reach the page.
 
 ## Player previews
 
-Stash generates a sprite sheet and matching WebVTT file for every scene
-(`scene.paths.sprite` / `scene.paths.vtt`) - the same screenshots used by the
-scene grid's hover preview. This plugin reuses that existing sprite data on
-the scene detail page in two places:
+Stash already renders a small seek-bar thumbnail preview (the sprite/VTT
+screenshots also used by the scene grid's hover preview) whenever the
+pointer moves over the seek bar. This plugin hides that small preview and
+mirrors its already-computed image, crop, and position onto a large overlay
+covering the cover/video area instead, scaled up proportionally:
 
-- **Cover-area scrubbing.** Hovering the cover/poster area before playback
-  starts cycles through the scene's sprite screenshots, one at a time, the
-  same source images the grid view uses for its own hover preview.
 - **Large seek-bar preview.** Hovering the seek bar below the player paints
-  the sprite frame for that point in time into the cover/video area itself,
-  scaled up to the sprite sheet's native resolution. This replaces Stash's
-  built-in small, fixed-size seek-bar thumbnail, which is hidden.
+  the same frame Stash would have shown in its small thumbnail into the
+  cover/video area, at a large size.
+- **Cover-area scrubbing.** Hovering the cover/poster area before playback
+  starts cycles through evenly-spaced points across the seek bar the same
+  way, so the cover area previews the scene the same way the scene grid's
+  hover preview does.
+
+Both reuse Stash's own thumbnail computation rather than re-deriving the
+sprite crop independently, so the previewed frame is always exactly what
+Stash itself would have shown - just displayed larger. The one limit scaling
+cannot remove is the sprite sheet's own source resolution: Stash's generated
+sprite screenshots are intentionally low-resolution to keep the sprite sheet
+small, so the large preview is that same resolution enlarged, not a
+higher-resolution capture.
 
 Both behaviors are on by default and can be turned off independently:
 
@@ -163,13 +172,13 @@ Two timings are configurable:
 
 - **Cover hover delay (ms)** - how long the pointer must rest over the cover
   area before scrubbing starts. Defaults to 400ms.
-- **Time between sprites (ms)** - how long each sprite screenshot is shown
-  before advancing to the next one. Defaults to 700ms; values below 100ms are
-  treated as 100ms.
+- **Time between sprites (ms)** - how long each frame is shown before
+  advancing to the next one during cover-area scrubbing. Defaults to 700ms;
+  values below 100ms are treated as 100ms.
 
-If a scene has no sprite VTT yet (for example, one added before Stash
-generated preview data), both previews are silently unavailable for that
-scene; nothing else on the page is affected.
+If a scene has no sprite preview data yet (for example, one added before
+Stash generated it), both previews are silently unavailable for that scene;
+nothing else on the page is affected.
 
 ## Realtime sync
 
