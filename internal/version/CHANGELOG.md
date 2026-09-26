@@ -5,6 +5,19 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.230] - 2026-09-26
+
+### Fixed
+
+- Fixed the real cause of the metadata timeouts v1.0.229 didn't fully fix:
+  computing which saved-filter-set collections a release belongs to was
+  scanning the entire release library once per saved filter preset, on
+  every single metadata request for one release - not just occasionally
+  slow under StashApp latency (already fixed in v1.0.229), but expensive on
+  every call regardless. This is now computed once per library-change
+  signal and cached, so a metadata request for one release no longer pays
+  for a full library scan.
+
 ## [1.0.229] - 2026-09-26
 
 ### Fixed
