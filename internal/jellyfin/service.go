@@ -46,6 +46,12 @@ type Service struct {
 	stash stashBridge
 	shots *screenshots.Cache
 	mu    sync.Mutex
+
+	// collMu/collRevision/collIndex cache collectionNamesForRelease's
+	// per-preset membership computation - see its own doc comment for why.
+	collMu       sync.Mutex
+	collRevision string
+	collIndex    map[int64][]string
 }
 
 func New(st store.Store, stashService *stash.Service, screenshotCaches ...*screenshots.Cache) *Service {
@@ -288,6 +294,13 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metada
 // both enrichment steps instead of fetching it twice.
 const stashLookupTimeout = 5 * time.Second
 
+// collectionIndexTimeout bounds collectionMembershipIndex's rebuild pass (see
+// its doc comment) - a full scan of every release for every saved filter
+// preset, which should be rare (once per jellyfin_library_revision change)
+// but must still not hang every concurrent Metadata() call open-endedly on a
+// very large library.
+const collectionIndexTimeout = 10 * time.Second
+
 // stashSceneMetadata fetches sceneID's Stash metadata under stashLookupTimeout
 // regardless of whatever deadline (if any) ctx already carries, so a slow or
 // stuck Stash server degrades this one lookup instead of blowing through a
@@ -346,37 +359,79 @@ func applyPerformerImages(scene stash.StashSceneMetadata, m *Metadata) {
 }
 
 // collectionNamesForRelease resolves every saved filter set that currently
-// matches releaseID, reusing the exact same filter+sort engine
-// LibrarySync/resolveFilterReleaseIDs uses for Jellyfin collections. It is
-// best-effort: any storage error yields no names rather than failing the
-// whole metadata request.
+// matches releaseID. It is best-effort: any storage error yields no names
+// rather than failing the whole metadata request.
+//
+// Confirmed live as the real cause of Metadata() timing out under load (a
+// Silo "Apply Match" click failing with a gRPC deadline error, and Jellyfin's
+// own 15s HttpClient.Timeout tripping during a full library scan): this used
+// to call resolveFilterReleaseIDs - which pages through EVERY release the
+// store holds - once per saved filter preset, on every single Metadata()
+// call for one release. With a library of several thousand releases and more
+// than a handful of presets, that is thousands of releases scanned, possibly
+// several times over, just to answer "which collections does this one
+// release belong to" - and a full Jellyfin library scan calls Metadata() for
+// every item, so this cost was being paid, in full, over and over,
+// concurrently. It now goes through collectionMembershipIndex, which
+// performs that same expensive pass once per jellyfin_library_revision value
+// (the same staleness signal the Silo collection-sync task and LibrarySync
+// already use) and serves every other release lookup against that revision
+// from an in-memory map until the revision moves again.
 func (s *Service) collectionNamesForRelease(ctx context.Context, releaseID int64) []string {
-	presets, err := s.store.FilterPresets(ctx)
-	if err != nil || len(presets) == 0 {
-		return nil
-	}
-	settings, err := s.store.Settings(ctx)
+	index, err := s.collectionMembershipIndex(ctx)
 	if err != nil {
 		return nil
 	}
-	var names []string
+	return index[releaseID]
+}
+
+// collectionMembershipIndex returns a releaseID -> matching-preset-names map,
+// rebuilding it only when jellyfin_library_revision has moved since the last
+// build. Concurrent callers during a rebuild block briefly on collMu rather
+// than each starting their own redundant full pass - acceptable here because
+// the pass only happens once per revision change, not once per request.
+func (s *Service) collectionMembershipIndex(ctx context.Context) (map[int64][]string, error) {
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	revision := settings["jellyfin_library_revision"]
+
+	s.collMu.Lock()
+	defer s.collMu.Unlock()
+	if s.collIndex != nil && s.collRevision == revision {
+		return s.collIndex, nil
+	}
+
+	// Bounded independently of the caller's own context/deadline (same
+	// reasoning as stashLookupTimeout above): this rebuild scans the whole
+	// library once per preset, so on a very large library it should still
+	// fail fast rather than hold collMu - and every other Metadata() call
+	// waiting on it - open-endedly.
+	boundedCtx, cancel := context.WithTimeout(ctx, collectionIndexTimeout)
+	defer cancel()
+
+	presets, err := s.store.FilterPresets(boundedCtx)
+	if err != nil {
+		return nil, err
+	}
+	index := map[int64][]string{}
 	for _, preset := range presets {
 		filter, ok := filterFromPresetState(preset.State, settings)
 		if !ok {
 			continue
 		}
-		ids, err := s.resolveFilterReleaseIDs(ctx, filter)
+		ids, err := s.resolveFilterReleaseIDs(boundedCtx, filter)
 		if err != nil {
 			continue
 		}
 		for _, id := range ids {
-			if id == releaseID {
-				names = append(names, preset.Name)
-				break
-			}
+			index[id] = append(index[id], preset.Name)
 		}
 	}
-	return names
+	s.collRevision = revision
+	s.collIndex = index
+	return index, nil
 }
 
 // enrichFromStash fills gaps in JAVBeacon's own scraped metadata directly
