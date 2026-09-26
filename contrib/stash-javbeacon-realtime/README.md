@@ -167,12 +167,12 @@ same resolution enlarged, not a higher-resolution capture.
 
 The preview is letterboxed to the frame's own aspect ratio and confined to
 the area above the player's control bar, so the control bar and seek
-position stay visible while scrubbing, and the preview never shows part of
-an adjacent sprite frame bleeding in below the intended one. The preview
-overlay always covers the full video area with an opaque background, with
-any letterbox margin painted as solid black rather than left transparent -
-the player's native cover image sits behind it and would otherwise show
-through around the edges.
+position stay visible while scrubbing. It's built from two layered pieces:
+an opaque backdrop that always covers the entire video area (so the
+player's native cover image, which sits behind it, can never show through
+around the edges) and an inner frame sized to exactly the scaled preview
+image (so an adjacent sprite frame can never bleed in above or below the
+intended one).
 
 Both behaviors are on by default and can be turned off independently:
 
