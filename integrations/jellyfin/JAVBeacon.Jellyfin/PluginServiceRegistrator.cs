@@ -14,7 +14,13 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
         services.AddSingleton<JAVBeaconClient>();
         services.AddSingleton<WatchedStatusSynchronizer>();
         services.AddHostedService<PlaybackBridge>();
-        services.AddHostedService<LibrarySyncService>();
+        // Registered as a singleton (not just AddHostedService, which would
+        // only expose it as IHostedService) so SyncCollectionsTask can also
+        // resolve and call the same instance's RunFullSyncAsync for its
+        // scheduled catch-up pass.
+        services.AddSingleton<LibrarySyncService>();
+        services.AddHostedService(sp => sp.GetRequiredService<LibrarySyncService>());
         services.AddScoped<IScheduledTask, SyncWatchedStatusTask>();
+        services.AddScoped<IScheduledTask, SyncCollectionsTask>();
     }
 }

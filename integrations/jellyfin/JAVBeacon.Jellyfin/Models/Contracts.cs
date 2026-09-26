@@ -21,6 +21,11 @@ public sealed record MetadataDto
     [JsonPropertyName("cover_path")] public string? CoverPath { get; init; }
     [JsonPropertyName("cover_backdrop_path")] public string? CoverBackdropPath { get; init; }
     [JsonPropertyName("backdrop_urls")] public string[] BackdropUrls { get; init; } = [];
+    // Populated only when JAVBeacon has no cover image of its own for this
+    // release (see JAVBeaconClient/enrichFromStash on the server) - a
+    // JAVBeacon-proxied StashApp scene screenshot, offered as an additional
+    // image candidate rather than a replacement for CoverPath/BackdropUrls.
+    [JsonPropertyName("stash_screenshot_url")] public string? StashScreenshotUrl { get; init; }
     [JsonPropertyName("provider_ids")] public Dictionary<string, string> ProviderIds { get; init; } = [];
 }
 
@@ -47,6 +52,18 @@ public sealed record LibrarySyncDto
     // includes it; the plugin only acts on it when SyncWatchedFromStash is
     // enabled.
     [JsonPropertyName("watched")] public LibrarySyncItemDto[] Watched { get; init; } = [];
+    // FilterPresets mirrors every saved filter set from the Release Library,
+    // each already resolved server-side to its exact, sorted membership
+    // using the same filter+sort engine the web UI itself uses. One Jellyfin
+    // collection is created/kept in sync per entry.
+    [JsonPropertyName("filter_presets")] public FilterPresetCollectionDto[] FilterPresets { get; init; } = [];
+}
+
+public sealed record FilterPresetCollectionDto
+{
+    [JsonPropertyName("id")] public long Id { get; init; }
+    [JsonPropertyName("name")] public string Name { get; init; } = string.Empty;
+    [JsonPropertyName("release_ids")] public long[] ReleaseIds { get; init; } = [];
 }
 
 public sealed record PlaybackDto

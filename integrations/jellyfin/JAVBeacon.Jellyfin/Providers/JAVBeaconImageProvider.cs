@@ -47,6 +47,17 @@ public sealed class JAVBeaconImageProvider(JAVBeaconClient client) : IRemoteImag
         images.AddRange(dto.BackdropUrls.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => new RemoteImageInfo { ProviderName = Name, Type = ImageType.Backdrop, Url = client.Absolute(x) }));
         var backdropCover = !string.IsNullOrWhiteSpace(dto.CoverBackdropPath) ? dto.CoverBackdropPath : dto.CoverPath;
         if (!string.IsNullOrWhiteSpace(backdropCover)) images.Add(new() { ProviderName = Name, Type = ImageType.Backdrop, Url = client.Absolute(backdropCover) });
+        // StashScreenshotUrl is only ever populated server-side when JAVBeacon
+        // has no cover of its own for this release (see MetadataDto). Offered
+        // as an additional Primary/Backdrop candidate, never a replacement,
+        // so a release JAVBeacon never finished scraping but that is linked
+        // to a StashApp scene still gets an image.
+        if (!string.IsNullOrWhiteSpace(dto.StashScreenshotUrl))
+        {
+            var stashUrl = client.Absolute(dto.StashScreenshotUrl);
+            images.Add(new() { ProviderName = Name, Type = ImageType.Primary, Url = stashUrl });
+            images.Add(new() { ProviderName = Name, Type = ImageType.Backdrop, Url = stashUrl });
+        }
         return images;
     }
 

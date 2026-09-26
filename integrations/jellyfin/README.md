@@ -103,6 +103,46 @@ scan. A successful scheduled Stash local-library sync also advances it, which
 catches changes made while realtime hooks were unavailable. The plugin queues
 one initial scan after startup, then checks at the configured interval.
 
+## Saved filter set collections
+
+Enable **Create a collection for every saved filter set in JAVBeacon** to get
+one Jellyfin collection per saved filter set from the Release Library (the
+same filter sets behind the toolbar's saved-filter-sets menu), automatically
+created, kept in sync, and renamed/removed when the filter set is renamed or
+deleted. Each collection's membership and sort order come straight from
+JAVBeacon's own filter+sort engine - the server resolves the filter set to an
+already-sorted list of matching local, Stash-linked release IDs, so the
+collection always matches what the Release Library itself would show for
+that saved filter set, with no separate sorting logic in the plugin. An
+optional prefix (for example `JAVBeacon: `) can be prepended to every such
+collection's name to tell them apart from manually-created ones.
+
+## Catch-up scheduled tasks
+
+Two scheduled tasks appear under Jellyfin's own Scheduled Tasks page,
+category "JAVBeacon":
+
+- **Sync watched status from StashApp** - runs the same watched-status
+  reconciliation as the "Sync watched status from StashApp" setting, once.
+- **Resync JAVBeacon collections (catch-up)** - forces a full resync of the
+  Watchlist collection, every saved-filter-set collection, and watched
+  status, independent of the continuous background poll's cached revision.
+  Runs every 6 hours by default and can also be triggered manually ("Run
+  Now") or given its own custom schedule. This exists as a safety net: the
+  background loop already reacts to Stash/JAVBeacon changes roughly every
+  `LibrarySyncIntervalSeconds`, but a missed poll (Jellyfin restart mid-cycle,
+  a JAVBeacon outage, the plugin reloading) has no other way to catch up.
+
+## Stash metadata/image fallback
+
+When a release is linked to a StashApp scene but JAVBeacon's own scrape is
+incomplete (no title/overview, studio, performers, genres, or cover image),
+the metadata endpoint fills only the missing fields directly from that Stash
+scene's title/details/studio/performers/tags and screenshot - it never
+overrides anything JAVBeacon already has. The Stash screenshot, when used, is
+proxied through JAVBeacon (`/api/v1/integrations/jellyfin/releases/{id}/stash-cover`)
+so the Stash base URL and API key never reach Jellyfin.
+
 ## API smoke tests
 
 Use placeholders; do not commit keys:

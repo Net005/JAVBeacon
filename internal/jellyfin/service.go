@@ -36,6 +36,7 @@ type stashBridge interface {
 	AddJellyfinPlay(context.Context, string, time.Time) (int, error)
 	AddJellyfinO(context.Context, string, time.Time) (int, error)
 	JellyfinActivity(context.Context, string) (stash.JellyfinActivity, error)
+	StashSceneMetadata(context.Context, string) (stash.StashSceneMetadata, error)
 }
 
 type Service struct {
@@ -85,10 +86,17 @@ type Metadata struct {
 	// CoverBackdropPath points at the non-cropped, non-padded original
 	// cover - a cropped poster makes a poor background, so Jellyfin's
 	// Backdrop image should use this path instead of CoverPath.
-	CoverBackdropPath string            `json:"cover_backdrop_path,omitempty"`
-	BackdropURLs      []string          `json:"backdrop_urls,omitempty"`
-	SourceURL         string            `json:"source_url,omitempty"`
-	ProviderIDs       map[string]string `json:"provider_ids"`
+	CoverBackdropPath string   `json:"cover_backdrop_path,omitempty"`
+	BackdropURLs      []string `json:"backdrop_urls,omitempty"`
+	// StashScreenshotURL is a JAVBeacon-proxied StashApp scene screenshot,
+	// populated only when this release has no JAVBeacon-scraped cover of its
+	// own (r.ImageURL is empty) - see enrichFromStash. Jellyfin's image
+	// provider offers it alongside (never instead of) JAVBeacon's own cover/
+	// backdrop candidates, so a release JAVBeacon never fully scraped but
+	// that is linked to a StashApp scene still gets an image.
+	StashScreenshotURL string            `json:"stash_screenshot_url,omitempty"`
+	SourceURL          string            `json:"source_url,omitempty"`
+	ProviderIDs        map[string]string `json:"provider_ids"`
 }
 
 type MatchResult struct {
@@ -120,6 +128,23 @@ type LibrarySyncSnapshot struct {
 	// status from StashApp" setting is enabled; JAVBeacon always includes it
 	// in the snapshot so enabling that setting later needs no backend change.
 	Watched []LibrarySyncItem `json:"watched"`
+	// FilterPresets mirrors every saved filter set from the Release Library
+	// (see domain.FilterPreset), each resolved to the exact, already-sorted
+	// list of local/Stash-linked release IDs it currently matches - using
+	// the very same filter+sort engine (store.Releases) the web UI itself
+	// uses, so a Jellyfin collection built from this list always matches
+	// what the Release Library would show for that saved filter set. The
+	// Jellyfin plugin creates/updates one collection per entry and removes
+	// collections for presets that no longer exist.
+	FilterPresets []FilterPresetCollection `json:"filter_presets"`
+}
+
+// FilterPresetCollection is one saved filter set resolved to its current,
+// ordered membership for the Jellyfin plugin's collection sync.
+type FilterPresetCollection struct {
+	ID         int64   `json:"id"`
+	Name       string  `json:"name"`
+	ReleaseIDs []int64 `json:"release_ids"`
 }
 
 var releaseCode = regexp.MustCompile(`(?i)[a-z]{2,}(?:[-_ ]?\d){2,7}`)
@@ -146,7 +171,7 @@ func (s *Service) Match(ctx context.Context, path, query string) (MatchResult, e
 		for _, candidate := range s.matchPaths(ctx, path) {
 			r, err := s.repo.JellyfinReleaseByPath(ctx, candidate)
 			if err == nil {
-				m := s.metadata(r)
+				m := s.enrichFromStash(ctx, r, s.metadata(r))
 				method := "path"
 				if candidate != path {
 					method = "remapped_path"
@@ -175,7 +200,7 @@ func (s *Service) Match(ctx context.Context, path, query string) (MatchResult, e
 	}
 	for _, r := range rows {
 		if canonical(r.VideoID) == want {
-			m := s.metadata(r)
+			m := s.enrichFromStash(ctx, r, s.metadata(r))
 			return MatchResult{Matched: true, MatchMethod: "release_code", Release: &m}, nil
 		}
 	}
@@ -231,7 +256,7 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metada
 	}
 	out := make([]Metadata, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, s.metadata(r))
+		out = append(out, s.enrichFromStash(ctx, r, s.metadata(r)))
 	}
 	return out, nil
 }
@@ -241,7 +266,50 @@ func (s *Service) Metadata(ctx context.Context, releaseID int64) (Metadata, erro
 	if err != nil {
 		return Metadata{}, err
 	}
-	return s.metadata(r), nil
+	return s.enrichFromStash(ctx, r, s.metadata(r)), nil
+}
+
+// enrichFromStash fills gaps in JAVBeacon's own scraped metadata directly
+// from the linked StashApp scene, so a release JAVBeacon only partially
+// scraped (or never finished scraping) still shows complete information in
+// Jellyfin. It only ever fills a field that is currently EMPTY - StashApp
+// data never overrides anything JAVBeacon itself already has - and it is
+// best-effort: a StashApp lookup failure (unreachable server, scene since
+// deleted, etc.) leaves m unchanged rather than failing the whole request.
+func (s *Service) enrichFromStash(ctx context.Context, r domain.Release, m Metadata) Metadata {
+	if s.stash == nil || r.StashSceneID == "" {
+		return m
+	}
+	missingText := r.Title == "" || r.Studio == "" || len(r.Actresses) == 0 || len(r.Genres) == 0
+	missingImage := r.ImageURL == ""
+	if !missingText && !missingImage {
+		return m
+	}
+	scene, err := s.stash.StashSceneMetadata(ctx, r.StashSceneID)
+	if err != nil {
+		return m
+	}
+	if r.Title == "" {
+		if scene.Details != "" {
+			m.Overview = scene.Details
+		} else if scene.Title != "" {
+			m.Overview = scene.Title
+		}
+	}
+	if r.Studio == "" && scene.Studio != "" {
+		m.Studio = scene.Studio
+	}
+	if len(r.Actresses) == 0 && len(scene.Performers) > 0 {
+		m.Performers = scene.Performers
+	}
+	if len(r.Genres) == 0 && len(scene.Tags) > 0 {
+		m.Genres = scene.Tags
+		m.Tags = append(append([]string(nil), scene.Tags...), m.Tags...)
+	}
+	if missingImage && scene.ScreenshotURL != "" {
+		m.StashScreenshotURL = fmt.Sprintf("/api/v1/integrations/jellyfin/releases/%d/stash-cover", r.ID)
+	}
+	return m
 }
 
 func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) {
@@ -277,7 +345,122 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 			break
 		}
 	}
+	presets, err := s.store.FilterPresets(ctx)
+	if err != nil {
+		return LibrarySyncSnapshot{}, err
+	}
+	for _, preset := range presets {
+		filter, ok := filterFromPresetState(preset.State, settings)
+		if !ok {
+			continue
+		}
+		ids, err := s.resolveFilterReleaseIDs(ctx, filter)
+		if err != nil {
+			// A single malformed/legacy saved filter must never break sync for
+			// every other collection - skip it and keep going.
+			continue
+		}
+		out.FilterPresets = append(out.FilterPresets, FilterPresetCollection{ID: preset.ID, Name: preset.Name, ReleaseIDs: ids})
+	}
 	return out, nil
+}
+
+// resolveFilterReleaseIDs runs filter through the exact same store.Releases
+// engine the Release Library itself uses, paging through every match and
+// keeping only releases Jellyfin could actually have (local, Stash-linked),
+// in the order store.Releases returns them (i.e. filter.Sort/Direction).
+func (s *Service) resolveFilterReleaseIDs(ctx context.Context, filter domain.ReleaseFilter) ([]int64, error) {
+	ids := []int64{}
+	filter.Limit = 500
+	for offset := 0; ; offset += 500 {
+		filter.Offset = offset
+		rows, err := s.store.Releases(ctx, filter)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			if r.Local && r.StashSceneID != "" {
+				ids = append(ids, r.ID)
+			}
+		}
+		if len(rows) < 500 {
+			break
+		}
+	}
+	return ids, nil
+}
+
+// filterPresetState mirrors the shape the web UI saves as a FilterPreset's
+// State (see app.js currentReleaseFilterState) - only the fields relevant to
+// selecting/ordering releases are decoded; unknown fields are ignored.
+type filterPresetState struct {
+	ActiveTab        string          `json:"activeTab"`
+	Category         string          `json:"category"`
+	Entries          json.RawMessage `json:"entries"`
+	Search           string          `json:"search"`
+	WildcardLogic    string          `json:"wildcardLogic"`
+	SearchExpression json.RawMessage `json:"searchExpression"`
+	SortField        string          `json:"sortField"`
+	SortDirection    string          `json:"sortDirection"`
+	HideLocal        bool            `json:"hideLocal"`
+	HideMonitored    bool            `json:"hideMonitored"`
+	ShowNonPreferred bool            `json:"showNonPreferred"`
+	Watchlist        bool            `json:"watchlist"`
+	ReleasedMinDays  string          `json:"releasedMinDays"`
+	ReleasedMaxDays  string          `json:"releasedMaxDays"`
+	UpcomingMaxDays  string          `json:"upcomingMaxDays"`
+}
+
+// filterFromPresetState reproduces app.js's releaseQuery()/releaseFilterFromQuery
+// pairing in Go, so a saved filter set resolves to precisely the same
+// domain.ReleaseFilter the Release Library itself would send for it - same
+// search, category/entries, structured conditions, wildcard logic, sort, and
+// (for the Released/Upcoming tabs) the same "days ago/days from now" window,
+// anchored on today since the UI never persists an explicit start date.
+func filterFromPresetState(raw json.RawMessage, settings map[string]string) (domain.ReleaseFilter, bool) {
+	var state filterPresetState
+	if len(raw) == 0 || json.Unmarshal(raw, &state) != nil {
+		return domain.ReleaseFilter{}, false
+	}
+	f := domain.ReleaseFilter{
+		Search:           state.Search,
+		SearchWildcards:  true,
+		Status:           state.ActiveTab,
+		Category:         state.Category,
+		WildcardLogic:    state.WildcardLogic,
+		Watchlist:        state.Watchlist,
+		HideLocal:        state.HideLocal,
+		HideMonitored:    state.HideMonitored,
+		ShowNonPreferred: state.ShowNonPreferred,
+		Sort:             state.SortField,
+		Direction:        state.SortDirection,
+	}
+	if len(state.Entries) > 0 && string(state.Entries) != "null" {
+		f.Entries = string(state.Entries)
+	}
+	if len(state.SearchExpression) > 0 && string(state.SearchExpression) != "null" {
+		f.SearchExpression = string(state.SearchExpression)
+	}
+	if !f.ShowNonPreferred {
+		f.IgnoreTags = domain.ParseIgnoreList(settings["ignore_tags"])
+		f.IgnoreTitles = domain.ParseIgnoreList(settings["ignore_titles"])
+		f.UsePreferred = len(f.IgnoreTags) > 0 || len(f.IgnoreTitles) > 0
+	}
+	today := time.Now().UTC()
+	switch state.ActiveTab {
+	case "released":
+		if minDays, err := strconv.Atoi(strings.TrimSpace(state.ReleasedMinDays)); err == nil {
+			f.MaxReleaseDate = today.AddDate(0, 0, -minDays).Format("2006-01-02")
+		}
+		if maxDays, err := strconv.Atoi(strings.TrimSpace(state.ReleasedMaxDays)); err == nil {
+			f.MinReleaseDate = today.AddDate(0, 0, -maxDays).Format("2006-01-02")
+		}
+	case "upcoming":
+		if maxDays, err := strconv.Atoi(strings.TrimSpace(state.UpcomingMaxDays)); err == nil {
+			f.MaxReleaseDate = today.AddDate(0, 0, maxDays).Format("2006-01-02")
+		}
+	}
+	return f, true
 }
 
 func (s *Service) metadata(r domain.Release) Metadata {

@@ -41,6 +41,9 @@ func (f *fakeStash) AddJellyfinO(context.Context, string, time.Time) (int, error
 func (f *fakeStash) JellyfinActivity(context.Context, string) (stash.JellyfinActivity, error) {
 	return stash.JellyfinActivity{OCount: f.os, PlayCount: f.plays}, nil
 }
+func (f *fakeStash) StashSceneMetadata(context.Context, string) (stash.StashSceneMetadata, error) {
+	return stash.StashSceneMetadata{}, errors.New("not configured in this test")
+}
 
 func testService(t *testing.T) (*Service, *store.SQLite, *fakeStash, domain.Release) {
 	t.Helper()
