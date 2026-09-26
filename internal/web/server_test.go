@@ -2600,6 +2600,38 @@ func TestHideMonitoredFiltersArePersistentAndPortable(t *testing.T) {
 	}
 }
 
+// TestDiscoveryHideMonitoredMirrorsReleaseLibrary guards the Discoveries
+// "hide monitored" toggle added alongside "hide local": it must reuse the
+// same toolbarToggle styling and SVG icon as the Release Library's control
+// (built dynamically in app.js, not static/index.html - see the
+// discoverySubtitleFilter.insertAdjacentHTML call) and be wired through the
+// same load/save/query round trip.
+func TestDiscoveryHideMonitoredMirrorsReleaseLibrary(t *testing.T) {
+	raw, err := assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	if !strings.Contains(script, `id="discoveryHideMonitored" class="toolbarToggle toolbarToggleIcon"`) {
+		t.Fatal("Discoveries hide-monitored button is missing or not styled as a toolbarToggle to match the Release Library")
+	}
+	if !strings.Contains(script, `<circle cx="12" cy="12" r="2.5"/><path d="M4 4l16 16"/></svg></button><button type="button" id="discoveryShowNonPreferred"`) {
+		t.Fatal("Discoveries hide-monitored button does not reuse the Release Library's crossed-eye SVG icon, or is not placed right after discoveryHideLocal")
+	}
+	for _, marker := range []string{
+		"discoveryHideMonitored:false",
+		"discoveryHideMonitored=$('#discoveryHideMonitored')",
+		"setToggleButton(discoveryHideMonitored,!!prefs.discoveryHideMonitored)",
+		"hide_monitored:String(!!prefs.discoveryHideMonitored)",
+		"discoveryHideMonitored.onclick=()=>{prefs.discoveryHideMonitored=!prefs.discoveryHideMonitored",
+		"prefs.discoveryHideMonitored=false;prefs.discoveryShowNonPreferred=false",
+	} {
+		if !strings.Contains(script, marker) {
+			t.Fatalf("Discoveries hide-monitored wiring is missing %q", marker)
+		}
+	}
+}
+
 func TestNotificationsUseInfiniteScroll(t *testing.T) {
 	javascript, err := assets.ReadFile("static/app.js")
 	if err != nil {

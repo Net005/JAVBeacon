@@ -182,6 +182,17 @@ func TestDiscoveryFilterPushesExcludedTagsBeforePaging(t *testing.T) {
 	}
 }
 
+func TestDiscoveryFilterHideMonitoredMatchesReleaseLibraryParam(t *testing.T) {
+	filter, _, _ := discoveryFilterFromQuery(url.Values{"hide_monitored": []string{"true"}}, map[string]string{}, "for_you")
+	if !filter.HideMonitored {
+		t.Fatal("expected hide_monitored=true query param to set filter.HideMonitored, matching the Release Library's hide_monitored param")
+	}
+	filter, _, _ = discoveryFilterFromQuery(url.Values{}, map[string]string{}, "for_you")
+	if filter.HideMonitored {
+		t.Fatal("expected filter.HideMonitored to default to false when hide_monitored is absent")
+	}
+}
+
 func TestTextAffinityReportsTitleAndStoryMatches(t *testing.T) {
 	weights := map[string]float64{"brainwashing": 8, "investigator": 5}
 	score, phrase, field := textAffinity(domain.Release{Title: "A Brainwashing Experiment", Story: "A female investigator follows the case."}, weights)

@@ -5,6 +5,18 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.226] - 2026-09-26
+
+### Added
+
+- Added a "Hide monitored" filter to Discoveries, matching the Release
+  Library's control exactly: same toggle styling, same crossed-eye icon,
+  placed directly to the right of "Hide local". Wired through the same
+  `hide_monitored` query parameter and `HideMonitored` release filter the
+  Release Library already uses, so Discoveries can now exclude releases
+  that are set to monitor for download the same way the Release Library
+  can.
+
 ## [1.0.225] - 2026-09-26
 
 ### Changed
