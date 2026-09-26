@@ -635,16 +635,30 @@
         ref: setProbe,
       }),
       React.createElement(SceneCardStory, { scene: resolvedScene }),
-      React.createElement(SceneCardSubtitleAction, {
-        scene: resolvedScene,
-        settings,
-        resolveScene,
-      }),
-      React.createElement(SceneCardWatchlistAction, {
-        scene: resolvedScene,
-        settings,
-        resolveScene,
-      })
+      // Confirmed live: these used to render as position:absolute overlays
+      // bottom-anchored to .card-section, which put them directly on top of
+      // Stash's own native footer row (studio/views/date) - fine when that
+      // row was short, but garbled ("GigaWatchlist" jammed together, dates
+      // doubled) once it grew from a scene having tags, an O-count, or an
+      // "organised"/CC indicator. Wrapping both buttons in one normal-flow
+      // row - rather than two independent absolutely-positioned divs - makes
+      // this row lay itself out below whatever Stash's own footer already
+      // rendered, however tall that turns out to be, instead of overlapping
+      // it at a fixed offset from the card's bottom edge.
+      React.createElement(
+        "div",
+        { className: "javbeacon-card-actions-row" },
+        React.createElement(SceneCardSubtitleAction, {
+          scene: resolvedScene,
+          settings,
+          resolveScene,
+        }),
+        React.createElement(SceneCardWatchlistAction, {
+          scene: resolvedScene,
+          settings,
+          resolveScene,
+        })
+      )
     );
   }
 
