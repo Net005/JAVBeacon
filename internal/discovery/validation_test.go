@@ -319,9 +319,47 @@ func TestReasonLengthLimit(t *testing.T) {
 	}
 }
 
+// TestPromptInstructsCitingSubtitleContentWhenUsable guards against the
+// prompt framing subtitle excerpts as such a low priority that the model
+// never actually cites them in a reason even when a usable excerpt is
+// supplied - "Subtitle used" on a card should be reflected in "Why it
+// fits", not just mean the excerpt was included in the request payload.
+func TestPromptInstructsCitingSubtitleContentWhenUsable(t *testing.T) {
+	prompt := rankingPrompt([]Candidate{{ID: 7, Subtitle: "fragmented line"}}, "Sci-Fi | space")
+	for _, required := range []string{
+		"cite that concrete detail rather than falling",
+		"a usable one should not be ignored either",
+		"Subtitle dialogue confirms a coercive office-blackmail scenario",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("prompt missing %q", required)
+		}
+	}
+}
+
+// TestPromptTreatsSubtitleAsPrimaryNarrativeForStoryEmptyCandidates guards
+// the instruction that a usable subtitle excerpt is the primary narrative
+// evidence (on par with a populated story field) for a candidate with no
+// story at all - the common case for JAVLibrary-sourced releases, which
+// only supply a title and a short tag list.
+func TestPromptTreatsSubtitleAsPrimaryNarrativeForStoryEmptyCandidates(t *testing.T) {
+	prompt := rankingPrompt([]Candidate{{ID: 7, Subtitle: "fragmented line"}}, "")
+	for _, required := range []string{
+		"only a title and a short tag list and no",
+		"story field at all (for example JAVLibrary-sourced releases)",
+		"treat it as primary narrative evidence on the",
+		"same footing as a populated story field",
+		"stepmother-stepson affair the tags alone only hint at",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("prompt missing %q", required)
+		}
+	}
+}
+
 func TestHardenedPromptSeparatesSubtitleFromUserRequest(t *testing.T) {
 	prompt := rankingPrompt([]Candidate{{ID: 7, Subtitle: "fragmented line"}}, "Sci-Fi | space")
-	for _, required := range []string{"not chatting with a user", "Do not summarize", "optional weak supporting evidence", "never a user request", "Return only valid JSON", "complete evidence boundary", "Only taste_match", "INTEGER score", "eligible_pools array is authoritative", "instead of listing", "Do not mention pools"} {
+	for _, required := range []string{"not chatting with a user", "Do not summarize", "supporting evidence, not the primary signal", "never a user request", "Return only valid JSON", "complete evidence boundary", "Only taste_match", "INTEGER score", "eligible_pools array is authoritative", "instead of listing", "Do not mention pools"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("prompt missing %q", required)
 		}

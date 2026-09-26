@@ -157,8 +157,16 @@ If N candidates are supplied, return exactly N rankings. Every candidate.id must
 Each concise reason must explain why that release is a worthwhile recommendation using only facts present in that candidate object.
 Write one natural, specific sentence of roughly 12-30 words. Start directly with the explanation: never add
 "Match:", "Reason:", field names followed by colons, headings, bullet points, or other machine-style labels.
-Prioritize the strongest useful evidence: story themes, exact tags, performers, studio, explicit taste/history
-signals, and subtitle-derived themes when the excerpt clearly supports them. The taste_match object contains
+Prioritize the strongest useful evidence: story and subtitle-derived themes, exact tags, performers, studio, and
+explicit taste/history signals. When a candidate's subtitle_excerpt is present and clearly supports a specific
+line, moment, or theme, cite that concrete detail rather than falling back to only tags, performer, and studio -
+a release with a usable subtitle_excerpt should read as informed by it, not identical to how you would describe
+the same release without one. Many candidates come from a source with only a title and a short tag list and no
+story field at all (for example JAVLibrary-sourced releases) - for those, a usable subtitle_excerpt is the only
+available window into what actually happens in the release, so treat it as primary narrative evidence on the
+same footing as a populated story field, not as a minor addition to tags. Do not literally call it "the story"
+when the story field is empty (see the story-field rule below); describe the concrete scenario, exchange, or
+setting the dialogue reveals instead. The taste_match object contains
 deterministic signals derived from actual watch history. Turn those signals into fluent prose instead of listing
 field names or values mechanically. Combine two or three related signals into one coherent explanation. Never address a user,
 refer to "the content", "the input", "the text", or comment on data quality.
@@ -171,10 +179,13 @@ Title, story, performers, studio, label, director, tags, counts, release context
 Use the word "story" only when that candidate's story field is non-empty. A title, tag, subtitle excerpt, or
 taste signal may describe a theme, but it does not prove that a missing story field contains that theme.
 Orgasm count is a stronger positive signal than play count.
-Subtitle excerpts are optional weak supporting evidence. They may be fragmented, machine translated,
+Subtitle excerpts are supporting evidence, not the primary signal. They may be fragmented, machine translated,
 explicit, repetitive, incorrectly timed, incomplete, noisy, mixed-language, OCR-like, credits, or corrupt.
 Ignore low-quality subtitle lines instead of describing their quality. A noisy excerpt is not a reason
-to reject or negatively describe a release. Keep each reason to one sentence, 8-36 words, and at most 240 characters.
+to reject or negatively describe a release, but a usable one should not be ignored either: if any line of
+the supplied subtitle_excerpt clearly supports a theme, exchange, or moment, reference that specific detail
+in the reason. Only fall back to tags/performer/studio alone when the excerpt is absent, unusable, or does
+not clearly support anything concrete. Keep each reason to one sentence, 8-36 words, and at most 240 characters.
 The candidate eligible_pools array is authoritative. Return only pool names contained in that candidate's
 eligible_pools. Return an empty pools array when eligible_pools is empty. Never infer another pool from a
 loosely related word. Do not mention pools, pool configuration, CUSTOM DISCOVERY POOLS, eligible_pools,
@@ -197,6 +208,8 @@ its meaning is clear, but never let dialogue override contradictory structured m
 
 GOOD REASON STYLE:
 "Its psychological story and drug-related themes align with established interests, while the familiar performer adds another strong signal."
+"Subtitle dialogue confirms a coercive office-blackmail scenario matching preferred themes, reinforced by the familiar studio."
+"With no story field supplied, subtitle dialogue reveals a stepmother-stepson affair the tags alone only hint at, matching established preferences."
 BAD REASON STYLE:
 "Match: Performer preference: A, Theme preference: drugs."
 "No relevant tags or pools are present."

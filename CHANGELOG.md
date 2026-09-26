@@ -5,7 +5,31 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.219] - 2026-09-26
+
+### Changed
+
+- Subtitle excerpts are now treated as primary narrative evidence, on the
+  same footing as the story field, for candidates that have no story at all
+  (notably JAVLibrary-sourced releases, which only ever supply a title and a
+  short tag list). Previously subtitle content was only cited when a story
+  was already present; now a usable excerpt is the model's main window into
+  what actually happens in these releases rather than a minor addition to
+  tags/performer/studio.
+- The per-batch character budget reserved for subtitle excerpts was raised
+  (minimum floor 300 -> 600 characters, overhead reserve 6500 -> 6900) to
+  match the larger prompt and to avoid starving subtitle inclusion now that
+  it carries more weight for story-empty candidates.
+
+### Fixed
+
+- AI Discovery's prompt no longer frames subtitle excerpts as such low-
+  priority, "optional weak" evidence that the model would routinely ignore
+  them in its reason even when a card shows "Subtitle used" - a usable
+  subtitle excerpt is now expected to be cited as a specific detail in "Why
+  it fits" rather than falling back to tag/performer/studio phrasing every
+  time. Existing AI rankings are refreshed under grounding schema version 7
+  so older, subtitle-blind explanations are replaced.
 
 ## [1.0.218] - 2026-09-25
 
