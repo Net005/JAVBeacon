@@ -75,3 +75,23 @@ func (s *Server) siloPlayback(w http.ResponseWriter, r *http.Request) {
 	}
 	s.json(w, http.StatusOK, result)
 }
+
+// siloLibrarySync exposes the exact same revision/filter-preset-membership
+// snapshot the Jellyfin plugin polls (internal/jellyfin.Service.LibrarySync),
+// under the Silo integration path. The Silo plugin's scheduled_task.v1
+// "collection-sync" task polls this to notice when a saved filter set's
+// membership changed since its last run, then calls Silo's own
+// POST /api/v2/admin/items/{id}/refresh-metadata for every affected item it
+// can map to a Silo media ID (see watchsync.go/collectionsync.go in the Silo
+// plugin repo) - there is no host API for a plugin to push new metadata or
+// invalidate an item directly, so this poll-and-refresh loop is the closest
+// available substitute for the realtime push Jellyfin's own plugin gets from
+// running in-process against ICollectionManager.
+func (s *Server) siloLibrarySync(w http.ResponseWriter, r *http.Request) {
+	value, err := s.jellyfin.LibrarySync(r.Context())
+	if err != nil {
+		s.problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, value)
+}

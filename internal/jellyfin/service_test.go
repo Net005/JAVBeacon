@@ -20,6 +20,8 @@ type fakeStash struct {
 	plays        int
 	os           int
 	failNextPlay bool
+	sceneMeta    stash.StashSceneMetadata
+	sceneMetaErr error
 }
 
 func (f *fakeStash) SaveJellyfinActivity(_ context.Context, _ string, resume, duration float64) error {
@@ -42,6 +44,9 @@ func (f *fakeStash) JellyfinActivity(context.Context, string) (stash.JellyfinAct
 	return stash.JellyfinActivity{OCount: f.os, PlayCount: f.plays}, nil
 }
 func (f *fakeStash) StashSceneMetadata(context.Context, string) (stash.StashSceneMetadata, error) {
+	if f.sceneMetaErr != nil || f.sceneMeta.Performers != nil {
+		return f.sceneMeta, f.sceneMetaErr
+	}
 	return stash.StashSceneMetadata{}, errors.New("not configured in this test")
 }
 
@@ -73,6 +78,36 @@ func testService(t *testing.T) (*Service, *store.SQLite, *fakeStash, domain.Rele
 	r, _ = st.Release(context.Background(), r.ID)
 	bridge := &fakeStash{}
 	return newService(st, bridge), st, bridge, r
+}
+
+func TestMetadataPopulatesPerformerImagesFromStashByName(t *testing.T) {
+	svc, st, bridge, r := testService(t)
+	defer st.Close()
+	bridge.sceneMeta = stash.StashSceneMetadata{
+		Performers: []stash.StashPerformer{
+			{ID: "p1", Name: "One", ImagePath: "/performer/p1/image"},
+			{ID: "p2", Name: "No Photo", ImagePath: ""},
+		},
+	}
+	m, err := svc.Metadata(context.Background(), r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.PerformerImages["One"]; got != "/api/v1/integrations/performers/p1/image" {
+		t.Fatalf("PerformerImages[One] = %q", got)
+	}
+	if _, ok := m.PerformerImages["No Photo"]; ok {
+		t.Fatalf("performer with no image path should not appear: %+v", m.PerformerImages)
+	}
+	// Search must never pay for this - it's Metadata-only, same policy as
+	// CollectionNames, to keep bulk search cheap.
+	rows, err := svc.Search(context.Background(), "ABC-123", 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("search: %v %+v", err, rows)
+	}
+	if rows[0].PerformerImages != nil {
+		t.Fatalf("Search must not populate PerformerImages: %+v", rows[0].PerformerImages)
+	}
 }
 
 func TestMatchPrefersExactPathAndReturnsPersistentIDs(t *testing.T) {

@@ -137,6 +137,16 @@ func (s *Service) JellyfinActivity(ctx context.Context, sceneID string) (Jellyfi
 	return out, nil
 }
 
+// StashPerformer is one scene performer's stable, provider-agnostic identity
+// and portrait, for the Jellyfin/Silo integrations to attach a photo to the
+// person they already add by name - JAVBeacon itself never scrapes performer
+// photos, so this is the only source for them.
+type StashPerformer struct {
+	ID        string
+	Name      string
+	ImagePath string
+}
+
 // StashSceneMetadata is the small, stable metadata contract exposed to the
 // Jellyfin integration for gap-filling a JAVBeacon release's own scraped
 // metadata (see internal/jellyfin's metadata()). Every field is left empty
@@ -145,9 +155,22 @@ type StashSceneMetadata struct {
 	Title         string
 	Details       string
 	Studio        string
-	Performers    []string
+	Performers    []StashPerformer
 	Tags          []string
 	ScreenshotURL string
+}
+
+// PerformerNames returns just the names from Performers, for callers that
+// only need display text (e.g. gap-filling a release's own performer list).
+func (m StashSceneMetadata) PerformerNames() []string {
+	if len(m.Performers) == 0 {
+		return nil
+	}
+	names := make([]string, len(m.Performers))
+	for i, p := range m.Performers {
+		names[i] = p.Name
+	}
+	return names
 }
 
 // StashSceneMetadata fetches a scene's title/details/studio/performers/tags
@@ -159,17 +182,19 @@ func (s *Service) StashSceneMetadata(ctx context.Context, sceneID string) (Stash
 	if err != nil {
 		return StashSceneMetadata{}, err
 	}
-	query := fmt.Sprintf(`query { findScene(id: "%s") { title details studio { name } performers { name } tags { name } paths { screenshot } } }`, escapeGraphQL(sceneID))
+	query := fmt.Sprintf(`query { findScene(id: "%s") { title details studio { name } performers { id name image_path } tags { name } paths { screenshot } } }`, escapeGraphQL(sceneID))
 	var payload struct {
 		Data struct {
 			Scene *struct {
-				Title      string `json:"title"`
-				Details    string `json:"details"`
-				Studio     *struct {
+				Title   string `json:"title"`
+				Details string `json:"details"`
+				Studio  *struct {
 					Name string `json:"name"`
 				} `json:"studio"`
 				Performers []struct {
-					Name string `json:"name"`
+					ID        string `json:"id"`
+					Name      string `json:"name"`
+					ImagePath string `json:"image_path"`
 				} `json:"performers"`
 				Tags []struct {
 					Name string `json:"name"`
@@ -198,12 +223,62 @@ func (s *Service) StashSceneMetadata(ctx context.Context, sceneID string) (Stash
 		out.Studio = x.Studio.Name
 	}
 	for _, p := range x.Performers {
-		out.Performers = append(out.Performers, p.Name)
+		out.Performers = append(out.Performers, StashPerformer{ID: p.ID, Name: p.Name, ImagePath: p.ImagePath})
 	}
 	for _, t := range x.Tags {
 		out.Tags = append(out.Tags, t.Name)
 	}
 	return out, nil
+}
+
+// FetchPerformerImage resolves performerID's portrait URL from StashApp and
+// fetches it with the same authenticated client used for every other Stash
+// request. The caller is responsible for closing the returned response body.
+func (s *Service) FetchPerformerImage(ctx context.Context, performerID string) (*http.Response, error) {
+	base, key, err := s.jellyfinConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	query := fmt.Sprintf(`query { findPerformer(id: "%s") { image_path } }`, escapeGraphQL(performerID))
+	var payload struct {
+		Data struct {
+			Performer *struct {
+				ImagePath string `json:"image_path"`
+			} `json:"findPerformer"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err = s.graphql(ctx, base, key, query, &payload); err != nil {
+		return nil, err
+	}
+	if len(payload.Errors) > 0 {
+		return nil, errors.New(payload.Errors[0].Message)
+	}
+	if payload.Data.Performer == nil || payload.Data.Performer.ImagePath == "" {
+		return nil, errors.New("StashApp performer has no image")
+	}
+	target := payload.Data.Performer.ImagePath
+	if parsed, err := url.Parse(target); err == nil && !parsed.IsAbs() {
+		target = strings.TrimRight(base, "/") + "/" + strings.TrimLeft(target, "/")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	if key != "" {
+		req.Header.Set("ApiKey", key)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode/100 != 2 {
+		resp.Body.Close()
+		return nil, fmt.Errorf("StashApp returned HTTP %d for performer image", resp.StatusCode)
+	}
+	return resp, nil
 }
 
 // FetchSceneScreenshot resolves sceneID's screenshot URL from StashApp and
