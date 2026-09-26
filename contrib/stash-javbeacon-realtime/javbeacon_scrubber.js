@@ -125,28 +125,37 @@
   window.__javbeaconScrubberInternals = { extractPx, mirrorBackground };
 
   // ---- DOM wiring --------------------------------------------------------
+  //
+  // The overlay is appended to document.body, never into .video-js or any
+  // other Stash/video.js-owned element, and every interaction with the
+  // player element itself is read-only (querySelector, getBoundingClientRect,
+  // classList.contains). Two earlier versions of this plugin instead
+  // appended the overlay as a child of .video-js and, in one revision, wrote
+  // to its inline style - both broke the entire player. video.js and/or
+  // Stash's own React wrapper around it manage that element's DOM directly;
+  // an externally added child or mutated style can conflict with that
+  // ownership in ways that are very hard to predict without the actual
+  // running app to test against. Positioning a fully independent, fixed
+  // overlay on top of the player's on-screen rect avoids touching that
+  // ownership at all.
 
-  function ensureOverlay(playerEl) {
-    let overlay = playerEl.querySelector(":scope > .javbeacon-scrub-overlay");
-    if (overlay) return overlay;
-    // The overlay is positioned absolutely relative to the nearest
-    // positioned ancestor. video.js sets its own .video-js element to
-    // position: relative (or Stash may use position: absolute to fill an
-    // aspect-ratio wrapper) - either already works as a containing block, so
-    // this only forces a position when the element is still the default
-    // "static" and would otherwise silently fail to contain the overlay. It
-    // deliberately never overrides an existing non-static position (doing
-    // that with a blanket CSS rule previously broke the player entirely by
-    // fighting Stash's own absolute-fill layout).
-    if (window.getComputedStyle(playerEl).position === "static") {
-      playerEl.style.position = "relative";
-    }
-    overlay = document.createElement("div");
+  function createOverlay() {
+    const overlay = document.createElement("div");
     overlay.className = "javbeacon-scrub-overlay";
     overlay.setAttribute("aria-hidden", "true");
-    playerEl.appendChild(overlay);
+    document.body.appendChild(overlay);
     return overlay;
   }
+
+  function positionOverlay(overlay, rect) {
+    if (!rect || rect.width <= 0 || rect.height <= 0) return;
+    overlay.style.left = `${rect.left}px`;
+    overlay.style.top = `${rect.top}px`;
+    overlay.style.width = `${rect.width}px`;
+    overlay.style.height = `${rect.height}px`;
+  }
+
+  window.__javbeaconScrubberInternals.positionOverlay = positionOverlay;
 
   function showOverlay(overlay) {
     overlay.classList.add("is-visible");
@@ -180,7 +189,7 @@
 
   function attachScrubber(playerEl, options) {
     const { hoverDelayMs, cycleIntervalMs, coverEnabled, seekEnabled } = options;
-    const overlay = ensureOverlay(playerEl);
+    const overlay = createOverlay();
     const poster = playerEl.querySelector(".vjs-poster");
     const progress = playerEl.querySelector(".vjs-progress-control");
 
@@ -233,6 +242,7 @@
           index++;
           dispatchSyntheticHover(ratio);
           const box = coverBox();
+          positionOverlay(overlay, box);
           // requestAnimationFrame runs after the current synchronous event
           // dispatch (including Stash's own mousemove listener) finishes,
           // regardless of listener registration order, so the thumbnail
@@ -252,8 +262,9 @@
     function onSeekMove() {
       if (!seekEnabled) return;
       stopCycle();
-      showOverlay(overlay);
       const box = playerEl.getBoundingClientRect();
+      positionOverlay(overlay, box);
+      showOverlay(overlay);
       requestAnimationFrame(() => mirrorFromThumbnail(box));
     }
 
