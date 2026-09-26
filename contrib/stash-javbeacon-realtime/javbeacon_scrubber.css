@@ -1,0 +1,37 @@
+.video-js {
+  /* video.js already sets this in its own core CSS; reinforced defensively
+     since the scrubber overlay below is positioned relative to this box. */
+  position: relative;
+}
+
+.javbeacon-scrub-overlay {
+  background-color: #000;
+  background-repeat: no-repeat;
+  bottom: 0;
+  left: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: 0;
+  transition: opacity 120ms ease;
+  z-index: 1;
+}
+
+.javbeacon-scrub-overlay.is-visible {
+  opacity: 1;
+}
+
+/* Keep the control bar clickable above the overlay regardless of DOM order;
+   the overlay itself already ignores pointer events, but this also stops it
+   from visually covering the control bar's own background. */
+.video-js .vjs-control-bar {
+  z-index: 2;
+}
+
+/* Stash's small fixed-size seek-bar thumbnail preview (the standard
+   videojs-vtt-thumbnails plugin) is replaced by the large preview painted
+   into .javbeacon-scrub-overlay above, so hide the original tooltip. */
+.vjs-vtt-thumbnail-display {
+  display: none !important;
+}

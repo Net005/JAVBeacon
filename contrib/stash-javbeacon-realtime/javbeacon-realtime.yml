@@ -1,11 +1,13 @@
 name: JAVBeacon Realtime Sync + Subtitles
-description: Syncs changed scenes, links scene pages to JAVBeacon releases, requests subtitles, and adds scene-card Watchlist controls.
-version: 1.11.0
+description: Syncs changed scenes, links scene pages to JAVBeacon releases, requests subtitles, adds scene-card Watchlist controls, and replaces the scene player's cover and seek-bar previews with large sprite-based scrubbing.
+version: 1.12.0
 ui:
   javascript:
     - javbeacon_subtitles.js
+    - javbeacon_scrubber.js
   css:
     - javbeacon_subtitles.css
+    - javbeacon_scrubber.css
 settings:
   javbeacon_url:
     displayName: JAVBeacon URL
@@ -75,6 +77,22 @@ settings:
     displayName: Job options (JSON)
     description: Optional advanced JSON overrides for the JAVBeacon-Subs request. Blank uses the individual settings and documented defaults. inputs is always controlled by the current scene.
     type: STRING
+  scrubber_cover_enabled:
+    displayName: Enable cover-area sprite scrubbing
+    description: On the scene page, hovering the cover/poster area before playback cycles through the scene's generated sprite screenshots, the same source images used for the scene grid's hover preview. Defaults to true.
+    type: BOOLEAN
+  scrubber_seek_preview_enabled:
+    displayName: Enable large seek-bar preview
+    description: Replaces Stash's small seek-bar thumbnail with a large preview painted into the cover/video area at the sprite sheet's native resolution. Defaults to true.
+    type: BOOLEAN
+  scrubber_hover_delay_ms:
+    displayName: Cover hover delay (ms)
+    description: How long the pointer must stay over the cover area before sprite scrubbing starts. Defaults to 400ms.
+    type: NUMBER
+  scrubber_interval_ms:
+    displayName: Time between sprites (ms)
+    description: How long each sprite screenshot is shown before advancing to the next one during cover-area scrubbing. Defaults to 700ms; minimum 100ms.
+    type: NUMBER
 exec:
   - python3
   - "{pluginDir}/javbeacon_realtime.py"
