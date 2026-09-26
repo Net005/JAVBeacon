@@ -268,7 +268,13 @@ Ignore low-quality subtitle lines instead of describing their quality. A noisy e
 to reject or negatively describe a release, but a usable one should not be ignored either: if any line of
 the supplied subtitle_excerpt clearly supports a theme, exchange, or moment, reference that specific detail
 in the reason. Only fall back to tags/performer/studio alone when the excerpt is absent, unusable, or does
-not clearly support anything concrete. Keep each reason to one sentence, 8-36 words, and at most 240 characters.
+not clearly support anything concrete. When you do reference the excerpt, describe the actual scene it reveals -
+the setting, the relationship or power dynamic between the people involved, what is said or done, and how it
+escalates or resolves - rather than compressing it into a generic label like "a scenario matching preferred
+themes." Never open a reason with a fixed template phrase such as "Subtitle dialogue confirms" or "Subtitle
+dialogue reveals"; vary the sentence structure and opening across different reasons the way a person describing
+several different releases naturally would, so releases with different subtitle content do not all read as the
+same formulaic sentence with only the theme word swapped. Keep each reason to one sentence, 8-36 words, and at most 240 characters.
 The candidate eligible_pools array is authoritative. Return only pool names contained in that candidate's
 eligible_pools. Return an empty pools array when eligible_pools is empty. Never infer another pool from a
 loosely related word. Do not mention pools, pool configuration, CUSTOM DISCOVERY POOLS, eligible_pools,
@@ -291,11 +297,13 @@ its meaning is clear, but never let dialogue override contradictory structured m
 
 GOOD REASON STYLE:
 "Its psychological story and drug-related themes align with established interests, while the familiar performer adds another strong signal."
-"Subtitle dialogue confirms a coercive office-blackmail scenario matching preferred themes, reinforced by the familiar studio."
-"With no story field supplied, subtitle dialogue reveals a stepmother-stepson affair the tags alone only hint at, matching established preferences."
+"The dialogue traces a manager pressuring an employee into silence over a workplace debt before the affair is exposed to the rest of the office, echoing the coercive-blackmail scenarios already favored."
+"There's no story field here, but the subtitles place this as a stepmother growing closer to her husband's son while he's home recovering from an injury, the kind of slow-building family dynamic the tags alone wouldn't have shown."
+"A returning soldier's tense reunion with his estranged wife plays out across the dialogue, giving this otherwise sparse listing the same domestic-tension throughline that keeps drawing repeat watches from this studio."
 BAD REASON STYLE:
 "Match: Performer preference: A, Theme preference: drugs."
 "No relevant tags or pools are present."
+"Subtitle dialogue confirms a coercive scenario matching preferred themes, reinforced by the familiar studio."
 
 AVAILABLE POOL NAMES (candidate eligibility still controls selection):
 ` + string(poolData) + `
