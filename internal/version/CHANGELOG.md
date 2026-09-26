@@ -5,6 +5,36 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.228] - 2026-09-26
+
+### Added
+
+- Jellyfin and Silo metadata now include performer photos sourced from
+  StashApp, served through a new shared JAVBeacon proxy endpoint
+  (`/api/v1/integrations/performers/{id}/image`).
+- Jellyfin collections (Watchlist and every saved filter-preset
+  collection) get a dedicated catch-up scheduled task
+  ("Resync JAVBeacon collections") in addition to the existing
+  continuous background sync, so a missed realtime update from a
+  restart or outage is always eventually caught up.
+- Playback and "+1 O" events can now be reported for a Stash scene that
+  has no matching JAVBeacon release, instead of being dropped.
+- The Jellyfin "+1 O" activity panel is now also distributed as a
+  Tampermonkey/Violentmonkey userscript, as an alternative to the
+  injector-script install path.
+- Added a Silo (self-hosted Jellyfin/Emby-compatible server) plugin
+  porting JAVBeacon's metadata, image, watch-sync, performer-photo, and
+  collection-tag-sync features to Silo, including a scheduled task that
+  polls JAVBeacon for library changes and pushes metadata refreshes to
+  Silo's admin API.
+
+### Fixed
+
+- Fixed missing Jellyfin collection cover images.
+- Fixed the "+1 O" activity panel's CSS/markup issues in Jellyfin Web.
+- Fixed Stash History gaps for entries not tracked in JAVBeacon by
+  backfilling cover art in JAVBeacon's own web UI.
+
 ## [1.0.227] - 2026-09-26
 
 ### Fixed
