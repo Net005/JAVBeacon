@@ -504,20 +504,24 @@ func discoveryTasteSignals(reasons []string) aidiscovery.TasteSignals {
 // discoveryAIPromptOverheadChars reserves room for the static ranking
 // instructions, JSON framing, and character escaping inside maxInputChars.
 // It used to be a flat 12000 characters - roughly double the actual
-// instructions text (~6.5k characters) - which silently zeroed out
-// perSubtitle for entire batches (SubtitleUsed=false) even though most of
-// that reserve went unused. Tightening it to match reality does not raise
-// maxInputChars or per-request cost; it only stops wasting budget that was
-// already being paid for, freeing real room for subtitle excerpts, which
-// are the strongest signal once a release actually has them.
-const discoveryAIPromptOverheadChars = 6500
+// instructions text - which silently zeroed out perSubtitle for entire
+// batches (SubtitleUsed=false) even though most of that reserve went
+// unused. The static instructions text measures ~6.5k characters (verify
+// with rankingPrompt(nil, "") after editing it); keep this constant a few
+// hundred characters above that measurement, never at 2x it again - the
+// point is to stop wasting budget that was already being paid for and free
+// real room for subtitle excerpts, not to reintroduce the same waste.
+const discoveryAIPromptOverheadChars = 6900
 
 // discoveryAIMinSubtitleChars is the smallest excerpt worth sending once a
 // release is eligible. Below this a subtitle-analysis excerpt reads as
-// noise to the model, so it is worth reclaiming a little room from the
-// story field (already backed by other structured metadata) rather than
-// silently sending no subtitle at all.
-const discoveryAIMinSubtitleChars = 300
+// noise to the model, so it is worth reclaiming room from the story field
+// (already backed by other structured metadata) rather than silently
+// sending no subtitle at all. Subtitle dialogue is often the only real
+// narrative evidence for a release sourced with just a title and tags (for
+// example JAVLibrary), so this floor is deliberately generous rather than
+// the bare minimum an excerpt could still technically be useful at.
+const discoveryAIMinSubtitleChars = 600
 
 func discoveryAICandidateBatch(items []discoveryItem, configuredPools map[string][]string, storyCap int) []discoveryAICandidate {
 	batch := make([]discoveryAICandidate, 0, len(items))

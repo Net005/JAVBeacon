@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	SchemaVersion   = "6"
+	SchemaVersion   = "7"
 	MaxReasonLength = 700
 	maxPoolNameLen  = 120
 )
