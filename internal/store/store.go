@@ -1717,6 +1717,24 @@ func releasePoolSearchWhere(d Dialect, keywordsCSV string) (string, []any) {
 		if term == "" {
 			continue
 		}
+		// A short keyword ("AI", "VR") is a substring of countless unrelated
+		// words ("Maid", "training", "certain") under a plain LIKE '%term%'
+		// pattern - a real observed false positive (an unrelated release
+		// showing a spurious pool match from nothing more than a word that
+		// happened to contain "ai"). discoveryTextMatches, the authoritative
+		// per-item match logic the displayed match percentage and reasoning
+		// grounding rely on, was fixed to match whole words only; SQL LIKE
+		// has no portable word-boundary operator across SQLite and
+		// PostgreSQL, so the safest equivalent here is excluding keywords
+		// too short for substring matching to be meaningfully selective.
+		// This is a coarse pre-filter only (discoveryTextMatches remains the
+		// source of truth for what actually counts as a match), so dropping
+		// an ultra-short keyword here just means the SQL candidate set is
+		// very slightly broader/narrower, never wrong in a way that changes
+		// what the user is shown.
+		if len([]rune(term)) < 3 {
+			continue
+		}
 		clause := `(` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.story") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name_normalized") + `))`
 		v := genericSearchLikePattern(term)
 		a = append(a, v, v, v, v, v, v, v)
