@@ -52,6 +52,7 @@ type Service struct {
 	collMu       sync.Mutex
 	collRevision string
 	collIndex    map[int64][]string
+	collPresets  []FilterPresetCollection
 }
 
 func New(st store.Store, stashService *stash.Service, screenshotCaches ...*screenshots.Cache) *Service {
@@ -391,16 +392,39 @@ func (s *Service) collectionNamesForRelease(ctx context.Context, releaseID int64
 // than each starting their own redundant full pass - acceptable here because
 // the pass only happens once per revision change, not once per request.
 func (s *Service) collectionMembershipIndex(ctx context.Context) (map[int64][]string, error) {
+	index, _, err := s.collectionIndexAndPresets(ctx)
+	return index, err
+}
+
+// collectionPresets returns the same per-preset release-ID lists LibrarySync
+// needs (FilterPresetCollection), sharing collectionMembershipIndex's
+// revision-gated cache instead of re-running resolveFilterReleaseIDs per
+// preset on every call. Before this, LibrarySync computed this itself inline
+// on every single invocation - the exact same O(numPresets x
+// fullLibraryScan) cost already found and fixed for Metadata() via this
+// cache, just left unpatched in this sibling code path. With several saved
+// presets and a large library, that per-call cost was slow enough to blow
+// Jellyfin's own HttpClient.Timeout (15s) on both scheduled tasks that call
+// LibrarySync (SyncWatchedStatusTask directly, SyncCollectionsTask via
+// RunFullSyncAsync) - which .NET reports as an OperationCanceledException,
+// surfacing in Jellyfin's UI as the task being "(Cancelled)" rather than
+// failed or timed out.
+func (s *Service) collectionPresets(ctx context.Context) ([]FilterPresetCollection, error) {
+	_, presets, err := s.collectionIndexAndPresets(ctx)
+	return presets, err
+}
+
+func (s *Service) collectionIndexAndPresets(ctx context.Context) (map[int64][]string, []FilterPresetCollection, error) {
 	settings, err := s.store.Settings(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	revision := settings["jellyfin_library_revision"]
 
 	s.collMu.Lock()
 	defer s.collMu.Unlock()
 	if s.collIndex != nil && s.collRevision == revision {
-		return s.collIndex, nil
+		return s.collIndex, s.collPresets, nil
 	}
 
 	// Bounded independently of the caller's own context/deadline (same
@@ -413,9 +437,10 @@ func (s *Service) collectionMembershipIndex(ctx context.Context) (map[int64][]st
 
 	presets, err := s.store.FilterPresets(boundedCtx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	index := map[int64][]string{}
+	var collections []FilterPresetCollection
 	for _, preset := range presets {
 		filter, ok := filterFromPresetState(preset.State, settings)
 		if !ok {
@@ -428,10 +453,12 @@ func (s *Service) collectionMembershipIndex(ctx context.Context) (map[int64][]st
 		for _, id := range ids {
 			index[id] = append(index[id], preset.Name)
 		}
+		collections = append(collections, FilterPresetCollection{ID: preset.ID, Name: preset.Name, ReleaseIDs: ids})
 	}
 	s.collRevision = revision
 	s.collIndex = index
-	return index, nil
+	s.collPresets = collections
+	return index, collections, nil
 }
 
 // enrichFromStash fills gaps in JAVBeacon's own scraped metadata directly
@@ -521,23 +548,14 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 			break
 		}
 	}
-	presets, err := s.store.FilterPresets(ctx)
+	// Reuse the same revision-gated cache Metadata()/collectionNamesForRelease
+	// build from, instead of re-running resolveFilterReleaseIDs per preset
+	// inline on every LibrarySync call (see collectionPresets' doc comment).
+	presetCollections, err := s.collectionPresets(ctx)
 	if err != nil {
 		return LibrarySyncSnapshot{}, err
 	}
-	for _, preset := range presets {
-		filter, ok := filterFromPresetState(preset.State, settings)
-		if !ok {
-			continue
-		}
-		ids, err := s.resolveFilterReleaseIDs(ctx, filter)
-		if err != nil {
-			// A single malformed/legacy saved filter must never break sync for
-			// every other collection - skip it and keep going.
-			continue
-		}
-		out.FilterPresets = append(out.FilterPresets, FilterPresetCollection{ID: preset.ID, Name: preset.Name, ReleaseIDs: ids})
-	}
+	out.FilterPresets = presetCollections
 	return out, nil
 }
 
