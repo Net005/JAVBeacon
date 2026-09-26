@@ -19,12 +19,15 @@
   opacity: 1;
 }
 
-/* Stash's small fixed-size seek-bar thumbnail preview (the standard
-   videojs-vtt-thumbnails plugin) is mirrored, scaled up, into
-   .javbeacon-scrub-overlay above, so hide the original small tooltip. The
-   attribute selector is a defensive fallback in case the exact class name
-   differs from the conventional one. */
-.vjs-vtt-thumbnail-display,
-[class*="vtt-thumbnail"] {
+/* Stash's small fixed-size seek-bar thumbnail preview (the
+   videojs-vtt-thumbnails plugin, confirmed live: the player root itself
+   carries a "vjs-vtt-thumbnails" feature-flag class, and the actual preview
+   element is "vjs-vtt-thumbnail-display") is mirrored, scaled up, into
+   .javbeacon-scrub-overlay above, so hide the original small tooltip.
+   IMPORTANT: this selector must stay exact. An earlier revision used
+   [class*="vtt-thumbnail"] as a "defensive" fallback, which also matches the
+   player root's own "vjs-vtt-thumbnails" class ("vtt-thumbnail" is a
+   substring of "vtt-thumbnails") and hid the entire player. */
+.vjs-vtt-thumbnail-display {
   display: none !important;
 }
