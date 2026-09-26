@@ -3,6 +3,24 @@
   if (window.__javBeaconActivityInjected) return;
   window.__javBeaconActivityInjected = true;
 
+  const styleId = 'javbeaconActivityStyle';
+  if (!document.getElementById(styleId)) {
+    const style = document.createElement('style');
+    style.id = styleId;
+    // Scoped, minimal styling matching Jellyfin Web's own spacing/typography
+    // conventions (verticalSection/sectionTitle) instead of a single run-on
+    // line of text and an inline button with no layout of its own.
+    style.textContent = `
+      #javbeaconActivityPanel .javbeaconActivityRow{display:flex;align-items:center;flex-wrap:wrap;gap:1.5em;}
+      #javbeaconActivityPanel .javbeaconActivityStats{display:flex;flex-wrap:wrap;gap:1.75em;flex:1 1 auto;min-width:0;}
+      #javbeaconActivityPanel .javbeaconStat{display:flex;flex-direction:column;gap:0.15em;min-width:0;}
+      #javbeaconActivityPanel .javbeaconStat .javbeaconStatValue{font-size:1.3em;font-weight:600;line-height:1.1;}
+      #javbeaconActivityPanel .javbeaconStat .javbeaconStatLabel{font-size:0.8em;opacity:0.7;text-transform:uppercase;letter-spacing:0.04em;}
+      #javbeaconActivityPanel .javbeaconActivityAdd{flex:0 0 auto;white-space:nowrap;}
+    `;
+    document.head.appendChild(style);
+  }
+
   const panelId = 'javbeaconActivityPanel';
   let generation = 0;
   let renderingId = '';
@@ -41,13 +59,20 @@
       panel.id = panelId;
       panel.className = 'verticalSection';
       panel.dataset.itemId = id;
-      panel.innerHTML = `<h2 class="sectionTitle">JAVBeacon</h2><div class="itemsContainer"><span data-jb-o>O count: ${oCount}</span> · <span>Plays: ${playCount}</span> · <span>Played: ${Math.round(playedSeconds / 60)} min</span> <button is="emby-button" class="raised" data-jb-add>+1 O</button></div>`;
+      panel.innerHTML = `<h2 class="sectionTitle">JAVBeacon</h2><div class="itemsContainer javbeaconActivityRow">` +
+        `<div class="javbeaconActivityStats">` +
+        `<div class="javbeaconStat"><span class="javbeaconStatValue" data-jb-o>${oCount}</span><span class="javbeaconStatLabel">O count</span></div>` +
+        `<div class="javbeaconStat"><span class="javbeaconStatValue">${playCount}</span><span class="javbeaconStatLabel">Plays</span></div>` +
+        `<div class="javbeaconStat"><span class="javbeaconStatValue">${Math.round(playedSeconds / 60)} min</span><span class="javbeaconStatLabel">Played</span></div>` +
+        `</div>` +
+        `<button is="emby-button" type="button" class="raised javbeaconActivityAdd" data-jb-add><span>+1 O</span></button>` +
+        `</div>`;
       panel.querySelector('[data-jb-add]').onclick = async event => {
         const button = event.currentTarget;
         button.disabled = true;
         try {
           const updated = responseJson(await ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl(`JAVBeacon/items/${id}/o`), dataType: 'json' }));
-          panel.querySelector('[data-jb-o]').textContent = `O count: ${number(field(updated, 'o_count', 'oCount'))}`;
+          panel.querySelector('[data-jb-o]').textContent = number(field(updated, 'o_count', 'oCount'));
         } finally {
           button.disabled = false;
         }

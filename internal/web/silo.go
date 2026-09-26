@@ -5,6 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
+
+	jellyfinintegration "github.com/Net005/JAVBeacon/internal/jellyfin"
 )
 
 // siloSearch and siloMetadata expose the same release-metadata shape as the
@@ -44,4 +47,31 @@ func (s *Server) siloMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, http.StatusOK, value)
+}
+
+// siloPlayback forwards playback/scrobble events reported by the Silo
+// watch_sync_provider.v1 capability into the exact same JAVBeacon playback
+// engine (checkpointing, resume, completion thresholds, play-count/O-count
+// writeback to StashApp) the Jellyfin plugin's /api/v1/integrations/jellyfin/
+// playback endpoint uses. jellyfin.PlaybackEvent is already provider-agnostic
+// (JellyfinItemID/JellyfinUserID are optional labels, not required fields),
+// so no separate DTO is needed for Silo.
+func (s *Server) siloPlayback(w http.ResponseWriter, r *http.Request) {
+	var event jellyfinintegration.PlaybackEvent
+	if !s.decode(w, r, &event) {
+		return
+	}
+	result, err := s.jellyfin.Playback(r.Context(), event)
+	if err != nil {
+		status := http.StatusBadGateway
+		if strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "event must") || strings.Contains(err.Error(), "already bound") || strings.Contains(err.Error(), "not mapped") {
+			status = http.StatusUnprocessableEntity
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		s.problem(w, status, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, result)
 }

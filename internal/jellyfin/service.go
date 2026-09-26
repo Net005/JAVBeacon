@@ -94,9 +94,16 @@ type Metadata struct {
 	// provider offers it alongside (never instead of) JAVBeacon's own cover/
 	// backdrop candidates, so a release JAVBeacon never fully scraped but
 	// that is linked to a StashApp scene still gets an image.
-	StashScreenshotURL string            `json:"stash_screenshot_url,omitempty"`
-	SourceURL          string            `json:"source_url,omitempty"`
-	ProviderIDs        map[string]string `json:"provider_ids"`
+	StashScreenshotURL string `json:"stash_screenshot_url,omitempty"`
+	SourceURL          string `json:"source_url,omitempty"`
+	// CollectionNames lists every saved filter set (see FilterPresetCollection)
+	// this release currently matches. It is only populated by Metadata (a
+	// single-release fetch, used by the Silo plugin's GetMetadata call to
+	// surface collection membership as a genre/tag since Silo has no
+	// collection-management plugin capability) - never by Search, to avoid
+	// running the filter-preset engine once per bulk search result.
+	CollectionNames []string          `json:"collection_names,omitempty"`
+	ProviderIDs     map[string]string `json:"provider_ids"`
 }
 
 type MatchResult struct {
@@ -266,7 +273,43 @@ func (s *Service) Metadata(ctx context.Context, releaseID int64) (Metadata, erro
 	if err != nil {
 		return Metadata{}, err
 	}
-	return s.enrichFromStash(ctx, r, s.metadata(r)), nil
+	m := s.enrichFromStash(ctx, r, s.metadata(r))
+	m.CollectionNames = s.collectionNamesForRelease(ctx, releaseID)
+	return m, nil
+}
+
+// collectionNamesForRelease resolves every saved filter set that currently
+// matches releaseID, reusing the exact same filter+sort engine
+// LibrarySync/resolveFilterReleaseIDs uses for Jellyfin collections. It is
+// best-effort: any storage error yields no names rather than failing the
+// whole metadata request.
+func (s *Service) collectionNamesForRelease(ctx context.Context, releaseID int64) []string {
+	presets, err := s.store.FilterPresets(ctx)
+	if err != nil || len(presets) == 0 {
+		return nil
+	}
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, preset := range presets {
+		filter, ok := filterFromPresetState(preset.State, settings)
+		if !ok {
+			continue
+		}
+		ids, err := s.resolveFilterReleaseIDs(ctx, filter)
+		if err != nil {
+			continue
+		}
+		for _, id := range ids {
+			if id == releaseID {
+				names = append(names, preset.Name)
+				break
+			}
+		}
+	}
+	return names
 }
 
 // enrichFromStash fills gaps in JAVBeacon's own scraped metadata directly
