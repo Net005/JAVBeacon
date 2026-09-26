@@ -467,11 +467,27 @@ func upsert(ctx context.Context, tx *sql.Tx, siteID int64, videoID string, r res
 		productURL = "https://www.akiba-web.com/product/product.php?product_id=" + url.QueryEscape(r.ScraperID)
 	}
 	identityKey := legacyReleaseIdentity(r.Source, videoID)
+	// is_local is deliberately never imported as true here, even when the
+	// legacy source (r.Local) says the release was local: this import has no
+	// way to supply the StashApp scene ID a "local" release must be paired
+	// with (stash_scene_id is always inserted empty below), and every active
+	// sync path - the full StashApp sync and the realtime webhook plugin -
+	// always sets is_local and stash_scene_id together from the same
+	// confirmed match. Importing is_local=true without a scene ID created a
+	// real, observed bug: the release showed an "In StashApp" badge with a
+	// dead (non-clickable) link and no StashApp entry under Sources, and
+	// could stay that way indefinitely if the release only ever gets
+	// realtime webhook events (which only fire for scenes StashApp actually
+	// has) rather than a periodic full sync (which reconciles every
+	// release, including this one, against StashApp's current scene list).
+	// Leaving it false here means Stash sync remains the single source of
+	// truth for local availability; it corrects to true on the next full or
+	// realtime sync if the release is genuinely in StashApp.
 	_, err := tx.ExecContext(ctx, `INSERT INTO releases(site_id,identity_key,video_id,scraper_id,title,release_date,source,image_url,product_url,director,studio,duration,story,screenshots,released,is_local,notified,notify_on_release,watchlist,monitor_download,stash_scene_id,added_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'','[]',?,?,?,0,0,0,'',?,?)
 		ON CONFLICT DO UPDATE SET
-		identity_key=COALESCE(NULLIF(releases.identity_key,''),excluded.identity_key),scraper_id=COALESCE(NULLIF(excluded.scraper_id,''),releases.scraper_id),title=COALESCE(NULLIF(excluded.title,''),releases.title),release_date=COALESCE(NULLIF(excluded.release_date,''),releases.release_date),source=COALESCE(NULLIF(excluded.source,''),releases.source),image_url=COALESCE(NULLIF(excluded.image_url,''),releases.image_url),product_url=COALESCE(NULLIF(excluded.product_url,''),releases.product_url),director=COALESCE(NULLIF(excluded.director,''),releases.director),studio=COALESCE(NULLIF(excluded.studio,''),releases.studio),duration=COALESCE(NULLIF(excluded.duration,''),releases.duration),released=MAX(releases.released,excluded.released),is_local=MAX(releases.is_local,excluded.is_local),notified=MAX(releases.notified,excluded.notified),added_at=MIN(releases.added_at,excluded.added_at),updated_at=MAX(releases.updated_at,excluded.updated_at)`,
-		siteID, identityKey, videoID, cleanLegacyText(r.ScraperID), title, releaseDate, cleanLegacyText(r.Source), image, productURL, director, studio, duration, r.Released, r.Local, r.Notified, added, updated)
+		identity_key=COALESCE(NULLIF(releases.identity_key,''),excluded.identity_key),scraper_id=COALESCE(NULLIF(excluded.scraper_id,''),releases.scraper_id),title=COALESCE(NULLIF(excluded.title,''),releases.title),release_date=COALESCE(NULLIF(excluded.release_date,''),releases.release_date),source=COALESCE(NULLIF(excluded.source,''),releases.source),image_url=COALESCE(NULLIF(excluded.image_url,''),releases.image_url),product_url=COALESCE(NULLIF(excluded.product_url,''),releases.product_url),director=COALESCE(NULLIF(excluded.director,''),releases.director),studio=COALESCE(NULLIF(excluded.studio,''),releases.studio),duration=COALESCE(NULLIF(excluded.duration,''),releases.duration),released=MAX(releases.released,excluded.released),notified=MAX(releases.notified,excluded.notified),added_at=MIN(releases.added_at,excluded.added_at),updated_at=MAX(releases.updated_at,excluded.updated_at)`,
+		siteID, identityKey, videoID, cleanLegacyText(r.ScraperID), title, releaseDate, cleanLegacyText(r.Source), image, productURL, director, studio, duration, r.Released, false, r.Notified, added, updated)
 	if err != nil {
 		return err
 	}

@@ -103,6 +103,9 @@ func TestDiscoveryPoolSearchAndGlobalScoreOrdering(t *testing.T) {
 	if err != nil || len(poolRows) != 2 {
 		t.Fatalf("pool rows=%d err=%v", len(poolRows), err)
 	}
+	// The PoolSearch above already confirms genuine matches on title/story
+	// keep working; see TestPoolSearchDoesNotMatchColumnsOutsideMatchScope
+	// for the columns pool search must NOT scan.
 	all, err := s.Releases(ctx, domain.ReleaseFilter{Sort: "release", Limit: 10, ShowNonPreferred: true})
 	if err != nil {
 		t.Fatal(err)
@@ -3256,5 +3259,93 @@ func TestReleaseUpgradeRunsPersistAndOrder(t *testing.T) {
 	}
 	if len(rows) != 2 || rows[0].Error != "search failed" || rows[1].Checked != 5 || rows[1].Upgraded != 2 || !strings.Contains(rows[1].Details, "ABC-123") {
 		t.Fatalf("release upgrade runs=%+v, want most recent (search failed) first", rows)
+	}
+}
+
+// TestPoolSearchDoesNotMatchColumnsOutsideMatchScope guards the discovery
+// pool search query against re-growing back into a large multi-column,
+// multi-subquery disjunction. It used to search director, scraper_id,
+// product_url, and monitoring-site titles too (via a full free-text Search
+// reuse), none of which discoveryTextMatches (the authoritative per-item
+// pool-match logic in internal/web/discoveries.go) ever considers - that
+// mismatch was also pure wasted query work, slow enough on a large library
+// to need a hard request timeout. Pool search must now match only
+// video_id/title/story/studio/label/actresses/tags, the same columns
+// discoveryTextMatches uses.
+func TestPoolSearchDoesNotMatchColumnsOutsideMatchScope(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "pool-search-scope.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "OnlyMatchesBySite", Type: "Site", Name: "OnlyMatchesBySite", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertRelease(ctx, domain.Release{
+		SiteID: site.ID, VideoID: "SCOPE-1", Title: "Unrelated title", Story: "Unrelated story", Source: "Test",
+		Director: "UniqueDirectorName", ScraperID: "unique-scraper-id", ProductURL: "https://example.test/unique-product-path",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, keyword := range []string{"UniqueDirectorName", "unique-scraper-id", "unique-product-path", "OnlyMatchesBySite"} {
+		rows, err := s.Releases(ctx, domain.ReleaseFilter{PoolSearch: keyword, Limit: 10, ShowNonPreferred: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("pool search matched on out-of-scope keyword %q, which discoveryTextMatches never considers: %+v", keyword, rows)
+		}
+	}
+	// A keyword that genuinely is in scope must still match.
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{PoolSearch: "Unrelated title", Limit: 10, ShowNonPreferred: true})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("in-scope title keyword did not match: rows=%d err=%v", len(rows), err)
+	}
+}
+
+// TestMigrateRepairsOrphanedLocalFlagWithoutStashSceneID guards the startup
+// repair for a real observed bug: is_local=1 with an empty stash_scene_id is
+// an invariant violation (every active sync path - full StashApp sync and
+// the realtime webhook plugin - always sets both together from the same
+// confirmed match), which the legacy importer used to be able to produce
+// and which showed a broken, non-clickable "In StashApp" badge with no
+// StashApp entry under Sources. Since migrate() runs on every open, forcing
+// a release into that state and reopening the same database must repair it.
+func TestMigrateRepairsOrphanedLocalFlagWithoutStashSceneID(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "orphaned-local.db")
+	s, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site, err := s.SaveSite(ctx, domain.Site{Title: "JavLibrary", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "GVH-844", Title: "Test release", Source: "JavLibrary"}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the orphaned state directly, bypassing SetStashState (which
+	// never allows it): is_local=1 but no scene ID.
+	if _, err := s.db.ExecContext(ctx, `UPDATE releases SET is_local=1,stash_scene_id='' WHERE video_id='GVH-844'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Reopening runs migrate() again, which must repair the orphaned row.
+	s2, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	rows, err := s2.Releases(ctx, domain.ReleaseFilter{Search: "GVH-844", Limit: 10})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows=%d err=%v", len(rows), err)
+	}
+	if rows[0].Local {
+		t.Fatalf("orphaned is_local=1/empty stash_scene_id was not repaired on reopen: %+v", rows[0])
 	}
 }

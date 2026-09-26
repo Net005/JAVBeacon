@@ -5,6 +5,38 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.222] - 2026-09-26
+
+### Fixed
+
+- Discovery pool filtering is now genuinely fast instead of relying on a
+  request timeout to fail gracefully. Pool search used to reuse the general
+  free-text search, which scans title, story, director, studio, label,
+  scraper ID, product URL, actresses, tags, AND monitoring-site titles (a
+  JOIN subquery) for every keyword in the pool - none of director,
+  scraper ID, product URL, or monitoring sites are ever part of what a pool
+  match actually means (the authoritative per-item match logic used for the
+  "Matched pools" chip never looks at them), so this was pure wasted query
+  work, and with several keyword synonyms per pool it was slow enough to
+  need a 20-second timeout. Pool search now matches only
+  video_id/title/story/studio/label/actresses/tags, the same columns the
+  displayed match result actually uses, removing an entire JOIN subquery
+  and two unindexed-for-this-purpose columns per keyword. The 20-second
+  timeout remains only as a safety net for a pathologically large keyword
+  list, not as the primary fix.
+- Fixed a release showing an "In StashApp" badge with a dead (non-clickable)
+  link and no StashApp entry under Sources: a release with is_local=1 but
+  no stash_scene_id is an invariant every active sync path (full StashApp
+  sync, the realtime webhook plugin) already prevents, and the legacy
+  importer was the one place that could produce it - it imported the
+  legacy source's local flag as-is while always leaving stash_scene_id
+  empty, since it has no way to know the real scene ID. Legacy import no
+  longer imports is_local as true; local status now always comes from an
+  actual StashApp sync. A startup repair also clears any release already
+  stuck in that inconsistent state, rather than requiring a full StashApp
+  sync to happen to notice it (which never happens for a release the
+  realtime plugin's webhooks alone would never touch).
+
 ## [1.0.221] - 2026-09-26
 
 ### Added

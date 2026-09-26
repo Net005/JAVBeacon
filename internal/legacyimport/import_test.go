@@ -75,6 +75,16 @@ func TestImportRepairsEmbeddedTabsAndAppliesFuzzyDates(t *testing.T) {
 	if err != nil || len(giga) != 1 || giga[0].VideoID != "TOR-6" {
 		t.Fatalf("GIGA normalization failed: %+v err=%v", giga, err)
 	}
+	// The TOR-6 row's legacy IsLocal column is 1 (see the results fixture
+	// above), but import must never mark a release local: it has no way to
+	// supply the paired StashApp scene ID that is_local=true requires under
+	// every active sync path, and doing so previously produced a release
+	// stuck showing a broken, non-clickable "In StashApp" badge until a full
+	// StashApp sync happened to notice and correct it. Local status must
+	// come only from an actual StashApp sync.
+	if giga[0].Local || giga[0].StashSceneID != "" {
+		t.Fatalf("legacy import wrongly marked a release local without a StashApp scene ID: %+v", giga[0])
+	}
 }
 
 func TestImportCanRestrictToExistingJavLibrarySitesAndNormalizeMetadata(t *testing.T) {

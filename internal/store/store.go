@@ -486,6 +486,23 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 		err = s.normalizeReleaseTimestamps(context.Background())
 	}
 	if err == nil {
+		// is_local=1 with an empty stash_scene_id is an invariant violation:
+		// every active code path that sets is_local true (the full StashApp
+		// sync and the realtime webhook plugin) always sets it together with
+		// the matched scene's ID in the same statement. A row in this state
+		// can only be a leftover from the legacy importer (which used to
+		// import is_local without any way to supply a real scene ID) or the
+		// historical release-identity dedup migration, and it shows a
+		// broken, non-clickable "In StashApp" badge with no StashApp entry
+		// under Sources until it happens to be corrected by a sync. Repair
+		// it unconditionally and cheaply on every startup rather than
+		// waiting for that: it never discards real data (StashApp will
+		// simply re-confirm true local releases on the next sync), and only
+		// ever moves a release from an already-broken display state to an
+		// honest "not yet confirmed local" one.
+		_, err = s.db.Exec(`UPDATE releases SET is_local=0 WHERE is_local=1 AND stash_scene_id=''`)
+	}
+	if err == nil {
 		_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_releases_released_date ON releases(released,release_date DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_local_created ON releases(is_local,stash_created_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_watchlist_date ON releases(watchlist,watchlist_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_updated ON releases(updated_at DESC,id DESC); CREATE INDEX IF NOT EXISTS idx_releases_title_order ON releases(title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS idx_releases_preferred ON releases(is_preferred,id); CREATE INDEX IF NOT EXISTS idx_releases_stash_file_path_ci ON releases(LOWER(stash_file_path)) WHERE stash_file_path<>'';`)
 	}
 	return err
@@ -1492,9 +1509,7 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		}
 	}
 	if f.PoolSearch != "" {
-		poolWhere, poolArgs := releaseFilterWhere(d, domain.ReleaseFilter{Search: f.PoolSearch, SearchWildcards: true})
-		poolClause := strings.TrimPrefix(poolWhere, ` WHERE 1=1 AND `)
-		if poolClause != poolWhere {
+		if poolClause, poolArgs := releasePoolSearchWhere(d, f.PoolSearch); poolClause != "" {
 			q += ` AND (` + poolClause + `)`
 			a = append(a, poolArgs...)
 		}
@@ -1666,6 +1681,55 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		a = append(a, f.UpdatedAfter.UTC())
 	}
 	return q, a
+}
+
+// releasePoolSearchWhere builds the WHERE clause fragment for a discovery
+// pool's keyword list. It deliberately searches far fewer columns than the
+// general free-text Search above.
+//
+// It used to reuse releaseFilterWhere wholesale (Search: f.PoolSearch),
+// which searches video_id, title, story, director, studio, label,
+// scraper_id, product_url, actresses, tags, AND monitoring-site titles (an
+// EXISTS-with-JOIN subquery) for every keyword in the pool. A pool with
+// several keyword synonyms - the normal case - turned that into a large
+// disjunction of many correlated subqueries per row, which was slow enough
+// on a large library to need a hard request timeout. But the actual,
+// authoritative definition of a pool match (discoveryTextMatches, in
+// internal/web/discoveries.go - used for the match-percentage chip and the
+// "Discovery pool match" reason tag) only ever looks at video_id, title,
+// story, studio, label, actresses, and genres/tags: director, scraper_id,
+// product_url, and monitoring sites were never part of what a pool match
+// actually means, so searching them here was pure wasted work (and a
+// latent inconsistency: a release could match at the SQL filtering stage
+// on a column discoveryTextMatches would never have matched on). Mirroring
+// that column list here removes both the site JOIN subquery and two of the
+// eight direct-column branches per keyword, and keeps DB-level filtering
+// and displayed match results consistent by construction.
+func releasePoolSearchWhere(d Dialect, keywordsCSV string) (string, []any) {
+	terms := splitWildcardValues(keywordsCSV)
+	if len(terms) == 0 {
+		return "", nil
+	}
+	var a []any
+	clauses := make([]string, 0, len(terms))
+	for _, term := range terms {
+		term = strings.TrimSpace(term)
+		if term == "" {
+			continue
+		}
+		clause := `(` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.story") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name_normalized") + `))`
+		v := genericSearchLikePattern(term)
+		a = append(a, v, v, v, v, v, v, v)
+		clauses = append(clauses, clause)
+	}
+	if len(clauses) == 0 {
+		return "", nil
+	}
+	// Keywords within one pool are alternatives ("drug, brainwash,
+	// hypnosis"), never a required combination, so they are always OR'd -
+	// unlike the free-text Search box, this has no user-facing AND/OR
+	// toggle to respect.
+	return strings.Join(clauses, " OR "), a
 }
 
 func (s *SQLite) Releases(ctx context.Context, f domain.ReleaseFilter) ([]domain.Release, error) {
