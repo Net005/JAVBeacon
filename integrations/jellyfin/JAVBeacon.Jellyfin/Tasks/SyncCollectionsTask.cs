@@ -34,6 +34,6 @@ public sealed class SyncCollectionsTask(LibrarySyncService librarySync) : ISched
     // typically polls every 15-60+ seconds while enabled.
     public IEnumerable<TaskTriggerInfo> GetDefaultTriggers() =>
     [
-        new TaskTriggerInfo { Type = TaskTriggerInfo.TriggerInterval, IntervalTicks = TimeSpan.FromHours(6).Ticks }
+        new TaskTriggerInfo { Type = TaskTriggerInfoType.IntervalTrigger, IntervalTicks = TimeSpan.FromHours(6).Ticks }
     ];
 }
