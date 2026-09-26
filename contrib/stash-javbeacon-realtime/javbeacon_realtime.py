@@ -239,6 +239,25 @@ def _current_subtitle_backends(settings, timeout):
     return {"transcription_backend": transcription, "translation_backend": translation}
 
 
+def _backend_model_id(backend):
+    """Strips a HuggingFace-style "@<revision>" pin (e.g. a commit hash)
+    from a backend identifier, so "Qwen/Qwen3-ASR-1.7B@<hash-a>" and
+    "Qwen/Qwen3-ASR-1.7B@<hash-b>" are treated as the same model. Backend
+    identifiers with no "@" are returned unchanged."""
+    value = str(backend or "").strip()
+    return value.split("@", 1)[0]
+
+
+def _backend_matches(sidecar_backend, current_backend):
+    """Same-model comparison used for the subtitle up-to-date check: an
+    exact match always counts, and so does a match once each side's
+    revision pin is stripped - a model re-tagged at a newer commit isn't a
+    different backend for this purpose."""
+    if sidecar_backend == current_backend:
+        return True
+    return _backend_model_id(sidecar_backend) == _backend_model_id(current_backend)
+
+
 def subtitle_status(payload, args):
     """Compares a scene's existing .en.srt.json sidecar (if any) against the
     transcription/translation backend JAVBeacon-Subs currently uses for new
@@ -276,9 +295,10 @@ def subtitle_status(payload, args):
             "sidecar_backends": sidecar_backends,
         }
 
-    up_to_date = (
-        sidecar_backends["transcription_backend"] == current["transcription_backend"]
-        and sidecar_backends["translation_backend"] == current["translation_backend"]
+    up_to_date = _backend_matches(
+        sidecar_backends["transcription_backend"], current["transcription_backend"]
+    ) and _backend_matches(
+        sidecar_backends["translation_backend"], current["translation_backend"]
     )
     return {
         "mode": "subtitle_status",
