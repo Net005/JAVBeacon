@@ -5,6 +5,30 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.237] - 2026-09-26
+
+### Fixed
+
+- Fixed Jellyfin/Silo Cast & Crew photos and StashApp performer ids not
+  filling in for a large share of performers, in two compounding ways:
+  - `Match` (the scan-time lookup Jellyfin uses before it has stored a
+    "JAVBeacon" provider id on a library item) built its result through
+    `enrichFromStash` alone, which fills text/image gaps but never attaches
+    performer images/ids at all - only `Metadata` (a direct by-id fetch) did
+    that. A freshly scanned item therefore got a completely photo-less Cast
+    & Crew row until some later call happened to fetch it by id directly,
+    which for most libraries rarely happens on its own. `Match` now enriches
+    performer images/ids exactly like `Metadata` does.
+  - Performer photo/id matching was an exact string match against StashApp's
+    own reported name, but JAVBeacon and StashApp surprisingly often scrape
+    the same performer in opposite word order (for example JAVBeacon's
+    "Hamasaki Mao" against StashApp's own "Mao Hamasaki" for the exact same
+    person) - the mismatch silently dropped the photo/id for every performer
+    caught by it. A reversed-name fallback now covers a clean two-word name,
+    without ever letting a guessed reversal steal another, genuinely
+    different performer's own real name in the same scene (for example two
+    performers whose names happen to be exact reverses of each other).
+
 ## [1.0.236] - 2026-09-26
 
 ### Fixed

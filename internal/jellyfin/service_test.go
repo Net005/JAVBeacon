@@ -114,6 +114,17 @@ func TestMetadataPopulatesPerformerImagesFromStashByName(t *testing.T) {
 		Performers: []stash.StashPerformer{
 			{ID: "p1", Name: "One", ImagePath: "/performer/p1/image"},
 			{ID: "p2", Name: "No Photo", ImagePath: ""},
+			// Confirmed live: JAVBeacon and StashApp surprisingly often scrape
+			// the same performer in opposite word order (JAVBeacon's
+			// "Hamasaki Mao" against StashApp's own "Mao Hamasaki" for the
+			// exact same person) - an exact-string match against StashApp's
+			// name alone silently dropped the photo/id.
+			{ID: "p3", Name: "Mao Hamasaki", ImagePath: "/performer/p3/image"},
+			// Two performers whose names happen to be exact reverses of each
+			// other - the reversed-name fallback above must never let one
+			// steal the other's own real entry.
+			{ID: "p4", Name: "Ai Yuki", ImagePath: "/performer/p4/image"},
+			{ID: "p5", Name: "Yuki Ai", ImagePath: "/performer/p5/image"},
 		},
 	}
 	m, err := svc.Metadata(context.Background(), r.ID)
@@ -133,6 +144,33 @@ func TestMetadataPopulatesPerformerImagesFromStashByName(t *testing.T) {
 	}
 	if got := m.PerformerIDs["No Photo"]; got != "p2" {
 		t.Fatalf("PerformerIDs[No Photo] = %q, want p2 even without a photo", got)
+	}
+	// Reversed-name lookup: a JAVBeacon actress name of "Hamasaki Mao" must
+	// resolve to StashApp's "Mao Hamasaki" record.
+	if got := m.PerformerImages["Hamasaki Mao"]; got != "/api/v1/integrations/performers/p3/image" {
+		t.Fatalf("PerformerImages[Hamasaki Mao] (reversed) = %q", got)
+	}
+	if got := m.PerformerIDs["Hamasaki Mao"]; got != "p3" {
+		t.Fatalf("PerformerIDs[Hamasaki Mao] (reversed) = %q", got)
+	}
+	// The original StashApp name must still resolve to itself too.
+	if got := m.PerformerIDs["Mao Hamasaki"]; got != "p3" {
+		t.Fatalf("PerformerIDs[Mao Hamasaki] = %q", got)
+	}
+	// Coincidental-reversal collision: each of the two real, distinct
+	// performers must keep resolving to their OWN id/image, never the
+	// other's.
+	if got := m.PerformerIDs["Ai Yuki"]; got != "p4" {
+		t.Fatalf("PerformerIDs[Ai Yuki] = %q, want p4 (must not be stolen by Yuki Ai's reversal)", got)
+	}
+	if got := m.PerformerIDs["Yuki Ai"]; got != "p5" {
+		t.Fatalf("PerformerIDs[Yuki Ai] = %q, want p5 (must not be stolen by Ai Yuki's reversal)", got)
+	}
+	if got := m.PerformerImages["Ai Yuki"]; got != "/api/v1/integrations/performers/p4/image" {
+		t.Fatalf("PerformerImages[Ai Yuki] = %q", got)
+	}
+	if got := m.PerformerImages["Yuki Ai"]; got != "/api/v1/integrations/performers/p5/image" {
+		t.Fatalf("PerformerImages[Yuki Ai] = %q", got)
 	}
 	// Search must never pay for this - it's Metadata-only, same policy as
 	// CollectionNames, to keep bulk search cheap.
@@ -308,6 +346,33 @@ func TestMatchPrefersExactPathAndReturnsPersistentIDs(t *testing.T) {
 	}
 	if result.Release.Title != "ABC-123" || result.Release.OriginalTitle != "ABC-123" || result.Release.Overview != "A title" {
 		t.Fatalf("Jellyfin title mapping=%+v", result.Release)
+	}
+}
+
+// TestMatchPopulatesPerformerImagesFromStash guards a real crash-adjacent
+// bug: Match (the scan-time lookup used before Jellyfin has stored a
+// "JAVBeacon" provider id) used to build its result via enrichFromStash
+// alone, which never calls applyPerformerImages - so a freshly scanned
+// item's entire Cast & Crew row came back with no photos at all, not just
+// ones affected by the reversed-name mismatch covered above. Match must
+// enrich performer images/ids exactly like Metadata does.
+func TestMatchPopulatesPerformerImagesFromStash(t *testing.T) {
+	svc, st, bridge, _ := testService(t)
+	defer st.Close()
+	bridge.sceneMeta = stash.StashSceneMetadata{
+		Performers: []stash.StashPerformer{
+			{ID: "p1", Name: "One", ImagePath: "/performer/p1/image"},
+		},
+	}
+	result, err := svc.Match(context.Background(), "/MEDIA/abc-123.MP4", "")
+	if err != nil || !result.Matched {
+		t.Fatalf("match=%+v err=%v", result, err)
+	}
+	if got := result.Release.PerformerImages["One"]; got != "/api/v1/integrations/performers/p1/image" {
+		t.Fatalf("PerformerImages[One] = %q, want a photo from Match just like Metadata", got)
+	}
+	if got := result.Release.PerformerIDs["One"]; got != "p1" {
+		t.Fatalf("PerformerIDs[One] = %q", got)
 	}
 }
 
