@@ -734,3 +734,28 @@ func TestOllamaTestEndpointReportsUnreachableServer(t *testing.T) {
 		t.Fatalf("unexpected offline response: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestDiscoveryCandidateLimitIsUncappedForOllamaButBoundedForOpenAI(t *testing.T) {
+	settings := map[string]string{"discoveries_openai_candidate_limit": "150"}
+	if got := discoveryCandidateLimit(settings, "ollama", 600); got != 600 {
+		t.Fatalf("expected Ollama enrichment to process every eligible candidate, got %d", got)
+	}
+	if got := discoveryCandidateLimit(settings, "ollama", 50); got != 50 {
+		t.Fatalf("expected Ollama enrichment to process every eligible candidate, got %d", got)
+	}
+	if got := discoveryCandidateLimit(settings, "openai", 600); got != 150 {
+		t.Fatalf("expected OpenAI enrichment to respect the configured candidate limit, got %d", got)
+	}
+	if got := discoveryCandidateLimit(map[string]string{}, "openai", 600); got != 150 {
+		t.Fatalf("expected default OpenAI candidate limit of 150, got %d", got)
+	}
+}
+
+func TestDiscoveryAIProviderDefaultsToOllama(t *testing.T) {
+	if got := discoveryAIProvider(map[string]string{}); got != "ollama" {
+		t.Fatalf("expected default provider ollama, got %q", got)
+	}
+	if got := discoveryAIProvider(map[string]string{"discoveries_ai_primary_provider": "OpenAI"}); got != "openai" {
+		t.Fatalf("expected case-insensitive openai provider match, got %q", got)
+	}
+}

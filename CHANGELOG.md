@@ -5,6 +5,18 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.224] - 2026-09-26
+
+### Fixed
+
+- Fixed AI enrichment runs silently stopping after only 50 candidates when
+  Ollama was the active provider ("50 / 50 · Completed" even though far more
+  releases were eligible). The candidate cap (`discoveries_openai_candidate_limit`,
+  150 by default) was applied to every provider even though it exists purely
+  to bound spend against a billed API. It now only applies when OpenAI is the
+  active provider; Ollama enrichment runs process every eligible candidate,
+  since a local/self-hosted model has no per-token cost to cap against.
+
 ## [1.0.223] - 2026-09-26
 
 ### Fixed
