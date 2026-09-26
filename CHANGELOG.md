@@ -5,6 +5,15 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.227] - 2026-09-26
+
+### Fixed
+
+- Fixed the Jellyfin plugin failing to build against current Jellyfin
+  server versions: `TaskTriggerInfo.TriggerInterval` was replaced upstream
+  by a `TaskTriggerInfoType` enum, which broke the catch-up scheduled
+  task's default trigger.
+
 ## [1.0.226] - 2026-09-26
 
 ### Added
