@@ -622,6 +622,28 @@ func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit
 	return batches, payloads
 }
 
+func discoveryAIProvider(settings map[string]string) string {
+	provider := strings.ToLower(strings.TrimSpace(settings["discoveries_ai_primary_provider"]))
+	if provider != "openai" {
+		provider = "ollama"
+	}
+	return provider
+}
+
+// discoveryCandidateLimit returns how many discovery items an enrichment run
+// should process. discoveries_openai_candidate_limit exists to cap per-run
+// spend against a billed API, so it only applies when OpenAI is the active
+// provider. Ollama runs against a local/self-hosted model with no per-token
+// cost, so a run enriches every eligible candidate instead of stopping early
+// at a limit that was never meant to apply to it.
+func discoveryCandidateLimit(settings map[string]string, provider string, itemCount int) int {
+	if provider != "openai" {
+		return itemCount
+	}
+	limit := discoveryInt(settings, "discoveries_openai_candidate_limit", 150)
+	return min(max(limit, 10), min(itemCount, 1000))
+}
+
 func discoveryAIRequestLimits(settings map[string]string) (int, int) {
 	batchSize := min(max(discoveryInt(settings, "discoveries_openai_batch_size", 5), 1), 5)
 	maxInputChars := min(max(discoveryInt(settings, "discoveries_openai_max_input_chars", 50000), 20000), 60000)
@@ -632,18 +654,14 @@ func (s *Server) enhanceDiscoveries(r *http.Request, settings map[string]string,
 	if settings["discoveries_ai_enabled"] != "true" || len(items) == 0 {
 		return items, false
 	}
-	limit := discoveryInt(settings, "discoveries_openai_candidate_limit", 150)
-	limit = min(max(limit, 10), min(len(items), 1000))
+	pools := strings.TrimSpace(settings["discoveries_pools"])
+	provider := discoveryAIProvider(settings)
+	limit := discoveryCandidateLimit(settings, provider, len(items))
 	// Small batches make the first durable results visible quickly and avoid a
 	// single oversized constrained-generation request monopolizing remote GPUs.
 	// This caps request size, not the total number of candidates enriched.
 	batchSize, maxInputChars := discoveryAIRequestLimits(settings)
 	batches, payloads := discoveryAIBatches(items, settings, limit, batchSize, maxInputChars)
-	pools := strings.TrimSpace(settings["discoveries_pools"])
-	provider := strings.ToLower(strings.TrimSpace(settings["discoveries_ai_primary_provider"]))
-	if provider != "openai" {
-		provider = "ollama"
-	}
 	model := strings.TrimSpace(settings["discoveries_ollama_model"])
 	if provider == "openai" {
 		model = strings.TrimSpace(settings["discoveries_openai_model"])
