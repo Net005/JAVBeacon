@@ -1297,6 +1297,32 @@ html.releaseOverlayOpen,body.releaseOverlayOpen{overflow:hidden!important;oversc
 .detailActionGroups:has(.downloadPillWrap),.actionGroup:has(.downloadPillWrap),.actionGroupHead:has(.downloadPillWrap){overflow:visible!important}
 .actionGroup:has(.downloadPillWrap),.downloadPillWrap{z-index:40}
 .downloadPillWrap.telemetryOpen .downloadPillTelemetry{opacity:1;visibility:visible;transform:none}
+
+/* The above overflow:visible fix escapes the compact action card, but on
+   Release Details the card also sits inside .releaseInfo, which several
+   desktop-width rules give overflow-x:hidden (some !important) so its taller
+   metadata/story content never spills sideways past the dialog. That same
+   clipping cuts off this telemetry popover's left side whenever its anchor
+   pill sits close enough to the pane's right edge that the popover's fixed
+   width would extend past releaseInfo's own left edge: the popover doesn't
+   lose a z-index fight, it never gets painted past that edge at all, so the
+   cover art underneath (a sibling, not an ancestor) just shows through where
+   the popover would have been.
+
+   Setting only overflow-x:visible here is NOT enough: per the CSS Overflow
+   spec, when overflow-x and overflow-y disagree and either is 'visible', the
+   'visible' one computes to 'auto' instead - and 'auto' still clips (it just
+   adds a scrollbar instead of a hard cut). releaseInfo's overflow-y stays
+   auto/hidden throughout, so overflow-x must be forced true 'visible' via
+   the shorthand, which sets both axes together and avoids that fallback.
+   This only lifts the clip (both axes) for the moment a popover is actually
+   open, via :has(), so releaseInfo's normal vertical scrolling is untouched
+   the rest of the time - this selector's specificity beats the plain
+   ".releaseInfo{overflow-x:hidden!important}" rules regardless of their own
+   source order. */
+.releaseInfo:has(.downloadPillWrap:hover),
+.releaseInfo:has(.downloadPillWrap:focus-within),
+.releaseInfo:has(.downloadPillWrap.telemetryOpen){overflow:visible!important}
 .actionIcon{display:inline-grid!important;flex:0 0 auto;width:1.15em;height:1.15em;place-items:center;filter:none!important;opacity:.9!important}
 .actionIcon svg{display:block;width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .stateButton .actionIcon{font-size:14px}.stateActions .actionIcon{font-size:17px}
