@@ -96,14 +96,29 @@
   opacity: 1;
 }
 
+/* Confirmed live: this row used to be two independent position:absolute
+ * divs bottom-anchored to .card-section, which placed them directly on top
+ * of Stash's own native footer (studio/views/date) - overlapping it as soon
+ * as that footer grew past a single short line (tags, an O-count, or an
+ * "organised"/CC indicator pushed it to two lines). This row now lives in
+ * normal flow, immediately after whatever Stash already rendered, so it can
+ * never overlap it - it simply becomes the next line down, however tall the
+ * native footer turned out to be. */
+.scene-card .javbeacon-card-actions-row {
+  align-items: center;
+  column-gap: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  margin-top: 0.4rem;
+  row-gap: 0.3rem;
+  width: 100%;
+}
+
 .scene-card .javbeacon-subs-card-action {
   align-items: center;
-  bottom: 0.95rem;
   display: inline-flex;
   justify-content: center;
-  position: absolute;
-  right: 0.55rem;
-  z-index: 3;
 }
 
 .scene-card .javbeacon-subs-card-action .javbeacon-subs-button,
@@ -119,12 +134,8 @@
 
 .scene-card .javbeacon-watchlist-card-action {
   align-items: center;
-  bottom: 0.95rem;
   display: inline-flex;
   justify-content: center;
-  left: 0.55rem;
-  position: absolute;
-  z-index: 3;
 }
 
 .scene-card .javbeacon-watchlist-button.btn.minimal {

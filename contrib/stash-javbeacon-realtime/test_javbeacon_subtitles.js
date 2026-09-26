@@ -219,8 +219,15 @@ captionQueryResult = {
 function renderCardActions(result) {
   return result.props.children[1].type(result.props.children[1].props);
 }
+// The subtitle/watchlist buttons are wrapped in one "javbeacon-card-actions-row"
+// div (cardActions.props.children[2]) instead of being two independent
+// top-level elements - see the CSS/JS overlap fix comment above
+// .javbeacon-card-actions-row for why - so index 0/1 here means the button's
+// position within that wrapper's own children, not within cardActions
+// directly.
 function renderCardAction(actions, index) {
-  const element = actions.props.children[index];
+  const row = actions.props.children[2];
+  const element = row.props.children[index];
   return element.type(element.props);
 }
 
@@ -228,7 +235,11 @@ const captionQueriesBeforeCards = queryCalls.filter((call) =>
   call.query.includes("JAVBeaconSceneCaptions")
 ).length;
 let cardActions = renderCardActions(cardResult);
-let subtitleAction = renderCardAction(cardActions, 2);
+assert.equal(
+  cardActions.props.children[2].props.className,
+  "javbeacon-card-actions-row"
+);
+let subtitleAction = renderCardAction(cardActions, 0);
 assert.equal(subtitleAction.props.className, "javbeacon-subs-card-action");
 assert.equal(
   queryCalls.find((call) => call.query.includes("JAVBeaconSubtitleSettings"))
@@ -241,7 +252,7 @@ assert.equal(
   captionQueriesBeforeCards
 );
 assert.equal(lazyQueryCalls.length, 0);
-const watchlistAction = renderCardAction(cardActions, 3);
+const watchlistAction = renderCardAction(cardActions, 1);
 const watchlistButton = watchlistAction.props.children;
 assert.equal(watchlistAction.props.className, "javbeacon-watchlist-card-action");
 assert.equal(watchlistButton.props.children.props.children, "+ Watchlist");
@@ -257,13 +268,13 @@ settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "/COLLECTIONS/jav/";
 cardActions = renderCardActions(cardResult);
-assert.notEqual(renderCardAction(cardActions, 2), null);
+assert.notEqual(renderCardAction(cardActions, 0), null);
 settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "/media/other/";
 cardActions = renderCardActions(cardResult);
-assert.equal(renderCardAction(cardActions, 2), null);
-assert.notEqual(renderCardAction(cardActions, 3), null);
+assert.equal(renderCardAction(cardActions, 0), null);
+assert.notEqual(renderCardAction(cardActions, 1), null);
 settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "";
@@ -314,7 +325,7 @@ storyContent.props.onClick({
 assert.equal(expandedState, true);
 assert.equal(prevented, true);
 assert.equal(stopped, true);
-const completedCardAction = renderCardAction(cardActions, 2);
+const completedCardAction = renderCardAction(cardActions, 0);
 assert.equal(completedCardAction.props.className, "javbeacon-subs-card-action");
 assert.equal(completedCardAction.props.children.props.completed, true);
 const completedSubtitleButton = completedCardAction.props.children.type(
@@ -381,7 +392,7 @@ assert.deepEqual(mutationCalls.at(-1).options.variables.args, {
   mode: "subtitles", scene_id: "39382", overwrite: true,
 });
 subtitleStatusResult = null;
-const completedWatchlistAction = renderCardAction(cardActions, 3);
+const completedWatchlistAction = renderCardAction(cardActions, 1);
 assert.equal(
   completedWatchlistAction.props.children.props.children.props.children,
   "✓ Watchlist"
@@ -406,7 +417,7 @@ const knownCompletedCard = afterPatches["SceneCard.Popovers"](
 assert.equal(knownCompletedCard.props.children[0], renderedPopovers);
 const knownCompletedActions = renderCardActions(knownCompletedCard);
 assert.equal(
-  renderCardAction(knownCompletedActions, 2).props.children.props.completed,
+  renderCardAction(knownCompletedActions, 0).props.children.props.completed,
   true
 );
 
@@ -415,7 +426,7 @@ const sceneWithoutCaptions = afterPatches["SceneCard.Popovers"](
   legacyContext,
   renderedPopovers
 );
-const noCaptionAction = renderCardAction(renderCardActions(sceneWithoutCaptions), 2);
+const noCaptionAction = renderCardAction(renderCardActions(sceneWithoutCaptions), 0);
 const noCaptionButton = noCaptionAction.props.children.type(noCaptionAction.props.children.props);
 const confirmationsBeforeNew = confirmationCalls.length;
 await noCaptionButton.props.onClick({ preventDefault() {}, stopPropagation() {} });
