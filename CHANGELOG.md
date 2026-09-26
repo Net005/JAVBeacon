@@ -5,6 +5,41 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.220] - 2026-09-26
+
+### Changed
+
+- AI Discovery validation no longer discards an entire ranking batch over one
+  candidate's borderline reason. Only structurally broken output (wrong or
+  duplicated candidate IDs, an empty result) still triggers a repair retry;
+  a single candidate with an over-eager or ungrounded reason now gets a
+  safe, deterministic fallback explanation while every other candidate's
+  genuinely good rank in the same batch is kept. A batch is only rejected
+  outright when every candidate in it came back unusable, so a truly broken
+  response still gets one repair attempt rather than being silently
+  accepted. This applies to both OpenAI and Ollama, since they share the
+  same validation path.
+- Discovery pool filtering ("Filters & discovery pools") now has a 20-second
+  server-side timeout with a clear error message instead of hanging
+  indefinitely, and the Discoveries grid shows a visible loading spinner and
+  status text (and surfaces failures as a toast) instead of only a subtle
+  dim with no indication anything was happening.
+
+### Fixed
+
+- Fixed a false-positive rejection where any AI Discovery reason containing
+  the word "corruption" (an ordinary JAV theme word, e.g. an "NTR/corruption
+  premise") was wrongly flagged as a data-quality complaint because of a
+  substring match against "corrupt". Now matched as a whole word.
+- Rejected-reason log lines for grounding failures (unsupported studio/
+  performer/story claims, etc.) now include the actual rejected text
+  (`detail=`), matching the diagnostic detail already added for
+  conversational-reason rejections, so future false positives are
+  root-causable from logs alone.
+- Added a missing trigram index on `releases.director` (Postgres), which
+  lacked one relative to every other free-text-searched column and could
+  force a sequential scan when it was part of a discovery pool's search.
+
 ## [1.0.219] - 2026-09-26
 
 ### Changed

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -1426,6 +1427,13 @@ func discoveryReleaseMatches(release domain.Release, category, subtitles string,
 	return !((subtitles == "yes" && !hasSubtitle) || (subtitles == "no" && hasSubtitle) || (category == "ready" && !hasSubtitle) || (category == "needs_subtitles" && hasSubtitle))
 }
 
+func discoveryTimeoutMessage(pool string) string {
+	if pool != "" {
+		return fmt.Sprintf("Filtering by discovery pool %q is taking too long and was stopped. Try narrowing your other filters, or check that the discovery pool's keyword list isn't excessively broad.", pool)
+	}
+	return "This discovery query is taking too long and was stopped. Try narrowing your search or other filters."
+}
+
 func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	settings, _ := s.store.Settings(r.Context())
 	if settings["discoveries_enabled"] == "false" {
@@ -1471,13 +1479,31 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	filter, pools, pool := discoveryFilterFromQuery(q, settings, category)
 	filter.AIEnhanced = aiOnly
 	filter.Offset = offset
-	fullTotal, err := s.store.ReleasesCount(r.Context(), filter)
+	// A discovery pool with several keyword terms turns into a large OR'd
+	// LIKE/EXISTS clause across title, story, director, studio, label, tags
+	// and actresses, which - especially on a large library - can run far
+	// longer than a normal request should ever take. Previously this had no
+	// bound at all: a slow pool query just hung until the client gave up,
+	// with nothing shown in the UI to say why. Bound it explicitly so a slow
+	// query fails fast with a clear, actionable message instead of hanging
+	// indefinitely.
+	dbCtx, cancelDB := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancelDB()
+	fullTotal, err := s.store.ReleasesCount(dbCtx, filter)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			s.problem(w, http.StatusGatewayTimeout, discoveryTimeoutMessage(pool))
+			return
+		}
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	releases, err := s.discoveryReleasePage(r.Context(), filter, candidateLimit)
+	releases, err := s.discoveryReleasePage(dbCtx, filter, candidateLimit)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			s.problem(w, http.StatusGatewayTimeout, discoveryTimeoutMessage(pool))
+			return
+		}
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
