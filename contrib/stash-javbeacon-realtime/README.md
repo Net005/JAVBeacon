@@ -10,6 +10,8 @@ This plugin provides two integrations:
 - an always-visible Watchlist toggle on Stash scene cards.
 - scene details beneath the scene ID on Stash scene cards, with a compact
   two-line preview, full-text hover tooltip, and click-to-expand display.
+- large, sprite-based cover and seek-bar previews on the scene player (see
+  **Player previews** below).
 
 The subtitle request runs in Python inside the Stash plugin process. It does
 not require `curl`, does not call JAVBeacon-Subs from the browser, and does
@@ -136,6 +138,38 @@ scene's linked release through JAVBeacon and opens its exact release page. The
 beacon remains available when subtitle path filters hide **+ CC**. The
 server-facing URL and webhook secret stay inside the Stash plugin process;
 only the configured browser URL and final release path reach the page.
+
+## Player previews
+
+Stash generates a sprite sheet and matching WebVTT file for every scene
+(`scene.paths.sprite` / `scene.paths.vtt`) - the same screenshots used by the
+scene grid's hover preview. This plugin reuses that existing sprite data on
+the scene detail page in two places:
+
+- **Cover-area scrubbing.** Hovering the cover/poster area before playback
+  starts cycles through the scene's sprite screenshots, one at a time, the
+  same source images the grid view uses for its own hover preview.
+- **Large seek-bar preview.** Hovering the seek bar below the player paints
+  the sprite frame for that point in time into the cover/video area itself,
+  scaled up to the sprite sheet's native resolution. This replaces Stash's
+  built-in small, fixed-size seek-bar thumbnail, which is hidden.
+
+Both behaviors are on by default and can be turned off independently:
+
+- **Enable cover-area sprite scrubbing**
+- **Enable large seek-bar preview**
+
+Two timings are configurable:
+
+- **Cover hover delay (ms)** - how long the pointer must rest over the cover
+  area before scrubbing starts. Defaults to 400ms.
+- **Time between sprites (ms)** - how long each sprite screenshot is shown
+  before advancing to the next one. Defaults to 700ms; values below 100ms are
+  treated as 100ms.
+
+If a scene has no sprite VTT yet (for example, one added before Stash
+generated preview data), both previews are silently unavailable for that
+scene; nothing else on the page is affected.
 
 ## Realtime sync
 
