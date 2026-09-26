@@ -96,6 +96,25 @@ assert.match(pluginSource, /function safeVideoBox\(/, "must define safeVideoBox 
   assert.match(coverBoxBody, /safeVideoBox\(playerEl\)/, "coverBox must derive its box from safeVideoBox");
 }
 
+// The underlying static poster/cover must be hidden while the overlay shows
+// a scrubbed frame, via a body-level class the CSS keys off, not by writing
+// directly to the player-owned .vjs-poster element.
+assert.match(
+  jsWithoutComments,
+  /document\.body\.classList\.add\(["']javbeacon-scrubbing["']\)/,
+  "showOverlay must add the javbeacon-scrubbing body class"
+);
+assert.match(
+  jsWithoutComments,
+  /document\.body\.classList\.remove\(["']javbeacon-scrubbing["']\)/,
+  "hideOverlay/detach must remove the javbeacon-scrubbing body class"
+);
+assert.match(
+  cssWithoutComments,
+  /\.javbeacon-scrubbing\s+\.vjs-poster\s*\{[^}]*opacity:\s*0/,
+  "CSS must hide .vjs-poster while .javbeacon-scrubbing is set"
+);
+
 // positionOverlay copies a rect (as returned by getBoundingClientRect, which
 // is already viewport-relative) directly onto a position: fixed element's
 // left/top/width/height, and leaves the element untouched for a degenerate
