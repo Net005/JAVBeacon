@@ -203,6 +203,29 @@ class SubtitleRequestTests(unittest.TestCase):
     @mock.patch.object(plugin, "_current_subtitle_backends")
     @mock.patch.object(plugin, "_read_subtitle_sidecar")
     @mock.patch.object(plugin, "_scene_and_subs_settings")
+    def test_subtitle_status_ignores_revision_pin_when_model_matches(
+        self, scene_settings, read_sidecar, current_backends
+    ):
+        # Same model, different HuggingFace revision hash - not a real
+        # backend change, so this must still count as up to date.
+        scene_settings.return_value = ("/collections/jav/NSPS-642.mp4", {})
+        read_sidecar.return_value = {
+            "transcription_backend": "Qwen/Qwen3-ASR-1.7B@old-commit-hash",
+            "translation_backend": "gpt-6-luna",
+        }
+        current_backends.return_value = {
+            "transcription_backend": "Qwen/Qwen3-ASR-1.7B@7278e1e70fe206f11671096ffdd38061171dd6e5",
+            "translation_backend": "gpt-6-luna",
+        }
+
+        result = plugin.subtitle_status({}, {"scene_id": "39381"})
+
+        self.assertTrue(result["up_to_date"])
+        self.assertEqual(result["reason"], "up_to_date")
+
+    @mock.patch.object(plugin, "_current_subtitle_backends")
+    @mock.patch.object(plugin, "_read_subtitle_sidecar")
+    @mock.patch.object(plugin, "_scene_and_subs_settings")
     def test_subtitle_status_when_current_backend_cannot_be_determined(
         self, scene_settings, read_sidecar, current_backends
     ):
