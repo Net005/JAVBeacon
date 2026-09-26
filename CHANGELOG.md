@@ -5,6 +5,17 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.231] - 2026-09-26
+
+### Fixed
+
+- Fixed performer photos failing to load in Jellyfin (401 Unauthorized) and
+  Silo: both fetch a performer's photo URL with their own generic,
+  unauthenticated HTTP client, with no way for a plugin to attach
+  credentials to that specific request. The performer-image endpoint no
+  longer requires authentication (every other endpoint, including the
+  release's own cover/backdrop, is unaffected).
+
 ## [1.0.230] - 2026-09-26
 
 ### Fixed
