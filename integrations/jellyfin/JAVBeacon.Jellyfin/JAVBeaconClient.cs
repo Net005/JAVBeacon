@@ -127,4 +127,30 @@ public sealed class JAVBeaconClient(IHttpClientFactory clients)
         var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
         return ToAbsoluteImageUrl(path, config.JAVBeaconUrl.TrimEnd('/') + "/");
     }
+
+    // Every other JAVBeacon image (movie/person provider images) reaches
+    // Jellyfin through GetImageResponse -> GetImage above, which carries our
+    // bearer token. A Jellyfin collection's cover has no such hook -
+    // LibrarySyncService.EnsureCollectionImage hands the URL straight to
+    // ProviderManager.SaveImage, which fetches it itself with a bare,
+    // unauthenticated HttpClient. Confirmed live: a plain Absolute() URL
+    // there 401'd and came back as an HTML error page instead of image
+    // bytes ("Request returned 'text/html' instead of an image type").
+    // Embedding ?api_key= in the URL - the same fix the Silo plugin's
+    // ImageURL already uses for the identical problem - lets JAVBeacon's own
+    // security() middleware accept the request (it already checks
+    // ?api_key= as well as the Authorization header) without needing a
+    // plugin-side public-route exemption.
+    public string AbsoluteWithApiKey(string path)
+    {
+        var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        var absolute = Absolute(path);
+        if (string.IsNullOrWhiteSpace(absolute))
+        {
+            return absolute;
+        }
+
+        var separator = absolute.Contains('?') ? '&' : '?';
+        return $"{absolute}{separator}api_key={Uri.EscapeDataString(config.ApiKey)}";
+    }
 }

@@ -120,8 +120,19 @@ public sealed class LibrarySyncService(
         }
     }
 
-    private async Task ReconcileFilterPresetCollections(IReadOnlyList<Models.FilterPresetCollectionDto> presets, string? prefix, bool forceImageRefresh, CancellationToken ct)
+    private async Task ReconcileFilterPresetCollections(IReadOnlyList<Models.FilterPresetCollectionDto>? presets, string? prefix, bool forceImageRefresh, CancellationToken ct)
     {
+        // Defensive: a JAVBeacon instance with zero saved filter presets (or
+        // an older/differently-behaving server) can serialize
+        // filter_presets as JSON null rather than an empty array, which
+        // System.Text.Json deserializes as a literal null - overriding
+        // LibrarySyncDto.FilterPresets's own "= []" default initializer.
+        // Confirmed live: this crashed the very next foreach with a
+        // NullReferenceException and took down the whole scheduled task.
+        // JAVBeacon itself no longer emits that null (see
+        // internal/jellyfin.Service.collectionIndexAndPresets), but this
+        // guard costs nothing and avoids depending on that alone.
+        presets ??= [];
         prefix ??= string.Empty;
         // Same defensive shape as ReconcileCollection below: guard against two
         // BoxSets somehow carrying the same FilterPresetProviderId (a
@@ -274,7 +285,10 @@ public sealed class LibrarySyncService(
         {
             var dto = await client.Metadata(releaseId, ct).ConfigureAwait(false);
             if (dto is null || string.IsNullOrWhiteSpace(dto.CoverPath)) return;
-            var url = client.Absolute(dto.CoverPath);
+            // AbsoluteWithApiKey, not Absolute - SaveImage below fetches this
+            // URL itself with a bare, unauthenticated client (see its doc
+            // comment in JAVBeaconClient.cs).
+            var url = client.AbsoluteWithApiKey(dto.CoverPath);
             await providerManager.SaveImage(collection, url, ImageType.Primary, null, ct).ConfigureAwait(false);
         }
         catch (Exception ex)

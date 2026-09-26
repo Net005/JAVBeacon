@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -417,6 +418,33 @@ func TestLibrarySyncOmitsUnplayedReleasesFromWatched(t *testing.T) {
 	}
 	if len(snapshot.Watched) != 0 {
 		t.Fatalf("watched=%+v, want empty (play_count is 0)", snapshot.Watched)
+	}
+}
+
+// TestLibrarySyncFilterPresetsNeverNil guards a real crash: with zero saved
+// filter presets, FilterPresets used to stay a nil slice, which Go's JSON
+// encoder (no omitempty on that field) serializes as "null" rather than
+// "[]". The Jellyfin plugin's DTO only defaults FilterPresets to an empty
+// array when the JSON key is absent - an explicit null overwrites that
+// default, and ReconcileFilterPresetCollections crashed on the very next
+// line with a NullReferenceException. FilterPresets must always marshal to
+// "[]" here, never "null".
+func TestLibrarySyncFilterPresetsNeverNil(t *testing.T) {
+	svc, st, _, _ := testService(t)
+	defer st.Close()
+	snapshot, err := svc.LibrarySync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.FilterPresets == nil {
+		t.Fatal("FilterPresets is nil, want a non-nil (possibly empty) slice")
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"filter_presets":null`) {
+		t.Fatalf("filter_presets serialized as null: %s", raw)
 	}
 }
 
