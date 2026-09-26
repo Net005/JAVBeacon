@@ -5,6 +5,25 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.223] - 2026-09-26
+
+### Fixed
+
+- Fixed discovery pool matches showing spurious, unrelated matches (e.g. a
+  school-themed, a gangbang, and a married-woman release all showing a 2%
+  "Sci-Fi" match with nothing sci-fi about them). A short pool keyword like
+  "AI" or "VR" matched via plain substring containment, which also matches
+  inside completely unrelated words ("Maid" contains "ai", "training"
+  contains "ai"). The per-item match logic that drives the "Matched pools"
+  chip and the AI reasoning's pool grounding now matches whole words only,
+  consistent with how pools are already authored (keyword lists already
+  enumerate word-form variants explicitly - "brainwash, brainwashing",
+  "alien, aliens" - which only makes sense under whole-word matching).
+  The SQL-level pool filter (used when a pool is selected to narrow the
+  Discoveries grid) also drops keywords under 3 characters from its LIKE
+  prefilter, since SQL has no portable word-boundary operator across
+  SQLite and PostgreSQL.
+
 ## [1.0.222] - 2026-09-26
 
 ### Fixed

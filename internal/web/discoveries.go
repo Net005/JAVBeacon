@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	aidiscovery "github.com/Net005/JAVBeacon/internal/discovery"
@@ -1242,14 +1243,35 @@ func discoveryCategory(release domain.Release, rewatchDays int, now time.Time) s
 	return "watched"
 }
 
+// discoveryWords splits text into lowercase whole-word tokens on any
+// non-letter/non-number boundary (spaces, hyphens, punctuation), shared by
+// discoveryTextMatches for both the haystack and the query so "sci-fi"
+// tokenizes to ["sci","fi"] on both sides consistently.
+func discoveryWords(text string) []string {
+	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
+}
+
 func discoveryTextMatches(release domain.Release, query string) bool {
-	query = strings.ToLower(strings.TrimSpace(query))
+	query = strings.TrimSpace(query)
 	if query == "" {
 		return true
 	}
-	haystack := strings.ToLower(strings.Join([]string{release.VideoID, release.Title, release.Story, release.Studio, release.Label, strings.Join(release.Actresses, " "), strings.Join(release.Genres, " ")}, " "))
-	for _, token := range strings.Fields(query) {
-		if !strings.Contains(haystack, token) {
+	// Whole-word matching, not substring: a discovery pool keyword like "AI"
+	// or "VR" used to match via strings.Contains, which also matches inside
+	// completely unrelated words ("Maid" contains "ai", "training" contains
+	// "ai") - a real observed false positive (a school/gangbang/married-
+	// woman release all showing a 2% "Sci-Fi" match from nothing more than
+	// an unrelated word containing "ai"). Pool authors already enumerate
+	// word-form variants explicitly (e.g. "brainwash, brainwashing",
+	// "alien, aliens", "heroine, super heroine, superheroine"), which only
+	// makes sense under whole-word matching - substring matching would have
+	// made half of those separate entries redundant.
+	haystackWords := map[string]bool{}
+	for _, word := range discoveryWords(strings.Join([]string{release.VideoID, release.Title, release.Story, release.Studio, release.Label, strings.Join(release.Actresses, " "), strings.Join(release.Genres, " ")}, " ")) {
+		haystackWords[word] = true
+	}
+	for _, token := range discoveryWords(query) {
+		if !haystackWords[token] {
 			return false
 		}
 	}

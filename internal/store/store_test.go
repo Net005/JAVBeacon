@@ -3305,6 +3305,49 @@ func TestPoolSearchDoesNotMatchColumnsOutsideMatchScope(t *testing.T) {
 	}
 }
 
+// TestPoolSearchExcludesUltraShortKeywordsFromSQLPrefilter guards against a
+// real observed false positive: a short pool keyword like "AI" matched via
+// plain SQL LIKE '%ai%' against ANY word containing that substring ("Maid",
+// "training", "certain"), pulling completely unrelated releases into a
+// pool's filtered results. SQL LIKE has no portable word-boundary operator
+// across SQLite and PostgreSQL (unlike discoveryTextMatches in
+// internal/web, which now matches whole words only), so keywords too short
+// for substring matching to be meaningfully selective are dropped from the
+// SQL-level filter entirely.
+func TestPoolSearchExcludesUltraShortKeywordsFromSQLPrefilter(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "pool-search-short-keyword.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	site, err := s.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "Test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertRelease(ctx, domain.Release{
+		SiteID: site.ID, VideoID: "MAID-1", Title: "Famous Maid Past In Akihabara", Source: "Test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertRelease(ctx, domain.Release{
+		SiteID: site.ID, VideoID: "BRAIN-1", Title: "Brainwashing Academy", Source: "Test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A realistic pool mixes short, unsafe-to-substring-match keywords ("AI")
+	// with genuine longer ones ("brainwashing"): the short keyword must be
+	// dropped from the SQL filter rather than pulling in "Maid" via
+	// substring, while the real keyword still filters normally.
+	rows, err := s.Releases(ctx, domain.ReleaseFilter{PoolSearch: "AI,brainwashing", Limit: 10, ShowNonPreferred: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].VideoID != "BRAIN-1" {
+		t.Fatalf(`short keyword "AI" wrongly matched "Maid" as a substring, or the real keyword stopped working: %+v`, rows)
+	}
+}
+
 // TestMigrateRepairsOrphanedLocalFlagWithoutStashSceneID guards the startup
 // repair for a real observed bug: is_local=1 with an empty stash_scene_id is
 // an invariant violation (every active sync path - full StashApp sync and

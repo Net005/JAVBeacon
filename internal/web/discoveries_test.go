@@ -272,6 +272,50 @@ func TestDiscoveryAIBatchesDoesNotStarveSubtitlesWithModestStories(t *testing.T)
 	}
 }
 
+// TestDiscoveryTextMatchesIsWholeWordNotSubstring guards a real observed
+// false positive: a short discovery pool keyword like "AI" or "VR" used to
+// match via strings.Contains, which also matches inside completely
+// unrelated words. A school-themed, a gangbang, and a married-woman release
+// all showed a spurious 2% "Sci-Fi" match from nothing more than "Maid" (in
+// the title) or a similar word containing "ai" - none of them had any
+// actual sci-fi content. Short keywords must only match as their own whole
+// word.
+func TestDiscoveryTextMatchesIsWholeWordNotSubstring(t *testing.T) {
+	maidRelease := domain.Release{Title: "Famous Maid Past In Akihabara", Story: "A boyish shyness acquaintance."}
+	if discoveryTextMatches(maidRelease, "AI") {
+		t.Fatal(`"AI" keyword wrongly matched inside "Maid" via substring`)
+	}
+	trainingRelease := domain.Release{Story: "Rigorous training and certain obedience await her."}
+	if discoveryTextMatches(trainingRelease, "AI") {
+		t.Fatal(`"AI" keyword wrongly matched inside "training"/"certain" via substring`)
+	}
+	// A release that genuinely says "AI" as its own word must still match.
+	genuineAI := domain.Release{Story: "An AI takes control of the household."}
+	if !discoveryTextMatches(genuineAI, "AI") {
+		t.Fatal(`"AI" keyword did not match a release that genuinely says "AI"`)
+	}
+	// Hyphenated keywords must still match against a hyphenated or
+	// space-separated occurrence, since both sides now tokenize the same
+	// way (word-boundary splitting, not substring).
+	scifiGenre := domain.Release{Genres: []string{"Sci-Fi"}}
+	if !discoveryTextMatches(scifiGenre, "sci-fi") {
+		t.Fatal(`"sci-fi" keyword did not match a "Sci-Fi" genre tag`)
+	}
+	scifiTitle := domain.Release{Title: "Sci Fi Nurse Squad"}
+	if !discoveryTextMatches(scifiTitle, "sci-fi") {
+		t.Fatal(`"sci-fi" keyword did not match a space-separated "Sci Fi" title`)
+	}
+	// Multi-word keyword phrases still require every word present
+	// (order-independent, same as before).
+	mindControl := domain.Release{Story: "Under his control, her mind slowly gives in."}
+	if !discoveryTextMatches(mindControl, "mind control") {
+		t.Fatal(`"mind control" keyword did not match both words present in the story`)
+	}
+	if discoveryTextMatches(domain.Release{Story: "Just her mind, nothing else."}, "mind control") {
+		t.Fatal(`"mind control" keyword matched with only one of its two words present`)
+	}
+}
+
 func TestDiscoveryAttachPoolMatchesScoresKeywordCoverage(t *testing.T) {
 	pools := map[string][]string{
 		"Brainwashing / Drugs": {"drug", "brainwashing"},
