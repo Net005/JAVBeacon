@@ -16,6 +16,14 @@ public sealed class LibrarySyncService(
     JAVBeaconClient client,
     ILogger<LibrarySyncService> logger) : BackgroundService
 {
+    // Every JAVBeacon-managed saved-filter-set collection carries this
+    // ProviderId, with the JAVBeacon filter preset's own (stable) ID as its
+    // value, so a renamed filter set updates its existing collection instead
+    // of creating a duplicate, and a deleted filter set's collection can be
+    // found and removed even though its name no longer matches anything in
+    // the current snapshot.
+    private const string FilterPresetProviderId = "JAVBeaconFilterPreset";
+
     private string? _revision;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -26,7 +34,7 @@ public sealed class LibrarySyncService(
             var interval = TimeSpan.FromSeconds(Math.Max(config?.LibrarySyncIntervalSeconds ?? 60, 15));
             try
             {
-                if (config is not null && (config.EnableWatchlistCollection || config.ScanLibraryOnStashChanges || config.SyncWatchedFromStash))
+                if (config is not null && (config.EnableWatchlistCollection || config.EnableFilterPresetCollections || config.ScanLibraryOnStashChanges || config.SyncWatchedFromStash))
                 {
                     var snapshot = await client.LibrarySync(stoppingToken).ConfigureAwait(false);
                     if (snapshot is not null)
@@ -41,7 +49,17 @@ public sealed class LibrarySyncService(
                         }
                         if (config.EnableWatchlistCollection)
                         {
-                            await ReconcileCollection(snapshot.Watchlist, config.WatchlistCollectionName).ConfigureAwait(false);
+                            var name = string.IsNullOrWhiteSpace(config.WatchlistCollectionName) ? "Watchlist" : config.WatchlistCollectionName.Trim();
+                            var orderedWatchlist = snapshot.Watchlist
+                                .OrderByDescending(x => x.WatchlistedAt ?? DateTimeOffset.MinValue)
+                                .ThenByDescending(x => x.ReleaseId)
+                                .Select(x => x.ReleaseId)
+                                .ToArray();
+                            await ReconcileCollection(name, orderedWatchlist).ConfigureAwait(false);
+                        }
+                        if (config.EnableFilterPresetCollections)
+                        {
+                            await ReconcileFilterPresetCollections(snapshot.FilterPresets, config.FilterPresetCollectionPrefix).ConfigureAwait(false);
                         }
                         if (config.SyncWatchedFromStash)
                         {
@@ -56,20 +74,82 @@ public sealed class LibrarySyncService(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Unable to synchronize the JAVBeacon Watchlist collection");
+                logger.LogWarning(ex, "Unable to synchronize JAVBeacon Jellyfin collections");
             }
             await Task.Delay(interval, stoppingToken).ConfigureAwait(false);
         }
     }
 
-    private async Task ReconcileCollection(IEnumerable<Models.LibrarySyncItemDto> watchlist, string configuredName)
+    /// <summary>
+    /// Forces one full pass right now, independent of the polling loop above
+    /// and its cached revision - used by the scheduled catch-up tasks so an
+    /// admin-triggered (or cron-triggered) run always does real work instead
+    /// of silently no-op'ing because the revision hasn't changed since the
+    /// last poll.
+    /// </summary>
+    public async Task RunFullSyncAsync(CancellationToken ct)
     {
-        var name = string.IsNullOrWhiteSpace(configuredName) ? "Watchlist" : configuredName.Trim();
-        var orderedWatchlist = watchlist
-            .OrderByDescending(x => x.WatchlistedAt ?? DateTimeOffset.MinValue)
-            .ThenByDescending(x => x.ReleaseId)
-            .ToArray();
-        var desiredReleaseIds = orderedWatchlist.Select(x => x.ReleaseId.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var config = Plugin.Instance?.Configuration;
+        if (config is null) return;
+        var snapshot = await client.LibrarySync(ct).ConfigureAwait(false);
+        if (snapshot is null) return;
+        _revision = snapshot.Revision;
+        if (config.EnableWatchlistCollection)
+        {
+            var name = string.IsNullOrWhiteSpace(config.WatchlistCollectionName) ? "Watchlist" : config.WatchlistCollectionName.Trim();
+            var orderedWatchlist = snapshot.Watchlist
+                .OrderByDescending(x => x.WatchlistedAt ?? DateTimeOffset.MinValue)
+                .ThenByDescending(x => x.ReleaseId)
+                .Select(x => x.ReleaseId)
+                .ToArray();
+            await ReconcileCollection(name, orderedWatchlist).ConfigureAwait(false);
+        }
+        if (config.EnableFilterPresetCollections)
+        {
+            await ReconcileFilterPresetCollections(snapshot.FilterPresets, config.FilterPresetCollectionPrefix).ConfigureAwait(false);
+        }
+        if (config.SyncWatchedFromStash)
+        {
+            watchedSync.Synchronize(snapshot.Watched, config.TrackedUserIds);
+        }
+    }
+
+    private async Task ReconcileFilterPresetCollections(IReadOnlyList<Models.FilterPresetCollectionDto> presets, string? prefix)
+    {
+        prefix ??= string.Empty;
+        var existingByPresetId = library.GetItemList(new InternalItemsQuery
+        {
+            Recursive = true,
+            IncludeItemTypes = [BaseItemKind.BoxSet]
+        }).OfType<BoxSet>()
+            .Where(x => x.ProviderIds.ContainsKey(FilterPresetProviderId))
+            .ToDictionary(x => x.ProviderIds[FilterPresetProviderId], StringComparer.Ordinal);
+
+        var seenPresetIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var preset in presets)
+        {
+            var presetId = preset.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            seenPresetIds.Add(presetId);
+            var name = string.IsNullOrWhiteSpace(prefix) ? preset.Name : prefix + preset.Name;
+            existingByPresetId.TryGetValue(presetId, out var existing);
+            await ReconcileCollection(name, preset.ReleaseIds, existing, FilterPresetProviderId, presetId).ConfigureAwait(false);
+        }
+
+        // A filter set that was deleted (or whose collection lost its
+        // provider-id tag some other way) has no matching entry in this
+        // sync's presets anymore - remove its now-orphaned collection rather
+        // than leaving a stale, no-longer-updated one behind.
+        foreach (var (presetId, orphan) in existingByPresetId)
+        {
+            if (seenPresetIds.Contains(presetId)) continue;
+            library.DeleteItem(orphan, new DeleteOptions { DeleteFileLocation = false });
+            logger.LogInformation("Removed Jellyfin collection {CollectionName} for a deleted JAVBeacon filter set", orphan.Name);
+        }
+    }
+
+    private async Task ReconcileCollection(string name, IReadOnlyList<long> desiredReleaseIds, BoxSet? existing = null, string? providerIdKey = null, string? providerIdValue = null)
+    {
+        var desiredIdStrings = desiredReleaseIds.Select(x => x.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var javItems = library.GetItemList(new InternalItemsQuery
         {
             Recursive = true,
@@ -77,14 +157,15 @@ public sealed class LibrarySyncService(
             IsVirtualItem = false
         }).Where(x => x.ProviderIds.ContainsKey("JAVBeacon")).ToArray();
         var javItemsByReleaseId = javItems
-            .Where(x => x.ProviderIds.TryGetValue("JAVBeacon", out var id) && desiredReleaseIds.Contains(id))
+            .Where(x => x.ProviderIds.TryGetValue("JAVBeacon", out var id) && desiredIdStrings.Contains(id))
             .ToDictionary(x => x.ProviderIds["JAVBeacon"], StringComparer.OrdinalIgnoreCase);
-        var desiredItems = orderedWatchlist
-            .Select(x => x.ReleaseId.ToString(System.Globalization.CultureInfo.InvariantCulture))
+        var desiredItems = desiredReleaseIds
+            .Select(x => x.ToString(System.Globalization.CultureInfo.InvariantCulture))
             .Where(javItemsByReleaseId.ContainsKey)
             .Select(id => javItemsByReleaseId[id])
             .ToArray();
-        var collection = library.GetItemList(new InternalItemsQuery
+
+        var collection = existing ?? library.GetItemList(new InternalItemsQuery
         {
             Recursive = true,
             IncludeItemTypes = [BaseItemKind.BoxSet]
@@ -98,9 +179,19 @@ public sealed class LibrarySyncService(
                 Name = name,
                 ItemIdList = desiredItems.Select(x => x.Id.ToString("N")).ToArray()
             }).ConfigureAwait(false);
-            await ApplyWatchlistOrder(collection, desiredItems, javItems).ConfigureAwait(false);
+            if (providerIdKey is not null && providerIdValue is not null)
+            {
+                collection.ProviderIds[providerIdKey] = providerIdValue;
+            }
+            await ApplyOrder(collection, desiredItems, javItems).ConfigureAwait(false);
             logger.LogInformation("Created Jellyfin collection {CollectionName} with {Count} JAVBeacon items", name, desiredItems.Length);
             return;
+        }
+
+        var renamed = !string.Equals(collection.Name, name, StringComparison.Ordinal);
+        if (renamed)
+        {
+            collection.Name = name;
         }
 
         var currentIds = collection.GetLinkedChildren().Select(x => x.Id).ToHashSet();
@@ -111,14 +202,15 @@ public sealed class LibrarySyncService(
         var remove = javItems.Where(x => currentIds.Contains(x.Id) && !desiredIds.Contains(x.Id)).Select(x => x.Id).ToArray();
         if (add.Length > 0) await collections.AddToCollectionAsync(collection.Id, add).ConfigureAwait(false);
         if (remove.Length > 0) await collections.RemoveFromCollectionAsync(collection.Id, remove).ConfigureAwait(false);
-        var reordered = await ApplyWatchlistOrder(collection, desiredItems, javItems).ConfigureAwait(false);
-        if (add.Length > 0 || remove.Length > 0 || reordered)
+        var reordered = await ApplyOrder(collection, desiredItems, javItems).ConfigureAwait(false);
+        if (renamed || add.Length > 0 || remove.Length > 0 || reordered)
         {
-            logger.LogInformation("Synchronized Jellyfin collection {CollectionName}: added {Added}, removed {Removed}, newest Watchlist items first", name, add.Length, remove.Length);
+            if (renamed) await collection.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None).ConfigureAwait(false);
+            logger.LogInformation("Synchronized Jellyfin collection {CollectionName}: added {Added}, removed {Removed}", name, add.Length, remove.Length);
         }
     }
 
-    private static async Task<bool> ApplyWatchlistOrder(BoxSet collection, IReadOnlyList<BaseItem> desiredItems, IReadOnlyList<BaseItem> allJavItems)
+    private static async Task<bool> ApplyOrder(BoxSet collection, IReadOnlyList<BaseItem> desiredItems, IReadOnlyList<BaseItem> allJavItems)
     {
         var javItemIds = allJavItems.Select(x => x.Id).ToHashSet();
         var manualLinks = collection.LinkedChildren
@@ -130,7 +222,11 @@ public sealed class LibrarySyncService(
         if (!changed) return false;
 
         // BoxSet is pre-sorted. DisplayOrder=Default makes Jellyfin honor the
-        // LinkedChildren order instead of re-sorting by premiere date.
+        // LinkedChildren order instead of re-sorting by premiere date. This
+        // is what makes a filter-preset collection's order match JAVBeacon's
+        // own sort exactly: desiredItems already arrives pre-sorted from the
+        // server (see internal/jellyfin's resolveFilterReleaseIDs), so
+        // LinkedChildren order is simply that sort, unchanged.
         collection.DisplayOrder = ItemSortBy.Default.ToString();
         collection.LinkedChildren = orderedLinks;
         await collection.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None).ConfigureAwait(false);

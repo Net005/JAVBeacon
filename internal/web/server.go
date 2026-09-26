@@ -272,6 +272,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/integrations/jellyfin/playback", s.jellyfinPlayback)
 	s.mux.HandleFunc("GET /api/v1/integrations/jellyfin/releases/{id}/activity", s.jellyfinActivity)
 	s.mux.HandleFunc("POST /api/v1/integrations/jellyfin/releases/{id}/o", s.jellyfinAddO)
+	s.mux.HandleFunc("GET /api/v1/integrations/jellyfin/releases/{id}/stash-cover", s.jellyfinStashCover)
 	s.mux.HandleFunc("GET /api/v1/integrations/silo/search", s.siloSearch)
 	s.mux.HandleFunc("GET /api/v1/integrations/silo/releases/{id}", s.siloMetadata)
 	s.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
@@ -1808,6 +1809,7 @@ func (s *Server) filterPresets(w http.ResponseWriter, r *http.Request) {
 			s.problem(w, 400, e.Error())
 			return
 		}
+		s.markJellyfinLibraryChanged(r.Context())
 		w.WriteHeader(204)
 	default:
 		var x domain.FilterPreset
@@ -1822,6 +1824,12 @@ func (s *Server) filterPresets(w http.ResponseWriter, r *http.Request) {
 			s.problem(w, 422, e.Error())
 			return
 		}
+		// A saved filter set can back a Jellyfin collection (see
+		// internal/jellyfin's LibrarySync), so creating/renaming/editing one
+		// must invalidate the plugin's cached revision the same way a
+		// Watchlist or Stash change does, or the new/updated collection would
+		// only appear after some unrelated library change happened to bump it.
+		s.markJellyfinLibraryChanged(r.Context())
 		s.json(w, map[bool]int{true: 201, false: 200}[r.Method == http.MethodPost], saved)
 	}
 }
