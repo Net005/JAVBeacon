@@ -165,14 +165,17 @@ source resolution: Stash's generated sprite screenshots are intentionally
 low-resolution to keep the sprite sheet small, so the large preview is that
 same resolution enlarged, not a higher-resolution capture.
 
-The preview is letterboxed to the frame's own aspect ratio and confined to
-the area above the player's control bar, so the control bar and seek
-position stay visible while scrubbing. It's built from two layered pieces:
-an opaque backdrop that always covers the entire video area (so the
-player's native cover image, which sits behind it, can never show through
-around the edges) and an inner frame sized to exactly the scaled preview
-image (so an adjacent sprite frame can never bleed in above or below the
-intended one).
+The preview is letterboxed to the frame's own aspect ratio, and it always
+leaves the control bar and seek bar visible and interactive while scrubbing.
+It's built from two layered pieces inserted directly into the player itself
+(as the element right before the control bar, so it naturally paints above
+the cover/video but below the control bar - no gap in the seek bar's own
+hit-area can ever expose the native cover, and no part of the overlay can
+ever cover the seek bar): an opaque backdrop that always covers the entire
+video area (so the player's native cover image, which sits behind it, can
+never show through around the edges) and an inner frame sized to exactly
+the scaled preview image (so an adjacent sprite frame can never bleed in
+above or below the intended one).
 
 Both behaviors are on by default and can be turned off independently:
 

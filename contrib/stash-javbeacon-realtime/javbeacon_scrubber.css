@@ -1,13 +1,38 @@
-/* Deliberately NOT positioned relative to .video-js or any other
-   Stash/video.js-owned element - it is appended to document.body and
-   positioned with fixed coordinates copied from the player's own
-   getBoundingClientRect() (see javbeacon_scrubber.js). Two earlier versions
-   of this plugin lived inside .video-js instead (as an added child, and
-   separately by writing to .video-js's own inline style) and both broke the
-   scene player entirely.
+/* Inserted as an actual child of .video-js itself (see createOverlay() in
+   javbeacon_scrubber.js: playerEl.insertBefore(backdrop, controlBar)), so it
+   shares the player's own stacking context instead of living outside it.
+
+   An earlier revision appended this element to document.body instead,
+   positioned with fixed coordinates copied from the player's
+   getBoundingClientRect(). That approach turned out to have a hard
+   architectural ceiling, confirmed live: an ancestor of .video-js several
+   levels up establishes its own stacking context (position:relative;
+   z-index:2), which traps the entire player subtree together. Any element
+   living OUTSIDE that ancestor can only ever render entirely above or
+   entirely below the whole player - it is architecturally impossible for an
+   outside element to sandwich itself between the video and the control bar
+   via z-index alone. That in turn made it impossible to fully hide the
+   native cover behind the seek bar's own transparent hit-area (the
+   .vjs-progress-control container is 45px tall but only its 4.5px
+   .vjs-progress-holder child has a real background) without also covering,
+   and thus hiding, the seek bar itself.
+
+   The fix is DOM position, not z-index: as a child of .video-js inserted
+   right before .vjs-control-bar, this element naturally paints above the
+   earlier siblings (poster, video) and below the control bar and everything
+   in it, with no z-index needed at all. This was verified live and
+   extensively before being adopted: play/pause still work, the control bar
+   and seek bar remain fully hit-testable and clickable, existing player
+   children are never removed or reordered, and only this one new element is
+   ever inserted - playerEl.style itself is still never touched. Two earlier,
+   different attempts at living inside .video-js (as a careless added child,
+   and separately by writing to .video-js's own inline style) broke the
+   scene player entirely; this insertion is deliberately narrow (one inert,
+   pointer-events:none node, added via insertBefore/appendChild only) to
+   avoid repeating that.
 
    Two elements, not one: .javbeacon-scrub-overlay is an opaque backdrop
-   sized to the full safe video area (blocks the native <video poster>
+   sized to the full player box (blocks the native <video poster>
    underneath from showing through any letterbox margin), and its child
    .javbeacon-scrub-frame is sized to exactly the scaled sprite cell and
    carries the actual crop - confirmed live that a single element sized to
@@ -19,9 +44,9 @@
   background-color: #000;
   opacity: 0;
   pointer-events: none;
-  position: fixed;
+  position: absolute;
+  inset: 0;
   transition: opacity 120ms ease;
-  z-index: 2147483000;
 }
 
 .javbeacon-scrub-overlay.is-visible {

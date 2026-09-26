@@ -55,18 +55,36 @@ const {
 } = window.__javbeaconScrubberInternals;
 
 // Two earlier revisions of this plugin mutated the scene player element
-// itself (.video-js) - once by appending the overlay as its child, once by
-// writing to its inline style - and both broke the scene player entirely.
-// The source must never touch playerEl (or any Stash/video.js-owned
-// element) except through read-only calls, so guard against reintroducing
-// either mutation.
+// carelessly - once by appending an ad-hoc child, once by writing to its
+// inline style - and both broke the scene player entirely. The current
+// architecture DOES insert our own overlay as a child of playerEl
+// (playerEl.insertBefore(backdrop, controlBar), confirmed live to be safe -
+// see the comment above createOverlay for why), but nothing else about
+// playerEl may ever be touched: no writes to its own style, and our
+// insertion must only ever add our own backdrop node via insertBefore or, as
+// a fallback, appendChild - never remove, replace, or reorder any existing
+// child.
 const pluginSource = fs.readFileSync(require.resolve("./javbeacon_scrubber.js"), "utf8");
-assert.doesNotMatch(pluginSource, /playerEl\.appendChild/, "must never append into the player element");
 assert.doesNotMatch(pluginSource, /playerEl\.style/, "must never write to the player element's style");
-assert.match(pluginSource, /document\.body\.appendChild\(backdrop\)/, "the overlay backdrop must be appended to document.body");
+assert.doesNotMatch(pluginSource, /playerEl\.removeChild/, "must never remove an existing child of the player element");
+assert.doesNotMatch(pluginSource, /playerEl\.replaceChild/, "must never replace an existing child of the player element");
+assert.match(
+  pluginSource,
+  /playerEl\.insertBefore\(backdrop,\s*controlBar\)/,
+  "the overlay backdrop must be inserted into the player element right before the control bar"
+);
+assert.match(
+  pluginSource,
+  /playerEl\.appendChild\(backdrop\)/,
+  "must fall back to appending the backdrop to the player element when no control bar is found"
+);
 
 const cssSource = fs.readFileSync(require.resolve("./javbeacon_scrubber.css"), "utf8");
-assert.match(cssSource, /position:\s*fixed/, "the overlay must be position: fixed, not relative to the player");
+assert.match(
+  cssSource,
+  /\.javbeacon-scrub-overlay\s*\{[^}]*position:\s*absolute/,
+  "the overlay must be position: absolute, positioned relative to the player it is now inserted into"
+);
 
 // This exact CSS selector match (a substring of .video-js's own
 // "vjs-vtt-thumbnails" feature-flag class) was confirmed live to hide the
@@ -80,19 +98,21 @@ const cssWithoutComments = cssSource.replace(/\/\*[\s\S]*?\*\//g, "");
 assert.doesNotMatch(jsWithoutComments, /\[class\*=["']vtt-thumbnail["']\]/, "must never use a substring selector to find the thumbnail element");
 assert.doesNotMatch(cssWithoutComments, /\[class\*=["']vtt-thumbnail["']\]/, "must never use a substring selector in CSS for the thumbnail element");
 
-// Confirmed live: the control bar sits on top of the video, not below it,
-// so the full player/poster rect includes the strip the control bar
-// occupies. Both preview paths must derive their box from safeVideoBox
-// (which subtracts that strip), not from a raw player/poster rect, or the
-// overlay's high z-index paints over the control bar and hides the seek
-// position while scrubbing.
-assert.match(pluginSource, /function safeVideoBox\(/, "must define safeVideoBox to exclude the control bar strip");
+// The overlay no longer needs to carve the control-bar strip out of its own
+// box: since it is now a DOM child of playerEl inserted right before the
+// control bar, it naturally paints below the control bar (and its seek bar)
+// regardless of its own size, so both preview paths simply use the full
+// player box. (An earlier revision computed a safeVideoBox that subtracted
+// the control bar's height - that function no longer exists, and its
+// removal is what fixed both the "seek bar hidden" and "native cover
+// exposed through the seek bar's transparent hit-area" regressions.)
+assert.doesNotMatch(pluginSource, /function safeVideoBox\(/, "safeVideoBox must not be reintroduced - DOM order now excludes the control bar, not box math");
+assert.match(pluginSource, /function playerBox\(/, "must define playerBox to size the overlay to the full player element");
 {
   const seekMoveBody = /function onSeekMove\(\) \{[\s\S]*?\n    \}/.exec(jsWithoutComments)?.[0] || "";
   const coverBoxBody = /function coverBox\(\) \{[\s\S]*?\n    \}/.exec(jsWithoutComments)?.[0] || "";
-  assert.match(seekMoveBody, /safeVideoBox\(playerEl\)/, "onSeekMove must derive its box from safeVideoBox");
-  assert.doesNotMatch(seekMoveBody, /playerEl\.getBoundingClientRect\(\)/, "onSeekMove must not use the raw player rect");
-  assert.match(coverBoxBody, /safeVideoBox\(playerEl\)/, "coverBox must derive its box from safeVideoBox");
+  assert.match(seekMoveBody, /playerBox\(playerEl\)/, "onSeekMove must derive its box from playerBox");
+  assert.match(coverBoxBody, /playerBox\(playerEl\)/, "coverBox must derive its box from playerBox");
 }
 
 // The underlying static poster/cover must be hidden while the overlay shows
