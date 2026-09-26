@@ -1400,7 +1400,7 @@ func diversifyDiscoveries(items []discoveryItem, strength float64) []discoveryIt
 func discoveryFilterFromQuery(q url.Values, settings map[string]string, category string) (domain.ReleaseFilter, map[string][]string, string) {
 	pools := discoveryPools(settings["discoveries_pools"])
 	pool := strings.TrimSpace(q.Get("pool"))
-	filter := domain.ReleaseFilter{Search: q.Get("search"), SearchWildcards: q.Get("search_wildcards") == "true", Category: q.Get("filter_category"), Entries: q.Get("entries"), WildcardLogic: q.Get("wildcard_logic"), SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Sort: q.Get("sort"), Direction: q.Get("direction")}
+	filter := domain.ReleaseFilter{Search: q.Get("search"), SearchWildcards: q.Get("search_wildcards") == "true", Category: q.Get("filter_category"), Entries: q.Get("entries"), WildcardLogic: q.Get("wildcard_logic"), SearchExpression: q.Get("search_expression"), HideLocal: q.Get("hide_local") == "true", HideMonitored: q.Get("hide_monitored") == "true", ShowNonPreferred: q.Get("show_non_preferred") == "true", Sort: q.Get("sort"), Direction: q.Get("direction")}
 	// Apply discovery-specific exclusions in SQL so totals, offsets and pages
 	// describe the same candidate set. Filtering these only after fetching a
 	// page could produce an empty page while still reporting thousands of
