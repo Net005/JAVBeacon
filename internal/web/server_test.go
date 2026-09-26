@@ -248,6 +248,30 @@ func TestOtherIntegrationRoutesStillRequireAuthentication(t *testing.T) {
 	}
 }
 
+// TestPerformerBioRouteRequiresAuthentication guards against
+// /api/v1/integrations/performer-bio/ being accidentally moved back under
+// the /api/v1/integrations/performers/ prefix (or the exemption broadened to
+// cover it): unlike the performer image proxy, this endpoint is fetched by
+// each plugin's own authenticated client, not the host's generic
+// unauthenticated image loader, so it has no reason to be public.
+func TestPerformerBioRouteRequiresAuthentication(t *testing.T) {
+	s := &Server{mux: http.NewServeMux()}
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := s.security(next)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/integrations/performer-bio/1656", nil))
+	if called {
+		t.Fatal("performer-bio request reached the handler without authentication")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
 func TestEmbeddedFrontendIncludesGlobalZoomAndLocalScreenshotUI(t *testing.T) {
 	javascript, err := assets.ReadFile("static/app.js")
 	if err != nil {

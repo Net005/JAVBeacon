@@ -33,6 +33,14 @@ public sealed class JAVBeaconMovieProvider(JAVBeaconClient client) : IRemoteMeta
             var person = new PersonInfo { Name = name, Type = PersonKind.Actor };
             if (dto.PerformerImages.TryGetValue(name, out var imagePath) && !string.IsNullOrWhiteSpace(imagePath))
                 person.ImageUrl = client.Absolute(imagePath);
+            // Tagging this person with the StashApp performer id as their own
+            // "JAVBeacon" provider id is what lets Jellyfin route that
+            // person's own metadata refresh to JAVBeaconPersonProvider - a
+            // PersonInfo's own bio fields (birthdate, overview, etc.) live on
+            // the separate Person entity, not here, and Jellyfin only invokes
+            // a Person provider when it has a provider id to look up.
+            if (dto.PerformerIds.TryGetValue(name, out var performerId) && !string.IsNullOrWhiteSpace(performerId))
+                person.ProviderIds["JAVBeacon"] = performerId;
             result.AddPerson(person);
         }
         foreach (var name in dto.Directors.Where(x => !string.IsNullOrWhiteSpace(x))) result.AddPerson(new() { Name = name, Type = PersonKind.Director });

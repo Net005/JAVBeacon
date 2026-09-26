@@ -39,7 +39,50 @@ public sealed record MetadataDto
     // populated on the single-release GET (see JAVBeaconMovieProvider, which
     // sets PersonInfo.ImageUrl from this).
     [JsonPropertyName("performer_images")] public Dictionary<string, string> PerformerImages { get; init; } = [];
+    // Maps a performer's display name (as it appears in Performers) to their
+    // StashApp performer id, for whichever performers on the linked Stash
+    // scene StashApp actually has a record for - independent of whether they
+    // have a photo. JAVBeaconMovieProvider attaches this as each PersonInfo's
+    // own "JAVBeacon" provider id, which is what lets Jellyfin route that
+    // person's own metadata refresh to JAVBeaconPersonProvider.
+    [JsonPropertyName("performer_ids")] public Dictionary<string, string> PerformerIds { get; init; } = [];
     [JsonPropertyName("provider_ids")] public Dictionary<string, string> ProviderIds { get; init; } = [];
+}
+
+public sealed record PerformerStashIdDto
+{
+    [JsonPropertyName("endpoint")] public string Endpoint { get; init; } = string.Empty;
+    [JsonPropertyName("stash_id")] public string StashId { get; init; } = string.Empty;
+}
+
+// PerformerBioDto is StashApp's full bio for one performer - everything
+// visible on that performer's own Stash page beyond the name/photo already
+// covered by MetadataDto.PerformerImages/PerformerIds. Jellyfin's Person
+// entity has no first-class field for most of these (gender, ethnicity,
+// measurements, etc. have no equivalent on Person), so
+// JAVBeaconPersonProvider folds them into the Person's Overview text instead
+// of dropping them.
+public sealed record PerformerBioDto
+{
+    [JsonPropertyName("id")] public string Id { get; init; } = string.Empty;
+    [JsonPropertyName("name")] public string Name { get; init; } = string.Empty;
+    [JsonPropertyName("gender")] public string? Gender { get; init; }
+    [JsonPropertyName("birthdate")] public string? Birthdate { get; init; }
+    [JsonPropertyName("death_date")] public string? DeathDate { get; init; }
+    [JsonPropertyName("ethnicity")] public string? Ethnicity { get; init; }
+    [JsonPropertyName("country")] public string? Country { get; init; }
+    [JsonPropertyName("eye_color")] public string? EyeColor { get; init; }
+    [JsonPropertyName("hair_color")] public string? HairColor { get; init; }
+    [JsonPropertyName("height_cm")] public int HeightCm { get; init; }
+    [JsonPropertyName("weight_kg")] public int WeightKg { get; init; }
+    [JsonPropertyName("measurements")] public string? Measurements { get; init; }
+    [JsonPropertyName("fake_tits")] public string? FakeTits { get; init; }
+    [JsonPropertyName("career_length")] public string? CareerLength { get; init; }
+    [JsonPropertyName("tattoos")] public string? Tattoos { get; init; }
+    [JsonPropertyName("piercings")] public string? Piercings { get; init; }
+    [JsonPropertyName("details")] public string? Details { get; init; }
+    [JsonPropertyName("urls")] public string[] Urls { get; init; } = [];
+    [JsonPropertyName("stash_ids")] public PerformerStashIdDto[] StashIds { get; init; } = [];
 }
 
 public sealed record MatchDto([property: JsonPropertyName("matched")] bool Matched, [property: JsonPropertyName("release")] MetadataDto? Release);

@@ -273,6 +273,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/integrations/jellyfin/releases/{id}/activity", s.jellyfinActivity)
 	s.mux.HandleFunc("POST /api/v1/integrations/jellyfin/releases/{id}/o", s.jellyfinAddO)
 	s.mux.HandleFunc("GET /api/v1/integrations/jellyfin/releases/{id}/stash-cover", s.jellyfinStashCover)
+	// Shared by both integrations (not namespaced under /jellyfin/ or
+	// /silo/), same as performerImage below - a performer's bio is
+	// provider-agnostic. Deliberately NOT placed under
+	// /api/v1/integrations/performers/, unlike performerImage: that prefix is
+	// security()'s auth-exempt path for the host's generic unauthenticated
+	// image loader, but this endpoint is fetched by each plugin's own
+	// authenticated client (like every other /integrations/ endpoint) and
+	// has no reason to be public.
+	s.mux.HandleFunc("GET /api/v1/integrations/performer-bio/{performerId}", s.jellyfinPerformerBio)
 	s.mux.HandleFunc("GET /api/v1/integrations/silo/search", s.siloSearch)
 	s.mux.HandleFunc("GET /api/v1/integrations/silo/releases/{id}", s.siloMetadata)
 	s.mux.HandleFunc("POST /api/v1/integrations/silo/playback", s.siloPlayback)

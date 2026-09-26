@@ -8,7 +8,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <AssemblyName>Jellyfin.Plugin.JAVBeacon</AssemblyName>
     <RootNamespace>Jellyfin.Plugin.JAVBeacon</RootNamespace>
-    <Version>1.0.136.0</Version>
+    <Version>1.0.137.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Jellyfin.Controller" Version="$(JellyfinVersion)"><ExcludeAssets>runtime</ExcludeAssets></PackageReference>

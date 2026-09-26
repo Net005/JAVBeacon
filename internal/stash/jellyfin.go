@@ -231,6 +231,103 @@ func (s *Service) StashSceneMetadata(ctx context.Context, sceneID string) (Stash
 	return out, nil
 }
 
+// StashStashID is one linked database's identifier for a performer (e.g.
+// StashDB, TPDB), as StashApp itself tracks them under stash_ids.
+type StashStashID struct {
+	Endpoint string
+	StashID  string
+}
+
+// StashPerformerDetails is the full bio StashApp holds for one performer -
+// everything visible on that performer's own Stash page beyond the
+// name/photo already covered by StashPerformer, for gap-filling a Jellyfin
+// Person page (see internal/jellyfin.PerformerBio). Every field is left
+// empty/zero when StashApp itself doesn't have it, never guessed.
+type StashPerformerDetails struct {
+	ID           string
+	Name         string
+	Gender       string
+	Birthdate    string
+	DeathDate    string
+	Ethnicity    string
+	Country      string
+	EyeColor     string
+	HairColor    string
+	HeightCM     int
+	WeightKG     int
+	Measurements string
+	FakeTits     string
+	CareerLength string
+	Tattoos      string
+	Piercings    string
+	Details      string
+	URLs         []string
+	StashIDs     []StashStashID
+}
+
+// PerformerDetails fetches a performer's full bio from StashApp, for
+// gap-filling a Jellyfin/Silo Person page - JAVBeacon itself never scrapes
+// this data, so StashApp (when linked) is the only source for it.
+func (s *Service) PerformerDetails(ctx context.Context, performerID string) (StashPerformerDetails, error) {
+	base, key, err := s.jellyfinConfig(ctx)
+	if err != nil {
+		return StashPerformerDetails{}, err
+	}
+	query := fmt.Sprintf(`query { findPerformer(id: "%s") { id name gender birthdate death_date ethnicity country eye_color hair_color height_cm weight measurements fake_tits career_length tattoos piercings details urls stash_ids { endpoint stash_id } } }`, escapeGraphQL(performerID))
+	var payload struct {
+		Data struct {
+			Performer *struct {
+				ID           string   `json:"id"`
+				Name         string   `json:"name"`
+				Gender       string   `json:"gender"`
+				Birthdate    string   `json:"birthdate"`
+				DeathDate    string   `json:"death_date"`
+				Ethnicity    string   `json:"ethnicity"`
+				Country      string   `json:"country"`
+				EyeColor     string   `json:"eye_color"`
+				HairColor    string   `json:"hair_color"`
+				HeightCM     int      `json:"height_cm"`
+				Weight       int      `json:"weight"`
+				Measurements string   `json:"measurements"`
+				FakeTits     string   `json:"fake_tits"`
+				CareerLength string   `json:"career_length"`
+				Tattoos      string   `json:"tattoos"`
+				Piercings    string   `json:"piercings"`
+				Details      string   `json:"details"`
+				URLs         []string `json:"urls"`
+				StashIDs     []struct {
+					Endpoint string `json:"endpoint"`
+					StashID  string `json:"stash_id"`
+				} `json:"stash_ids"`
+			} `json:"findPerformer"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err = s.graphql(ctx, base, key, query, &payload); err != nil {
+		return StashPerformerDetails{}, err
+	}
+	if len(payload.Errors) > 0 {
+		return StashPerformerDetails{}, errors.New(payload.Errors[0].Message)
+	}
+	if payload.Data.Performer == nil {
+		return StashPerformerDetails{}, errors.New("StashApp performer not found")
+	}
+	x := payload.Data.Performer
+	out := StashPerformerDetails{
+		ID: x.ID, Name: x.Name, Gender: x.Gender, Birthdate: x.Birthdate, DeathDate: x.DeathDate,
+		Ethnicity: x.Ethnicity, Country: x.Country, EyeColor: x.EyeColor, HairColor: x.HairColor,
+		HeightCM: x.HeightCM, WeightKG: x.Weight, Measurements: x.Measurements, FakeTits: x.FakeTits,
+		CareerLength: x.CareerLength, Tattoos: x.Tattoos, Piercings: x.Piercings, Details: x.Details,
+		URLs: x.URLs,
+	}
+	for _, id := range x.StashIDs {
+		out.StashIDs = append(out.StashIDs, StashStashID{Endpoint: id.Endpoint, StashID: id.StashID})
+	}
+	return out, nil
+}
+
 // FetchPerformerImage resolves performerID's portrait URL from StashApp and
 // fetches it with the same authenticated client used for every other Stash
 // request. The caller is responsible for closing the returned response body.
