@@ -112,30 +112,34 @@
   opacity: 1;
 }
 
-/* Confirmed live: this row used to be two independent position:absolute
- * divs bottom-anchored to .card-section, which placed them directly on top
- * of Stash's own native footer (studio/views/date) - overlapping it as soon
- * as that footer grew past a single short line (tags, an O-count, or an
- * "organised"/CC indicator pushed it to two lines). This row now lives in
- * normal flow, immediately after whatever Stash already rendered, so it can
- * never overlap it - it simply becomes the next line down, however tall the
- * native footer turned out to be.
+/* This row IS Stash's own native popovers row (tag count, gallery count,
+ * organized flag, etc.) - not a new one. The SceneCard.Popovers patch passes
+ * Stash's already-rendered popovers content straight into this row instead
+ * of rendering it as an independent sibling, so merging Watchlist/+CC in
+ * here adds no extra line and no extra height to the card; it only widens
+ * the line Stash already draws.
  *
- * justify-content: space-between - Watchlist flush to the row's left edge,
- * +CC flush to its right edge - restores the exact opposite-corner look the
- * two buttons had back when they were independently position:absolute
- * (left: 0.55rem / right: 0.55rem off .scene-card). A flex-start attempt
- * here read as clustered/misaligned instead. No margin-top: the row is
- * exactly one button's height, immediately below whatever Stash's own
- * footer rendered, adding nothing beyond that to the card's total height.
- * flex-wrap stays off - two small buttons never need to wrap, and wrap
- * combined with space-between could put them on separate lines at some
- * card widths. */
+ * justify-content: space-between pins the left cluster (Watchlist + Stash's
+ * own icons, see .javbeacon-card-actions-left) to the row's left edge and
+ * +CC to its right edge - the same opposite-corner look both buttons had
+ * back when they were independently position:absolute (left: 0.55rem /
+ * right: 0.55rem off .scene-card). flex-wrap stays off - these controls
+ * never need to wrap, and wrap combined with space-between could put them
+ * on separate lines at some card widths. */
 .scene-card .javbeacon-card-actions-row {
   align-items: center;
   display: flex;
   justify-content: space-between;
   width: 100%;
+}
+
+/* Clusters Watchlist immediately beside Stash's own popover icons (small
+ * gap, not the far-corner spacing +CC gets) so it reads as "next to the
+ * other icons" rather than isolated at the row's left edge. */
+.scene-card .javbeacon-card-actions-left {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.5rem;
 }
 
 .scene-card .javbeacon-subs-card-action {

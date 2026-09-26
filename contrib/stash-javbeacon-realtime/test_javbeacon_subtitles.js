@@ -231,30 +231,33 @@ const cardResult = afterPatches["SceneCard.Popovers"](
   renderedPopovers
 );
 
-assert.equal(cardResult.props.children[0], renderedPopovers);
-assert.equal(
-  cardResult.props.children[1].props.scene.id,
-  "39382"
-);
+// SceneCard.Popovers now returns SceneCardActions directly, with Stash's own
+// popovers content passed through as the "popovers" prop rather than
+// rendered as an independent sibling - so the merge below adds no extra line.
+assert.equal(cardResult.props.popovers, renderedPopovers);
+assert.equal(cardResult.props.scene.id, "39382");
 captionQueryResult = {
   data: { findScene: { captions: null, tags: [] } },
   loading: false,
 };
 function renderCardActions(result) {
-  return result.props.children[1].type(result.props.children[1].props);
+  return result.type(result.props);
 }
-// The subtitle/watchlist buttons are wrapped in one "javbeacon-card-actions-row"
-// div (cardActions.props.children[2]) instead of being two independent
-// top-level elements - see the CSS/JS overlap fix comment above
-// .javbeacon-card-actions-row for why - so index 0/1 here means the button's
-// position within that wrapper's own children, not within cardActions
-// directly. Watchlist renders first (index 0, left), +CC second (index 1,
-// right) - the original left/right assignment from when they were
-// independently position:absolute, restored after the overlap fix
-// accidentally swapped it.
+// The subtitle/watchlist buttons are merged into the same
+// "javbeacon-card-actions-row" div (cardActions.props.children[2]) that now
+// also carries Stash's own popovers content - see the merge-row comment
+// above .javbeacon-card-actions-row for why. Watchlist sits inside the
+// row's first child, a "javbeacon-card-actions-left" cluster it shares with
+// Stash's popovers (left, index 0 of that cluster); +CC is the row's own
+// second child (right, index 1 of the row).
 function renderCardAction(actions, index) {
   const row = actions.props.children[2];
-  const element = row.props.children[index];
+  if (index === 0) {
+    const left = row.props.children[0];
+    const element = left.props.children[0];
+    return element.type(element.props);
+  }
+  const element = row.props.children[1];
   return element.type(element.props);
 }
 function renderWatchlistAction(actions) {
@@ -272,6 +275,9 @@ assert.equal(
   cardActions.props.children[2].props.className,
   "javbeacon-card-actions-row"
 );
+const leftCluster = cardActions.props.children[2].props.children[0];
+assert.equal(leftCluster.props.className, "javbeacon-card-actions-left");
+assert.equal(leftCluster.props.children[1], renderedPopovers);
 let subtitleAction = renderSubtitleAction(cardActions);
 assert.equal(subtitleAction.props.className, "javbeacon-subs-card-action");
 assert.equal(
@@ -447,7 +453,7 @@ const knownCompletedCard = afterPatches["SceneCard.Popovers"](
   legacyContext,
   renderedPopovers
 );
-assert.equal(knownCompletedCard.props.children[0], renderedPopovers);
+assert.equal(knownCompletedCard.props.popovers, renderedPopovers);
 const knownCompletedActions = renderCardActions(knownCompletedCard);
 assert.equal(
   renderSubtitleAction(knownCompletedActions).props.children.props.completed,

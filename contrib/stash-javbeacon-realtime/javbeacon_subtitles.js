@@ -609,7 +609,7 @@
     );
   }
 
-  function SceneCardActions({ scene }) {
+  function SceneCardActions({ scene, popovers }) {
     const settingsQuery = usePluginSettings();
     const sceneID = String(scene.id);
     const [probe, setProbe] = React.useState(null);
@@ -705,29 +705,34 @@
         ref: setProbe,
       }),
       React.createElement(SceneCardStory, { scene: resolvedScene }),
-      // Confirmed live: these used to render as position:absolute overlays
-      // bottom-anchored to .card-section, which put them directly on top of
-      // Stash's own native footer row (studio/views/date) - fine when that
-      // row was short, but garbled ("GigaWatchlist" jammed together, dates
-      // doubled) once it grew from a scene having tags, an O-count, or an
-      // "organised"/CC indicator. Wrapping both buttons in one normal-flow
-      // row - rather than two independent absolutely-positioned divs - makes
-      // this row lay itself out below whatever Stash's own footer already
-      // rendered, however tall that turns out to be, instead of overlapping
-      // it at a fixed offset from the card's bottom edge.
+      // Confirmed live: these used to render as their own row below Stash's
+      // native popovers (tag count, gallery count, organized flag, etc.),
+      // which restored the overlap fix above but added a whole extra line
+      // to every card - not what was asked for. Watchlist and +CC now merge
+      // directly into that SAME popovers row instead: "popovers" here is
+      // Stash's own already-rendered popovers content, passed straight
+      // through in the SceneCard.Popovers patch above rather than rendered
+      // as an independent sibling, so this adds no line of its own - it's
+      // the same row Stash already draws, just wider.
       React.createElement(
         "div",
         { className: "javbeacon-card-actions-row" },
-        // Watchlist first (left), then +CC (right) - the same left/right
-        // assignment the two buttons had back when they were independently
-        // position:absolute (left: 0.55rem for Watchlist, right: 0.55rem for
-        // +CC). Wrapping them in one row for the overlap fix above
-        // accidentally reversed that order; restored here.
-        React.createElement(SceneCardWatchlistAction, {
-          scene: resolvedScene,
-          settings,
-          resolveScene,
-        }),
+        // Watchlist sits immediately left of Stash's own popovers icons, in
+        // one inline cluster - the same left assignment it had back when it
+        // was independently position:absolute (left: 0.55rem), now flush
+        // against the icons instead of alone. +CC stays on the right,
+        // pinned to the row's far edge via justify-content: space-between
+        // on the row itself.
+        React.createElement(
+          "div",
+          { className: "javbeacon-card-actions-left" },
+          React.createElement(SceneCardWatchlistAction, {
+            scene: resolvedScene,
+            settings,
+            resolveScene,
+          }),
+          popovers
+        ),
         React.createElement(SceneCardSubtitleAction, {
           scene: resolvedScene,
           settings,
@@ -814,14 +819,15 @@
     const props = args[0];
     const rendered = args[args.length - 1];
     if (!props?.scene?.id) return rendered;
-    return React.createElement(
-      React.Fragment,
-      null,
-      rendered,
-      React.createElement(SceneCardActions, {
-        key: "javbeacon-card-actions",
-        scene: props.scene,
-      })
-    );
+    // Passing Stash's own popovers output in as a prop - rather than
+    // rendering it as an independent sibling next to SceneCardActions, the
+    // way this used to work - lets SceneCardActions merge Watchlist/+CC
+    // directly into that same row instead of adding a new one below it. See
+    // the merge-row comment inside SceneCardActions for why.
+    return React.createElement(SceneCardActions, {
+      key: "javbeacon-card-actions",
+      popovers: rendered,
+      scene: props.scene,
+    });
   });
 })();
