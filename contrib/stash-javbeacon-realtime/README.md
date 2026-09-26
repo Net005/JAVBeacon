@@ -165,6 +165,11 @@ source resolution: Stash's generated sprite screenshots are intentionally
 low-resolution to keep the sprite sheet small, so the large preview is that
 same resolution enlarged, not a higher-resolution capture.
 
+The preview is letterboxed to the frame's own aspect ratio and confined to
+the area above the player's control bar, so the control bar and seek
+position stay visible while scrubbing, and the preview never shows part of
+an adjacent sprite frame bleeding in below the intended one.
+
 Both behaviors are on by default and can be turned off independently:
 
 - **Enable cover-area sprite scrubbing**

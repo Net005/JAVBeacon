@@ -96,13 +96,41 @@
     return promise;
   }
 
+  // Fits a contentW x contentH rectangle inside box the way CSS
+  // "background-size: contain" would - scaled up as far as possible without
+  // exceeding either dimension, then centered. Confirmed live to be
+  // necessary: an earlier revision stretched the overlay to fill the whole
+  // box while only painting a scaled image sized by the SMALLER of the two
+  // axis ratios, so the leftover space on the larger axis kept showing
+  // whatever sprite content sits past the edge of the intended cell -
+  // visible as a second, wrong frame bleeding in from the row below.
+  // Sizing the overlay itself to the scaled content, instead of stretching
+  // it to fill an arbitrarily-shaped box, removes that leftover space
+  // entirely.
+  function containRect(box, contentW, contentH) {
+    if (!box || box.width <= 0 || box.height <= 0 || !contentW || !contentH) return null;
+    const scale = Math.min(box.width / contentW, box.height / contentH);
+    if (!Number.isFinite(scale) || scale <= 0) return null;
+    const width = contentW * scale;
+    const height = contentH * scale;
+    return {
+      left: box.left + (box.width - width) / 2,
+      top: box.top + (box.height - height) / 2,
+      width,
+      height,
+      scale,
+    };
+  }
+
   // Pure aside from writing to targetEl.style and (when the source has no
   // explicit background-size) loading the sprite image to measure it. Takes
   // plain {style, getBoundingClientRect?} shaped objects so it can run
   // against a real DOM element or a fake one in a Node test. Resolves false
   // (leaving targetEl untouched) whenever sourceEl currently has no
   // thumbnail painted, so callers can decide whether to keep showing the
-  // previous frame.
+  // previous frame. Positions and sizes targetEl itself to the letterboxed
+  // fit within box (see containRect above), rather than stretching it to
+  // fill box - the caller does not need to call positionOverlay separately.
   async function mirrorBackground(sourceEl, targetEl, box) {
     if (!sourceEl || !targetEl || !box || box.width <= 0 || box.height <= 0) {
       return false;
@@ -119,8 +147,8 @@
     const baseHeight = (rect && rect.height) || extractPx(style.height);
     if (!baseWidth || !baseHeight) return false;
 
-    const scale = Math.min(box.width / baseWidth, box.height / baseHeight);
-    if (!Number.isFinite(scale) || scale <= 0) return false;
+    const fit = containRect(box, baseWidth, baseHeight);
+    if (!fit) return false;
 
     const positionParts = String(style.backgroundPosition || "0px 0px").split(/\s+/);
     const posX = extractPx(positionParts[0]) ?? 0;
@@ -137,10 +165,14 @@
       sizeH = natural.height;
     }
 
+    targetEl.style.left = `${fit.left.toFixed(2)}px`;
+    targetEl.style.top = `${fit.top.toFixed(2)}px`;
+    targetEl.style.width = `${fit.width.toFixed(2)}px`;
+    targetEl.style.height = `${fit.height.toFixed(2)}px`;
     targetEl.style.backgroundImage = image;
     targetEl.style.backgroundRepeat = "no-repeat";
-    targetEl.style.backgroundPosition = `${(posX * scale).toFixed(2)}px ${(posY * scale).toFixed(2)}px`;
-    targetEl.style.backgroundSize = `${(sizeW * scale).toFixed(2)}px ${(sizeH * scale).toFixed(2)}px`;
+    targetEl.style.backgroundPosition = `${(posX * fit.scale).toFixed(2)}px ${(posY * fit.scale).toFixed(2)}px`;
+    targetEl.style.backgroundSize = `${(sizeW * fit.scale).toFixed(2)}px ${(sizeH * fit.scale).toFixed(2)}px`;
     return true;
   }
 
@@ -221,17 +253,24 @@
   // Paints one VTT cue's crop into targetEl, using the same "measure the
   // sprite's natural size, scale position and size together" technique as
   // mirrorBackground above - confirmed live to reproduce a single, correctly
-  // cropped frame with no ghosting.
+  // cropped frame with no ghosting. Positions and sizes targetEl itself to
+  // the letterboxed fit within box (see containRect above) rather than
+  // stretching it to fill box, which is what let the next sprite row bleed
+  // into view below the intended frame.
   async function paintCue(targetEl, cue, box) {
     if (!targetEl || !cue || !box || box.width <= 0 || box.height <= 0) return false;
+    const fit = containRect(box, cue.w, cue.h);
+    if (!fit) return false;
     const natural = await loadNaturalSize(cue.url);
     if (!natural) return false;
-    const scale = Math.min(box.width / cue.w, box.height / cue.h);
-    if (!Number.isFinite(scale) || scale <= 0) return false;
+    targetEl.style.left = `${fit.left.toFixed(2)}px`;
+    targetEl.style.top = `${fit.top.toFixed(2)}px`;
+    targetEl.style.width = `${fit.width.toFixed(2)}px`;
+    targetEl.style.height = `${fit.height.toFixed(2)}px`;
     targetEl.style.backgroundImage = `url("${cue.url}")`;
     targetEl.style.backgroundRepeat = "no-repeat";
-    targetEl.style.backgroundPosition = `-${(cue.x * scale).toFixed(2)}px -${(cue.y * scale).toFixed(2)}px`;
-    targetEl.style.backgroundSize = `${(natural.width * scale).toFixed(2)}px ${(natural.height * scale).toFixed(2)}px`;
+    targetEl.style.backgroundPosition = `-${(cue.x * fit.scale).toFixed(2)}px -${(cue.y * fit.scale).toFixed(2)}px`;
+    targetEl.style.backgroundSize = `${(natural.width * fit.scale).toFixed(2)}px ${(natural.height * fit.scale).toFixed(2)}px`;
     return true;
   }
 
@@ -245,6 +284,7 @@
     parseCueImageLine,
     parseSpriteVtt,
     paintCue,
+    containRect,
   };
 
   // ---- DOM wiring --------------------------------------------------------
@@ -312,6 +352,29 @@
     return null;
   }
 
+  // Confirmed live: the control bar is absolutely positioned over the
+  // bottom of the video, not below it, so playerEl's own rect (or the
+  // poster's, which matches it exactly) includes the strip the control bar
+  // sits on. An earlier revision used that full rect as the preview box,
+  // so the overlay's very high z-index painted over the control bar,
+  // hiding the seek position the user needs to see while scrubbing. This
+  // returns the player rect with that bottom strip subtracted, read-only
+  // (getBoundingClientRect only, never mutating the control bar).
+  function safeVideoBox(playerEl) {
+    const rect = playerEl.getBoundingClientRect();
+    const controlBar = playerEl.querySelector(".vjs-control-bar");
+    const controlRect = controlBar ? controlBar.getBoundingClientRect() : null;
+    if (controlRect && controlRect.height > 0 && controlRect.top > rect.top) {
+      return {
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: Math.max(0, controlRect.top - rect.top),
+      };
+    }
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  }
+
   function attachScrubber(playerEl, cuesPromise, options) {
     const { hoverDelayMs, cycleIntervalMs, coverEnabled, seekEnabled } = options;
     const overlay = createOverlay();
@@ -327,8 +390,7 @@
     }
 
     function coverBox() {
-      const box = poster || playerEl;
-      return box.getBoundingClientRect();
+      return safeVideoBox(playerEl);
     }
 
     function mirrorFromThumbnail(box) {
@@ -353,9 +415,7 @@
         let index = 0;
         showOverlay(overlay);
         const step = () => {
-          const box = coverBox();
-          positionOverlay(overlay, box);
-          paintCue(overlay, cues[index], box);
+          paintCue(overlay, cues[index], coverBox());
           index = (index + 1) % cues.length;
         };
         step();
@@ -371,9 +431,8 @@
     function onSeekMove() {
       if (!seekEnabled) return;
       stopCycle();
-      const box = playerEl.getBoundingClientRect();
-      positionOverlay(overlay, box);
       showOverlay(overlay);
+      const box = safeVideoBox(playerEl);
       requestAnimationFrame(() => mirrorFromThumbnail(box));
     }
 
