@@ -16,12 +16,14 @@ import (
 )
 
 type fakeStash struct {
-	saves        []struct{ resume, duration float64 }
-	plays        int
-	os           int
-	failNextPlay bool
-	sceneMeta    stash.StashSceneMetadata
-	sceneMetaErr error
+	saves          []struct{ resume, duration float64 }
+	plays          int
+	os             int
+	failNextPlay   bool
+	sceneMeta      stash.StashSceneMetadata
+	sceneMetaErr   error
+	sceneMetaCalls int
+	sceneMetaDelay time.Duration
 }
 
 func (f *fakeStash) SaveJellyfinActivity(_ context.Context, _ string, resume, duration float64) error {
@@ -43,7 +45,15 @@ func (f *fakeStash) AddJellyfinO(context.Context, string, time.Time) (int, error
 func (f *fakeStash) JellyfinActivity(context.Context, string) (stash.JellyfinActivity, error) {
 	return stash.JellyfinActivity{OCount: f.os, PlayCount: f.plays}, nil
 }
-func (f *fakeStash) StashSceneMetadata(context.Context, string) (stash.StashSceneMetadata, error) {
+func (f *fakeStash) StashSceneMetadata(ctx context.Context, _ string) (stash.StashSceneMetadata, error) {
+	f.sceneMetaCalls++
+	if f.sceneMetaDelay > 0 {
+		select {
+		case <-time.After(f.sceneMetaDelay):
+		case <-ctx.Done():
+			return stash.StashSceneMetadata{}, ctx.Err()
+		}
+	}
 	if f.sceneMetaErr != nil || f.sceneMeta.Performers != nil {
 		return f.sceneMeta, f.sceneMetaErr
 	}
@@ -107,6 +117,52 @@ func TestMetadataPopulatesPerformerImagesFromStashByName(t *testing.T) {
 	}
 	if rows[0].PerformerImages != nil {
 		t.Fatalf("Search must not populate PerformerImages: %+v", rows[0].PerformerImages)
+	}
+}
+
+// TestMetadataFetchesStashSceneOnlyOnce guards against Metadata() regressing
+// back to two separate Stash round trips (one for text/image gap-fill, one
+// for performer images) - the exact shape of the bug that made a Silo
+// "Apply Match" click fail with a gRPC deadline-exceeded error even though
+// both JAVBeacon and Stash were reachable.
+func TestMetadataFetchesStashSceneOnlyOnce(t *testing.T) {
+	svc, st, bridge, r := testService(t)
+	defer st.Close()
+	bridge.sceneMeta = stash.StashSceneMetadata{
+		Performers: []stash.StashPerformer{{ID: "p1", Name: "One", ImagePath: "/performer/p1/image"}},
+	}
+	if _, err := svc.Metadata(context.Background(), r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if bridge.sceneMetaCalls != 1 {
+		t.Fatalf("StashSceneMetadata called %d times, want exactly 1", bridge.sceneMetaCalls)
+	}
+}
+
+// TestMetadataBoundsSlowStashLookup guards against a slow or stuck Stash
+// server hanging Metadata() past its own caller's budget - confirmed live: a
+// Silo "Apply Match" click failed with "context deadline exceeded" from
+// Metadata()'s Stash calls running unbounded on the incoming request's
+// context. Metadata() must return (with degraded, Stash-less data) well
+// within stashLookupTimeout even when the caller's own context has no
+// deadline and Stash never responds in time.
+func TestMetadataBoundsSlowStashLookup(t *testing.T) {
+	svc, st, bridge, r := testService(t)
+	defer st.Close()
+	bridge.sceneMetaDelay = stashLookupTimeout + 5*time.Second
+
+	start := time.Now()
+	m, err := svc.Metadata(context.Background(), r.ID)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Metadata should degrade gracefully rather than error: %v", err)
+	}
+	if elapsed > stashLookupTimeout+2*time.Second {
+		t.Fatalf("Metadata took %s, want it bounded near stashLookupTimeout (%s)", elapsed, stashLookupTimeout)
+	}
+	if m.PerformerImages != nil {
+		t.Fatalf("expected no performer images from a timed-out Stash lookup: %+v", m.PerformerImages)
 	}
 }
 

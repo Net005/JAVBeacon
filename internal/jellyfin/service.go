@@ -276,29 +276,61 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metada
 	return out, nil
 }
 
+// stashLookupTimeout bounds every individual Stash round trip made while
+// building Metadata/Search/Match results. Confirmed live: a single unmatched
+// Silo "Apply Match" click failed with the plugin's own gRPC call timing out
+// (context deadline exceeded) even though JAVBeacon and Stash were both
+// reachable - Metadata() was making up to two sequential, unbounded Stash
+// GraphQL calls (one from enrichFromStash, one from populatePerformerImages)
+// on the incoming request's context, which has no deadline of its own, so any
+// slowness on Stash's end directly ate into Silo's much shorter per-call RPC
+// budget. Metadata() below also now fetches the scene once and reuses it for
+// both enrichment steps instead of fetching it twice.
+const stashLookupTimeout = 5 * time.Second
+
+// stashSceneMetadata fetches sceneID's Stash metadata under stashLookupTimeout
+// regardless of whatever deadline (if any) ctx already carries, so a slow or
+// stuck Stash server degrades this one lookup instead of blowing through a
+// caller's own budget. Returns ok=false - never an error - for a nil Stash
+// bridge, an empty scene ID, a Stash error, or a timeout, since every call
+// site treats "no Stash data" as a normal, best-effort gap-fill miss.
+func (s *Service) stashSceneMetadata(ctx context.Context, sceneID string) (stash.StashSceneMetadata, bool) {
+	if s.stash == nil || sceneID == "" {
+		return stash.StashSceneMetadata{}, false
+	}
+	boundedCtx, cancel := context.WithTimeout(ctx, stashLookupTimeout)
+	defer cancel()
+	scene, err := s.stash.StashSceneMetadata(boundedCtx, sceneID)
+	if err != nil {
+		return stash.StashSceneMetadata{}, false
+	}
+	return scene, true
+}
+
 func (s *Service) Metadata(ctx context.Context, releaseID int64) (Metadata, error) {
 	r, err := s.store.Release(ctx, releaseID)
 	if err != nil {
 		return Metadata{}, err
 	}
-	m := s.enrichFromStash(ctx, r, s.metadata(r))
+	m := s.metadata(r)
+	// One Stash fetch shared by both enrichment steps below - see
+	// stashLookupTimeout's comment for why this used to be two.
+	if scene, ok := s.stashSceneMetadata(ctx, r.StashSceneID); ok {
+		m = applyStashScene(r, m, scene)
+		applyPerformerImages(scene, &m)
+	}
 	m.CollectionNames = s.collectionNamesForRelease(ctx, releaseID)
-	s.populatePerformerImages(ctx, r, &m)
 	return m, nil
 }
 
-// populatePerformerImages attaches a JAVBeacon-proxied StashApp portrait URL
-// to every performer name already on m (from JAVBeacon's own scrape or from
-// enrichFromStash) that StashApp has a photo for, matching by name. It is
-// unconditional - unlike enrichFromStash's gap-fill, JAVBeacon never has its
-// own performer photos to prefer, so this always runs when a Stash scene is
-// linked, not just when other metadata is missing.
-func (s *Service) populatePerformerImages(ctx context.Context, r domain.Release, m *Metadata) {
-	if s.stash == nil || r.StashSceneID == "" {
-		return
-	}
-	scene, err := s.stash.StashSceneMetadata(ctx, r.StashSceneID)
-	if err != nil || len(scene.Performers) == 0 {
+// applyPerformerImages attaches a JAVBeacon-proxied StashApp portrait URL to
+// every performer name already on m (from JAVBeacon's own scrape or from
+// applyStashScene) that StashApp has a photo for, matching by name. It is
+// unconditional - unlike applyStashScene's gap-fill, JAVBeacon never has its
+// own performer photos to prefer, so this always runs when scene data is
+// available, not just when other metadata is missing.
+func applyPerformerImages(scene stash.StashSceneMetadata, m *Metadata) {
+	if len(scene.Performers) == 0 {
 		return
 	}
 	images := make(map[string]string, len(scene.Performers))
@@ -363,10 +395,21 @@ func (s *Service) enrichFromStash(ctx context.Context, r domain.Release, m Metad
 	if !missingText && !missingImage {
 		return m
 	}
-	scene, err := s.stash.StashSceneMetadata(ctx, r.StashSceneID)
-	if err != nil {
+	scene, ok := s.stashSceneMetadata(ctx, r.StashSceneID)
+	if !ok {
 		return m
 	}
+	return applyStashScene(r, m, scene)
+}
+
+// applyStashScene fills gaps in JAVBeacon's own scraped metadata directly
+// from an already-fetched StashApp scene - split out from enrichFromStash so
+// Metadata() can fetch the scene once and apply it here and in
+// applyPerformerImages, instead of each doing its own separate Stash round
+// trip. It only ever fills a field that is currently EMPTY - StashApp data
+// never overrides anything JAVBeacon itself already has.
+func applyStashScene(r domain.Release, m Metadata, scene stash.StashSceneMetadata) Metadata {
+	missingImage := r.ImageURL == ""
 	if r.Title == "" {
 		if scene.Details != "" {
 			m.Overview = scene.Details
