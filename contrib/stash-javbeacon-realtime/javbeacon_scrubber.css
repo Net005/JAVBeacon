@@ -1,26 +1,22 @@
+/* Deliberately NOT positioned relative to .video-js or any other
+   Stash/video.js-owned element - it is appended to document.body and
+   positioned with fixed coordinates copied from the player's own
+   getBoundingClientRect() (see javbeacon_scrubber.js). Two earlier versions
+   of this plugin lived inside .video-js instead (as an added child, and
+   separately by writing to .video-js's own inline style) and both broke the
+   scene player entirely. */
 .javbeacon-scrub-overlay {
   background-color: #000;
   background-repeat: no-repeat;
-  bottom: 0;
-  left: 0;
   opacity: 0;
   pointer-events: none;
-  position: absolute;
-  right: 0;
-  top: 0;
+  position: fixed;
   transition: opacity 120ms ease;
-  z-index: 1;
+  z-index: 2147483000;
 }
 
 .javbeacon-scrub-overlay.is-visible {
   opacity: 1;
-}
-
-/* Keep the control bar clickable above the overlay regardless of DOM order;
-   the overlay itself already ignores pointer events, but this also stops it
-   from visually covering the control bar's own background. */
-.video-js .vjs-control-bar {
-  z-index: 2;
 }
 
 /* Stash's small fixed-size seek-bar thumbnail preview (the standard

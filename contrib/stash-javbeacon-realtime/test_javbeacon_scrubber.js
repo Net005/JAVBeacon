@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 
 const afterPatches = {};
 const React = {
@@ -43,7 +44,40 @@ global.window = {
 
 require("./javbeacon_scrubber.js");
 
-const { extractPx, mirrorBackground } = window.__javbeaconScrubberInternals;
+const { extractPx, mirrorBackground, positionOverlay } = window.__javbeaconScrubberInternals;
+
+// Two earlier revisions of this plugin mutated the scene player element
+// itself (.video-js) - once by appending the overlay as its child, once by
+// writing to its inline style - and both broke the scene player entirely.
+// The source must never touch playerEl (or any Stash/video.js-owned
+// element) except through read-only calls, so guard against reintroducing
+// either mutation.
+const pluginSource = fs.readFileSync(require.resolve("./javbeacon_scrubber.js"), "utf8");
+assert.doesNotMatch(pluginSource, /playerEl\.appendChild/, "must never append into the player element");
+assert.doesNotMatch(pluginSource, /playerEl\.style/, "must never write to the player element's style");
+assert.match(pluginSource, /document\.body\.appendChild\(overlay\)/, "the overlay must be appended to document.body");
+
+const cssSource = fs.readFileSync(require.resolve("./javbeacon_scrubber.css"), "utf8");
+assert.match(cssSource, /position:\s*fixed/, "the overlay must be position: fixed, not relative to the player");
+
+// positionOverlay copies a rect (as returned by getBoundingClientRect, which
+// is already viewport-relative) directly onto a position: fixed element's
+// left/top/width/height, and leaves the element untouched for a degenerate
+// (zero-size) rect rather than positioning it at 0x0.
+{
+  const overlay = { style: {} };
+  positionOverlay(overlay, { left: 12, top: 34, width: 560, height: 315 });
+  assert.equal(overlay.style.left, "12px");
+  assert.equal(overlay.style.top, "34px");
+  assert.equal(overlay.style.width, "560px");
+  assert.equal(overlay.style.height, "315px");
+
+  const untouched = { style: {} };
+  positionOverlay(untouched, { left: 0, top: 0, width: 0, height: 0 });
+  assert.equal(untouched.style.left, undefined);
+  positionOverlay(untouched, null);
+  assert.equal(untouched.style.left, undefined);
+}
 
 // extractPx pulls the numeric pixel value out of a CSS length, including
 // negative offsets (background-position commonly uses these).
