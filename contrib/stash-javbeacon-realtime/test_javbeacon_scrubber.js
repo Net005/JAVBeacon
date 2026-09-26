@@ -52,7 +52,7 @@ const {
   parseCueImageLine,
   parseSpriteVtt,
   paintCue,
-  containRect,
+  containFit,
 } = window.__javbeaconScrubberInternals;
 
 // Two earlier revisions of this plugin mutated the scene player element
@@ -173,42 +173,44 @@ global.Image = class {
 };
 
 (async () => {
-  // containRect fits contentW x contentH inside box the way CSS
-  // "background-size: contain" would: scaled up as far as possible without
-  // exceeding either axis, then centered - never stretched to fill box on
-  // an axis the content doesn't reach. An earlier revision stretched the
-  // overlay to fill the whole box while only painting a scaled image sized
-  // by the smaller-ratio axis, so the leftover space on the other axis
-  // revealed whatever sprite content sat past the edge of the intended
-  // cell - visible as a second, wrong frame bleeding in from the next row.
+  // containFit computes the "background-size: contain" scale and centering
+  // margins for a contentW x contentH image inside box, without sizing
+  // anything itself - callers keep their overlay element at the FULL box
+  // size (opaque) and use the margins to offset the background image
+  // within it. Confirmed live (twice) that the overlay element itself must
+  // never shrink to just the letterboxed content rect: the native <video>
+  // element carries its own "poster" HTML attribute, rendered by the
+  // browser independently of Stash's .vjs-poster div, so any letterbox
+  // margin left uncovered by a shrunk overlay exposes that poster (or the
+  // live video frame) straight through. An earlier revision (which fixed a
+  // different bug - a second sprite frame bleeding in from stretching the
+  // background image without containing it) shrank the overlay element to
+  // match, which reintroduced exposure via the letterbox margin instead.
   {
-    // uniform box: no letterboxing needed
-    assert.deepEqual(containRect({ left: 0, top: 0, width: 800, height: 450 }, 160, 90), {
-      left: 0,
-      top: 0,
-      width: 800,
-      height: 450,
+    // uniform box: no letterboxing needed, margins are zero
+    assert.deepEqual(containFit({ left: 0, top: 0, width: 800, height: 450 }, 160, 90), {
+      marginX: 0,
+      marginY: 0,
       scale: 5,
     });
     // taller box than content aspect: letterboxed top/bottom, centered
-    const fit = containRect({ left: 10, top: 20, width: 400, height: 400 }, 160, 90);
+    const fit = containFit({ left: 10, top: 20, width: 400, height: 400 }, 160, 90);
     assert.equal(fit.scale, 2.5); // width-limited: 400/160
-    assert.equal(fit.width, 400);
-    assert.equal(fit.height, 225);
-    assert.equal(fit.left, 10);
-    assert.equal(fit.top, 20 + (400 - 225) / 2);
+    assert.equal(fit.marginX, 0);
+    assert.equal(fit.marginY, (400 - 225) / 2);
     // degenerate inputs
-    assert.equal(containRect(null, 10, 10), null);
-    assert.equal(containRect({ left: 0, top: 0, width: 0, height: 0 }, 10, 10), null);
-    assert.equal(containRect({ left: 0, top: 0, width: 10, height: 10 }, 0, 0), null);
+    assert.equal(containFit(null, 10, 10), null);
+    assert.equal(containFit({ left: 0, top: 0, width: 0, height: 0 }, 10, 10), null);
+    assert.equal(containFit({ left: 0, top: 0, width: 10, height: 10 }, 0, 0), null);
   }
 
   // mirrorBackground scales a source element's background image, position
   // and size up, preserving the exact crop Stash's own thumbnail element
   // already computed - this is what replaces re-deriving the sprite crop
   // from scratch (the earlier approach that produced overlapping/ghosted
-  // frames). It also sizes/positions targetEl itself to the letterboxed
-  // fit within box, rather than stretching it to fill box.
+  // frames). It always sizes/positions targetEl to the FULL box (opaque),
+  // painting the letterboxed image via background-position/size instead of
+  // shrinking the element - see containFit above for why.
   {
     const source = fakeElement(
       {
@@ -223,7 +225,7 @@ global.Image = class {
     assert.equal(ok, true);
     assert.equal(target.style.backgroundImage, source.style.backgroundImage);
     assert.equal(target.style.backgroundRepeat, "no-repeat");
-    // box aspect matches source aspect exactly, so it fills the box fully
+    // box aspect matches source aspect exactly, so margins are zero
     assert.equal(target.style.left, "0.00px");
     assert.equal(target.style.top, "0.00px");
     assert.equal(target.style.width, "800.00px");
@@ -259,12 +261,12 @@ global.Image = class {
     assert.equal(target.style.backgroundSize, "8640.00px 4860.00px");
   }
 
-  // Regression case matching the live bug report exactly: box (the player
-  // rect) is much taller than the seek-bar thumbnail's 16:9 aspect ratio
-  // (905x760.5, mimicking a real player rect that still includes room for
-  // the control bar). The overlay must be letterboxed to 905x509.06 and
-  // centered, NOT stretched to the full 760.5 height - stretching it is
-  // what let the next sprite row bleed into view below the intended frame.
+  // Regression case matching the live bug report exactly: box (the safe
+  // video area, control bar already excluded) is taller than the seek-bar
+  // thumbnail's 16:9 aspect ratio (905x760.5). The overlay element must
+  // cover the FULL 905x760.5 box (opaque, so the native <video poster>
+  // underneath can never show through the letterbox margin), with the
+  // image itself letterboxed via background-position/size instead.
   {
     const url = "https://stash.bondt.network/scene/regression_sprite.jpg";
     global.__fakeImageSizes = { ...global.__fakeImageSizes, [url]: { width: 5760, height: 3240 } };
@@ -281,12 +283,14 @@ global.Image = class {
     const target = fakeElement({});
     const ok = await mirrorBackground(source, target, { left: 465, top: 55.75, width: 905, height: 760.5 });
     assert.equal(ok, true);
+    // element covers the entire box - no shrinking, no uncovered margin
     assert.equal(target.style.left, "465.00px");
+    assert.equal(target.style.top, "55.75px");
     assert.equal(target.style.width, "905.00px");
-    // height must be letterboxed to the scaled content height, not the box's
-    assert.equal(target.style.height, "509.06px");
-    assert.equal(target.style.top, "181.47px");
-    assert.equal(target.style.backgroundPosition, "-7240.00px -1527.19px");
+    assert.equal(target.style.height, "760.50px");
+    // the letterbox margin (125.71875px top/bottom) is folded into the
+    // background offset instead
+    assert.equal(target.style.backgroundPosition, "-7240.00px -1401.47px");
     assert.equal(target.style.backgroundSize, "8145.00px 4581.56px");
   }
 
@@ -301,9 +305,10 @@ global.Image = class {
     assert.equal(target.style.backgroundImage, "url(previous.jpg)");
   }
 
-  // A non-uniform target box scales by the smaller ratio and centers on the
-  // other axis, so the mirrored crop never overflows either dimension and
-  // never leaves stray sprite content visible past its edges.
+  // A non-uniform target box scales by the smaller ratio, covers the FULL
+  // box (opaque), and folds the resulting centering margin into the
+  // background offset so the crop never overflows either dimension and the
+  // letterbox margin is never left uncovered.
   {
     const source = fakeElement(
       {
@@ -315,11 +320,11 @@ global.Image = class {
     );
     const target = fakeElement({});
     await mirrorBackground(source, target, { left: 0, top: 0, width: 400, height: 150 });
-    // width ratio = 4, height ratio = 3 -> use 3
-    assert.equal(target.style.backgroundPosition, "-300.00px -150.00px");
-    assert.equal(target.style.width, "300.00px");
+    // width ratio = 4, height ratio = 3 -> use 3; marginX = (400-300)/2 = 50
+    assert.equal(target.style.backgroundPosition, "-250.00px -150.00px");
+    assert.equal(target.style.width, "400.00px");
     assert.equal(target.style.height, "150.00px");
-    assert.equal(target.style.left, "50.00px"); // centered: (400-300)/2
+    assert.equal(target.style.left, "0.00px");
   }
 
   // Falls back to reading the source element's own width/height style when
@@ -421,7 +426,7 @@ global.Image = class {
     assert.equal(target.style.top, "0.00px");
     assert.equal(target.style.width, "1280.00px");
     assert.equal(target.style.height, "720.00px");
-    assert.equal(target.style.backgroundPosition, "-1280.00px -0.00px");
+    assert.equal(target.style.backgroundPosition, "-1280.00px 0.00px");
     assert.equal(target.style.backgroundSize, "11520.00px 6480.00px");
 
     assert.equal(await paintCue(null, cue, { left: 0, top: 0, width: 10, height: 10 }), false);
@@ -434,10 +439,12 @@ global.Image = class {
   }
 
   // Regression case matching the live bug report exactly: box taller than
-  // the cue's 16:9 aspect (905x760.5, the pre-control-bar-exclusion player
-  // rect). paintCue must letterbox to 905x509.06 and center it, not stretch
-  // to 760.5 tall - the same "next sprite row bleeds in below the frame"
-  // bug reported for the cover-area cycle as well as the seek-bar mirror.
+  // the cue's 16:9 aspect (905x760.5, the safe video area with the control
+  // bar already excluded). paintCue must cover the FULL box (opaque),
+  // letterboxing the image itself via background-position/size, so the
+  // native <video poster> underneath is never exposed through an uncovered
+  // margin - and the crop itself must still be a single, correctly-cropped
+  // frame with no ghosting from an adjacent sprite row.
   {
     const url = "https://stash.bondt.network/scene/1/vtt/regression_sprite.jpg";
     global.__fakeImageSizes = { ...global.__fakeImageSizes, [url]: { width: 5760, height: 3240 } };
@@ -446,10 +453,10 @@ global.Image = class {
     const ok = await paintCue(target, cue, { left: 465, top: 55.75, width: 905, height: 760.5 });
     assert.equal(ok, true);
     assert.equal(target.style.left, "465.00px");
+    assert.equal(target.style.top, "55.75px");
     assert.equal(target.style.width, "905.00px");
-    assert.equal(target.style.height, "509.06px");
-    assert.equal(target.style.top, "181.47px");
-    assert.equal(target.style.backgroundPosition, "-7240.00px -1527.19px");
+    assert.equal(target.style.height, "760.50px");
+    assert.equal(target.style.backgroundPosition, "-7240.00px -1401.47px");
     assert.equal(target.style.backgroundSize, "8145.00px 4581.56px");
   }
 

@@ -96,28 +96,32 @@
     return promise;
   }
 
-  // Fits a contentW x contentH rectangle inside box the way CSS
-  // "background-size: contain" would - scaled up as far as possible without
-  // exceeding either dimension, then centered. Confirmed live to be
-  // necessary: an earlier revision stretched the overlay to fill the whole
-  // box while only painting a scaled image sized by the SMALLER of the two
-  // axis ratios, so the leftover space on the larger axis kept showing
-  // whatever sprite content sits past the edge of the intended cell -
-  // visible as a second, wrong frame bleeding in from the row below.
-  // Sizing the overlay itself to the scaled content, instead of stretching
-  // it to fill an arbitrarily-shaped box, removes that leftover space
-  // entirely.
-  function containRect(box, contentW, contentH) {
+  // Computes the "background-size: contain" fit of a contentW x contentH
+  // rectangle inside box - scaled up as far as possible without exceeding
+  // either dimension, then centered - without sizing anything itself.
+  // marginX/marginY are the letterbox offsets *inside* box (not absolute
+  // page coordinates), for callers that keep an element sized to the full
+  // box and only need to offset a background image within it.
+  //
+  // Confirmed live (twice) that the overlay element itself must always
+  // cover the *entire* box, opaquely, not just the letterboxed content
+  // rect: the native <video> element carries its own "poster" HTML
+  // attribute, which the browser renders independently of Stash's
+  // .vjs-poster div (our CSS hiding that div doesn't touch it). An earlier
+  // revision sized/positioned the overlay element itself to the shrunk
+  // "contain" rect, leaving the letterbox margin around it completely
+  // uncovered - exposing that native poster (or the paused video frame)
+  // through the gap. Keeping the overlay element at the full box size, with
+  // an opaque background-color, and painting the letterboxed image via
+  // background-position/background-size instead, covers the whole box so
+  // nothing behind it can show through.
+  function containFit(box, contentW, contentH) {
     if (!box || box.width <= 0 || box.height <= 0 || !contentW || !contentH) return null;
     const scale = Math.min(box.width / contentW, box.height / contentH);
     if (!Number.isFinite(scale) || scale <= 0) return null;
-    const width = contentW * scale;
-    const height = contentH * scale;
     return {
-      left: box.left + (box.width - width) / 2,
-      top: box.top + (box.height - height) / 2,
-      width,
-      height,
+      marginX: (box.width - contentW * scale) / 2,
+      marginY: (box.height - contentH * scale) / 2,
       scale,
     };
   }
@@ -128,9 +132,9 @@
   // against a real DOM element or a fake one in a Node test. Resolves false
   // (leaving targetEl untouched) whenever sourceEl currently has no
   // thumbnail painted, so callers can decide whether to keep showing the
-  // previous frame. Positions and sizes targetEl itself to the letterboxed
-  // fit within box (see containRect above), rather than stretching it to
-  // fill box - the caller does not need to call positionOverlay separately.
+  // previous frame. Always sizes/positions targetEl to the full box (see
+  // containFit above) - the caller does not need to call positionOverlay
+  // separately.
   async function mirrorBackground(sourceEl, targetEl, box) {
     if (!sourceEl || !targetEl || !box || box.width <= 0 || box.height <= 0) {
       return false;
@@ -147,7 +151,7 @@
     const baseHeight = (rect && rect.height) || extractPx(style.height);
     if (!baseWidth || !baseHeight) return false;
 
-    const fit = containRect(box, baseWidth, baseHeight);
+    const fit = containFit(box, baseWidth, baseHeight);
     if (!fit) return false;
 
     const positionParts = String(style.backgroundPosition || "0px 0px").split(/\s+/);
@@ -165,13 +169,13 @@
       sizeH = natural.height;
     }
 
-    targetEl.style.left = `${fit.left.toFixed(2)}px`;
-    targetEl.style.top = `${fit.top.toFixed(2)}px`;
-    targetEl.style.width = `${fit.width.toFixed(2)}px`;
-    targetEl.style.height = `${fit.height.toFixed(2)}px`;
+    targetEl.style.left = `${box.left.toFixed(2)}px`;
+    targetEl.style.top = `${box.top.toFixed(2)}px`;
+    targetEl.style.width = `${box.width.toFixed(2)}px`;
+    targetEl.style.height = `${box.height.toFixed(2)}px`;
     targetEl.style.backgroundImage = image;
     targetEl.style.backgroundRepeat = "no-repeat";
-    targetEl.style.backgroundPosition = `${(posX * fit.scale).toFixed(2)}px ${(posY * fit.scale).toFixed(2)}px`;
+    targetEl.style.backgroundPosition = `${(fit.marginX + posX * fit.scale).toFixed(2)}px ${(fit.marginY + posY * fit.scale).toFixed(2)}px`;
     targetEl.style.backgroundSize = `${(sizeW * fit.scale).toFixed(2)}px ${(sizeH * fit.scale).toFixed(2)}px`;
     return true;
   }
@@ -253,23 +257,23 @@
   // Paints one VTT cue's crop into targetEl, using the same "measure the
   // sprite's natural size, scale position and size together" technique as
   // mirrorBackground above - confirmed live to reproduce a single, correctly
-  // cropped frame with no ghosting. Positions and sizes targetEl itself to
-  // the letterboxed fit within box (see containRect above) rather than
-  // stretching it to fill box, which is what let the next sprite row bleed
-  // into view below the intended frame.
+  // cropped frame with no ghosting. Always sizes/positions targetEl to the
+  // full box (see containFit above) rather than shrinking it to the
+  // letterboxed content rect, so the overlay's own opaque background covers
+  // any letterbox margin instead of leaving it uncovered.
   async function paintCue(targetEl, cue, box) {
     if (!targetEl || !cue || !box || box.width <= 0 || box.height <= 0) return false;
-    const fit = containRect(box, cue.w, cue.h);
+    const fit = containFit(box, cue.w, cue.h);
     if (!fit) return false;
     const natural = await loadNaturalSize(cue.url);
     if (!natural) return false;
-    targetEl.style.left = `${fit.left.toFixed(2)}px`;
-    targetEl.style.top = `${fit.top.toFixed(2)}px`;
-    targetEl.style.width = `${fit.width.toFixed(2)}px`;
-    targetEl.style.height = `${fit.height.toFixed(2)}px`;
+    targetEl.style.left = `${box.left.toFixed(2)}px`;
+    targetEl.style.top = `${box.top.toFixed(2)}px`;
+    targetEl.style.width = `${box.width.toFixed(2)}px`;
+    targetEl.style.height = `${box.height.toFixed(2)}px`;
     targetEl.style.backgroundImage = `url("${cue.url}")`;
     targetEl.style.backgroundRepeat = "no-repeat";
-    targetEl.style.backgroundPosition = `-${(cue.x * fit.scale).toFixed(2)}px -${(cue.y * fit.scale).toFixed(2)}px`;
+    targetEl.style.backgroundPosition = `${(fit.marginX - cue.x * fit.scale).toFixed(2)}px ${(fit.marginY - cue.y * fit.scale).toFixed(2)}px`;
     targetEl.style.backgroundSize = `${(natural.width * fit.scale).toFixed(2)}px ${(natural.height * fit.scale).toFixed(2)}px`;
     return true;
   }
@@ -284,7 +288,7 @@
     parseCueImageLine,
     parseSpriteVtt,
     paintCue,
-    containRect,
+    containFit,
   };
 
   // ---- DOM wiring --------------------------------------------------------
