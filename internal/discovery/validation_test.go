@@ -329,7 +329,7 @@ func TestPromptInstructsCitingSubtitleContentWhenUsable(t *testing.T) {
 	for _, required := range []string{
 		"cite that concrete detail rather than falling",
 		"a usable one should not be ignored either",
-		"Subtitle dialogue confirms a coercive office-blackmail scenario",
+		"Never open a reason with a fixed template phrase",
 	} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("prompt missing %q", required)
@@ -349,7 +349,7 @@ func TestPromptTreatsSubtitleAsPrimaryNarrativeForStoryEmptyCandidates(t *testin
 		"story field at all (for example JAVLibrary-sourced releases)",
 		"treat it as primary narrative evidence on the",
 		"same footing as a populated story field",
-		"stepmother-stepson affair the tags alone only hint at",
+		"stepmother growing closer to her husband's son",
 	} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("prompt missing %q", required)

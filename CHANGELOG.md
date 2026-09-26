@@ -5,6 +5,21 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.225] - 2026-09-26
+
+### Changed
+
+- Made AI Discovery reasons that draw on subtitle dialogue read less
+  formulaic. Every subtitle-informed reason had converged on a fixed
+  template phrase ("Subtitle dialogue confirms/reveals a ... scenario
+  matching preferred themes"), so different releases with different
+  subtitle content all came out sounding like the same sentence with only
+  the theme word swapped. The prompt now explicitly forbids that opening
+  phrase, asks the model to describe the actual scene (setting,
+  relationship/power dynamic, what happens, how it resolves) instead of
+  compressing it into a generic label, and gives varied example reasons
+  instead of two that shared the same structure.
+
 ## [1.0.224] - 2026-09-26
 
 ### Fixed
