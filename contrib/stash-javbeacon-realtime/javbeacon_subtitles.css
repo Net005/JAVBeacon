@@ -86,6 +86,22 @@
   white-space: nowrap;
 }
 
+/* At-a-glance subtitle freshness, without a click - see
+ * subtitleStatusColor's doc comment in javbeacon_subtitles.js for exactly
+ * what each state means. No class at all (the default label color) means no
+ * subtitles exist yet. */
+.javbeacon-subs-label.javbeacon-subs-status-green {
+  color: #1f7a3d;
+}
+
+.javbeacon-subs-label.javbeacon-subs-status-orange {
+  color: #d9822b;
+}
+
+.javbeacon-subs-label.javbeacon-subs-status-red {
+  color: #d64545;
+}
+
 .javbeacon-subs-button[disabled]:not(.javbeacon-subs-complete) {
   cursor: wait;
 }
@@ -103,15 +119,23 @@
  * "organised"/CC indicator pushed it to two lines). This row now lives in
  * normal flow, immediately after whatever Stash already rendered, so it can
  * never overlap it - it simply becomes the next line down, however tall the
- * native footer turned out to be. */
+ * native footer turned out to be.
+ *
+ * justify-content was originally space-between, stretching the two buttons
+ * to the row's full width - on a wide card that reproduced the two buttons'
+ * old opposite-corner look, but with nothing else on that line any more (the
+ * footer text they used to overlap no longer shares the row), the empty
+ * middle read as a big dead gap rather than an intentional layout. flex-wrap
+ * is dropped too - two small buttons never need to wrap, and space-between
+ * plus wrap could put them on separate lines at some card widths. Both
+ * buttons now sit together, left-aligned, with just a small gap between
+ * them. */
 .scene-card .javbeacon-card-actions-row {
   align-items: center;
-  column-gap: 0.5rem;
+  column-gap: 0.6rem;
   display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  margin-top: 0.4rem;
-  row-gap: 0.3rem;
+  justify-content: flex-start;
+  margin-top: 0.35rem;
   width: 100%;
 }
 

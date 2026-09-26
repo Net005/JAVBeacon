@@ -65,8 +65,16 @@ card pages.
 For matching scene paths, the action appears in the scene action row and at
 the bottom-right of cards on the scene overview. **+ CC** requests subtitles
 when Stash reports no linked caption or subtitle tracks. When subtitles are
-already linked, it changes to **✓ CC**. Selecting it when subtitles already
-exist first checks the scene's `.en.srt.json` sidecar (written by
+already linked, it changes to **✓ CC**, and on scene cards its text color
+reports freshness at a glance, without a click: dark green means a
+JAVBeacon-Subs sidecar exists and matches the current transcription/
+translation backend (up to date); orange means a sidecar exists but predates
+the current backend, or its freshness could not be determined; red means
+captions exist in Stash but no JAVBeacon-Subs sidecar was found at all (not
+produced by the AI pipeline - a manually added or externally sourced `.srt`)
+and should be replaced; no color at all means the scene has no subtitles.
+Selecting it when subtitles already exist first checks the scene's
+`.en.srt.json` sidecar (written by
 JAVBeacon-Subs next to the video) against JAVBeacon-Subs's current
 transcription/translation backend, then confirms with wording matching what
 it found:

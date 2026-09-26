@@ -116,6 +116,30 @@ assert.ok(
     pluginSource.indexOf("React.createElement(ReleaseLinkButton"),
   "the + CC action must remain to the left of the JAVBeacon release link"
 );
+assert.ok(
+  pluginSource.indexOf("React.createElement(SceneCardWatchlistAction") <
+    pluginSource.indexOf("React.createElement(SceneCardSubtitleAction"),
+  "Watchlist must render before (left of) +CC in the card actions row, " +
+    "matching their original position: absolute left/right corners"
+);
+// subtitleStatusColor's four branches (see its own doc comment): the mock
+// test harness stubs React.useEffect as a no-op, so the hover-triggered
+// subtitle_status fetch that feeds this function in the running plugin can't
+// be exercised end to end here - these are structural checks that the
+// mapping itself, and the CSS classes it drives, exist as documented.
+assert.match(pluginSource, /function subtitleStatusColor\(hasSubtitles, status\)/);
+assert.match(pluginSource, /if \(!hasSubtitles\) return null;/);
+assert.match(pluginSource, /if \(status === undefined\) return null;/);
+assert.match(pluginSource, /if \(!status \|\| !status\.sidecar_found\) return "red";/);
+assert.match(pluginSource, /if \(status\.up_to_date === true\) return "green";/);
+assert.match(pluginSource, /statusColor: subtitleStatusColor\(completed, subtitleStatus\)/);
+const cssSource = fs.readFileSync(
+  require.resolve("./javbeacon_subtitles.css"),
+  "utf8"
+);
+assert.match(cssSource, /\.javbeacon-subs-status-green\s*\{/);
+assert.match(cssSource, /\.javbeacon-subs-status-orange\s*\{/);
+assert.match(cssSource, /\.javbeacon-subs-status-red\s*\{/);
 
 (async () => {
 
@@ -224,11 +248,20 @@ function renderCardActions(result) {
 // top-level elements - see the CSS/JS overlap fix comment above
 // .javbeacon-card-actions-row for why - so index 0/1 here means the button's
 // position within that wrapper's own children, not within cardActions
-// directly.
+// directly. Watchlist renders first (index 0, left), +CC second (index 1,
+// right) - the original left/right assignment from when they were
+// independently position:absolute, restored after the overlap fix
+// accidentally swapped it.
 function renderCardAction(actions, index) {
   const row = actions.props.children[2];
   const element = row.props.children[index];
   return element.type(element.props);
+}
+function renderWatchlistAction(actions) {
+  return renderCardAction(actions, 0);
+}
+function renderSubtitleAction(actions) {
+  return renderCardAction(actions, 1);
 }
 
 const captionQueriesBeforeCards = queryCalls.filter((call) =>
@@ -239,7 +272,7 @@ assert.equal(
   cardActions.props.children[2].props.className,
   "javbeacon-card-actions-row"
 );
-let subtitleAction = renderCardAction(cardActions, 0);
+let subtitleAction = renderSubtitleAction(cardActions);
 assert.equal(subtitleAction.props.className, "javbeacon-subs-card-action");
 assert.equal(
   queryCalls.find((call) => call.query.includes("JAVBeaconSubtitleSettings"))
@@ -252,7 +285,7 @@ assert.equal(
   captionQueriesBeforeCards
 );
 assert.equal(lazyQueryCalls.length, 0);
-const watchlistAction = renderCardAction(cardActions, 1);
+const watchlistAction = renderWatchlistAction(cardActions);
 const watchlistButton = watchlistAction.props.children;
 assert.equal(watchlistAction.props.className, "javbeacon-watchlist-card-action");
 assert.equal(watchlistButton.props.children.props.children, "+ Watchlist");
@@ -268,13 +301,13 @@ settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "/COLLECTIONS/jav/";
 cardActions = renderCardActions(cardResult);
-assert.notEqual(renderCardAction(cardActions, 0), null);
+assert.notEqual(renderSubtitleAction(cardActions), null);
 settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "/media/other/";
 cardActions = renderCardActions(cardResult);
-assert.equal(renderCardAction(cardActions, 0), null);
-assert.notEqual(renderCardAction(cardActions, 1), null);
+assert.equal(renderSubtitleAction(cardActions), null);
+assert.notEqual(renderWatchlistAction(cardActions), null);
 settingsQueryResult.data.configuration.plugins[
   "javbeacon-realtime"
 ].subs_scene_path_filters = "";
@@ -325,7 +358,7 @@ storyContent.props.onClick({
 assert.equal(expandedState, true);
 assert.equal(prevented, true);
 assert.equal(stopped, true);
-const completedCardAction = renderCardAction(cardActions, 0);
+const completedCardAction = renderSubtitleAction(cardActions);
 assert.equal(completedCardAction.props.className, "javbeacon-subs-card-action");
 assert.equal(completedCardAction.props.children.props.completed, true);
 const completedSubtitleButton = completedCardAction.props.children.type(
@@ -392,7 +425,7 @@ assert.deepEqual(mutationCalls.at(-1).options.variables.args, {
   mode: "subtitles", scene_id: "39382", overwrite: true,
 });
 subtitleStatusResult = null;
-const completedWatchlistAction = renderCardAction(cardActions, 1);
+const completedWatchlistAction = renderWatchlistAction(cardActions);
 assert.equal(
   completedWatchlistAction.props.children.props.children.props.children,
   "✓ Watchlist"
@@ -417,7 +450,7 @@ const knownCompletedCard = afterPatches["SceneCard.Popovers"](
 assert.equal(knownCompletedCard.props.children[0], renderedPopovers);
 const knownCompletedActions = renderCardActions(knownCompletedCard);
 assert.equal(
-  renderCardAction(knownCompletedActions, 0).props.children.props.completed,
+  renderSubtitleAction(knownCompletedActions).props.children.props.completed,
   true
 );
 
@@ -426,7 +459,7 @@ const sceneWithoutCaptions = afterPatches["SceneCard.Popovers"](
   legacyContext,
   renderedPopovers
 );
-const noCaptionAction = renderCardAction(renderCardActions(sceneWithoutCaptions), 0);
+const noCaptionAction = renderSubtitleAction(renderCardActions(sceneWithoutCaptions));
 const noCaptionButton = noCaptionAction.props.children.type(noCaptionAction.props.children.props);
 const confirmationsBeforeNew = confirmationCalls.length;
 await noCaptionButton.props.onClick({ preventDefault() {}, stopPropagation() {} });
