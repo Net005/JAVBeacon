@@ -5,6 +5,18 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.229] - 2026-09-26
+
+### Fixed
+
+- Fixed the Jellyfin metadata endpoint (also used by the Silo plugin's
+  metadata provider) occasionally timing out instead of responding: it was
+  making two separate, unbounded StashApp lookups per release with no
+  timeout, so any StashApp slowness could exceed a caller's own request
+  budget (observed as Silo's "Apply Match" failing with a gRPC deadline
+  error even though JAVBeacon and StashApp were both reachable). Both
+  lookups are now merged into one bounded (5 second) call.
+
 ## [1.0.228] - 2026-09-26
 
 ### Added
