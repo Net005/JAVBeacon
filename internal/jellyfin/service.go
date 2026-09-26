@@ -204,7 +204,7 @@ func (s *Service) Match(ctx context.Context, path, query string) (MatchResult, e
 		for _, candidate := range s.matchPaths(ctx, path) {
 			r, err := s.repo.JellyfinReleaseByPath(ctx, candidate)
 			if err == nil {
-				m := s.enrichFromStash(ctx, r, s.metadata(r))
+				m := s.metadataForRelease(ctx, r)
 				method := "path"
 				if candidate != path {
 					method = "remapped_path"
@@ -233,7 +233,7 @@ func (s *Service) Match(ctx context.Context, path, query string) (MatchResult, e
 	}
 	for _, r := range rows {
 		if canonical(r.VideoID) == want {
-			m := s.enrichFromStash(ctx, r, s.metadata(r))
+			m := s.metadataForRelease(ctx, r)
 			return MatchResult{Matched: true, MatchMethod: "release_code", Release: &m}, nil
 		}
 	}
@@ -337,6 +337,25 @@ func (s *Service) Metadata(ctx context.Context, releaseID int64) (Metadata, erro
 	if err != nil {
 		return Metadata{}, err
 	}
+	m := s.metadataForRelease(ctx, r)
+	m.CollectionNames = s.collectionNamesForRelease(ctx, releaseID)
+	return m, nil
+}
+
+// metadataForRelease builds r's Metadata with the same single-Stash-fetch
+// enrichment (text/image gap-fill plus performer images/ids) used whether
+// the release is reached by id (Metadata above) or by a fresh scan-time
+// match (Match below, which used to call enrichFromStash alone -
+// enrichFromStash never attaches performer images/ids, so a release
+// Jellyfin first matched by path/release-code got a completely photo-less
+// Cast & Crew row until some later call happened to fetch it by id
+// directly, which for most libraries is rare: Jellyfin reuses the provider
+// id it already has instead of calling Match again. Confirmed live: a
+// freshly scanned item's whole Cast & Crew row had no photos at all, not
+// just the ones StashApp and JAVBeacon happened to scrape in different name
+// order (see applyPerformerImages's reversed-name handling for that
+// separate issue).
+func (s *Service) metadataForRelease(ctx context.Context, r domain.Release) Metadata {
 	m := s.metadata(r)
 	// One Stash fetch shared by both enrichment steps below - see
 	// stashLookupTimeout's comment for why this used to be two.
@@ -344,8 +363,7 @@ func (s *Service) Metadata(ctx context.Context, releaseID int64) (Metadata, erro
 		m = applyStashScene(r, m, scene)
 		applyPerformerImages(scene, &m)
 	}
-	m.CollectionNames = s.collectionNamesForRelease(ctx, releaseID)
-	return m, nil
+	return m
 }
 
 // applyPerformerImages attaches a JAVBeacon-proxied StashApp portrait URL to
@@ -358,18 +376,63 @@ func applyPerformerImages(scene stash.StashSceneMetadata, m *Metadata) {
 	if len(scene.Performers) == 0 {
 		return
 	}
-	images := make(map[string]string, len(scene.Performers))
-	ids := make(map[string]string, len(scene.Performers))
+	imagePathFor := func(id string) string {
+		return fmt.Sprintf("/api/v1/integrations/performers/%s/image", url.PathEscape(id))
+	}
+	// First pass, StashApp's own exact names only - so a genuine name can
+	// never be shadowed by a guessed reversal in the second pass below.
+	type performer struct{ id, imagePath string }
+	byExactName := make(map[string]performer, len(scene.Performers))
 	for _, p := range scene.Performers {
-		if p.Name == "" || p.ID == "" {
+		name := strings.TrimSpace(p.Name)
+		if name == "" || p.ID == "" {
 			continue
 		}
+		byExactName[name] = performer{id: p.ID, imagePath: p.ImagePath}
+	}
+	if len(byExactName) == 0 {
+		return
+	}
+	images := make(map[string]string, len(byExactName))
+	ids := make(map[string]string, len(byExactName))
+	for name, p := range byExactName {
 		// PerformerIDs is populated whenever StashApp has a record for this
 		// performer at all, independent of whether a photo exists - a
 		// performer's bio can be worth fetching even with no portrait.
-		ids[p.Name] = p.ID
-		if p.ImagePath != "" {
-			images[p.Name] = fmt.Sprintf("/api/v1/integrations/performers/%s/image", url.PathEscape(p.ID))
+		ids[name] = p.id
+		if p.imagePath != "" {
+			images[name] = imagePathFor(p.id)
+		}
+	}
+	// Second pass: JAVBeacon and StashApp surprisingly often scrape the same
+	// performer in opposite word order (e.g. JAVBeacon's "Hamasaki Mao"
+	// against StashApp's own "Mao Hamasaki" for the exact same person) - an
+	// exact-string match against StashApp's own name alone silently drops
+	// the photo/id for every performer caught by that mismatch, leaving a
+	// blank Jellyfin/Silo avatar even though StashApp has the data.
+	// Confirmed live. Register a reversed key too, but only for a clean
+	// two-word name, and never when the reversal collides with some OTHER
+	// performer's own real name in this same scene - never let a guessed
+	// reversal steal a genuine match.
+	for name, p := range byExactName {
+		fields := strings.Fields(name)
+		if len(fields) != 2 {
+			continue
+		}
+		reversed := fields[1] + " " + fields[0]
+		if strings.EqualFold(reversed, name) {
+			continue
+		}
+		if _, isSomeoneElsesRealName := byExactName[reversed]; isSomeoneElsesRealName {
+			continue
+		}
+		if _, exists := ids[reversed]; !exists {
+			ids[reversed] = p.id
+		}
+		if p.imagePath != "" {
+			if _, exists := images[reversed]; !exists {
+				images[reversed] = imagePathFor(p.id)
+			}
 		}
 	}
 	if len(images) > 0 {
