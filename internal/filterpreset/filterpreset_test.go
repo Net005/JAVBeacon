@@ -58,12 +58,23 @@ func TestResolveReleaseIDsIncludesLocalWhenSavedFilterHidesIt(t *testing.T) {
 	if err := st.SetStashState(ctx, local[0].ID, true, "scene-1"); err != nil {
 		t.Fatal(err)
 	}
-	filter := domain.ReleaseFilter{Search: "Substitute", HideLocal: true, HideMonitored: true, Sort: "release", Direction: "desc"}
+	filter := domain.ReleaseFilter{Search: "Substitute", HideLocal: true, HideMonitored: true, Sort: "release", Direction: "desc", SearchExpression: `{"logic":"and","groups":[{"logic":"or","conditions":[{"field":"title","value":"Substitute"}]},{"logic":"and","conditions":[{"field":"monitored","value":"false"},{"field":"local","value":"false"}]}]}`}
 	ids, err := ResolveReleaseIDs(ctx, st, filter)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != 1 || ids[0] != local[0].ID {
 		t.Fatalf("collection members = %v, want [%d]", ids, local[0].ID)
+	}
+}
+
+func TestCollectionSearchExpressionPreservesContentFilters(t *testing.T) {
+	raw := `{"logic":"and","groups":[{"logic":"or","conditions":[{"field":"title","value":"prison"},{"field":"tag","value":"Confinement"}]},{"logic":"and","conditions":[{"field":"monitored","value":"false"},{"field":"local","value":"false"}]}]}`
+	got := collectionSearchExpression(raw)
+	if strings.Contains(got, `"field":"local"`) || strings.Contains(got, `"field":"monitored"`) || !strings.Contains(got, `"field":"title"`) || !strings.Contains(got, `"field":"tag"`) {
+		t.Fatalf("collection expression lost content filters or kept availability filters: %s", got)
+	}
+	if got := collectionSearchExpression(`{"logic":"and","conditions":[{"field":"local","value":"false"}]}`); got != "" {
+		t.Fatalf("availability-only expression = %s, want empty", got)
 	}
 }
