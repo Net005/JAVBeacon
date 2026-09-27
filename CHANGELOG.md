@@ -5,6 +5,14 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.252] - 2026-09-27
+
+### Fixed
+
+- Stop running a catalog-wide fuzzy search when Silo's scan misses an exact
+  JAV release code. Missing codes now return quickly instead of taking
+  seconds each across thousands of unmatched files.
+
 ## [1.0.251] - 2026-09-27
 
 ### Fixed
