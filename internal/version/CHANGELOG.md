@@ -5,6 +5,19 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.241] - 2026-09-27
+
+### Changed
+
+- Moved the Jellyfin plugin (`integrations/jellyfin/`) out of this repo into
+  its own repository,
+  [jellyfin-plugin-javbeacon](https://github.com/Net005/jellyfin-plugin-javbeacon).
+  JAVBeacon no longer builds, bundles, or releases the Jellyfin plugin as part
+  of its own release process (the CI workflow's dotnet/Jellyfin-plugin-zip
+  step was removed). This repo still serves the HTTP API the plugin talks to
+  (`internal/jellyfin`) - only the C# plugin itself moved, with no change to
+  that API contract.
+
 ## [1.0.240] - 2026-09-27
 
 ### Fixed

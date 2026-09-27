@@ -34,8 +34,9 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete version history.
 - Integrate with Jellyfin for authoritative file matching, metadata, artwork,
   manual Identify search, a Stash-synchronized Watchlist collection,
   Stash-triggered library scans, and resilient playback/O-count forwarding
-  without giving Jellyfin any Stash credentials. See
-  [integrations/jellyfin/README.md](integrations/jellyfin/README.md).
+  without giving Jellyfin any Stash credentials. The Jellyfin plugin itself
+  lives in its own repo:
+  [jellyfin-plugin-javbeacon](https://github.com/Net005/jellyfin-plugin-javbeacon).
 - Run ordered post-download and post-removal pipelines, including path mapping, shell commands, moves, and StashApp scans.
 - Cache cover artwork and JavLibrary screenshots locally, preview screenshots
   as card slideshows, and browse them from Release Details.
@@ -541,10 +542,10 @@ rejects a stale embedded copy.
 - `internal/scraper` — GIGA/Akiba and JavLibrary providers
 - `internal/download` — search, RSS, qBittorrent, notifications, and pipelines
 - `internal/stash` — StashApp synchronization and missing-file recovery
-- `internal/jellyfin` — Jellyfin-facing metadata, matching, and durable playback accounting
+- `internal/jellyfin` — Jellyfin-facing metadata, matching, and durable playback accounting (the HTTP API; the Jellyfin plugin itself is the separate [jellyfin-plugin-javbeacon](https://github.com/Net005/jellyfin-plugin-javbeacon) repo)
+- `internal/silo` — Silo-facing metadata, matching, and durable playback accounting, independent of `internal/jellyfin`
 - `internal/store` — SQLite/PostgreSQL persistence and migrations
 - `internal/auth` — single-user authentication and sessions
-- `integrations/jellyfin` — buildable Jellyfin 10.11 plugin and optional Web activity panel
 
 ## Security and responsible use
 
