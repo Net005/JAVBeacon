@@ -251,6 +251,20 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 			missing[k] = v
 		}
 	}
+	// Preserve existing AI limits for Ollama when introducing separate
+	// provider settings. New installations still receive the old defaults.
+	legacyAICandidateLimit := strings.TrimSpace(settings["discoveries_openai_candidate_limit"])
+	if legacyAICandidateLimit == "" {
+		legacyAICandidateLimit = "150"
+	}
+	legacyAIBatchSize := strings.TrimSpace(settings["discoveries_openai_batch_size"])
+	if legacyAIBatchSize == "" {
+		legacyAIBatchSize = "5"
+	}
+	legacyAIInputChars := strings.TrimSpace(settings["discoveries_openai_max_input_chars"])
+	if legacyAIInputChars == "" {
+		legacyAIInputChars = "50000"
+	}
 	for k, v := range map[string]string{
 		"discoveries_enabled":                        "true",
 		"discoveries_refresh_enabled":                "true",
@@ -273,6 +287,9 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		"discoveries_ollama_model":                   cfg.OllamaModel,
 		"discoveries_ollama_request_timeout_seconds": "120",
 		"discoveries_ollama_health_timeout_seconds":  "2",
+		"discoveries_ollama_candidate_limit":         legacyAICandidateLimit,
+		"discoveries_ollama_batch_size":              legacyAIBatchSize,
+		"discoveries_ollama_max_input_chars":         legacyAIInputChars,
 		"discoveries_openai_fallback_enabled":        "false",
 		"discoveries_openai_include_subtitles":       "true",
 		"discoveries_subtitle_weight_no_story":       "100",

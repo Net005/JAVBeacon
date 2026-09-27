@@ -383,17 +383,22 @@ func TestDiscoveryAIBatchesPrecomputeCandidatePoolEligibility(t *testing.T) {
 	}
 }
 
-func TestDiscoveryAIRequestLimitsKeepSmallModelWorkBounded(t *testing.T) {
-	batchSize, inputChars := discoveryAIRequestLimits(map[string]string{
-		"discoveries_openai_batch_size":      "50",
-		"discoveries_openai_max_input_chars": "500000",
-	})
-	if batchSize != 5 || inputChars != 60000 {
-		t.Fatalf("oversized saved settings were not bounded: batch=%d input=%d", batchSize, inputChars)
+func TestDiscoveryAIRequestLimitsAreProviderSpecific(t *testing.T) {
+	settings := map[string]string{
+		"discoveries_openai_batch_size": "2", "discoveries_openai_max_input_chars": "30000",
+		"discoveries_ollama_batch_size": "4", "discoveries_ollama_max_input_chars": "55000",
 	}
-	batchSize, inputChars = discoveryAIRequestLimits(nil)
-	if batchSize != 5 || inputChars != 50000 {
-		t.Fatalf("unexpected defaults: batch=%d input=%d", batchSize, inputChars)
+	if batch, chars := discoveryAIRequestLimits(settings, "openai"); batch != 2 || chars != 30000 {
+		t.Fatalf("OpenAI limits: %d, %d", batch, chars)
+	}
+	if batch, chars := discoveryAIRequestLimits(settings, "ollama"); batch != 4 || chars != 55000 {
+		t.Fatalf("Ollama limits: %d, %d", batch, chars)
+	}
+	if batch, chars := discoveryAIRequestLimits(map[string]string{"discoveries_ollama_batch_size": "50", "discoveries_ollama_max_input_chars": "500000"}, "ollama"); batch != 5 || chars != 60000 {
+		t.Fatalf("oversized request: %d, %d", batch, chars)
+	}
+	if batch, chars := discoveryAIRequestLimits(nil, "openai"); batch != 5 || chars != 50000 {
+		t.Fatalf("defaults: %d, %d", batch, chars)
 	}
 }
 
@@ -815,29 +820,27 @@ func TestOllamaTestEndpointReportsUnreachableServer(t *testing.T) {
 	}
 }
 
-func TestDiscoveryCandidateLimitRespectsConfiguredCapForBothProviders(t *testing.T) {
-	// Ollama used to bypass discoveries_openai_candidate_limit entirely
-	// (returning itemCount unconditionally), which silently discarded a
-	// user's configured "Maximum candidates per enrichment run" for the
-	// default/local provider - reported directly as enrichment "running very
-	// short" despite the setting being raised to 3000. The limit now applies
-	// to both providers, still never padding a short itemCount back up.
-	settings := map[string]string{"discoveries_openai_candidate_limit": "150"}
-	if got := discoveryCandidateLimit(settings, "ollama", 600); got != 150 {
-		t.Fatalf("expected Ollama enrichment to respect the configured candidate limit, got %d", got)
+func TestDiscoveryCandidateLimitIsProviderSpecificAndCanBeUnlimited(t *testing.T) {
+	settings := map[string]string{"discoveries_openai_candidate_limit": "80", "discoveries_ollama_candidate_limit": "200"}
+	if got := discoveryCandidateLimit(settings, "openai", 600); got != 80 {
+		t.Fatalf("OpenAI cap: %d", got)
+	}
+	if got := discoveryCandidateLimit(settings, "ollama", 600); got != 200 {
+		t.Fatalf("Ollama cap: %d", got)
 	}
 	if got := discoveryCandidateLimit(settings, "ollama", 50); got != 50 {
-		t.Fatalf("expected the limit to never exceed the available item count, got %d", got)
+		t.Fatalf("available candidates: %d", got)
 	}
-	if got := discoveryCandidateLimit(settings, "openai", 600); got != 150 {
-		t.Fatalf("expected OpenAI enrichment to respect the configured candidate limit, got %d", got)
-	}
-	if got := discoveryCandidateLimit(map[string]string{}, "openai", 600); got != 150 {
-		t.Fatalf("expected default OpenAI candidate limit of 150, got %d", got)
-	}
-	large := map[string]string{"discoveries_openai_candidate_limit": "3000"}
-	if got := discoveryCandidateLimit(large, "ollama", 5000); got != 3000 {
-		t.Fatalf("expected a raised candidate limit like 3000 to actually apply, got %d", got)
+	for _, provider := range []string{"ollama", "openai"} {
+		if got := discoveryCandidateLimit(map[string]string{"discoveries_" + provider + "_candidate_limit": "0"}, provider, 7000); got != 7000 {
+			t.Fatalf("%s unlimited: %d", provider, got)
+		}
+		if got := discoveryCandidateLimit(map[string]string{"discoveries_" + provider + "_candidate_limit": "6000"}, provider, 7000); got != 6000 {
+			t.Fatalf("%s raised cap: %d", provider, got)
+		}
+		if got := discoveryCandidateLimit(nil, provider, 600); got != 150 {
+			t.Fatalf("%s default: %d", provider, got)
+		}
 	}
 }
 
