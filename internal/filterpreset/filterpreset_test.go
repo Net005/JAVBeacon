@@ -1,8 +1,13 @@
 package filterpreset
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Net005/JAVBeacon/internal/domain"
+	"github.com/Net005/JAVBeacon/internal/store"
 )
 
 // TestSanitizeTagNameCleansUpBeforeBecomingAGenreTag guards the
@@ -27,5 +32,38 @@ func TestSanitizeTagNameCleansUpBeforeBecomingAGenreTag(t *testing.T) {
 	got := SanitizeTagName(long)
 	if runes := []rune(got); len(runes) != MaxTagNameRunes {
 		t.Fatalf("long name not capped: got %d runes, want %d", len(runes), MaxTagNameRunes)
+	}
+}
+
+func TestResolveReleaseIDsIncludesLocalWhenSavedFilterHidesIt(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "presets.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "Test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []string{"LOCAL-1", "REMOTE-2"} {
+		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: code, Title: "Substitute " + code, Source: "Test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	local, err := st.Releases(ctx, domain.ReleaseFilter{VideoID: "LOCAL-1", Limit: 1})
+	if err != nil || len(local) != 1 {
+		t.Fatalf("local release: %v, %v", local, err)
+	}
+	if err := st.SetStashState(ctx, local[0].ID, true, "scene-1"); err != nil {
+		t.Fatal(err)
+	}
+	filter := domain.ReleaseFilter{Search: "Substitute", HideLocal: true, HideMonitored: true, Sort: "release", Direction: "desc"}
+	ids, err := ResolveReleaseIDs(ctx, st, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != local[0].ID {
+		t.Fatalf("collection members = %v, want [%d]", ids, local[0].ID)
 	}
 }

@@ -101,15 +101,18 @@ func FromState(raw json.RawMessage, settings map[string]string) (domain.ReleaseF
 	return f, true
 }
 
-// ResolveReleaseIDs runs filter through the exact same store.Releases engine
-// the Release Library itself uses, paging through every match and keeping
-// only releases either integration could actually have (local, Stash-linked),
-// in the order store.Releases returns them (i.e. filter.Sort/Direction).
+// ResolveReleaseIDs finds the local Stash-linked members of a saved filter
+// for media-server collections. The UI's Hide local and Hide monitored flags
+// are presentation filters for discovering new releases; applying either here
+// would hide eligible collection members. All other criteria and sort order
+// remain the same as the saved filter.
 func ResolveReleaseIDs(ctx context.Context, st store.Store, filter domain.ReleaseFilter) ([]int64, error) {
 	ids := []int64{}
 	// Only local Stash-linked releases can appear in either media server.
 	// Apply this in SQL before paging instead of scanning every remote title.
 	filter.StashLinked = true
+	filter.HideLocal = false
+	filter.HideMonitored = false
 	filter.Limit = 500
 	for offset := 0; ; offset += 500 {
 		filter.Offset = offset
