@@ -257,6 +257,44 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metada
 	return out, nil
 }
 
+// SearchWithStashFallback prefers an exact local JAV release. A broad local
+// text hit must not hide an exact Stash filename match when JAVBeacon has no
+// release for that scene.
+func (s *Service) SearchWithStashFallback(ctx context.Context, query string, limit int) ([]Metadata, error) {
+	// Ordinary filename stems can trigger a costly broad JAV text search.
+	// Ask Stash's scene index first; an exact local filename wins over any
+	// unrelated title text in JAVBeacon's wider catalog.
+	if !likelyReleaseCode(strings.TrimSpace(query)) {
+		stashRows, err := s.SearchStashScenes(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		if len(stashRows) > 0 {
+			return stashRows, nil
+		}
+	}
+	rows, err := s.Search(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if strings.EqualFold(strings.TrimSpace(row.Code), strings.TrimSpace(query)) {
+			return rows, nil
+		}
+	}
+	if !likelyReleaseCode(strings.TrimSpace(query)) {
+		return rows, nil // Stash was already queried above.
+	}
+	stashRows, err := s.SearchStashScenes(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	if len(stashRows) > 0 {
+		return stashRows, nil
+	}
+	return rows, nil
+}
+
 // SearchStashScenes uses StashApp's scene index when no JAVBeacon release
 // matches the filename-derived query. Only exact code/file stems are returned.
 func (s *Service) SearchStashScenes(ctx context.Context, query string) ([]Metadata, error) {

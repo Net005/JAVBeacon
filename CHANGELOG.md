@@ -5,6 +5,15 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.257] - 2026-09-27
+
+### Fixed
+
+- Let Silo's scheduled auto-match see an exact StashApp filename match even
+  when a broad JAVBeacon title search would return unrelated local results.
+  Check Stash first for ordinary filename stems and retain fast exact JAV
+  code lookup for release-code filenames.
+
 ## [1.0.256] - 2026-09-27
 
 ### Changed

@@ -25,10 +25,7 @@ import (
 // depending on the other's shape.
 func (s *Server) siloSearch(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	rows, err := s.silo.Search(r.Context(), r.URL.Query().Get("q"), limit)
-	if err == nil && len(rows) == 0 {
-		rows, err = s.silo.SearchStashScenes(r.Context(), r.URL.Query().Get("q"))
-	}
+	rows, err := s.silo.SearchWithStashFallback(r.Context(), r.URL.Query().Get("q"), limit)
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
