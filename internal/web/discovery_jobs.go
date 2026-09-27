@@ -545,6 +545,14 @@ func (s *Server) discoveryJob(w http.ResponseWriter, r *http.Request) {
 		operation = "recommendations"
 	}
 	if operation == "openai" {
+		if settings["discoveries_ai_enabled"] != "true" {
+			s.json(w, http.StatusAccepted, discoveryJobSnapshot(settings))
+			return
+		}
+		if !reserveDiscoveryEnrichmentSweep(settings) {
+			s.problem(w, http.StatusConflict, "an enrichment run is already in progress")
+			return
+		}
 		discoveryRankCache.Lock()
 		discoveryRankCache.entries = map[[32]byte]discoveryRankCacheEntry{}
 		discoveryRankCache.Unlock()
@@ -567,7 +575,7 @@ func (s *Server) discoveryJob(w http.ResponseWriter, r *http.Request) {
 		// GET /jobs/discoveries independent of this response.
 		jobContext := context.WithoutCancel(r.Context())
 		go func() {
-			if err := s.runDiscoveryEnrichmentSweep(jobContext, settings); err != nil && s.log != nil {
+			if err := s.runReservedDiscoveryEnrichmentSweep(jobContext, settings); err != nil && s.log != nil {
 				s.log.Warn("Discovery AI enrichment sweep failed to start", "error", err)
 			}
 		}()

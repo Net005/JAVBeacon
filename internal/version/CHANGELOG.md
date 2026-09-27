@@ -5,6 +5,17 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.247] - 2026-09-27
+
+### Fixed
+
+- Reserve a manual AI enrichment sweep before reloading or browsing Discoveries
+  can start a small page-only run. The progress total now consistently reflects
+  the configured provider run limit from the start.
+- Honor each provider's saved maximum input characters instead of silently
+  reducing values above 60,000. The settings fields now accept values such as
+  128,000 without browser validation blocking the form.
+
 ## [1.0.246] - 2026-09-27
 
 ### Changed
