@@ -240,9 +240,9 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metada
 		// Scan filenames commonly contain a release code. An exact miss is
 		// definitive for Silo's matcher: a broad text search cannot turn a
 		// different code into a safe match, and costs seconds on large catalogs.
-		rows, err = s.store.Releases(ctx, domain.ReleaseFilter{VideoID: needle, Limit: limit})
+		rows, err = s.store.Releases(ctx, domain.ReleaseFilter{VideoID: needle, Limit: limit, StashLinked: true})
 	} else {
-		rows, err = s.store.Releases(ctx, domain.ReleaseFilter{Search: needle, Limit: limit})
+		rows, err = s.store.Releases(ctx, domain.ReleaseFilter{Search: needle, Limit: limit, StashLinked: true})
 	}
 	if err != nil {
 		return nil, err
@@ -273,7 +273,21 @@ func (s *Service) SearchStashScenes(ctx context.Context, query string) ([]Metada
 	}
 	out := make([]Metadata, 0, len(scenes))
 	for _, scene := range scenes {
-		out = append(out, stashOnlyMetadata(scene))
+		// The file may already be linked to a JAVBeacon release under a
+		// different code. Prefer its richer metadata, but only while local.
+		linked, err := s.store.Releases(ctx, domain.ReleaseFilter{StashSceneID: scene.ID, StashLinked: true, Limit: 2})
+		if err != nil {
+			return nil, err
+		}
+		if len(linked) == 1 {
+			item := s.metadata(linked[0])
+			item.Code = scene.Code // Keep the filename Silo actually matched.
+			out = append(out, item)
+			continue
+		}
+		if len(linked) == 0 {
+			out = append(out, stashOnlyMetadata(scene))
+		}
 	}
 	return out, nil
 }

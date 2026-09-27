@@ -5,6 +5,15 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.254] - 2026-09-27
+
+### Fixed
+
+- Restrict Silo provider search to JAVBeacon releases linked to a local
+  StashApp scene, so remote-only catalog titles cannot match local media or
+  prevent Stash scene filename fallback. Prefer linked JAV metadata when a
+  local Stash filename differs from its release code.
+
 ## [1.0.253] - 2026-09-27
 
 ### Added

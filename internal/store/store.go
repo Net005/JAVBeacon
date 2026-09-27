@@ -1643,6 +1643,9 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		q += ` AND r.stash_scene_id=?`
 		a = append(a, f.StashSceneID)
 	}
+	if f.StashLinked {
+		q += ` AND r.is_local=1 AND r.stash_scene_id<>''`
+	}
 	if f.AIEnhanced {
 		q += ` AND EXISTS (SELECT 1 FROM discovery_ai_ranks dar WHERE dar.release_id=r.id)`
 	}
