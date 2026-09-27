@@ -7,6 +7,7 @@ type Config struct {
 	PrimaryProvider        string
 	OllamaURL              string
 	OllamaModel            string
+	OllamaMaxOutputTokens  int
 	RequestTimeout         time.Duration
 	HealthTimeout          time.Duration
 	OpenAIFallbackEnabled  bool
