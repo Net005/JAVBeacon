@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Net005/JAVBeacon/internal/covers"
+
 	siloIntegration "github.com/Net005/JAVBeacon/internal/silo"
 )
 
@@ -67,6 +69,10 @@ func (s *Server) siloStashSceneCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if r.URL.Query().Get("variant") == "poster" {
+		serveSiloStashPoster(w, resp)
+		return
+	}
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "image/jpeg"
@@ -110,6 +116,10 @@ func (s *Server) siloStashCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if r.URL.Query().Get("variant") == "poster" {
+		serveSiloStashPoster(w, resp)
+		return
+	}
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "image/jpeg"
@@ -166,4 +176,25 @@ func (s *Server) siloLibrarySync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, http.StatusOK, value)
+}
+
+func serveSiloStashPoster(w http.ResponseWriter, resp *http.Response) {
+	const maxImage = 16 << 20
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxImage+1))
+	if err != nil || len(raw) > maxImage {
+		http.Error(w, "invalid cover image", http.StatusBadGateway)
+		return
+	}
+	contentType := resp.Header.Get("Content-Type")
+	if transformed, ok := covers.ConformStashPoster(raw); ok {
+		raw = transformed
+		contentType = "image/jpeg"
+	}
+	if contentType == "" {
+		contentType = "image/jpeg"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
 }
