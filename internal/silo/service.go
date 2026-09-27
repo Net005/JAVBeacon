@@ -37,11 +37,13 @@ package silo
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
 	"math"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,6 +77,7 @@ type stashBridge interface {
 	StashSceneMetadata(context.Context, string) (stash.StashSceneMetadata, error)
 	SearchSiloScenes(context.Context, string) ([]stash.SiloScene, error)
 	SiloSceneByID(context.Context, string) (stash.SiloScene, error)
+	SiloWatchlistScenes(context.Context) (map[string]time.Time, bool, error)
 	SaveActivity(context.Context, string, float64, float64) error
 	AddPlay(context.Context, string, time.Time) (int, error)
 }
@@ -286,7 +289,7 @@ func (s *Service) SearchStashScenes(ctx context.Context, query string) ([]Metada
 			continue
 		}
 		if len(linked) == 0 {
-			out = append(out, stashOnlyMetadata(scene))
+			out = append(out, s.stashOnlyMetadata(ctx, scene))
 		}
 	}
 	return out, nil
@@ -297,11 +300,14 @@ func (s *Service) StashMetadata(ctx context.Context, sceneID string) (Metadata, 
 	if err != nil {
 		return Metadata{}, err
 	}
-	return stashOnlyMetadata(scene), nil
+	return s.stashOnlyMetadata(ctx, scene), nil
 }
 
-func stashOnlyMetadata(scene stash.SiloScene) Metadata {
+func (s *Service) stashOnlyMetadata(ctx context.Context, scene stash.SiloScene) Metadata {
 	m := Metadata{ProviderID: "stash:" + scene.ID, StashSceneID: scene.ID, Code: scene.Code, Title: scene.Title, OriginalTitle: scene.Title, Overview: scene.Details, PremiereDate: scene.Date, Studio: scene.Studio, Genres: append([]string(nil), scene.Tags...), ProviderIDs: map[string]string{"Stash": scene.ID}}
+	if tagID := s.watchlistTagID(ctx); tagID != "" {
+		m.Watchlist = containsTagID(scene.TagIDs, tagID)
+	}
 	if len(scene.Date) >= 4 {
 		m.ProductionYear, _ = strconv.Atoi(scene.Date[:4])
 	}
@@ -343,6 +349,23 @@ const stashLookupTimeout = 5 * time.Second
 // collectionIndexTimeout bounds collectionMembershipIndex's rebuild pass.
 const collectionIndexTimeout = 20 * time.Second
 
+func (s *Service) watchlistTagID(ctx context.Context) string {
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(settings["stash_watchlist_tag_id"])
+}
+
+func containsTagID(tags []string, tagID string) bool {
+	for _, id := range tags {
+		if id == tagID {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) stashSceneMetadata(ctx context.Context, sceneID string) (stash.StashSceneMetadata, bool) {
 	if s.stash == nil || sceneID == "" {
 		return stash.StashSceneMetadata{}, false
@@ -375,6 +398,9 @@ func (s *Service) metadataForRelease(ctx context.Context, r domain.Release) Meta
 		m = applyStashScene(r, m, scene)
 		applyPerformerImages(scene, &m)
 		applyPerformerDetails(scene, &m)
+		if tagID := s.watchlistTagID(ctx); tagID != "" {
+			m.Watchlist = containsTagID(scene.TagIDs, tagID)
+		}
 	}
 	return m
 }
@@ -598,20 +624,71 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 		return LibrarySyncSnapshot{}, err
 	}
 	out := LibrarySyncSnapshot{Revision: settings["jellyfin_library_revision"], Watchlist: []LibrarySyncItem{}, Watched: []LibrarySyncItem{}}
-	for offset := 0; ; offset += 500 {
-		rows, err := s.store.Releases(ctx, domain.ReleaseFilter{Watchlist: true, Limit: 500, Offset: offset})
-		if err != nil {
-			return LibrarySyncSnapshot{}, err
-		}
-		for _, r := range rows {
-			if r.Local && r.StashSceneID != "" {
-				out.Watchlist = append(out.Watchlist, LibrarySyncItem{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Path: r.StashFilePath, WatchlistedAt: r.WatchlistAt})
+	var stashWatchlist map[string]time.Time
+	var configured bool
+	var stashErr error
+	if s.stash != nil {
+		stashWatchlist, configured, stashErr = s.stash.SiloWatchlistScenes(ctx)
+	}
+	if configured && stashErr == nil {
+		// Include Stash-only scenes too: no JAVBeacon release row is needed for
+		// a local file or for Silo's Stash provider ID.
+		linkedByScene := make(map[string]domain.Release)
+		for offset := 0; ; offset += 500 {
+			rows, err := s.store.Releases(ctx, domain.ReleaseFilter{StashLinked: true, Limit: 500, Offset: offset})
+			if err != nil {
+				return LibrarySyncSnapshot{}, err
+			}
+			for _, r := range rows {
+				linkedByScene[r.StashSceneID] = r
+			}
+			if len(rows) < 500 {
+				break
 			}
 		}
-		if len(rows) < 500 {
-			break
+		sceneIDs := make([]string, 0, len(stashWatchlist))
+		for sceneID := range stashWatchlist {
+			sceneIDs = append(sceneIDs, sceneID)
+		}
+		sort.Strings(sceneIDs)
+		hash := sha256.New()
+		for _, sceneID := range sceneIDs {
+			updated := stashWatchlist[sceneID]
+			fmt.Fprintf(hash, "%s:%s\n", sceneID, updated.UTC().Format(time.RFC3339Nano))
+			item := LibrarySyncItem{StashSceneID: sceneID, WatchlistedAt: updated}
+			if r, ok := linkedByScene[sceneID]; ok {
+				item.ReleaseID = r.ID
+				item.Path = r.StashFilePath
+			}
+			out.Watchlist = append(out.Watchlist, item)
+		}
+		out.Revision += fmt.Sprintf("/stash-watchlist:%x", hash.Sum(nil))
+	} else {
+		// Stash is unavailable or no tag is configured. Keep the last
+		// JAVBeacon mirror as a degraded fallback rather than dropping tags.
+		for offset := 0; ; offset += 500 {
+			rows, err := s.store.Releases(ctx, domain.ReleaseFilter{Watchlist: true, Limit: 500, Offset: offset})
+			if err != nil {
+				return LibrarySyncSnapshot{}, err
+			}
+			for _, r := range rows {
+				if r.Local && r.StashSceneID != "" {
+					out.Watchlist = append(out.Watchlist, LibrarySyncItem{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Path: r.StashFilePath, WatchlistedAt: r.WatchlistAt})
+				}
+			}
+			if len(rows) < 500 {
+				break
+			}
 		}
 	}
+	sort.Slice(out.Watchlist, func(i, j int) bool {
+		a, b := out.Watchlist[i], out.Watchlist[j]
+		if !a.WatchlistedAt.Equal(b.WatchlistedAt) {
+			return a.WatchlistedAt.After(b.WatchlistedAt)
+		}
+		return a.StashSceneID < b.StashSceneID
+	})
+
 	for offset := 0; ; offset += 500 {
 		rows, err := s.store.Releases(ctx, domain.ReleaseFilter{StashWatched: true, Limit: 500, Offset: offset})
 		if err != nil {

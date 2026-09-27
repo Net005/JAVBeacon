@@ -5,6 +5,15 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.256] - 2026-09-27
+
+### Changed
+
+- Use the configured StashApp Watchlist scene tag as Silo's primary
+  Watchlist source, including Stash-only scenes. Import its scene update
+  timestamps and return Watchlist entries newest first. Continue using the
+  JAVBeacon mirror when StashApp is unavailable.
+
 ## [1.0.255] - 2026-09-27
 
 ### Fixed

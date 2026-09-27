@@ -15,13 +15,16 @@ import (
 )
 
 type fakeStash struct {
-	sceneMeta      stash.StashSceneMetadata
-	siloScenes     []stash.SiloScene
-	sceneMetaErr   error
-	sceneMetaCalls int
-	saves          []struct{ resume, duration float64 }
-	plays          int
-	failNextPlay   bool
+	sceneMeta           stash.StashSceneMetadata
+	siloScenes          []stash.SiloScene
+	siloScene           stash.SiloScene
+	watchlistScenes     map[string]time.Time
+	watchlistConfigured bool
+	sceneMetaErr        error
+	sceneMetaCalls      int
+	saves               []struct{ resume, duration float64 }
+	plays               int
+	failNextPlay        bool
 }
 
 func (f *fakeStash) StashSceneMetadata(_ context.Context, _ string) (stash.StashSceneMetadata, error) {
@@ -36,7 +39,13 @@ func (f *fakeStash) SearchSiloScenes(context.Context, string) ([]stash.SiloScene
 	return f.siloScenes, nil
 }
 func (f *fakeStash) SiloSceneByID(context.Context, string) (stash.SiloScene, error) {
+	if f.siloScene.ID != "" {
+		return f.siloScene, nil
+	}
 	return stash.SiloScene{}, errors.New("not configured")
+}
+func (f *fakeStash) SiloWatchlistScenes(context.Context) (map[string]time.Time, bool, error) {
+	return f.watchlistScenes, f.watchlistConfigured, nil
 }
 
 func (f *fakeStash) SaveActivity(_ context.Context, _ string, resume, duration float64) error {
@@ -256,6 +265,55 @@ func TestLibrarySyncRetriesFailedPresetIndexInsteadOfCachingEmpty(t *testing.T) 
 	}
 	if len(snapshot.FilterPresets) != 1 || len(snapshot.FilterPresets[0].ReleaseIDs) != 1 || snapshot.FilterPresets[0].ReleaseIDs[0] != release.ID {
 		t.Fatalf("retry omitted saved-filter membership: %+v", snapshot.FilterPresets)
+	}
+}
+
+func TestSiloWatchlistUsesStashAndNewestUpdateFirst(t *testing.T) {
+	svc, st, bridge, release := testService(t)
+	defer st.Close()
+	newest := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
+	older := newest.Add(-time.Hour)
+	bridge.watchlistConfigured = true
+	bridge.watchlistScenes = map[string]time.Time{"stash-1": older, "stash-only": newest}
+	snapshot, err := svc.LibrarySync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Watchlist) != 2 || snapshot.Watchlist[0].StashSceneID != "stash-only" || snapshot.Watchlist[0].ReleaseID != 0 || snapshot.Watchlist[1].ReleaseID != release.ID || !snapshot.Watchlist[1].WatchlistedAt.Equal(older) {
+		t.Fatalf("Watchlist must follow Stash update order: %+v", snapshot.Watchlist)
+	}
+	oldRevision := snapshot.Revision
+	delete(bridge.watchlistScenes, "stash-1")
+	snapshot, err = svc.LibrarySync(context.Background())
+	if err != nil || snapshot.Revision == oldRevision {
+		t.Fatalf("Stash Watchlist change did not update revision: %+v err=%v", snapshot, err)
+	}
+}
+
+func TestSiloMetadataUsesStashTagOverJAVWatchlist(t *testing.T) {
+	svc, st, bridge, release := testService(t)
+	defer st.Close()
+	if err := st.SaveSettings(context.Background(), map[string]string{"stash_watchlist_tag_id": "watch-tag"}); err != nil {
+		t.Fatal(err)
+	}
+	bridge.sceneMeta = stash.StashSceneMetadata{TagIDs: []string{"watch-tag"}, Performers: []stash.StashPerformer{}}
+	m, err := svc.Metadata(context.Background(), release.ID)
+	if err != nil || !m.Watchlist {
+		t.Fatalf("Stash tag was not primary: %+v err=%v", m, err)
+	}
+	watchlist := true
+	if err := st.PatchRelease(context.Background(), release.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	bridge.sceneMeta.TagIDs = nil
+	m, err = svc.Metadata(context.Background(), release.ID)
+	if err != nil || m.Watchlist {
+		t.Fatalf("removed Stash tag must override stale JAV watchlist: %+v err=%v", m, err)
+	}
+	bridge.siloScene = stash.SiloScene{ID: "stash-only", Code: "X-1", TagIDs: []string{"watch-tag"}}
+	m, err = svc.StashMetadata(context.Background(), "stash-only")
+	if err != nil || !m.Watchlist {
+		t.Fatalf("Stash-only Watchlist tag missing: %+v err=%v", m, err)
 	}
 }
 

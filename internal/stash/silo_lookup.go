@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // SiloScene is the Stash-owned metadata needed when a media file has no
@@ -19,6 +20,7 @@ type SiloScene struct {
 	Studio        string
 	Performers    []StashPerformer
 	Tags          []string
+	TagIDs        []string
 	ScreenshotURL string
 }
 
@@ -75,7 +77,7 @@ func (s *Service) SiloSceneByID(ctx context.Context, sceneID string) (SiloScene,
 	if err != nil {
 		return SiloScene{}, err
 	}
-	gql := fmt.Sprintf(`query { findScene(id: %s) { id title code details date studio { name } performers { id name image_path birthdate } tags { name } files { path } paths { screenshot } } }`, strconv.Quote(sceneID))
+	gql := fmt.Sprintf(`query { findScene(id: %s) { id title code details date studio { name } performers { id name image_path birthdate } tags { id name } files { path } paths { screenshot } } }`, strconv.Quote(sceneID))
 	var payload struct {
 		Data struct {
 			Scene *struct {
@@ -87,7 +89,7 @@ func (s *Service) SiloSceneByID(ctx context.Context, sceneID string) (SiloScene,
 					ImagePath string `json:"image_path"`
 					Birthdate string `json:"birthdate"`
 				} `json:"performers"`
-				Tags  []struct{ Name string }
+				Tags  []struct{ ID, Name string }
 				Files []struct{ Path string }
 				Paths struct{ Screenshot string }
 			} `json:"findScene"`
@@ -119,6 +121,63 @@ func (s *Service) SiloSceneByID(ctx context.Context, sceneID string) (SiloScene,
 	}
 	for _, t := range x.Tags {
 		out.Tags = append(out.Tags, t.Name)
+		out.TagIDs = append(out.TagIDs, t.ID)
 	}
 	return out, nil
+}
+
+// SiloWatchlistScenes reads the configured Watchlist tag directly from
+// StashApp. The returned timestamps are Stash scene update times, which are
+// the ordering source for Silo's imported Watchlist.
+func (s *Service) SiloWatchlistScenes(ctx context.Context) (map[string]time.Time, bool, error) {
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	tagID := strings.TrimSpace(settings["stash_watchlist_tag_id"])
+	if tagID == "" {
+		return nil, false, nil
+	}
+	base, key, err := s.stashConfig(ctx)
+	if err != nil {
+		return nil, true, err
+	}
+	const gql = `query JAVBeaconSiloWatchlist { findScenes(filter: { per_page: -1 }) { scenes { id updated_at tags { id } files { path } } } }`
+	var payload struct {
+		Data struct {
+			FindScenes struct {
+				Scenes []struct {
+					ID        string `json:"id"`
+					UpdatedAt string `json:"updated_at"`
+					Tags      []struct {
+						ID string `json:"id"`
+					} `json:"tags"`
+					Files []struct {
+						Path string `json:"path"`
+					} `json:"files"`
+				} `json:"scenes"`
+			} `json:"findScenes"`
+		} `json:"data"`
+		Errors []struct{ Message string } `json:"errors"`
+	}
+	if err := s.graphql(ctx, base, key, gql, &payload); err != nil {
+		return nil, true, err
+	}
+	if len(payload.Errors) > 0 {
+		return nil, true, fmt.Errorf("StashApp watchlist: %s", payload.Errors[0].Message)
+	}
+	out := make(map[string]time.Time)
+	for _, scene := range payload.Data.FindScenes.Scenes {
+		if len(scene.Files) == 0 {
+			continue // Only Stash scenes backed by a local media file.
+		}
+		for _, tag := range scene.Tags {
+			if tag.ID == tagID {
+				updated, _ := time.Parse(time.RFC3339Nano, scene.UpdatedAt)
+				out[scene.ID] = updated
+				break
+			}
+		}
+	}
+	return out, true, nil
 }
