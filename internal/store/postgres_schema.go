@@ -147,6 +147,7 @@ CREATE INDEX IF NOT EXISTS idx_releases_updated ON releases(updated_at DESC,id D
 CREATE INDEX IF NOT EXISTS idx_releases_title_order ON releases(LOWER(title),id);
 CREATE INDEX IF NOT EXISTS idx_releases_studio_order ON releases(LOWER(studio),id);
 CREATE INDEX IF NOT EXISTS idx_releases_label_order ON releases(LOWER(label),id);
+CREATE INDEX IF NOT EXISTS idx_releases_video_id_ci ON releases(LOWER(video_id));
 CREATE INDEX IF NOT EXISTS idx_releases_video_id_trgm ON releases USING gin(video_id gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_releases_title_trgm ON releases USING gin(title gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_releases_studio_trgm ON releases USING gin(studio gin_trgm_ops);

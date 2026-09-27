@@ -90,7 +90,7 @@ func TestMetadataPopulatesPerformerImagesFromStashByName(t *testing.T) {
 		Performers: []stash.StashPerformer{
 			{ID: "p1", Name: "One", ImagePath: "/performer/p1/image"},
 			{ID: "p2", Name: "No Photo", ImagePath: ""},
-			{ID: "p3", Name: "Mao Hamasaki", ImagePath: "/performer/p3/image"},
+			{ID: "p3", Name: "Mao Hamasaki", ImagePath: "/performer/p3/image", Birthdate: "1980-01-01"},
 			{ID: "p4", Name: "Ai Yuki", ImagePath: "/performer/p4/image"},
 			{ID: "p5", Name: "Yuki Ai", ImagePath: "/performer/p5/image"},
 		},
@@ -110,6 +110,9 @@ func TestMetadataPopulatesPerformerImagesFromStashByName(t *testing.T) {
 	}
 	if got := m.PerformerImages["Mao Hamasaki"]; got != "/api/v1/integrations/performers/p3/image" {
 		t.Fatalf("PerformerImages[Mao Hamasaki] = %q", got)
+	}
+	if got := m.PerformerDetails["Hamasaki Mao"]; got.StashID != "p3" || got.Birthdate != "1980-01-01" {
+		t.Fatalf("PerformerDetails[Hamasaki Mao] = %+v", got)
 	}
 	// Coincidental-reversal collision: each of the two real, distinct
 	// performers must keep only its own image, never the other's.
