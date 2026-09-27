@@ -73,6 +73,8 @@ const (
 // own main.go), so no performer-bio method is declared either.
 type stashBridge interface {
 	StashSceneMetadata(context.Context, string) (stash.StashSceneMetadata, error)
+	SearchSiloScenes(context.Context, string) ([]stash.SiloScene, error)
+	SiloSceneByID(context.Context, string) (stash.SiloScene, error)
 	SaveActivity(context.Context, string, float64, float64) error
 	AddPlay(context.Context, string, time.Time) (int, error)
 }
@@ -137,6 +139,7 @@ func newService(st store.Store, stashService stashBridge, screenshotCaches ...*s
 //     for a while; Silo never did) - see its own doc comment below.
 type Metadata struct {
 	ReleaseID      int64    `json:"release_id"`
+	ProviderID     string   `json:"provider_id,omitempty"`
 	StashSceneID   string   `json:"stash_scene_id,omitempty"`
 	Code           string   `json:"code"`
 	Title          string   `json:"title"`
@@ -249,6 +252,59 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metada
 		out = append(out, s.metadata(r))
 	}
 	return out, nil
+}
+
+// SearchStashScenes uses StashApp's scene index when no JAVBeacon release
+// matches the filename-derived query. Only exact code/file stems are returned.
+func (s *Service) SearchStashScenes(ctx context.Context, query string) ([]Metadata, error) {
+	if s.stash == nil {
+		return nil, nil
+	}
+	boundedCtx, cancel := context.WithTimeout(ctx, stashLookupTimeout)
+	defer cancel()
+	scenes, err := s.stash.SearchSiloScenes(boundedCtx, query)
+	if err != nil {
+		// A Stash outage must not fail Silo's entire scan of an unmatched file.
+		return nil, nil
+	}
+	if len(scenes) > 1 {
+		// Multiple scenes for one filename stem are ambiguous to Silo.
+		return nil, nil
+	}
+	out := make([]Metadata, 0, len(scenes))
+	for _, scene := range scenes {
+		out = append(out, stashOnlyMetadata(scene))
+	}
+	return out, nil
+}
+
+func (s *Service) StashMetadata(ctx context.Context, sceneID string) (Metadata, error) {
+	scene, err := s.stash.SiloSceneByID(ctx, sceneID)
+	if err != nil {
+		return Metadata{}, err
+	}
+	return stashOnlyMetadata(scene), nil
+}
+
+func stashOnlyMetadata(scene stash.SiloScene) Metadata {
+	m := Metadata{ProviderID: "stash:" + scene.ID, StashSceneID: scene.ID, Code: scene.Code, Title: scene.Title, OriginalTitle: scene.Title, Overview: scene.Details, PremiereDate: scene.Date, Studio: scene.Studio, Genres: append([]string(nil), scene.Tags...), ProviderIDs: map[string]string{"Stash": scene.ID}}
+	if len(scene.Date) >= 4 {
+		m.ProductionYear, _ = strconv.Atoi(scene.Date[:4])
+	}
+	if scene.ScreenshotURL != "" {
+		m.StashScreenshotURL = "/api/v1/integrations/silo/stash/scenes/" + url.PathEscape(scene.ID) + "/cover"
+		m.CoverPath = m.StashScreenshotURL
+	}
+	m.PerformerImages = map[string]string{}
+	m.PerformerDetails = map[string]PerformerDetail{}
+	for _, p := range scene.Performers {
+		m.Performers = append(m.Performers, p.Name)
+		if p.ImagePath != "" {
+			m.PerformerImages[p.Name] = "/api/v1/integrations/performers/" + url.PathEscape(p.ID) + "/image"
+		}
+		m.PerformerDetails[p.Name] = PerformerDetail{StashID: p.ID, Birthdate: p.Birthdate}
+	}
+	return m
 }
 
 func likelyReleaseCode(query string) bool {

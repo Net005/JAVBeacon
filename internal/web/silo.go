@@ -26,6 +26,9 @@ import (
 func (s *Server) siloSearch(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	rows, err := s.silo.Search(r.Context(), r.URL.Query().Get("q"), limit)
+	if err == nil && len(rows) == 0 {
+		rows, err = s.silo.SearchStashScenes(r.Context(), r.URL.Query().Get("q"))
+	}
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
@@ -49,6 +52,32 @@ func (s *Server) siloMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, http.StatusOK, value)
+}
+
+func (s *Server) siloStashMetadata(w http.ResponseWriter, r *http.Request) {
+	value, err := s.silo.StashMetadata(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.problem(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, value)
+}
+
+func (s *Server) siloStashSceneCover(w http.ResponseWriter, r *http.Request) {
+	resp, err := s.stash.FetchSceneScreenshot(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.problem(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "image/jpeg"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 // siloStashCover mirrors jellyfinStashCover under Silo's own dedicated path
