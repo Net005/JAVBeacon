@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -93,6 +94,39 @@ func TestOllamaLengthStopReportsUsefulFailure(t *testing.T) {
 	result := New(nil).Rank(context.Background(), baseConfig(server.URL), testCandidates(), "")
 	if !result.Skipped || !strings.Contains(result.Status, "token limit") {
 		t.Fatalf("length stop did not return a useful status: %+v", result)
+	}
+}
+
+func TestOllamaOutputCeilingControlsRequest(t *testing.T) {
+	var budgets []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "qwen3:8b"}}})
+		case "/api/chat":
+			var request struct {
+				Options struct {
+					NumPredict int `json:"num_predict"`
+				} `json:"options"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode: %v", err)
+				return
+			}
+			budgets = append(budgets, request.Options.NumPredict)
+			if len(budgets) == 1 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": `{"rankings":[`}, "done_reason": "length"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": `{"rankings":[{"id":7,"score":80,"reason":"The supplied title and studio match established interests.","pools":[]}]}`}})
+		}
+	}))
+	defer server.Close()
+	cfg := baseConfig(server.URL)
+	cfg.OllamaMaxOutputTokens = 4096
+	result := New(nil).Rank(context.Background(), cfg, testCandidates(), "")
+	if result.Skipped || len(result.Ranks) != 1 || !reflect.DeepEqual(budgets, []int{2048, 4096}) {
+		t.Fatalf("unexpected output budget or result: budgets=%v result=%+v", budgets, result)
 	}
 }
 

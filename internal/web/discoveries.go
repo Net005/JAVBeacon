@@ -1090,6 +1090,7 @@ func discoveryAIConfig(settings map[string]string) aidiscovery.Config {
 		PrimaryProvider:        strings.TrimSpace(settings["discoveries_ai_primary_provider"]),
 		OllamaURL:              strings.TrimSpace(settings["discoveries_ollama_url"]),
 		OllamaModel:            strings.TrimSpace(settings["discoveries_ollama_model"]),
+		OllamaMaxOutputTokens:  min(max(discoveryInt(settings, "discoveries_ollama_max_output_tokens", 16384), 1024), 32768),
 		RequestTimeout:         time.Duration(min(max(discoveryInt(settings, "discoveries_ollama_request_timeout_seconds", 120), 5), 7200)) * time.Second,
 		HealthTimeout:          time.Duration(min(max(discoveryInt(settings, "discoveries_ollama_health_timeout_seconds", 2), 1), 30)) * time.Second,
 		OpenAIFallbackEnabled:  settings["discoveries_openai_fallback_enabled"] == "true",

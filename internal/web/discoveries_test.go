@@ -421,6 +421,18 @@ func TestDiscoveryAIBatchesPrecomputeCandidatePoolEligibility(t *testing.T) {
 	}
 }
 
+func TestDiscoveryOllamaOutputCeilingSetting(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want int
+	}{{"", 16384}, {"4096", 4096}, {"1", 1024}, {"999999", 32768}} {
+		cfg := discoveryAIConfig(map[string]string{"discoveries_ollama_max_output_tokens": tc.raw})
+		if cfg.OllamaMaxOutputTokens != tc.want {
+			t.Fatalf("raw %q: got %d, want %d", tc.raw, cfg.OllamaMaxOutputTokens, tc.want)
+		}
+	}
+}
+
 func TestDiscoveryAIRequestLimitsAreProviderSpecific(t *testing.T) {
 	settings := map[string]string{
 		"discoveries_openai_batch_size": "2", "discoveries_openai_max_input_chars": "30000",

@@ -335,7 +335,12 @@ var errOllamaOutputLimit = errors.New("Ollama output reached its token limit bef
 
 func (s *Service) ollamaRankBatch(ctx context.Context, cfg Config, candidates []Candidate, pools string) ([]Rank, error) {
 	var lastErr error
-	outputTokens := min(max(len(candidates)*650+512, 2048), 8192)
+	outputCeiling := cfg.OllamaMaxOutputTokens
+	if outputCeiling == 0 {
+		outputCeiling = 16384
+	}
+	outputCeiling = min(max(outputCeiling, 1024), 32768)
+	outputTokens := min(max(len(candidates)*650+512, 2048), outputCeiling)
 	for attempt := 0; attempt < 3; attempt++ {
 		ranks, err := s.ollamaRankOnce(ctx, cfg, candidates, pools, outputTokens, attempt > 0 && !errors.Is(lastErr, errOllamaOutputLimit), lastErr)
 		if err == nil {
@@ -343,8 +348,8 @@ func (s *Service) ollamaRankBatch(ctx context.Context, cfg Config, candidates []
 		}
 		lastErr = err
 		if errors.Is(err, errOllamaOutputLimit) {
-			if outputTokens < 16384 {
-				outputTokens = min(outputTokens*2, 16384)
+			if outputTokens < outputCeiling {
+				outputTokens = min(outputTokens*2, outputCeiling)
 				continue
 			}
 			return nil, err

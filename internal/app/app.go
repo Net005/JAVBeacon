@@ -290,6 +290,7 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 		"discoveries_ollama_candidate_limit":         legacyAICandidateLimit,
 		"discoveries_ollama_batch_size":              legacyAIBatchSize,
 		"discoveries_ollama_max_input_chars":         legacyAIInputChars,
+		"discoveries_ollama_max_output_tokens":       "16384",
 		"discoveries_openai_fallback_enabled":        "false",
 		"discoveries_openai_include_subtitles":       "true",
 		"discoveries_subtitle_weight_no_story":       "100",

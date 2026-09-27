@@ -5,6 +5,17 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.269] - 2026-09-27
+
+### Added
+
+- Add a per-Ollama maximum output token setting (1,024–32,768; default 16,384). Automatic JSON completion retries respect this ceiling and still split truncated multi-release requests.
+- Show the estimated subtitle excerpt upper bound from the selected provider's input budget and candidates per request. The actual excerpt can be shorter after release metadata and pool definitions are included.
+
+### Fixed
+
+- Regenerate the embedded changelog required by the release build, which was missed in v1.0.268 and caused that build to fail.
+
 ## [1.0.268] - 2026-09-27
 
 ### Fixed
