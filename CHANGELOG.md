@@ -5,6 +5,15 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.253] - 2026-09-27
+
+### Added
+
+- Fall back to StashApp scenes when Silo searches a media filename that has
+  no JAVBeacon release. Match only an exact scene code or file stem, expose
+  Stash-only metadata and artwork under a stable scene provider ID, and
+  leave duplicate filename matches unresolved.
+
 ## [1.0.252] - 2026-09-27
 
 ### Fixed

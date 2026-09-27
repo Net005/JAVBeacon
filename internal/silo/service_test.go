@@ -16,6 +16,7 @@ import (
 
 type fakeStash struct {
 	sceneMeta      stash.StashSceneMetadata
+	siloScenes     []stash.SiloScene
 	sceneMetaErr   error
 	sceneMetaCalls int
 	saves          []struct{ resume, duration float64 }
@@ -29,6 +30,13 @@ func (f *fakeStash) StashSceneMetadata(_ context.Context, _ string) (stash.Stash
 		return f.sceneMeta, f.sceneMetaErr
 	}
 	return stash.StashSceneMetadata{}, errors.New("not configured in this test")
+}
+
+func (f *fakeStash) SearchSiloScenes(context.Context, string) ([]stash.SiloScene, error) {
+	return f.siloScenes, nil
+}
+func (f *fakeStash) SiloSceneByID(context.Context, string) (stash.SiloScene, error) {
+	return stash.SiloScene{}, errors.New("not configured")
 }
 
 func (f *fakeStash) SaveActivity(_ context.Context, _ string, resume, duration float64) error {
@@ -335,5 +343,20 @@ func TestPlaybackIgnoresOutOfOrderCallbacks(t *testing.T) {
 	}
 	if result.Accumulated != 35 || result.Forwarded != 35 || len(bridge.saves) != 1 {
 		t.Fatalf("progress after reorder=%+v saves=%+v", result, bridge.saves)
+	}
+}
+
+func TestStashOnlyFilenameFallback(t *testing.T) {
+	svc, st, bridge, _ := testService(t)
+	defer st.Close()
+	bridge.siloScenes = []stash.SiloScene{{ID: "11631", Code: "ad-359", Title: "Scene"}}
+	rows, err := svc.SearchStashScenes(context.Background(), "AD-359")
+	if err != nil || len(rows) != 1 || rows[0].ProviderID != "stash:11631" || rows[0].Code != "ad-359" {
+		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
+	bridge.siloScenes = append(bridge.siloScenes, stash.SiloScene{ID: "2", Code: "ad-359"})
+	rows, err = svc.SearchStashScenes(context.Background(), "AD-359")
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("ambiguous rows=%+v err=%v", rows, err)
 	}
 }
