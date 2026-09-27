@@ -291,6 +291,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/integrations/silo/library-sync", s.siloLibrarySync)
 	s.mux.HandleFunc("GET /api/v1/integrations/silo/releases/{id}/stash-cover", s.siloStashCover)
 	s.mux.HandleFunc("GET /api/v1/integrations/performers/{performerId}/image", s.performerImage)
+	s.mux.HandleFunc("GET /api/v1/integrations/performers/{performerId}/stash", s.performerStashRedirect)
 	s.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)

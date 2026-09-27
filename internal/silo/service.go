@@ -100,7 +100,11 @@ type Service struct {
 	// copy), which costs one extra revision-gated rebuild pass on the rare
 	// occasion both happen to miss at once - a fine trade for not sharing
 	// mutable state between two otherwise-independent services.
-	collMu       sync.Mutex
+	collMu       sync.RWMutex
+	collBuildMu  sync.Mutex
+	collAsyncMu  sync.Mutex
+	collBuilding bool
+	collRetryAt  time.Time
 	collRevision string
 	collIndex    map[int64][]string
 	collPresets  []FilterPresetCollection
@@ -178,8 +182,16 @@ type Metadata struct {
 	// Performers) to a JAVBeacon-proxied StashApp portrait URL. Only
 	// populated by Metadata; never by Search, for the same bulk-cost reason
 	// as CollectionNames.
-	PerformerImages map[string]string `json:"performer_images,omitempty"`
-	ProviderIDs     map[string]string `json:"provider_ids"`
+	PerformerImages  map[string]string          `json:"performer_images,omitempty"`
+	PerformerDetails map[string]PerformerDetail `json:"performer_details,omitempty"`
+	ProviderIDs      map[string]string          `json:"provider_ids"`
+}
+
+// PerformerDetail uses only StashApp fields already returned with the scene.
+// No extra per-performer GraphQL round trip is needed during a scan.
+type PerformerDetail struct {
+	StashID   string `json:"stash_id"`
+	Birthdate string `json:"birthdate,omitempty"`
 }
 
 type LibrarySyncItem struct {
@@ -215,7 +227,18 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metada
 	if limit < 1 || limit > 100 {
 		limit = 25
 	}
-	rows, err := s.store.Releases(ctx, domain.ReleaseFilter{Search: strings.TrimSpace(query), Limit: limit})
+	needle := strings.TrimSpace(query)
+	// Scan titles are usually exact JAV release codes. Use the dedicated
+	// video_id predicate first; fuzzy search joins many text fields and is
+	// substantially slower on large libraries.
+	var rows []domain.Release
+	var err error
+	if likelyReleaseCode(needle) {
+		rows, err = s.store.Releases(ctx, domain.ReleaseFilter{VideoID: needle, Limit: limit})
+	}
+	if err == nil && len(rows) == 0 {
+		rows, err = s.store.Releases(ctx, domain.ReleaseFilter{Search: needle, Limit: limit})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -224,6 +247,18 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metada
 		out = append(out, s.metadata(r))
 	}
 	return out, nil
+}
+
+func likelyReleaseCode(query string) bool {
+	if !strings.Contains(query, "-") || strings.ContainsAny(query, " \t\n") {
+		return false
+	}
+	for _, r := range query {
+		if r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
 }
 
 // stashLookupTimeout bounds every individual Stash round trip made while
@@ -267,6 +302,7 @@ func (s *Service) metadataForRelease(ctx context.Context, r domain.Release) Meta
 	if scene, ok := s.stashSceneMetadata(ctx, r.StashSceneID); ok {
 		m = applyStashScene(r, m, scene)
 		applyPerformerImages(scene, &m)
+		applyPerformerDetails(scene, &m)
 	}
 	return m
 }
@@ -328,15 +364,56 @@ func applyPerformerImages(scene stash.StashSceneMetadata, m *Metadata) {
 	}
 }
 
+func applyPerformerDetails(scene stash.StashSceneMetadata, m *Metadata) {
+	if len(scene.Performers) == 0 {
+		return
+	}
+	details := make(map[string]PerformerDetail)
+	for _, p := range scene.Performers {
+		if p.ID == "" || p.Name == "" {
+			continue
+		}
+		detail := PerformerDetail{StashID: p.ID, Birthdate: p.Birthdate}
+		details[p.Name] = detail
+		fields := strings.Fields(p.Name)
+		if len(fields) == 2 {
+			reversed := fields[1] + " " + fields[0]
+			if reversed != p.Name {
+				if _, exists := details[reversed]; !exists {
+					details[reversed] = detail
+				}
+			}
+		}
+	}
+	if len(details) > 0 {
+		m.PerformerDetails = details
+	}
+}
+
 // collectionNamesForRelease resolves every saved filter set that currently
 // matches releaseID. Best-effort: any storage error yields no names rather
 // than failing the whole metadata request.
-func (s *Service) collectionNamesForRelease(ctx context.Context, releaseID int64) []string {
-	index, err := s.collectionMembershipIndex(ctx)
-	if err != nil {
-		return nil
+func (s *Service) collectionNamesForRelease(_ context.Context, releaseID int64) []string {
+	// A preset-index rebuild can run for ten seconds. Never make the scan's
+	// per-release metadata RPC wait for it; return the last complete snapshot.
+	s.collMu.RLock()
+	names := append([]string(nil), s.collIndex[releaseID]...)
+	s.collMu.RUnlock()
+	s.collAsyncMu.Lock()
+	if !s.collBuilding && time.Now().After(s.collRetryAt) {
+		s.collBuilding = true
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), collectionIndexTimeout+time.Second)
+			defer cancel()
+			_, _, _ = s.collectionIndexAndPresets(ctx)
+			s.collAsyncMu.Lock()
+			s.collBuilding = false
+			s.collRetryAt = time.Now().Add(time.Minute)
+			s.collAsyncMu.Unlock()
+		}()
 	}
-	return index[releaseID]
+	s.collAsyncMu.Unlock()
+	return names
 }
 
 // collectionMembershipIndex returns a releaseID -> matching-preset-names map,
@@ -362,11 +439,15 @@ func (s *Service) collectionIndexAndPresets(ctx context.Context) (map[int64][]st
 	}
 	revision := settings["jellyfin_library_revision"]
 
-	s.collMu.Lock()
-	defer s.collMu.Unlock()
+	s.collBuildMu.Lock()
+	defer s.collBuildMu.Unlock()
+	s.collMu.RLock()
 	if s.collIndex != nil && s.collRevision == revision {
-		return s.collIndex, s.collPresets, nil
+		index, presets := s.collIndex, s.collPresets
+		s.collMu.RUnlock()
+		return index, presets, nil
 	}
+	s.collMu.RUnlock()
 
 	boundedCtx, cancel := context.WithTimeout(ctx, collectionIndexTimeout)
 	defer cancel()
@@ -399,9 +480,11 @@ func (s *Service) collectionIndexAndPresets(ctx context.Context) (map[int64][]st
 		}
 		collections = append(collections, FilterPresetCollection{ID: preset.ID, Name: preset.Name, ReleaseIDs: ids})
 	}
+	s.collMu.Lock()
 	s.collRevision = revision
 	s.collIndex = index
 	s.collPresets = collections
+	s.collMu.Unlock()
 	return index, collections, nil
 }
 

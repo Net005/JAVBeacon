@@ -150,6 +150,7 @@ type StashPerformer struct {
 	ID        string
 	Name      string
 	ImagePath string
+	Birthdate string
 }
 
 // StashSceneMetadata is the small, stable metadata contract exposed to
@@ -188,7 +189,7 @@ func (s *Service) StashSceneMetadata(ctx context.Context, sceneID string) (Stash
 	if err != nil {
 		return StashSceneMetadata{}, err
 	}
-	query := fmt.Sprintf(`query { findScene(id: "%s") { title details studio { name } performers { id name image_path } tags { name } paths { screenshot } } }`, escapeGraphQL(sceneID))
+	query := fmt.Sprintf(`query { findScene(id: "%s") { title details studio { name } performers { id name image_path birthdate } tags { name } paths { screenshot } } }`, escapeGraphQL(sceneID))
 	var payload struct {
 		Data struct {
 			Scene *struct {
@@ -201,6 +202,7 @@ func (s *Service) StashSceneMetadata(ctx context.Context, sceneID string) (Stash
 					ID        string `json:"id"`
 					Name      string `json:"name"`
 					ImagePath string `json:"image_path"`
+					Birthdate string `json:"birthdate"`
 				} `json:"performers"`
 				Tags []struct {
 					Name string `json:"name"`
@@ -229,7 +231,7 @@ func (s *Service) StashSceneMetadata(ctx context.Context, sceneID string) (Stash
 		out.Studio = x.Studio.Name
 	}
 	for _, p := range x.Performers {
-		out.Performers = append(out.Performers, StashPerformer{ID: p.ID, Name: p.Name, ImagePath: p.ImagePath})
+		out.Performers = append(out.Performers, StashPerformer{ID: p.ID, Name: p.Name, ImagePath: p.ImagePath, Birthdate: p.Birthdate})
 	}
 	for _, t := range x.Tags {
 		out.Tags = append(out.Tags, t.Name)

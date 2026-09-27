@@ -5,6 +5,21 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.245] - 2026-09-27
+
+### Added
+
+- Include StashApp performer birth dates and IDs with Silo release metadata, and expose a public JAVBeacon redirect to each StashApp performer page.
+
+### Changed
+
+- Use an indexed exact release-code lookup before fuzzy search for Silo scan queries.
+- Rebuild collection membership outside individual metadata requests, serving the last complete index while it refreshes.
+
+### Fixed
+
+- Avoid the repeated ten-second collection-index wait that slowed Silo metadata scans.
+
 ## [1.0.244] - 2026-09-27
 
 ### Changed
