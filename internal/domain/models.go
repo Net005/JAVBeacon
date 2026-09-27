@@ -79,6 +79,30 @@ type JellyfinPlaybackSession struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+// SiloPlaybackSession is Silo's own checkpoint/resume/completion session
+// row - a field-for-field twin of JellyfinPlaybackSession (same semantics,
+// same StashApp writeback), kept as a separate type and table on purpose so
+// the two integrations' playback engines never share mutable state. See
+// internal/silo.Service.Playback's doc comment for why this duplication was
+// requested over reusing JellyfinPlaybackSession.
+type SiloPlaybackSession struct {
+	SessionID      string    `json:"session_id"`
+	ReleaseID      int64     `json:"release_id"`
+	StashSceneID   string    `json:"stash_scene_id"`
+	SiloItemID     string    `json:"silo_item_id"`
+	SiloUserID     string    `json:"silo_user_id"`
+	StartedAt      time.Time `json:"started_at"`
+	LastEventAt    time.Time `json:"last_event_at"`
+	LastPosition   float64   `json:"last_position_seconds"`
+	RuntimeSeconds float64   `json:"runtime_seconds"`
+	Accumulated    float64   `json:"accumulated_seconds"`
+	Forwarded      float64   `json:"forwarded_seconds"`
+	WasPaused      bool      `json:"was_paused"`
+	PlayCounted    bool      `json:"play_counted"`
+	Status         string    `json:"status"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 type Site struct {
 	ID                int64  `json:"id"`
 	Title             string `json:"title"`

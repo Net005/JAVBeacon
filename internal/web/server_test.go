@@ -1221,6 +1221,27 @@ func TestCoverJellyfinPrimaryConformsUsingReleaseProductURLNotImageURL(t *testin
 	}
 }
 
+// TestCoverSiloPrimaryConformsIdenticallyToJellyfinPrimary guards Silo's own
+// twin route (/covers/{id}/silo-primary) - added so internal/silo.Metadata's
+// CoverPath never has to point at a Jellyfin-named URL again - applies the
+// exact same crop/pad transform as coverJellyfinPrimary via the shared
+// serveConformedCover helper.
+func TestCoverSiloPrimaryConformsIdenticallyToJellyfinPrimary(t *testing.T) {
+	s, req := newSpreadCoverTestServer(t)
+	rec := httptest.NewRecorder()
+	s.coverSiloPrimary(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	img, _, err := image.Decode(bytes.NewReader(rec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if b := img.Bounds(); b.Dx() != 1000 || b.Dy() != 1500 {
+		t.Fatalf("got %dx%d, want 1000x1500 (conformed)", b.Dx(), b.Dy())
+	}
+}
+
 // TestCoverNeverConformsEvenForAMatchingSpreadShape guards the other half
 // of the same contract: /covers/{id} - the endpoint JAVBeacon's own web UI
 // uses everywhere - must always serve the cover exactly as cached, even

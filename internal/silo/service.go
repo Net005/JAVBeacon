@@ -16,22 +16,17 @@
 // internal/jellyfin's DTO shape where that divergence is useful (see
 // Metadata's own doc comment) without worrying about a second consumer.
 //
-// Two pieces are deliberately still shared with internal/jellyfin, not
-// duplicated here:
-//
-//   - Playback (internal/jellyfin.Service.Playback) - the checkpoint/resume/
-//     completion-threshold engine and its StashApp play-count/O-count
-//     writeback. It is keyed by domain.JellyfinPlaybackSession (a
-//     Jellyfin-named persistence type predating this split) but is otherwise
-//     already fully provider-agnostic - JellyfinItemID/JellyfinUserID are
-//     optional labels, not required fields - and reimplementing ~150 lines of
-//     delicate checkpoint/gap/completion arithmetic a second time would be
-//     pure duplication risk for zero behavioral benefit. internal/web/silo.go
-//     still calls s.jellyfin.Playback directly for this reason.
-//   - The /covers/{id}/jellyfin-primary image-crop endpoint - a pure,
-//     deterministic image transform (portrait pad/crop of a source cover)
-//     with no business logic or per-integration behavior at all. Both
-//     integrations' Metadata.CoverPath point at the same URL on purpose.
+// Playback and the cover-crop endpoint were briefly left calling into
+// internal/jellyfin (see git history around v1.0.241) on the reasoning that
+// both were provider-agnostic enough not to be worth duplicating. That was
+// overruled: this package now owns its own Playback engine (below, keyed by
+// domain.SiloPlaybackSession, its own table) and its own cover-crop route
+// (/covers/{id}/silo-primary, registered in internal/web/server.go), so
+// internal/web/silo.go never calls into internal/jellyfin.Service at all.
+// The two engines share only the deterministic image-crop transform
+// function itself (covers.ConformForServing - pure pixel logic, no
+// integration-specific behavior) and the stash package's StashApp client,
+// same as any two independent callers of a shared library would.
 //
 // The saved-filter-set ("collection") resolution logic - the one place a
 // silent behavioral drift between the two integrations would be most visible
@@ -42,7 +37,10 @@ package silo
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -61,20 +59,39 @@ const (
 	ProviderIDStash   = "Stash"
 )
 
-// stashBridge is deliberately much narrower than internal/jellyfin's own
-// stashBridge interface: this package never needs playback/O-count writeback
-// (Playback stays on internal/jellyfin.Service, see the package doc comment)
-// or performer bio lookups (Silo's GetPersonDetail always returns empty -
-// confirmed against the plugin's own main.go), only the one Stash gap-fill
-// lookup Metadata/Search's enrichment step uses.
+// stashBridge no longer omits playback writeback now that Playback lives on
+// this package too (see the package doc comment) - it needs the checkpoint
+// and play-count methods internal/jellyfin's own stashBridge declares.
+// These names carry a "Jellyfin" prefix only because stash.Service was
+// written before this package existed; they write to StashApp's per-scene
+// play counters, which are shared physical state regardless of which
+// integration drove playback, not something specific to the Jellyfin
+// integration. Silo has no "+1 O"/activity-readback route of its own (unlike
+// Jellyfin's releases/{id}/activity and releases/{id}/o), so
+// AddJellyfinO/JellyfinActivity aren't declared here; add them if that ever
+// changes. GetPersonDetail still always returns empty (confirmed against the
+// plugin's own main.go), so no performer-bio method is declared either.
 type stashBridge interface {
 	StashSceneMetadata(context.Context, string) (stash.StashSceneMetadata, error)
+	SaveJellyfinActivity(context.Context, string, float64, float64) error
+	AddJellyfinPlay(context.Context, string, time.Time) (int, error)
+}
+
+// repository is satisfied by *store.SQLite via a type assertion in
+// newService, mirroring internal/jellyfin's own repository interface -
+// separate from the wide store.Store interface so Playback's persistence
+// contract is explicit and independently testable.
+type repository interface {
+	SiloPlaybackSession(context.Context, string) (domain.SiloPlaybackSession, error)
+	SaveSiloPlaybackSession(context.Context, domain.SiloPlaybackSession) error
 }
 
 type Service struct {
 	store store.Store
+	repo  repository
 	stash stashBridge
 	shots *screenshots.Cache
+	mu    sync.Mutex
 
 	// collMu/collRevision/collIndex/collPresets cache
 	// collectionNamesForRelease's per-preset membership computation - see its
@@ -94,7 +111,8 @@ func New(st store.Store, stashService *stash.Service, screenshotCaches ...*scree
 }
 
 func newService(st store.Store, stashService stashBridge, screenshotCaches ...*screenshots.Cache) *Service {
-	service := &Service{store: st, stash: stashService}
+	repo, _ := st.(repository)
+	service := &Service{store: st, repo: repo, stash: stashService}
 	if len(screenshotCaches) > 0 {
 		service.shots = screenshotCaches[0]
 	}
@@ -128,9 +146,12 @@ type Metadata struct {
 	Directors      []string `json:"directors,omitempty"`
 	Genres         []string `json:"genres,omitempty"`
 	RuntimeSeconds int64    `json:"runtime_seconds,omitempty"`
-	// CoverPath deliberately points at the same
-	// /covers/{id}/jellyfin-primary endpoint the Jellyfin integration uses -
-	// see the package doc comment for why that one endpoint stays shared.
+	// CoverPath points at this integration's own /covers/{id}/silo-primary
+	// crop endpoint (see internal/web/server.go's coverSiloPrimary) - not
+	// Jellyfin's /covers/{id}/jellyfin-primary. Both routes apply the exact
+	// same deterministic crop transform (covers.ConformForServing); only the
+	// URL is integration-specific, so a change to one route's auth/caching
+	// behavior can never accidentally affect the other's.
 	CoverPath         string   `json:"cover_path,omitempty"`
 	CoverBackdropPath string   `json:"cover_backdrop_path,omitempty"`
 	BackdropURLs      []string `json:"backdrop_urls,omitempty"`
@@ -479,7 +500,7 @@ func (s *Service) metadata(r domain.Release) Metadata {
 		OriginalTitle: r.VideoID, Overview: releaseTitle(r.VideoID, r.Title), PremiereDate: r.ReleaseDate,
 		ProductionYear: year, Studio: r.Studio, Label: r.Label, Performers: append([]string(nil), r.Actresses...),
 		Directors: directors, Genres: append([]string(nil), r.Genres...), RuntimeSeconds: parseRuntime(r.Duration),
-		CoverPath: fmt.Sprintf("/covers/%d/jellyfin-primary", r.ID), CoverBackdropPath: fmt.Sprintf("/covers/%d/original", r.ID),
+		CoverPath: fmt.Sprintf("/covers/%d/silo-primary", r.ID), CoverBackdropPath: fmt.Sprintf("/covers/%d/original", r.ID),
 		BackdropURLs: backdrops, SourceURL: r.ProductURL, ProviderIDs: ids, Watchlist: r.Watchlist,
 	}
 }
@@ -500,6 +521,166 @@ func releaseTitle(releaseID, title string) string {
 		}
 	}
 	return strings.TrimSpace(strings.TrimLeft(title[len(releaseID):], "-_:|–— \t"))
+}
+
+// PlaybackEvent/PlaybackResult/Playback are Silo's own independent twin of
+// internal/jellyfin.Service's checkpoint/resume/completion-threshold engine
+// - same arithmetic, deliberately duplicated rather than shared (see the
+// package doc comment for why) so this integration never depends on
+// internal/jellyfin.Service. Persistence is keyed by
+// domain.SiloPlaybackSession/silo_playback_sessions, a separate table from
+// Jellyfin's own session store.
+type PlaybackEvent struct {
+	Event     string `json:"event"`
+	SessionID string `json:"session_id"`
+	ReleaseID int64  `json:"release_id"`
+	// StashSceneID lets a playback event be reported for a StashApp scene
+	// JAVBeacon never scraped into a release row at all (no ReleaseID exists
+	// yet). Either ReleaseID or StashSceneID is required; when both are given,
+	// ReleaseID wins and is trusted to already be linked to that scene.
+	StashSceneID    string    `json:"stash_scene_id,omitempty"`
+	SiloItemID      string    `json:"silo_item_id"`
+	SiloUserID      string    `json:"silo_user_id"`
+	PositionSeconds float64   `json:"position_seconds"`
+	RuntimeSeconds  float64   `json:"runtime_seconds"`
+	IsPaused        bool      `json:"is_paused"`
+	IsPlayed        bool      `json:"is_played"`
+	OccurredAt      time.Time `json:"occurred_at,omitempty"`
+}
+
+type PlaybackResult struct {
+	SessionID         string  `json:"session_id"`
+	Accumulated       float64 `json:"accumulated_seconds"`
+	Forwarded         float64 `json:"forwarded_seconds"`
+	ResumeTime        float64 `json:"resume_time_seconds"`
+	PlayCounted       bool    `json:"play_counted"`
+	CheckpointWritten bool    `json:"checkpoint_written"`
+}
+
+type playbackPolicy struct{ checkpoint, maxGap, percent, remaining float64 }
+
+// policy reads the same jellyfin_checkpoint_seconds/jellyfin_max_checkpoint_
+// gap_seconds/jellyfin_completion_percent/jellyfin_completion_remaining_
+// seconds settings internal/jellyfin.Service.policy reads. These are
+// generic playback-completion thresholds, not integration-specific
+// configuration or a call into internal/jellyfin.Service - there is only one
+// admin-configured completion policy, and both integrations' playback
+// engines apply it identically. The setting keys keep their pre-split names
+// since no admin UI change was requested alongside this split.
+func (s *Service) policy(ctx context.Context) playbackPolicy {
+	p := playbackPolicy{checkpoint: 30, maxGap: 120, percent: 80, remaining: 600}
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return p
+	}
+	for key, target := range map[string]*float64{"jellyfin_checkpoint_seconds": &p.checkpoint, "jellyfin_max_checkpoint_gap_seconds": &p.maxGap, "jellyfin_completion_percent": &p.percent, "jellyfin_completion_remaining_seconds": &p.remaining} {
+		if n, e := strconv.ParseFloat(settings[key], 64); e == nil && n >= 0 {
+			*target = n
+		}
+	}
+	return p
+}
+
+func (s *Service) Playback(ctx context.Context, event PlaybackEvent) (PlaybackResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.repo == nil {
+		return PlaybackResult{}, errors.New("Silo integration storage is unavailable")
+	}
+	event.Event = strings.ToLower(strings.TrimSpace(event.Event))
+	if event.Event != "start" && event.Event != "progress" && event.Event != "stop" {
+		return PlaybackResult{}, errors.New("event must be start, progress, or stop")
+	}
+	stashSceneID := strings.TrimSpace(event.StashSceneID)
+	if strings.TrimSpace(event.SessionID) == "" || (event.ReleaseID < 1 && stashSceneID == "") {
+		return PlaybackResult{}, errors.New("session_id and either release_id or stash_scene_id are required")
+	}
+	// releaseID stays 0 for a Stash-only scene JAVBeacon never scraped into a
+	// release row - the session and every Stash write below are keyed by
+	// stashSceneID alone in that case, bypassing store.Release entirely.
+	releaseID := int64(0)
+	if event.ReleaseID > 0 {
+		r, err := s.store.Release(ctx, event.ReleaseID)
+		if err != nil {
+			return PlaybackResult{}, err
+		}
+		if r.StashSceneID == "" {
+			return PlaybackResult{}, errors.New("release is not mapped to a StashApp scene")
+		}
+		releaseID, stashSceneID = r.ID, r.StashSceneID
+	}
+	now := event.OccurredAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	p := s.policy(ctx)
+	x, err := s.repo.SiloPlaybackSession(ctx, event.SessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		x = domain.SiloPlaybackSession{SessionID: event.SessionID, ReleaseID: releaseID, StashSceneID: stashSceneID, SiloItemID: event.SiloItemID, SiloUserID: event.SiloUserID, StartedAt: now, LastEventAt: now, RuntimeSeconds: event.RuntimeSeconds, Status: "active"}
+	} else if err != nil {
+		return PlaybackResult{}, err
+	} else if x.StashSceneID != stashSceneID {
+		return PlaybackResult{}, errors.New("session_id is already bound to another release")
+	} else if now.Before(x.LastEventAt) {
+		// Playback event callbacks are forwarded asynchronously and may arrive
+		// out of order. A stale callback must never move the durable clock or
+		// resume position backwards, or cause a second external mutation.
+		return playbackResult(x, false), nil
+	} else if now.After(x.LastEventAt) && !x.WasPaused {
+		delta := now.Sub(x.LastEventAt).Seconds()
+		if delta > p.maxGap {
+			delta = p.maxGap
+		}
+		if delta > 0 {
+			x.Accumulated += delta
+		}
+	}
+	if event.RuntimeSeconds > 0 {
+		x.RuntimeSeconds = event.RuntimeSeconds
+	}
+	x.LastEventAt, x.LastPosition, x.WasPaused, x.UpdatedAt = now, math.Max(event.PositionSeconds, 0), event.IsPaused, time.Now().UTC()
+	if event.Event == "stop" {
+		x.Status = "stopped"
+	} else {
+		x.Status = "active"
+	}
+	if err = s.repo.SaveSiloPlaybackSession(ctx, x); err != nil {
+		return PlaybackResult{}, err
+	}
+	pending := math.Max(x.Accumulated-x.Forwarded, 0)
+	write := event.Event == "start" || event.Event == "stop" || pending >= p.checkpoint
+	if write {
+		if err = s.stash.SaveJellyfinActivity(ctx, x.StashSceneID, x.LastPosition, pending); err != nil {
+			return playbackResult(x, false), err
+		}
+		x.Forwarded = x.Accumulated
+		// Persist the successful external write before attempting the separate
+		// play-count mutation. If that second Stash call fails, the retry must
+		// not add this duration delta a second time.
+		if err = s.repo.SaveSiloPlaybackSession(ctx, x); err != nil {
+			return PlaybackResult{}, err
+		}
+	}
+	complete := event.IsPlayed
+	if x.RuntimeSeconds > 0 {
+		complete = complete || x.Accumulated/x.RuntimeSeconds*100 >= p.percent || (x.RuntimeSeconds > p.remaining && x.RuntimeSeconds-x.LastPosition <= p.remaining)
+	}
+	if complete && !x.PlayCounted {
+		if _, err = s.stash.AddJellyfinPlay(ctx, x.StashSceneID, now); err != nil {
+			return playbackResult(x, write), err
+		}
+		x.PlayCounted = true
+	}
+	if x.PlayCounted {
+		if err = s.repo.SaveSiloPlaybackSession(ctx, x); err != nil {
+			return PlaybackResult{}, err
+		}
+	}
+	return playbackResult(x, write), nil
+}
+
+func playbackResult(x domain.SiloPlaybackSession, written bool) PlaybackResult {
+	return PlaybackResult{SessionID: x.SessionID, Accumulated: x.Accumulated, Forwarded: x.Forwarded, ResumeTime: x.LastPosition, PlayCounted: x.PlayCounted, CheckpointWritten: written}
 }
 
 // parseRuntime parses a duration string in whatever shape JAVBeacon scraped

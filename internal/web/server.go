@@ -265,6 +265,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /covers/{id}", s.cover)
 	s.mux.HandleFunc("GET /covers/{id}/original", s.coverOriginal)
 	s.mux.HandleFunc("GET /covers/{id}/jellyfin-primary", s.coverJellyfinPrimary)
+	s.mux.HandleFunc("GET /covers/{id}/silo-primary", s.coverSiloPrimary)
 	s.mux.HandleFunc("GET /screenshots/{id}/{index}", s.screenshot)
 	s.mux.HandleFunc("GET /api/releases/{id}/screenshots", s.releaseScreenshots)
 	s.mux.HandleFunc("POST /api/v1/media/match", s.jellyfinMatch)
@@ -1592,8 +1593,28 @@ func (s *Server) coverOriginal(w http.ResponseWriter, r *http.Request) {
 // covers.ConformForServing). This is dedicated to Jellyfin's own Primary
 // image fetch (see internal/jellyfin/service.go's Metadata.CoverPath);
 // JAVBeacon's own web UI never requests this endpoint, only the plain,
-// always-unconformed /covers/{id} above.
+// always-unconformed /covers/{id} above. See coverSiloPrimary for Silo's own
+// identical-transform, separately-routed twin.
 func (s *Server) coverJellyfinPrimary(w http.ResponseWriter, r *http.Request) {
+	s.serveConformedCover(w, r)
+}
+
+// coverSiloPrimary is Silo's own twin of coverJellyfinPrimary - the same
+// deterministic crop/pad transform, served from its own route so Silo's
+// Metadata.CoverPath (internal/silo/service.go) never points at a
+// Jellyfin-named URL. See internal/silo's package doc comment for why the
+// two integrations each got their own route here even though the underlying
+// image transform is identical and shared.
+func (s *Server) coverSiloPrimary(w http.ResponseWriter, r *http.Request) {
+	s.serveConformedCover(w, r)
+}
+
+// serveConformedCover is the shared implementation behind
+// coverJellyfinPrimary and coverSiloPrimary - a pure, deterministic image
+// transform with no integration-specific behavior, so both routes calling
+// into one function is not the kind of sharing either integration split was
+// about (see internal/silo's package doc comment).
+func (s *Server) serveConformedCover(w http.ResponseWriter, r *http.Request) {
 	release, path, ok := s.resolveCoverPath(w, r)
 	if !ok {
 		return

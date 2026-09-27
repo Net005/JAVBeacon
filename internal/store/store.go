@@ -461,6 +461,32 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 		CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_scene ON jellyfin_playback_sessions(stash_scene_id,updated_at DESC);`)
 	}
 	if err == nil {
+		// silo_playback_sessions is Silo's own independent twin of
+		// jellyfin_playback_sessions above (see domain.SiloPlaybackSession's
+		// doc comment) - release_id is nullable from creation since this table
+		// has no pre-existing rows to migrate, unlike the Jellyfin one.
+		_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS silo_playback_sessions (
+			session_id TEXT PRIMARY KEY,
+			release_id INTEGER REFERENCES releases(id) ON DELETE CASCADE,
+			stash_scene_id TEXT NOT NULL,
+			silo_item_id TEXT NOT NULL DEFAULT '',
+			silo_user_id TEXT NOT NULL DEFAULT '',
+			started_at DATETIME NOT NULL,
+			last_event_at DATETIME NOT NULL,
+			last_position_seconds REAL NOT NULL DEFAULT 0,
+			runtime_seconds REAL NOT NULL DEFAULT 0,
+			accumulated_seconds REAL NOT NULL DEFAULT 0,
+			forwarded_seconds REAL NOT NULL DEFAULT 0,
+			was_paused INTEGER NOT NULL DEFAULT 0,
+			play_counted INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'active',
+			updated_at DATETIME NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_silo_playback_release ON silo_playback_sessions(release_id,updated_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_silo_playback_active ON silo_playback_sessions(status,updated_at);
+		CREATE INDEX IF NOT EXISTS idx_silo_playback_scene ON silo_playback_sessions(stash_scene_id,updated_at DESC);`)
+	}
+	if err == nil {
 		err = s.migrateJellyfinPlaybackReleaseNullable(context.Background())
 	}
 	if err == nil {
