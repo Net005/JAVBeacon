@@ -234,9 +234,11 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metada
 	var rows []domain.Release
 	var err error
 	if likelyReleaseCode(needle) {
+		// Scan filenames commonly contain a release code. An exact miss is
+		// definitive for Silo's matcher: a broad text search cannot turn a
+		// different code into a safe match, and costs seconds on large catalogs.
 		rows, err = s.store.Releases(ctx, domain.ReleaseFilter{VideoID: needle, Limit: limit})
-	}
-	if err == nil && len(rows) == 0 {
+	} else {
 		rows, err = s.store.Releases(ctx, domain.ReleaseFilter{Search: needle, Limit: limit})
 	}
 	if err != nil {

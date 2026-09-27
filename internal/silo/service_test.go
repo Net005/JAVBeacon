@@ -145,6 +145,21 @@ func TestSearchNeverCallsStash(t *testing.T) {
 // Metadata.Watchlist must mirror domain.Release.Watchlist and (unlike
 // CollectionNames/PerformerImages) cost nothing extra, so it is populated
 // everywhere, including Search.
+func TestSearchCodeMissDoesNotFallBackToBroadText(t *testing.T) {
+	svc, st, _, _ := testService(t)
+	defer st.Close()
+	// This code occurs in the title but is not the release's own code.
+	// Returning it would waste a broad scan and cannot be safely matched.
+	rows, err := svc.Search(context.Background(), "123", 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("plain text search: %v %+v", err, rows)
+	}
+	rows, err = svc.Search(context.Background(), "XYZ-123", 10)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("code miss must stay exact: %v %+v", err, rows)
+	}
+}
+
 func TestMetadataReflectsWatchlistState(t *testing.T) {
 	svc, st, _, r := testService(t)
 	defer st.Close()
