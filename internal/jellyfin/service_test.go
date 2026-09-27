@@ -31,11 +31,11 @@ type fakeStash struct {
 	performerErr      error
 }
 
-func (f *fakeStash) SaveJellyfinActivity(_ context.Context, _ string, resume, duration float64) error {
+func (f *fakeStash) SaveActivity(_ context.Context, _ string, resume, duration float64) error {
 	f.saves = append(f.saves, struct{ resume, duration float64 }{resume, duration})
 	return nil
 }
-func (f *fakeStash) AddJellyfinPlay(context.Context, string, time.Time) (int, error) {
+func (f *fakeStash) AddPlay(context.Context, string, time.Time) (int, error) {
 	if f.failNextPlay {
 		f.failNextPlay = false
 		return f.plays, errors.New("temporary Stash failure")
@@ -43,12 +43,12 @@ func (f *fakeStash) AddJellyfinPlay(context.Context, string, time.Time) (int, er
 	f.plays++
 	return f.plays, nil
 }
-func (f *fakeStash) AddJellyfinO(context.Context, string, time.Time) (int, error) {
+func (f *fakeStash) AddO(context.Context, string, time.Time) (int, error) {
 	f.os++
 	return f.os, nil
 }
-func (f *fakeStash) JellyfinActivity(context.Context, string) (stash.JellyfinActivity, error) {
-	return stash.JellyfinActivity{OCount: f.os, PlayCount: f.plays}, nil
+func (f *fakeStash) Activity(context.Context, string) (stash.Activity, error) {
+	return stash.Activity{OCount: f.os, PlayCount: f.plays}, nil
 }
 func (f *fakeStash) PerformerDetails(_ context.Context, performerID string) (stash.StashPerformerDetails, error) {
 	if f.performerErr != nil {

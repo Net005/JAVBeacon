@@ -34,10 +34,10 @@ type repository interface {
 }
 
 type stashBridge interface {
-	SaveJellyfinActivity(context.Context, string, float64, float64) error
-	AddJellyfinPlay(context.Context, string, time.Time) (int, error)
-	AddJellyfinO(context.Context, string, time.Time) (int, error)
-	JellyfinActivity(context.Context, string) (stash.JellyfinActivity, error)
+	SaveActivity(context.Context, string, float64, float64) error
+	AddPlay(context.Context, string, time.Time) (int, error)
+	AddO(context.Context, string, time.Time) (int, error)
+	Activity(context.Context, string) (stash.Activity, error)
 	StashSceneMetadata(context.Context, string) (stash.StashSceneMetadata, error)
 	PerformerDetails(context.Context, string) (stash.StashPerformerDetails, error)
 }
@@ -1002,7 +1002,7 @@ func (s *Service) Playback(ctx context.Context, event PlaybackEvent) (PlaybackRe
 	pending := math.Max(x.Accumulated-x.Forwarded, 0)
 	write := event.Event == "start" || event.Event == "stop" || pending >= p.checkpoint
 	if write {
-		if err = s.stash.SaveJellyfinActivity(ctx, x.StashSceneID, x.LastPosition, pending); err != nil {
+		if err = s.stash.SaveActivity(ctx, x.StashSceneID, x.LastPosition, pending); err != nil {
 			return playbackResult(x, false), err
 		}
 		x.Forwarded = x.Accumulated
@@ -1018,7 +1018,7 @@ func (s *Service) Playback(ctx context.Context, event PlaybackEvent) (PlaybackRe
 		complete = complete || x.Accumulated/x.RuntimeSeconds*100 >= p.percent || (x.RuntimeSeconds > p.remaining && x.RuntimeSeconds-x.LastPosition <= p.remaining)
 	}
 	if complete && !x.PlayCounted {
-		if _, err = s.stash.AddJellyfinPlay(ctx, x.StashSceneID, now); err != nil {
+		if _, err = s.stash.AddPlay(ctx, x.StashSceneID, now); err != nil {
 			return playbackResult(x, write), err
 		}
 		x.PlayCounted = true
@@ -1035,27 +1035,27 @@ func playbackResult(x domain.JellyfinPlaybackSession, written bool) PlaybackResu
 	return PlaybackResult{SessionID: x.SessionID, Accumulated: x.Accumulated, Forwarded: x.Forwarded, ResumeTime: x.LastPosition, PlayCounted: x.PlayCounted, CheckpointWritten: written}
 }
 
-func (s *Service) Activity(ctx context.Context, releaseID int64) (stash.JellyfinActivity, error) {
+func (s *Service) Activity(ctx context.Context, releaseID int64) (stash.Activity, error) {
 	r, err := s.store.Release(ctx, releaseID)
 	if err != nil {
-		return stash.JellyfinActivity{}, err
+		return stash.Activity{}, err
 	}
 	if r.StashSceneID == "" {
-		return stash.JellyfinActivity{}, errors.New("release is not mapped to a StashApp scene")
+		return stash.Activity{}, errors.New("release is not mapped to a StashApp scene")
 	}
-	return s.stash.JellyfinActivity(ctx, r.StashSceneID)
+	return s.stash.Activity(ctx, r.StashSceneID)
 }
 
-func (s *Service) AddO(ctx context.Context, releaseID int64, at time.Time) (stash.JellyfinActivity, error) {
+func (s *Service) AddO(ctx context.Context, releaseID int64, at time.Time) (stash.Activity, error) {
 	r, err := s.store.Release(ctx, releaseID)
 	if err != nil {
-		return stash.JellyfinActivity{}, err
+		return stash.Activity{}, err
 	}
 	if r.StashSceneID == "" {
-		return stash.JellyfinActivity{}, errors.New("release is not mapped to a StashApp scene")
+		return stash.Activity{}, errors.New("release is not mapped to a StashApp scene")
 	}
-	if _, err = s.stash.AddJellyfinO(ctx, r.StashSceneID, at); err != nil {
-		return stash.JellyfinActivity{}, err
+	if _, err = s.stash.AddO(ctx, r.StashSceneID, at); err != nil {
+		return stash.Activity{}, err
 	}
-	return s.stash.JellyfinActivity(ctx, r.StashSceneID)
+	return s.stash.Activity(ctx, r.StashSceneID)
 }

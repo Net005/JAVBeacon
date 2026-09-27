@@ -31,12 +31,12 @@ func (f *fakeStash) StashSceneMetadata(_ context.Context, _ string) (stash.Stash
 	return stash.StashSceneMetadata{}, errors.New("not configured in this test")
 }
 
-func (f *fakeStash) SaveJellyfinActivity(_ context.Context, _ string, resume, duration float64) error {
+func (f *fakeStash) SaveActivity(_ context.Context, _ string, resume, duration float64) error {
 	f.saves = append(f.saves, struct{ resume, duration float64 }{resume, duration})
 	return nil
 }
 
-func (f *fakeStash) AddJellyfinPlay(context.Context, string, time.Time) (int, error) {
+func (f *fakeStash) AddPlay(context.Context, string, time.Time) (int, error) {
 	if f.failNextPlay {
 		f.failNextPlay = false
 		return f.plays, errors.New("temporary Stash failure")
