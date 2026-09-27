@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	jellyfinintegration "github.com/Net005/JAVBeacon/internal/jellyfin"
+	siloIntegration "github.com/Net005/JAVBeacon/internal/silo"
 )
 
 // siloSearch and siloMetadata expose Silo's own, independent metadata service
@@ -95,24 +95,16 @@ func (s *Server) siloStashCover(w http.ResponseWriter, r *http.Request) {
 }
 
 // siloPlayback forwards playback/scrobble events reported by the Silo
-// watch_sync_provider.v1 capability into the exact same JAVBeacon playback
-// engine (checkpointing, resume, completion thresholds, play-count/O-count
-// writeback to StashApp) the Jellyfin plugin's /api/v1/integrations/jellyfin/
-// playback endpoint uses. This is the one deliberate exception to the rest of
-// this file no longer calling into internal/jellyfin: Playback is ~150 lines
-// of delicate checkpoint/gap/completion-threshold arithmetic that is already
-// fully provider-agnostic (JellyfinItemID/JellyfinUserID are optional labels,
-// not required fields) and keyed by a persistence type
-// (domain.JellyfinPlaybackSession) shared by both integrations regardless -
-// duplicating it into internal/silo would be pure drift risk for no
-// behavioral benefit. See internal/silo's own package doc comment for the
-// full reasoning.
+// watch_sync_provider.v1 capability into internal/silo.Service's own
+// checkpoint/resume/completion-threshold engine - a full duplicate of
+// internal/jellyfin.Service's Playback, not a call into it. See
+// internal/silo's own package doc comment for why this was split out.
 func (s *Server) siloPlayback(w http.ResponseWriter, r *http.Request) {
-	var event jellyfinintegration.PlaybackEvent
+	var event siloIntegration.PlaybackEvent
 	if !s.decode(w, r, &event) {
 		return
 	}
-	result, err := s.jellyfin.Playback(r.Context(), event)
+	result, err := s.silo.Playback(r.Context(), event)
 	if err != nil {
 		status := http.StatusBadGateway
 		if strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "event must") || strings.Contains(err.Error(), "already bound") || strings.Contains(err.Error(), "not mapped") {

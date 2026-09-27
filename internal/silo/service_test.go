@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"github.com/Net005/JAVBeacon/internal/stash"
@@ -17,6 +18,9 @@ type fakeStash struct {
 	sceneMeta      stash.StashSceneMetadata
 	sceneMetaErr   error
 	sceneMetaCalls int
+	saves          []struct{ resume, duration float64 }
+	plays          int
+	failNextPlay   bool
 }
 
 func (f *fakeStash) StashSceneMetadata(_ context.Context, _ string) (stash.StashSceneMetadata, error) {
@@ -25,6 +29,20 @@ func (f *fakeStash) StashSceneMetadata(_ context.Context, _ string) (stash.Stash
 		return f.sceneMeta, f.sceneMetaErr
 	}
 	return stash.StashSceneMetadata{}, errors.New("not configured in this test")
+}
+
+func (f *fakeStash) SaveJellyfinActivity(_ context.Context, _ string, resume, duration float64) error {
+	f.saves = append(f.saves, struct{ resume, duration float64 }{resume, duration})
+	return nil
+}
+
+func (f *fakeStash) AddJellyfinPlay(context.Context, string, time.Time) (int, error) {
+	if f.failNextPlay {
+		f.failNextPlay = false
+		return f.plays, errors.New("temporary Stash failure")
+	}
+	f.plays++
+	return f.plays, nil
 }
 
 func testService(t *testing.T) (*Service, *store.SQLite, *fakeStash, domain.Release) {
@@ -202,5 +220,102 @@ func TestMetadataSkipsUnsanitizableFilterPresetTag(t *testing.T) {
 		if name == "" {
 			t.Fatalf("CollectionNames contains an empty entry: %+v", m.CollectionNames)
 		}
+	}
+}
+
+// The three tests below are direct ports of
+// internal/jellyfin's TestPlaybackUsesWallTimeCheckpointsAndCountsCompletionOnce/
+// TestPlaybackDoesNotRepeatDurationWhenPlayMutationRetries/
+// TestPlaybackIgnoresOutOfOrderCallbacks, guarding that this package's own,
+// independently persisted (domain.SiloPlaybackSession) Playback engine
+// behaves identically to Jellyfin's rather than merely compiling.
+
+func TestPlaybackUsesWallTimeCheckpointsAndCountsCompletionOnce(t *testing.T) {
+	svc, st, bridge, r := testService(t)
+	defer st.Close()
+	start := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	base := PlaybackEvent{SessionID: "play-1", ReleaseID: r.ID, SiloItemID: "item", SiloUserID: "user", RuntimeSeconds: 1000, OccurredAt: start}
+	base.Event = "start"
+	if _, err := svc.Playback(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+	base.Event, base.PositionSeconds, base.OccurredAt = "progress", 35, start.Add(35*time.Second)
+	result, err := svc.Playback(context.Background(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CheckpointWritten || result.Forwarded != 35 {
+		t.Fatalf("checkpoint=%+v", result)
+	}
+	// A seek close to the end completes the play but adds only elapsed wall time.
+	base.PositionSeconds, base.OccurredAt = 995, start.Add(40*time.Second)
+	result, err = svc.Playback(context.Background(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.PlayCounted || result.Accumulated != 40 || bridge.plays != 1 {
+		t.Fatalf("completion=%+v plays=%d", result, bridge.plays)
+	}
+	base.Event, base.OccurredAt = "stop", start.Add(45*time.Second)
+	if _, err = svc.Playback(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+	if bridge.plays != 1 {
+		t.Fatalf("play counted %d times", bridge.plays)
+	}
+	if len(bridge.saves) != 3 || bridge.saves[1].duration != 35 || bridge.saves[2].duration != 10 {
+		t.Fatalf("saves=%+v", bridge.saves)
+	}
+}
+
+func TestPlaybackDoesNotRepeatDurationWhenPlayMutationRetries(t *testing.T) {
+	svc, st, bridge, r := testService(t)
+	defer st.Close()
+	start := time.Date(2026, 9, 8, 14, 0, 0, 0, time.UTC)
+	event := PlaybackEvent{Event: "start", SessionID: "retry-1", ReleaseID: r.ID, RuntimeSeconds: 1000, OccurredAt: start}
+	if _, err := svc.Playback(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	bridge.failNextPlay = true
+	event.Event, event.PositionSeconds, event.OccurredAt = "progress", 995, start.Add(40*time.Second)
+	if _, err := svc.Playback(context.Background(), event); err == nil {
+		t.Fatal("expected temporary play mutation failure")
+	}
+	event.Event, event.OccurredAt = "stop", start.Add(45*time.Second)
+	result, err := svc.Playback(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.PlayCounted || bridge.plays != 1 {
+		t.Fatalf("result=%+v plays=%d", result, bridge.plays)
+	}
+	if len(bridge.saves) != 3 || bridge.saves[1].duration != 40 || bridge.saves[2].duration != 5 {
+		t.Fatalf("duration was replayed: %+v", bridge.saves)
+	}
+}
+
+func TestPlaybackIgnoresOutOfOrderCallbacks(t *testing.T) {
+	svc, st, bridge, r := testService(t)
+	defer st.Close()
+	start := time.Date(2026, 9, 8, 15, 0, 0, 0, time.UTC)
+	event := PlaybackEvent{Event: "progress", SessionID: "reordered-1", ReleaseID: r.ID, RuntimeSeconds: 1000, PositionSeconds: 40, OccurredAt: start.Add(40 * time.Second)}
+	if _, err := svc.Playback(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	event.Event, event.PositionSeconds, event.OccurredAt = "start", 0, start
+	result, err := svc.Playback(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ResumeTime != 40 || result.CheckpointWritten || len(bridge.saves) != 0 {
+		t.Fatalf("stale callback changed session: result=%+v saves=%+v", result, bridge.saves)
+	}
+	event.Event, event.PositionSeconds, event.OccurredAt = "progress", 75, start.Add(75*time.Second)
+	result, err = svc.Playback(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Accumulated != 35 || result.Forwarded != 35 || len(bridge.saves) != 1 {
+		t.Fatalf("progress after reorder=%+v saves=%+v", result, bridge.saves)
 	}
 }

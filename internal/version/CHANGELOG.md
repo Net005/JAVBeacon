@@ -5,6 +5,38 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.242] - 2026-09-27
+
+### Changed
+
+- Finished the Silo/Jellyfin backend split from 1.0.239: Playback reporting
+  and the conformed-cover-crop endpoint, previously left intentionally
+  shared, are now fully duplicated per integration.
+  - `internal/silo.Service` gained its own `Playback` method - the same
+    checkpoint/resume/completion-threshold arithmetic as
+    `internal/jellyfin.Service.Playback`, but persisted to a new, separate
+    `silo_playback_sessions` table (`domain.SiloPlaybackSession`) instead of
+    reusing `jellyfin_playback_sessions`. `POST /api/v1/integrations/silo/
+    playback` now calls this instead of `internal/jellyfin.Service.Playback`
+    - `internal/web/silo.go` no longer imports `internal/jellyfin` at all.
+  - Added `GET /covers/{id}/silo-primary`, a twin of
+    `/covers/{id}/jellyfin-primary` applying the identical crop/pad
+    transform under its own route. `internal/silo.Metadata.CoverPath` now
+    points at it instead of the Jellyfin-named URL.
+
+### Fixed
+
+- The Silo plugin (`silo-plugin-metadata-javbeacon`) never had a logger
+  wired into its `ScheduledTask` capability, so when its two scheduled
+  tasks failed, nothing about why ever reached Silo's own Logs page beyond
+  the host's generic "Task failed" message. Both tasks now log each network
+  call's duration and outcome (JAVBeacon's `LibrarySync`, the
+  `RuntimeHost.GetHostInfo`/`ListLibraryMedia` calls, and each per-item
+  Silo admin API call), including the request context's own error state, so
+  a future "fails after N seconds" report has an actual cause to look at
+  instead of only a duration. See that plugin's own changelog for the
+  version this shipped in.
+
 ## [1.0.241] - 2026-09-27
 
 ### Changed

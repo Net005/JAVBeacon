@@ -488,6 +488,27 @@ CREATE TABLE IF NOT EXISTS jellyfin_playback_sessions (
 CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_release ON jellyfin_playback_sessions(release_id,updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_active ON jellyfin_playback_sessions(status,updated_at);
 CREATE INDEX IF NOT EXISTS idx_jellyfin_playback_scene ON jellyfin_playback_sessions(stash_scene_id,updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS silo_playback_sessions (
+	session_id TEXT PRIMARY KEY,
+	release_id BIGINT REFERENCES releases(id) ON DELETE CASCADE,
+	stash_scene_id TEXT NOT NULL,
+	silo_item_id TEXT NOT NULL DEFAULT '',
+	silo_user_id TEXT NOT NULL DEFAULT '',
+	started_at TIMESTAMPTZ NOT NULL,
+	last_event_at TIMESTAMPTZ NOT NULL,
+	last_position_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+	runtime_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+	accumulated_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+	forwarded_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+	was_paused INTEGER NOT NULL DEFAULT 0,
+	play_counted INTEGER NOT NULL DEFAULT 0,
+	status TEXT NOT NULL DEFAULT 'active',
+	updated_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_silo_playback_release ON silo_playback_sessions(release_id,updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_silo_playback_active ON silo_playback_sessions(status,updated_at);
+CREATE INDEX IF NOT EXISTS idx_silo_playback_scene ON silo_playback_sessions(stash_scene_id,updated_at DESC);
 `
 
 // migratePostgres applies postgresSchemaDDL and then runs the same
