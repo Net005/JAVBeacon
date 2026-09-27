@@ -262,6 +262,18 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metada
 // text hit must not hide an exact Stash filename match when JAVBeacon has no
 // release for that scene.
 func (s *Service) SearchWithStashFallback(ctx context.Context, query string, limit int) ([]Metadata, error) {
+	// The manual match dialog can search a known Stash scene ID directly.
+	// This bypasses Stash's text index, which may omit a scene whose code
+	// and local filename use different separators.
+	if sceneID, explicit := stashSceneIDQuery(query); sceneID != "" && s.stash != nil {
+		item, err := s.StashMetadata(ctx, sceneID)
+		if err == nil {
+			return []Metadata{item}, nil
+		}
+		if explicit {
+			return nil, err
+		}
+	}
 	// Ordinary filename stems can trigger a costly broad JAV text search.
 	// Ask Stash's scene index first; an exact local filename wins over any
 	// unrelated title text in JAVBeacon's wider catalog.
@@ -294,6 +306,30 @@ func (s *Service) SearchWithStashFallback(ctx context.Context, query string, lim
 		return stashRows, nil
 	}
 	return rows, nil
+}
+
+// stashSceneIDQuery recognizes a numeric Stash scene ID, stash:<id>, or a
+// Stash scene URL pasted into the manual match search box.
+func stashSceneIDQuery(query string) (string, bool) {
+	value := strings.TrimSpace(query)
+	explicit := false
+	if id, ok := strings.CutPrefix(strings.ToLower(value), "stash:"); ok {
+		value, explicit = id, true
+	} else if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {
+		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		if len(parts) == 2 && parts[0] == "scenes" {
+			value, explicit = parts[1], true
+		}
+	}
+	if value == "" {
+		return "", explicit
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return "", explicit
+		}
+	}
+	return value, explicit
 }
 
 // SearchStashScenes uses StashApp's scene index when no JAVBeacon release

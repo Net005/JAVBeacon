@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.265] - 2026-09-27
+
+### Fixed
+
+- Let Silo manual matching search a Stash scene directly by numeric scene ID, `stash:<id>`, or a pasted Stash scene URL. This bypasses text-search misses for scenes such as GXXD-06 and returns the stable `stash:<id>` provider identity for selection.
+
 ## [1.0.264] - 2026-09-27
 
 ### Fixed

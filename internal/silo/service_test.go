@@ -542,3 +542,15 @@ func TestBestStashSceneFavorsPlaybackAndBreaksTrueTies(t *testing.T) {
 		t.Fatalf("most recently played tie-break: best=%+v ok=%v", best, ok)
 	}
 }
+
+func TestManualStashSceneIDSearch(t *testing.T) {
+	svc, st, bridge, _ := testService(t)
+	defer st.Close()
+	bridge.siloScene = stash.SiloScene{ID: "4392", Code: "gxxd06", Title: "GXXD-06 Wonder Soldier"}
+	for _, query := range []string{"4392", "stash:4392", "https://stash.example/scenes/4392?qfq=GXXD-06"} {
+		rows, err := svc.SearchWithStashFallback(context.Background(), query, 10)
+		if err != nil || len(rows) != 1 || rows[0].ProviderID != "stash:4392" {
+			t.Fatalf("query=%q rows=%+v err=%v", query, rows, err)
+		}
+	}
+}
