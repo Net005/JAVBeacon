@@ -1800,3 +1800,5 @@ a.releaseStatusInfo:hover{border-color:color-mix(in srgb,currentColor 78%,white)
   .notificationToolbar>.zoom{flex:1 1 180px;max-width:none}
   .notificationToolbar>#notificationSort{flex:1 1 150px;max-width:none}
 }
+
+.aiDiscoverySettings{gap:var(--space-4)}.discoveryProviderSettings,.discoverySharedSettings{display:grid;gap:var(--space-3);padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface2)}.discoveryProviderSettings h3,.discoverySharedSettings h3{margin:0}.discoveryProviderHeading{display:flex;align-items:baseline;justify-content:space-between;gap:10px}.discoveryProviderLimits{display:grid;gap:var(--space-3);padding:12px;border:1px solid var(--line);border-radius:8px}.discoveryProviderLimits h4{margin:0;font-size:12px}.discoveryProviderLimits .settingHelp{margin:0}.aiDiscoverySettings .settingsSubsectionDisabled{opacity:.8}

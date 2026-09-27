@@ -123,6 +123,11 @@ func TestOllamaSettingsUIControlsAndLoadingState(t *testing.T) {
 		`/discoveries/ai-rankings`,
 		`Clear all AI recommendations`,
 		`discoveries_ai_primary_provider`,
+		`discoveries_ollama_candidate_limit`,
+		`discoveries_ollama_batch_size`,
+		`discoveries_ollama_max_input_chars`,
+		`discoveries_openai_candidate_limit`,
+		`Set maximum candidates to 0 to enrich all eligible releases`,
 		`If Ollama is offline or its model is missing, AI is skipped and OpenAI is never called`,
 	} {
 		if !strings.Contains(text, required) {

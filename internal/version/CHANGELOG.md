@@ -5,6 +5,19 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.246] - 2026-09-27
+
+### Changed
+
+- Give Ollama and OpenAI separate AI enrichment run caps, request batch sizes,
+  and input character limits. Set either run cap to 0 to process all eligible
+  releases, with no fixed 5,000-candidate ceiling.
+- Group each provider's connection and limit settings together. OpenAI cost
+  estimates now account for an unlimited run, and fallback respects OpenAI's
+  configured limit.
+- Preserve existing AI limits for Ollama when upgrading to the separate
+  provider settings.
+
 ## [1.0.245] - 2026-09-27
 
 ### Added

@@ -292,7 +292,8 @@ func (s *Server) estimateDiscoveryOpenAI(w http.ResponseWriter, r *http.Request)
 	if model == "" {
 		model = "gpt-5-mini"
 	}
-	if input.CandidateLimit <= 0 {
+	// Zero explicitly means the full library; the UI always sends this field.
+	if input.CandidateLimit < 0 {
 		input.CandidateLimit = discoveryInt(settings, "discoveries_openai_candidate_limit", 150)
 	}
 	if input.BatchSize <= 0 {
@@ -306,7 +307,7 @@ func (s *Server) estimateDiscoveryOpenAI(w http.ResponseWriter, r *http.Request)
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	runCandidates := min(max(input.CandidateLimit, 10), min(total, 5000))
+	runCandidates := discoveryCandidateLimit(map[string]string{"discoveries_openai_candidate_limit": strconv.Itoa(input.CandidateLimit)}, "openai", total)
 	_, pricingKnown := discoveryOpenAIRates(model)
 	s.json(w, http.StatusOK, map[string]any{
 		"dry_run": true, "openai_called": false, "model": model, "pricing_known": pricingKnown,
@@ -630,26 +631,30 @@ func discoveryAIProvider(settings map[string]string) string {
 	return provider
 }
 
-// discoveryCandidateLimit returns how many discovery items an enrichment run
-// should process, honoring "Maximum candidates per enrichment run"
-// (discoveries_openai_candidate_limit) for both providers. It used to apply
-// only to OpenAI, on the reasoning that the setting exists to cap per-run
-// spend against a billed API and Ollama has no per-token cost - but Ollama
-// still runs against a real GPU/CPU budget, and a user who explicitly raises
-// this to, say, 3000 clearly wants that many candidates enriched regardless
-// of provider. The old Ollama bypass just silently discarded that
-// configuration, so a run always stopped after whatever a single Discoveries
-// page happened to be showing (itemCount), never approaching the configured
-// number - reported directly as "AI enrichment runs very short while I set
-// it to 3000 candidates".
+// discoveryCandidateLimit applies the active provider's per-run limit. Zero
+// processes every available candidate, while positive values cap the run.
 func discoveryCandidateLimit(settings map[string]string, provider string, itemCount int) int {
-	limit := discoveryInt(settings, "discoveries_openai_candidate_limit", 150)
-	return min(max(limit, 10), min(itemCount, 5000))
+	if itemCount <= 0 {
+		return 0
+	}
+	key := "discoveries_ollama_candidate_limit"
+	if provider == "openai" {
+		key = "discoveries_openai_candidate_limit"
+	}
+	limit := discoveryInt(settings, key, 150)
+	if limit == 0 {
+		return itemCount
+	}
+	return min(max(limit, 1), itemCount)
 }
 
-func discoveryAIRequestLimits(settings map[string]string) (int, int) {
-	batchSize := min(max(discoveryInt(settings, "discoveries_openai_batch_size", 5), 1), 5)
-	maxInputChars := min(max(discoveryInt(settings, "discoveries_openai_max_input_chars", 50000), 20000), 60000)
+func discoveryAIRequestLimits(settings map[string]string, provider string) (int, int) {
+	prefix := "discoveries_ollama_"
+	if provider == "openai" {
+		prefix = "discoveries_openai_"
+	}
+	batchSize := min(max(discoveryInt(settings, prefix+"batch_size", 5), 1), 5)
+	maxInputChars := min(max(discoveryInt(settings, prefix+"max_input_chars", 50000), 20000), 60000)
 	return batchSize, maxInputChars
 }
 
@@ -663,7 +668,12 @@ func (s *Server) enhanceDiscoveries(ctx context.Context, settings map[string]str
 	// Small batches make the first durable results visible quickly and avoid a
 	// single oversized constrained-generation request monopolizing remote GPUs.
 	// This caps request size, not the total number of candidates enriched.
-	batchSize, maxInputChars := discoveryAIRequestLimits(settings)
+	batchSize, maxInputChars := discoveryAIRequestLimits(settings, provider)
+	if provider == "ollama" && settings["discoveries_openai_fallback_enabled"] == "true" {
+		openAIBatchSize, openAIInputChars := discoveryAIRequestLimits(settings, "openai")
+		batchSize = min(batchSize, openAIBatchSize)
+		maxInputChars = min(maxInputChars, openAIInputChars)
+	}
 	batches, payloads := discoveryAIBatches(items, settings, limit, batchSize, maxInputChars)
 	model := strings.TrimSpace(settings["discoveries_ollama_model"])
 	if provider == "openai" {
@@ -758,6 +768,8 @@ func (s *Server) enhanceDiscoveries(ctx context.Context, settings map[string]str
 		}()
 		combined := slices.Clone(persisted)
 		completed := len(persisted)
+		openAIFallbackLimit := discoveryCandidateLimit(settingsCopy, "openai", len(items))
+		openAIFallbackUsed := 0
 		for index, batch := range missingBatches {
 			discoveryAIStatus.Lock()
 			discoveryAIStatus.Batch, discoveryAIStatus.Current = index+1, len(batch)
@@ -768,7 +780,18 @@ func (s *Server) enhanceDiscoveries(ctx context.Context, settings map[string]str
 			for _, candidate := range batch {
 				aiCandidates = append(aiCandidates, aidiscovery.Candidate{ID: candidate.ID, VideoID: candidate.VideoID, Title: candidate.Title, Story: candidate.Story, Actresses: candidate.Actresses, Genres: candidate.Genres, Studio: candidate.Studio, Label: candidate.Label, Director: candidate.Director, ReleaseDate: candidate.ReleaseDate, Duration: candidate.Duration, Local: candidate.Local, Played: candidate.Played, Orgasms: candidate.Orgasms, BaselineScore: candidate.BaselineScore, DiscoveryState: candidate.DiscoveryState, SubtitleAvailable: candidate.SubtitleAvailable, Evidence: candidate.Evidence, Taste: candidate.Taste, EligiblePools: candidate.EligiblePools, Subtitle: candidate.Subtitle})
 			}
-			result := s.discoveryAI.Rank(context.Background(), discoveryAIConfig(settingsCopy), aiCandidates, pools)
+			cfg := discoveryAIConfig(settingsCopy)
+			fallbackCapped := provider == "ollama" && cfg.OpenAIFallbackEnabled && openAIFallbackUsed+len(batch) > openAIFallbackLimit
+			if fallbackCapped {
+				cfg.OpenAIFallbackEnabled = false
+			}
+			result := s.discoveryAI.Rank(context.Background(), cfg, aiCandidates, pools)
+			if fallbackCapped {
+				result.Status = strings.Replace(result.Status, "OpenAI fallback disabled", "OpenAI fallback run limit reached", 1)
+			}
+			if result.Provider == "openai" || result.AttemptedProvider == "openai" {
+				openAIFallbackUsed += len(batch)
+			}
 			resultModel := model
 			telemetryProvider := result.Provider
 			if telemetryProvider == "" {
