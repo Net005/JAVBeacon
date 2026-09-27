@@ -5,6 +5,17 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.248] - 2026-09-27
+
+### Changed
+
+- Show library-wide subtitle totals in Discoveries and its settings: detected
+  sidecars, readable dialogue ready for AI, releases checked, and files found
+  but unusable. Current scan progress is shown separately.
+- Save the last full subtitle scan summary so its counts remain visible after
+  restarts and later AI or recommendation runs. Earlier scans need one new
+  subtitle scan to establish these durable totals.
+
 ## [1.0.247] - 2026-09-27
 
 ### Fixed

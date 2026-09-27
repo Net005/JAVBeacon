@@ -2841,7 +2841,7 @@ func TestDiscoveryManualRunLayoutAndPersistentDetails(t *testing.T) {
 			t.Fatalf("manual-run layout is missing %q", marker)
 		}
 	}
-	for _, marker := range []string{"Run recommendations", "Run subtitle scan", "Run AI enrichment", "Subtitles indexed", "Provider / model", "Last recommendations", "details.hidden=false"} {
+	for _, marker := range []string{"Run recommendations", "Run subtitle scan", "Run AI enrichment", "Usable subtitles / detected", "Usable for AI", "Sidecars detected", "Releases checked", "Provider / model", "Last recommendations", "details.hidden=false"} {
 		if !strings.Contains(javascript, marker) {
 			t.Fatalf("manual-run detail UI is missing %q", marker)
 		}
