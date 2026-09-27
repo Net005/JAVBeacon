@@ -460,6 +460,21 @@ func TestPlaybackIgnoresOutOfOrderCallbacks(t *testing.T) {
 	}
 }
 
+func TestBroadLocalJAVHitDoesNotHideExactStashFilename(t *testing.T) {
+	svc, st, bridge, _ := testService(t)
+	defer st.Close()
+	// The local JAV release has this text in its title, but a different
+	// code. The Stash scene has an exact filename match.
+	if _, err := st.DB().ExecContext(context.Background(), `UPDATE releases SET title='alternate-filename title' WHERE video_id='ABC-123'`); err != nil {
+		t.Fatal(err)
+	}
+	bridge.siloScenes = []stash.SiloScene{{ID: "stash-only", Code: "alternate-filename", Title: "Scene"}}
+	rows, err := svc.SearchWithStashFallback(context.Background(), "alternate-filename", 10)
+	if err != nil || len(rows) != 1 || rows[0].ProviderID != "stash:stash-only" {
+		t.Fatalf("exact Stash filename lost to broad JAV hit: %+v err=%v", rows, err)
+	}
+}
+
 func TestNonlocalJAVReleaseDoesNotBlockStashFilenameFallback(t *testing.T) {
 	svc, st, bridge, _ := testService(t)
 	defer st.Close()
