@@ -755,6 +755,91 @@ func TestDiscoveriesSubtitleFilterScansBeyondFirstRawChunk(t *testing.T) {
 	}
 }
 
+func TestDiscoveriesSubtitleFiltersCountAndPaginateActualMatches(t *testing.T) {
+	discoverySubtitleCache.Lock()
+	previousCreated, previousAvailability, previousChecked := discoverySubtitleCache.created, discoverySubtitleCache.availability, discoverySubtitleCache.checked
+	discoverySubtitleCache.created, discoverySubtitleCache.availability, discoverySubtitleCache.checked = time.Time{}, nil, nil
+	discoverySubtitleCache.Unlock()
+	t.Cleanup(func() {
+		discoverySubtitleCache.Lock()
+		discoverySubtitleCache.created, discoverySubtitleCache.availability, discoverySubtitleCache.checked = previousCreated, previousAvailability, previousChecked
+		discoverySubtitleCache.Unlock()
+	})
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "subtitle-filter-count.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "Test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for i := 1; i <= 6; i++ {
+		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: fmt.Sprintf("COUNT-%d", i), Title: fmt.Sprintf("Title %d", i), Source: "Test"}); err != nil {
+			t.Fatal(err)
+		}
+		if i%2 == 0 {
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("COUNT-%d.en.srt", i)), []byte("Hello there\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Limit: 10, ShowNonPreferred: true})
+	if err != nil || len(releases) != 6 {
+		t.Fatalf("releases=%d err=%v", len(releases), err)
+	}
+	for _, release := range releases {
+		if err := st.SetStashFilePath(ctx, release.ID, filepath.Join(dir, release.VideoID+".mp4")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := &Server{store: st, log: slog.Default()}
+	for _, subtitleFilter := range []string{"yes", "no"} {
+		seen := map[int64]bool{}
+		offset := 0
+		for pageNumber := 0; pageNumber < 2; pageNumber++ {
+			url := fmt.Sprintf("/discoveries?subtitles=%s&limit=2&offset=%d", subtitleFilter, offset)
+			rec := httptest.NewRecorder()
+			srv.discoveries(rec, httptest.NewRequest(http.MethodGet, url, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s page %d: status=%d body=%s", subtitleFilter, pageNumber, rec.Code, rec.Body.String())
+			}
+			var response struct {
+				Items []struct {
+					ID int64 `json:"id"`
+				} `json:"items"`
+				Total      int  `json:"total"`
+				NextOffset int  `json:"next_offset"`
+				HasMore    bool `json:"has_more"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Total != 3 {
+				t.Fatalf("%s page %d total=%d, want 3", subtitleFilter, pageNumber, response.Total)
+			}
+			if len(response.Items) != 2-pageNumber {
+				t.Fatalf("%s page %d items=%d, want %d", subtitleFilter, pageNumber, len(response.Items), 2-pageNumber)
+			}
+			if response.HasMore != (pageNumber == 0) {
+				t.Fatalf("%s page %d has_more=%v", subtitleFilter, pageNumber, response.HasMore)
+			}
+			for _, item := range response.Items {
+				if seen[item.ID] {
+					t.Fatalf("%s duplicate id %d", subtitleFilter, item.ID)
+				}
+				seen[item.ID] = true
+			}
+			offset = response.NextOffset
+		}
+		if len(seen) != 3 {
+			t.Fatalf("%s returned %d distinct releases", subtitleFilter, len(seen))
+		}
+	}
+}
+
 func TestClearDiscoveryAIRankingsEndpoint(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "clear-ai-endpoint.db"))

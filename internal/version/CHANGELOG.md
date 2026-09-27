@@ -5,6 +5,17 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.249] - 2026-09-27
+
+### Fixed
+
+- Count the releases that actually match With subtitles, Without subtitles,
+  and subtitle-dependent Discovery categories. The result heading no longer
+  shows the unfiltered SQL total after sidecar filtering.
+- Keep subtitle-filtered pages at the selected Results size, preserve the
+  correct next-page cursor, and stop offering more pages when no matching
+  releases remain. Refresh cached counts after subtitle scans.
+
 ## [1.0.248] - 2026-09-27
 
 ### Changed
