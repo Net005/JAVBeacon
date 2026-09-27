@@ -107,6 +107,9 @@ func FromState(raw json.RawMessage, settings map[string]string) (domain.ReleaseF
 // in the order store.Releases returns them (i.e. filter.Sort/Direction).
 func ResolveReleaseIDs(ctx context.Context, st store.Store, filter domain.ReleaseFilter) ([]int64, error) {
 	ids := []int64{}
+	// Only local Stash-linked releases can appear in either media server.
+	// Apply this in SQL before paging instead of scanning every remote title.
+	filter.StashLinked = true
 	filter.Limit = 500
 	for offset := 0; ; offset += 500 {
 		filter.Offset = offset

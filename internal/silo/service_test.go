@@ -223,6 +223,42 @@ func TestMetadataReflectsWatchlistState(t *testing.T) {
 // presets, not null, even though this package's own consumer (the Silo
 // plugin's Go decoder) tolerates a JSON null fine - keeping the wire shape
 // identical between the two integrations is the point.
+type failPresetReleaseStore struct {
+	store.Store
+	fail bool
+}
+
+func (s *failPresetReleaseStore) Releases(ctx context.Context, filter domain.ReleaseFilter) ([]domain.Release, error) {
+	if filter.StashLinked && s.fail {
+		s.fail = false
+		return nil, errors.New("transient preset lookup failure")
+	}
+	return s.Store.Releases(ctx, filter)
+}
+
+func TestLibrarySyncRetriesFailedPresetIndexInsteadOfCachingEmpty(t *testing.T) {
+	svc, st, _, release := testService(t)
+	defer st.Close()
+	if err := st.SaveUser(context.Background(), "admin", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveFilterPreset(context.Background(), domain.FilterPreset{Name: "Local", State: json.RawMessage(`{"watchlist":false}`)}); err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &failPresetReleaseStore{Store: st, fail: true}
+	svc.store = wrapped
+	if _, err := svc.LibrarySync(context.Background()); err == nil {
+		t.Fatal("partial preset index should return an error")
+	}
+	snapshot, err := svc.LibrarySync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.FilterPresets) != 1 || len(snapshot.FilterPresets[0].ReleaseIDs) != 1 || snapshot.FilterPresets[0].ReleaseIDs[0] != release.ID {
+		t.Fatalf("retry omitted saved-filter membership: %+v", snapshot.FilterPresets)
+	}
+}
+
 func TestLibrarySyncFilterPresetsNeverNil(t *testing.T) {
 	svc, st, _, _ := testService(t)
 	defer st.Close()
