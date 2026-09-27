@@ -247,7 +247,7 @@ type discoveryOpenAIEstimate struct {
 func estimateDiscoveryOpenAI(model string, candidates, batchSize, maxInputChars int, includeSubtitles bool) discoveryOpenAIEstimate {
 	candidates = max(candidates, 0)
 	batchSize = min(max(batchSize, 1), 5)
-	maxInputChars = min(max(maxInputChars, 20000), 60000)
+	maxInputChars = max(maxInputChars, 20000)
 	batches := 0
 	if candidates > 0 {
 		batches = (candidates + batchSize - 1) / batchSize
@@ -368,6 +368,7 @@ var discoveryRankCache = struct {
 var discoveryAIStatus = struct {
 	sync.RWMutex
 	Running           bool
+	Preparing         bool
 	Completed         int
 	Total             int
 	Batch             int
@@ -654,11 +655,15 @@ func discoveryAIRequestLimits(settings map[string]string, provider string) (int,
 		prefix = "discoveries_openai_"
 	}
 	batchSize := min(max(discoveryInt(settings, prefix+"batch_size", 5), 1), 5)
-	maxInputChars := min(max(discoveryInt(settings, prefix+"max_input_chars", 50000), 20000), 60000)
+	maxInputChars := max(discoveryInt(settings, prefix+"max_input_chars", 50000), 20000)
 	return batchSize, maxInputChars
 }
 
 func (s *Server) enhanceDiscoveries(ctx context.Context, settings map[string]string, items []discoveryItem) ([]discoveryItem, bool) {
+	return s.enhanceDiscoveriesWithSweep(ctx, settings, items, false)
+}
+
+func (s *Server) enhanceDiscoveriesWithSweep(ctx context.Context, settings map[string]string, items []discoveryItem, sweep bool) ([]discoveryItem, bool) {
 	if settings["discoveries_ai_enabled"] != "true" || len(items) == 0 {
 		return items, false
 	}
@@ -746,10 +751,11 @@ func (s *Server) enhanceDiscoveries(ctx context.Context, settings map[string]str
 	// ranking.
 	settingsCopy := maps.Clone(settings)
 	discoveryAIStatus.Lock()
-	if discoveryAIStatus.Running {
+	if discoveryAIStatus.Running && !(sweep && discoveryAIStatus.Preparing) {
 		discoveryAIStatus.Unlock()
 		return applyOpenAIRanks(items, persisted), len(persisted) > 0
 	}
+	discoveryAIStatus.Preparing = false
 	discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Batch, discoveryAIStatus.Batches, discoveryAIStatus.Current, discoveryAIStatus.Error = true, len(persisted), limit, 1, len(missingBatches), len(missingBatches[0]), ""
 	discoveryAIStatus.StartedAt, discoveryAIStatus.BatchStartedAt, discoveryAIStatus.LastBatchSeconds = time.Now().UTC(), time.Now().UTC(), 0
 	discoveryAIStatus.CurrentItems = discoveryBatchLabels(missingBatches[0])
@@ -877,16 +883,42 @@ func (s *Server) enhanceDiscoveries(ctx context.Context, settings map[string]str
 // highest-scored first) and starts the existing batch-by-batch background
 // enrichment over all of them, tracked through the same discoveryAIStatus
 // fields the UI already polls.
+func reserveDiscoveryEnrichmentSweep(settings map[string]string) bool {
+	discoveryAIStatus.Lock()
+	defer discoveryAIStatus.Unlock()
+	if discoveryAIStatus.Running {
+		return false
+	}
+	discoveryAIStatus.Running, discoveryAIStatus.Preparing = true, true
+	discoveryAIStatus.Completed, discoveryAIStatus.Total = 0, 0
+	discoveryAIStatus.Batch, discoveryAIStatus.Batches, discoveryAIStatus.Current = 0, 0, 0
+	discoveryAIStatus.Error, discoveryAIStatus.CurrentItems = "", nil
+	discoveryAIStatus.StartedAt = time.Now().UTC()
+	discoveryAIStatus.Provider = discoveryAIProvider(settings)
+	return true
+}
+
 func (s *Server) runDiscoveryEnrichmentSweep(ctx context.Context, settings map[string]string) error {
 	if settings["discoveries_ai_enabled"] != "true" {
 		return nil
 	}
-	discoveryAIStatus.RLock()
-	running := discoveryAIStatus.Running
-	discoveryAIStatus.RUnlock()
-	if running {
+	if !reserveDiscoveryEnrichmentSweep(settings) {
 		return errors.New("an enrichment run is already in progress")
 	}
+	return s.runReservedDiscoveryEnrichmentSweep(ctx, settings)
+}
+
+func (s *Server) runReservedDiscoveryEnrichmentSweep(ctx context.Context, settings map[string]string) (runErr error) {
+	defer func() {
+		discoveryAIStatus.Lock()
+		if discoveryAIStatus.Preparing {
+			discoveryAIStatus.Running, discoveryAIStatus.Preparing = false, false
+			if runErr != nil {
+				discoveryAIStatus.Error = runErr.Error()
+			}
+		}
+		discoveryAIStatus.Unlock()
+	}()
 	provider := discoveryAIProvider(settings)
 	filter, _, _ := discoveryFilterFromQuery(url.Values{}, settings, "")
 	dbCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
@@ -939,7 +971,7 @@ func (s *Server) runDiscoveryEnrichmentSweep(ctx context.Context, settings map[s
 		return nil
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].Score > items[j].Score })
-	_, _ = s.enhanceDiscoveries(ctx, settings, items)
+	_, _ = s.enhanceDiscoveriesWithSweep(ctx, settings, items, true)
 	return nil
 }
 

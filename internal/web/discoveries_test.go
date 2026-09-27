@@ -394,7 +394,7 @@ func TestDiscoveryAIRequestLimitsAreProviderSpecific(t *testing.T) {
 	if batch, chars := discoveryAIRequestLimits(settings, "ollama"); batch != 4 || chars != 55000 {
 		t.Fatalf("Ollama limits: %d, %d", batch, chars)
 	}
-	if batch, chars := discoveryAIRequestLimits(map[string]string{"discoveries_ollama_batch_size": "50", "discoveries_ollama_max_input_chars": "500000"}, "ollama"); batch != 5 || chars != 60000 {
+	if batch, chars := discoveryAIRequestLimits(map[string]string{"discoveries_ollama_batch_size": "50", "discoveries_ollama_max_input_chars": "500000"}, "ollama"); batch != 5 || chars != 500000 {
 		t.Fatalf("oversized request: %d, %d", batch, chars)
 	}
 	if batch, chars := discoveryAIRequestLimits(nil, "openai"); batch != 5 || chars != 50000 {
@@ -858,6 +858,44 @@ func TestRunDiscoveryEnrichmentSweepNoopWhenAIDisabled(t *testing.T) {
 	s := &Server{store: st, log: slog.Default()}
 	if err := s.runDiscoveryEnrichmentSweep(ctx, map[string]string{"discoveries_ai_enabled": "false"}); err != nil {
 		t.Fatalf("expected no error when AI enrichment is disabled, got %v", err)
+	}
+}
+
+func TestDiscoverySweepReservationBlocksPageEnrichment(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "sweep-reservation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{store: st, log: slog.Default()}
+	settings := map[string]string{"discoveries_ai_enabled": "true", "discoveries_ai_primary_provider": "ollama", "discoveries_ollama_candidate_limit": "3000"}
+	if !reserveDiscoveryEnrichmentSweep(settings) {
+		t.Fatal("could not reserve sweep")
+	}
+	defer func() {
+		discoveryAIStatus.Lock()
+		discoveryAIStatus.Running, discoveryAIStatus.Preparing = false, false
+		discoveryAIStatus.Unlock()
+	}()
+	if reserveDiscoveryEnrichmentSweep(settings) {
+		t.Fatal("concurrent sweep reserved the same run")
+	}
+	items := []discoveryItem{{Release: domain.Release{ID: 1, VideoID: "TEST-1"}}}
+	_, _ = s.enhanceDiscoveries(context.Background(), settings, items)
+	discoveryAIStatus.RLock()
+	preparing, total := discoveryAIStatus.Preparing, discoveryAIStatus.Total
+	discoveryAIStatus.RUnlock()
+	if !preparing || total != 0 {
+		t.Fatalf("page enrichment stole the reserved sweep: preparing=%v total=%d", preparing, total)
+	}
+	if err := s.runReservedDiscoveryEnrichmentSweep(context.Background(), settings); err != nil {
+		t.Fatal(err)
+	}
+	discoveryAIStatus.RLock()
+	running, preparing := discoveryAIStatus.Running, discoveryAIStatus.Preparing
+	discoveryAIStatus.RUnlock()
+	if running || preparing {
+		t.Fatal("empty sweep did not release its reservation")
 	}
 }
 
