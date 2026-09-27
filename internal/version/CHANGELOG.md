@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.260] - 2026-09-27
+
+### Fixed
+
+- Ignore structured `local` and `monitored` availability conditions when resolving saved-filter membership for Silo and Jellyfin collections. Preserve title, tag, and other content conditions, so filters such as Prison can include matching local releases even when their library view excludes local items.
+
 ## [1.0.259] - 2026-09-27
 
 ### Fixed

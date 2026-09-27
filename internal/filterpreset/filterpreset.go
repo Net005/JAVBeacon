@@ -113,6 +113,7 @@ func ResolveReleaseIDs(ctx context.Context, st store.Store, filter domain.Releas
 	filter.StashLinked = true
 	filter.HideLocal = false
 	filter.HideMonitored = false
+	filter.SearchExpression = collectionSearchExpression(filter.SearchExpression)
 	filter.Limit = 500
 	for offset := 0; ; offset += 500 {
 		filter.Offset = offset
@@ -130,6 +131,60 @@ func ResolveReleaseIDs(ctx context.Context, st store.Store, filter domain.Releas
 		}
 	}
 	return ids, nil
+}
+
+// collectionSearchExpression removes UI availability predicates from a saved
+// structured search. A collection contains local items by definition, so a
+// saved "local=false" or "monitored=false" condition would otherwise make
+// its Silo/Jellyfin membership empty even when the library view has matches.
+func collectionSearchExpression(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return raw
+	}
+	var root map[string]any
+	if json.Unmarshal([]byte(raw), &root) != nil {
+		return raw
+	}
+	if !pruneAvailabilityConditions(root) {
+		return ""
+	}
+	encoded, err := json.Marshal(root)
+	if err != nil {
+		return raw
+	}
+	return string(encoded)
+}
+
+func pruneAvailabilityConditions(group map[string]any) bool {
+	if rawConditions, ok := group["conditions"].([]any); ok {
+		kept := make([]any, 0, len(rawConditions))
+		for _, raw := range rawConditions {
+			condition, ok := raw.(map[string]any)
+			if !ok {
+				kept = append(kept, raw)
+				continue
+			}
+			field, _ := condition["field"].(string)
+			if strings.EqualFold(field, "local") || strings.EqualFold(field, "monitored") {
+				continue
+			}
+			kept = append(kept, condition)
+		}
+		group["conditions"] = kept
+	}
+	if rawGroups, ok := group["groups"].([]any); ok {
+		kept := make([]any, 0, len(rawGroups))
+		for _, raw := range rawGroups {
+			subgroup, ok := raw.(map[string]any)
+			if !ok || pruneAvailabilityConditions(subgroup) {
+				kept = append(kept, raw)
+			}
+		}
+		group["groups"] = kept
+	}
+	conditions, _ := group["conditions"].([]any)
+	groups, _ := group["groups"].([]any)
+	return len(conditions) > 0 || len(groups) > 0
 }
 
 // MaxTagNameRunes bounds a saved filter set's name once it becomes a
