@@ -138,7 +138,8 @@ func (s *Server) jellyfinActivity(w http.ResponseWriter, r *http.Request) {
 
 // jellyfinStashCover streams a release's linked StashApp scene screenshot,
 // for use only when JAVBeacon itself has no cover image for that release
-// (see internal/jellyfin's enrichFromStash and Metadata.StashScreenshotURL).
+// (see internal/jellyfin's metadataForRelease/applyStashScene and
+// Metadata.StashScreenshotURL).
 // The Stash base URL and API key never reach the caller; only the image
 // bytes do.
 func (s *Server) jellyfinStashCover(w http.ResponseWriter, r *http.Request) {

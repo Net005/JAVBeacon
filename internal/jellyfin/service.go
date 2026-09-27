@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
 	"github.com/Net005/JAVBeacon/internal/screenshots"
@@ -112,6 +113,14 @@ type Metadata struct {
 	// collection-management plugin capability) - never by Search, to avoid
 	// running the filter-preset engine once per bulk search result.
 	CollectionNames []string `json:"collection_names,omitempty"`
+	// Watchlist mirrors domain.Release.Watchlist - cheap (already loaded on
+	// every release row), so unlike CollectionNames/PerformerImages/
+	// PerformerIDs it is populated everywhere, including Search. The Silo
+	// plugin's GetMetadata uses it to add a plain "Watchlist" genre/tag,
+	// mirroring the "Collection: <name>" substitute already used for saved
+	// filter sets - Silo has no separate favorites/watchlist marker of its
+	// own that GetMetadata could set instead.
+	Watchlist bool `json:"watchlist"`
 	// PerformerImages maps a performer's display name (as it appears in
 	// Performers) to a JAVBeacon-proxied StashApp portrait URL, for whichever
 	// performers on the linked Stash scene have one - JAVBeacon itself never
@@ -279,6 +288,23 @@ func slicesContainsFold(values []string, want string) bool {
 	return false
 }
 
+// Search is deliberately DB-only - no per-result Stash enrichment (text/
+// image gap-fill or performer images), the same policy PerformerImages/
+// CollectionNames already follow here. Confirmed live: this used to call
+// enrichFromStash per row, each a bounded (but real) StashApp round trip for
+// any release missing a text/image field - fine for a human typing into a
+// search box, but catastrophic for Silo's automated matching, which calls
+// this same endpoint once per unmatched library item (Silo's own scan-time
+// matcher, and this plugin's own "match-unmatched" scheduled task both
+// search by title before accepting a match). Multiplied across a real
+// library that reduced matching throughput to a handful of items a minute -
+// something that should take minutes took days. A search result's displayed
+// title is always the release Code, never affected by Stash enrichment, and
+// exact-code matching (selectExactReleaseID in the Silo plugin) only ever
+// needs Code + ReleaseID - Stash's overview/cover fallback was pure,
+// expensive overhead here. The one place a rich, Stash-enriched result
+// matters - the single item a user actually opens - is Metadata/Match,
+// which still enrich in full.
 func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metadata, error) {
 	if limit < 1 || limit > 100 {
 		limit = 25
@@ -289,7 +315,7 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metada
 	}
 	out := make([]Metadata, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, s.enrichFromStash(ctx, r, s.metadata(r)))
+		out = append(out, s.metadata(r))
 	}
 	return out, nil
 }
@@ -610,8 +636,14 @@ func (s *Service) collectionIndexAndPresets(ctx context.Context) (map[int64][]st
 		if err != nil {
 			continue
 		}
-		for _, id := range ids {
-			index[id] = append(index[id], preset.Name)
+		// Sanitized only for the genre/tag index below - Jellyfin's own
+		// collection (FilterPresetCollection.Name a few lines down) keeps the
+		// preset name exactly as the admin saved it, since a real BoxSet name
+		// has none of a single-string genre tag's constraints.
+		if tagName := sanitizeCollectionTagName(preset.Name); tagName != "" {
+			for _, id := range ids {
+				index[id] = append(index[id], tagName)
+			}
 		}
 		collections = append(collections, FilterPresetCollection{ID: preset.ID, Name: preset.Name, ReleaseIDs: ids})
 	}
@@ -621,27 +653,52 @@ func (s *Service) collectionIndexAndPresets(ctx context.Context) (map[int64][]st
 	return index, collections, nil
 }
 
-// enrichFromStash fills gaps in JAVBeacon's own scraped metadata directly
-// from the linked StashApp scene, so a release JAVBeacon only partially
-// scraped (or never finished scraping) still shows complete information in
-// Jellyfin. It only ever fills a field that is currently EMPTY - StashApp
-// data never overrides anything JAVBeacon itself already has - and it is
-// best-effort: a StashApp lookup failure (unreachable server, scene since
-// deleted, etc.) leaves m unchanged rather than failing the whole request.
-func (s *Service) enrichFromStash(ctx context.Context, r domain.Release, m Metadata) Metadata {
-	if s.stash == nil || r.StashSceneID == "" {
-		return m
+// maxCollectionTagNameRunes bounds a saved filter set's name once it becomes
+// a Silo "Collection: <name>" genre/tag value - generous for any real
+// preset name, but enough to stop a pathological one from producing an
+// oversized genre entry.
+const maxCollectionTagNameRunes = 80
+
+// sanitizeCollectionTagName cleans a saved filter set's name before it
+// becomes a Silo genre/tag value (see the Watchlist field and
+// collectionIndexAndPresets above). A preset name is free text an admin
+// typed into the web UI - fine as-is for Jellyfin's own collection, which
+// has no such constraints, but a genre/tag is a single flat string Silo
+// treats as a label: an embedded newline/tab or run of whitespace would
+// render as a garbled tag, and an unbounded length has no real upper limit
+// enforced anywhere else in this pipeline. Collapses whitespace/control
+// characters to single spaces, trims the ends, and caps the result at
+// maxCollectionTagNameRunes (counted in runes, not bytes, so a multi-byte
+// name is never cut mid-character). Returns "" for a name that sanitizes
+// away to nothing (for example one made only of control characters), which
+// the caller treats as "skip this preset's tag" rather than emitting an
+// empty genre.
+func sanitizeCollectionTagName(name string) string {
+	var b strings.Builder
+	lastWasSpace := false
+	for _, r := range name {
+		if r == unicode.ReplacementChar {
+			continue
+		}
+		if unicode.IsControl(r) {
+			r = ' '
+		}
+		if unicode.IsSpace(r) {
+			if lastWasSpace {
+				continue
+			}
+			lastWasSpace = true
+			r = ' '
+		} else {
+			lastWasSpace = false
+		}
+		b.WriteRune(r)
 	}
-	missingText := r.Title == "" || r.Studio == "" || len(r.Actresses) == 0 || len(r.Genres) == 0
-	missingImage := r.ImageURL == ""
-	if !missingText && !missingImage {
-		return m
+	cleaned := strings.TrimSpace(b.String())
+	if runes := []rune(cleaned); len(runes) > maxCollectionTagNameRunes {
+		cleaned = strings.TrimSpace(string(runes[:maxCollectionTagNameRunes]))
 	}
-	scene, ok := s.stashSceneMetadata(ctx, r.StashSceneID)
-	if !ok {
-		return m
-	}
-	return applyStashScene(r, m, scene)
+	return cleaned
 }
 
 // applyStashScene fills gaps in JAVBeacon's own scraped metadata directly
@@ -840,7 +897,7 @@ func (s *Service) metadata(r domain.Release) Metadata {
 			backdrops = append(backdrops, fmt.Sprintf("/screenshots/%d/%d", r.ID, index))
 		}
 	}
-	return Metadata{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Code: r.VideoID, Title: r.VideoID, OriginalTitle: r.VideoID, Overview: releaseTitle(r.VideoID, r.Title), PremiereDate: r.ReleaseDate, ProductionYear: year, Studio: r.Studio, Label: r.Label, Performers: append([]string(nil), r.Actresses...), Directors: directors, Genres: append([]string(nil), r.Genres...), Tags: tags, RuntimeSeconds: parseRuntime(r.Duration), CoverPath: fmt.Sprintf("/covers/%d/jellyfin-primary", r.ID), CoverBackdropPath: fmt.Sprintf("/covers/%d/original", r.ID), BackdropURLs: backdrops, SourceURL: r.ProductURL, ProviderIDs: ids}
+	return Metadata{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Code: r.VideoID, Title: r.VideoID, OriginalTitle: r.VideoID, Overview: releaseTitle(r.VideoID, r.Title), PremiereDate: r.ReleaseDate, ProductionYear: year, Studio: r.Studio, Label: r.Label, Performers: append([]string(nil), r.Actresses...), Directors: directors, Genres: append([]string(nil), r.Genres...), Tags: tags, RuntimeSeconds: parseRuntime(r.Duration), CoverPath: fmt.Sprintf("/covers/%d/jellyfin-primary", r.ID), CoverBackdropPath: fmt.Sprintf("/covers/%d/original", r.ID), BackdropURLs: backdrops, SourceURL: r.ProductURL, ProviderIDs: ids, Watchlist: r.Watchlist}
 }
 
 func releaseTitle(releaseID, title string) string {

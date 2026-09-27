@@ -173,13 +173,25 @@ func TestMetadataPopulatesPerformerImagesFromStashByName(t *testing.T) {
 		t.Fatalf("PerformerImages[Yuki Ai] = %q", got)
 	}
 	// Search must never pay for this - it's Metadata-only, same policy as
-	// CollectionNames, to keep bulk search cheap.
+	// CollectionNames, to keep bulk search cheap. Confirmed live: Search used
+	// to run this same Stash gap-fill per result row, which is fine for a
+	// human typing into a search box but was catastrophic for Silo's
+	// automated matching (Silo's own scan-time matcher and this plugin's
+	// "match-unmatched" scheduled task both search by title before accepting
+	// a match, once per unmatched library item) - a real library saw
+	// matching throughput fall to a handful of items a minute. Search must
+	// never call Stash at all, not even for a release missing text/image
+	// fields.
+	callsBefore := bridge.sceneMetaCalls
 	rows, err := svc.Search(context.Background(), "ABC-123", 10)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("search: %v %+v", err, rows)
 	}
 	if rows[0].PerformerImages != nil {
 		t.Fatalf("Search must not populate PerformerImages: %+v", rows[0].PerformerImages)
+	}
+	if bridge.sceneMetaCalls != callsBefore {
+		t.Fatalf("Search must never call Stash (sceneMetaCalls went %d -> %d)", callsBefore, bridge.sceneMetaCalls)
 	}
 }
 
@@ -285,6 +297,87 @@ func TestCollectionNamesForReleaseReflectsFilterPresetMembership(t *testing.T) {
 	}
 }
 
+// TestMetadataReflectsWatchlistState guards the Silo "Watchlist" genre/tag:
+// a release's Metadata.Watchlist must mirror domain.Release.Watchlist, and
+// (unlike CollectionNames/PerformerImages/PerformerIDs) it costs nothing
+// extra to populate, so it must be set on every call, including Search.
+func TestMetadataReflectsWatchlistState(t *testing.T) {
+	svc, st, _, r := testService(t)
+	defer st.Close()
+	m, err := svc.Metadata(context.Background(), r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Watchlist {
+		t.Fatalf("Watchlist=%v, want false before being added", m.Watchlist)
+	}
+	watchlist := true
+	if err := st.PatchRelease(context.Background(), r.ID, nil, nil, nil, nil, &watchlist, nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	m, err = svc.Metadata(context.Background(), r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.Watchlist {
+		t.Fatal("Watchlist=false, want true after being added")
+	}
+	rows, err := svc.Search(context.Background(), "ABC-123", 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("search: %v %+v", err, rows)
+	}
+	if !rows[0].Watchlist {
+		t.Fatal("Search must also reflect Watchlist state (it costs nothing extra, unlike CollectionNames)")
+	}
+}
+
+// TestSanitizeCollectionTagNameCleansUpBeforeBecomingASiloGenre guards the
+// Silo "Collection: <name>" genre/tag against a saved filter set's name -
+// free text an admin can type into the web UI - producing a garbled or
+// unbounded genre entry. Jellyfin's own collection name is never sanitized
+// this way; only the genre/tag value is.
+func TestSanitizeCollectionTagNameCleansUpBeforeBecomingASiloGenre(t *testing.T) {
+	for _, test := range []struct{ name, in, want string }{
+		{"unchanged", "My Favorites", "My Favorites"},
+		{"collapses internal whitespace", "My\t\tFavorites\n\nList", "My Favorites List"},
+		{"trims ends", "  Padded  ", "Padded"},
+		{"strips control characters", "Weird\x00Name", "Weird Name"},
+		{"empty after cleanup", "\x00\x01\x02", ""},
+		{"unicode preserved", "お気に入り", "お気に入り"},
+	} {
+		if got := sanitizeCollectionTagName(test.in); got != test.want {
+			t.Errorf("%s: sanitizeCollectionTagName(%q) = %q, want %q", test.name, test.in, got, test.want)
+		}
+	}
+	long := strings.Repeat("a", maxCollectionTagNameRunes+50)
+	got := sanitizeCollectionTagName(long)
+	if runes := []rune(got); len(runes) != maxCollectionTagNameRunes {
+		t.Fatalf("long name not capped: got %d runes, want %d", len(runes), maxCollectionTagNameRunes)
+	}
+	// A preset actually named this way must be skipped entirely (no empty
+	// genre entry), not crash or add a blank tag.
+	svc, st, _, r := testService(t)
+	defer st.Close()
+	if err := st.SaveUser(context.Background(), "admin", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveFilterPreset(context.Background(), domain.FilterPreset{Name: "\x00\x01\x02", State: json.RawMessage(`{"watchlist":false}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveSettings(context.Background(), map[string]string{"jellyfin_library_revision": "revision-1"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := svc.Metadata(context.Background(), r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range m.CollectionNames {
+		if name == "" {
+			t.Fatalf("CollectionNames contains an empty entry: %+v", m.CollectionNames)
+		}
+	}
+}
+
 // TestCollectionMembershipIndexCachesUntilRevisionChanges guards against
 // collectionNamesForRelease regressing back to a full per-preset library scan
 // on every single Metadata() call - confirmed live as the real cause of
@@ -351,11 +444,12 @@ func TestMatchPrefersExactPathAndReturnsPersistentIDs(t *testing.T) {
 
 // TestMatchPopulatesPerformerImagesFromStash guards a real crash-adjacent
 // bug: Match (the scan-time lookup used before Jellyfin has stored a
-// "JAVBeacon" provider id) used to build its result via enrichFromStash
-// alone, which never calls applyPerformerImages - so a freshly scanned
-// item's entire Cast & Crew row came back with no photos at all, not just
-// ones affected by the reversed-name mismatch covered above. Match must
-// enrich performer images/ids exactly like Metadata does.
+// "JAVBeacon" provider id) used to build its result via a lighter,
+// conditional Stash gap-fill alone, which never called
+// applyPerformerImages - so a freshly scanned item's entire Cast & Crew row
+// came back with no photos at all, not just ones affected by the
+// reversed-name mismatch covered above. Match must enrich performer
+// images/ids exactly like Metadata does.
 func TestMatchPopulatesPerformerImagesFromStash(t *testing.T) {
 	svc, st, bridge, _ := testService(t)
 	defer st.Close()

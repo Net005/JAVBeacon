@@ -5,6 +5,33 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.238] - 2026-09-27
+
+### Fixed
+
+- Fixed Silo matching taking days instead of minutes. `Search` (used both by
+  Silo's own scan-time auto-matcher and this repo's `match-unmatched`
+  scheduled task, once per unmatched library item) ran a full StashApp
+  gap-fill lookup for every result row - a real, if bounded, network round
+  trip - even though exact-code matching only ever needs a release's own
+  Code and ID. `Search` is now DB-only; the enriched, Stash-aware fetch
+  (text/image gap-fill, performer photos/ids) still happens in full for the
+  single item a user actually opens, via `Metadata`/`Match`.
+
+### Added
+
+- Added a "Watchlist" genre/tag to the Silo metadata response, alongside the
+  existing "Collection: `<name>`" saved-filter-set tags - Silo has no
+  separate favorites/watchlist marker of its own for this plugin to set
+  instead, so a release's Watchlist membership is exposed the same way
+  collection membership already is.
+- Sanitized a saved filter set's name before it becomes a Silo
+  "Collection: `<name>`" genre/tag value: collapses embedded
+  whitespace/control characters to single spaces, trims the ends, and caps
+  the result at 80 characters (counted in Unicode characters, not bytes).
+  Jellyfin's own collection name is unaffected - it keeps the preset name
+  exactly as saved; only the flat-string genre/tag value is cleaned up.
+
 ## [1.0.237] - 2026-09-26
 
 ### Fixed
