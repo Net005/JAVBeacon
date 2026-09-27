@@ -355,6 +355,7 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 			discoverySubtitleCache.availability = availability
 			discoverySubtitleCache.checked = checked
 			discoverySubtitleCache.Unlock()
+			clearDiscoveryPostFilterCountCache()
 		} else if availability != nil {
 			discoveryJobs.Lock()
 			discoveryJobs.status.Stage = "Using current subtitle index"

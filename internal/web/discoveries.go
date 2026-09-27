@@ -1669,6 +1669,69 @@ func discoveryReleaseMatches(release domain.Release, category, subtitles string,
 	return !((subtitles == "yes" && !hasSubtitle) || (subtitles == "no" && hasSubtitle) || (category == "ready" && !hasSubtitle) || (category == "needs_subtitles" && hasSubtitle))
 }
 
+type discoveryPostFilterCountEntry struct {
+	created   time.Time
+	positions []int
+}
+
+var discoveryPostFilterCountCache = struct {
+	sync.Mutex
+	entries map[[32]byte]discoveryPostFilterCountEntry
+}{entries: map[[32]byte]discoveryPostFilterCountEntry{}}
+
+func clearDiscoveryPostFilterCountCache() {
+	discoveryPostFilterCountCache.Lock()
+	discoveryPostFilterCountCache.entries = map[[32]byte]discoveryPostFilterCountEntry{}
+	discoveryPostFilterCountCache.Unlock()
+}
+
+// Subtitle presence and ready/needs-subtitle categories are checked against
+// sidecar files after SQL filtering. Count the same matches across the full
+// SQL result set so the heading and pagination match the cards. Raw positions
+// let later pages answer has_more without rescanning the entire library.
+func (s *Server) discoveryPostFilterPositions(ctx context.Context, q url.Values, settings map[string]string, filter domain.ReleaseFilter, category, subtitles string, excluded map[string]bool, rewatchDays int, now time.Time, subtitleTTL time.Duration) ([]int, error) {
+	countQuery := make(url.Values, len(q))
+	for key, values := range q {
+		countQuery[key] = append([]string(nil), values...)
+	}
+	countQuery.Del("offset")
+	countQuery.Del("limit")
+	settingsJSON, _ := json.Marshal(settings)
+	key := sha256.Sum256(append([]byte(fmt.Sprintf("%T:%p\n", s.store, s.store)+countQuery.Encode()+"\n"), settingsJSON...))
+	discoveryPostFilterCountCache.Lock()
+	entry, found := discoveryPostFilterCountCache.entries[key]
+	discoveryPostFilterCountCache.Unlock()
+	if found && time.Since(entry.created) < min(subtitleTTL, time.Minute) {
+		return entry.positions, nil
+	}
+	positions := make([]int, 0)
+	for offset := 0; ; offset += 500 {
+		chunk := filter
+		chunk.Offset = offset
+		page, err := s.discoveryReleasePage(ctx, chunk, 500)
+		if err != nil {
+			return nil, err
+		}
+		remapped := discoveryRemapReleases(page, settings["stash_missing_path_remaps"])
+		available := cachedSubtitleAvailability(remapped, subtitleTTL)
+		for i, release := range page {
+			if discoveryReleaseMatches(release, category, subtitles, available[release.ID], excluded, rewatchDays, now) {
+				positions = append(positions, offset+i)
+			}
+		}
+		if len(page) < 500 {
+			break
+		}
+	}
+	discoveryPostFilterCountCache.Lock()
+	if len(discoveryPostFilterCountCache.entries) >= 32 {
+		discoveryPostFilterCountCache.entries = map[[32]byte]discoveryPostFilterCountEntry{}
+	}
+	discoveryPostFilterCountCache.entries[key] = discoveryPostFilterCountEntry{created: time.Now(), positions: positions}
+	discoveryPostFilterCountCache.Unlock()
+	return positions, nil
+}
+
 func discoveryTimeoutMessage(pool string) string {
 	if pool != "" {
 		return fmt.Sprintf("Filtering by discovery pool %q is taking too long and was stopped. Try narrowing your other filters, or check that the discovery pool's keyword list isn't excessively broad.", pool)
@@ -1770,6 +1833,18 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	// the requested page or the full matching set is exhausted, instead of
 	// stopping after exactly one bounded fetch.
 	needsPostFetchFilter := subtitles != "" || category == "ready" || category == "needs_subtitles"
+	var matchingPositions []int
+	if needsPostFetchFilter {
+		matchingPositions, err = s.discoveryPostFilterPositions(dbCtx, q, settings, filter, category, subtitles, excluded, rewatchDays, now, subtitleTTL)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				s.problem(w, http.StatusGatewayTimeout, discoveryTimeoutMessage(pool))
+			} else {
+				s.problem(w, http.StatusInternalServerError, err.Error())
+			}
+			return
+		}
+	}
 	rawChunk := requestedLimit
 	if needsPostFetchFilter {
 		rawChunk = 500
@@ -1802,7 +1877,8 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		}
 		remapped := discoveryRemapReleases(page, pathRemaps)
 		subtitlesByRelease := cachedSubtitleAvailability(remapped, subtitleTTL)
-		for _, release := range page {
+		consumed := len(page)
+		for i, release := range page {
 			itemCategory := discoveryCategory(release, rewatchDays, now)
 			hasSubtitle := subtitlesByRelease[release.ID]
 			if !discoveryReleaseMatches(release, category, subtitles, hasSubtitle, excluded, rewatchDays, now) {
@@ -1822,8 +1898,12 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 				itemPools = append(itemPools, pool)
 			}
 			items = append(items, discoveryItem{Release: release, Score: score, Category: itemCategory, Reasons: reasons, Pools: itemPools, HasSubtitle: hasSubtitle})
+			if needsPostFetchFilter && len(items) >= requestedLimit {
+				consumed = i + 1
+				break
+			}
 		}
-		releases = append(releases, page...)
+		releases = append(releases, page[:consumed]...)
 		if !needsPostFetchFilter || len(items) >= requestedLimit || len(page) < rawChunk {
 			break
 		}
@@ -1879,6 +1959,9 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		items = diversifyDiscoveries(items, discoveryFloat(settings, "discoveries_diversity_percent", 25))
 	}
 	total := fullTotal
+	if needsPostFetchFilter {
+		total = len(matchingPositions)
+	}
 	allItems := items
 	mode := "deterministic"
 	if enhanced {
@@ -1896,5 +1979,9 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 	aiRunning, aiCompleted, aiTotal, aiError := discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Error
 	discoveryAIStatus.RUnlock()
 	nextOffset := offset + len(releases)
-	s.json(w, http.StatusOK, map[string]any{"items": items, "total": total, "offset": offset, "next_offset": nextOffset, "has_more": nextOffset < total, "generated_at": now, "mode": mode, "pools": poolNames, "selected_pool": pool, "pool_keywords": pools[pool], "openai": map[string]any{"enabled": settings["discoveries_ai_enabled"] == "true", "running": aiRunning, "completed": aiCompleted, "total": aiTotal, "error": aiError}})
+	hasMore := nextOffset < fullTotal
+	if needsPostFetchFilter {
+		hasMore = sort.SearchInts(matchingPositions, nextOffset) < len(matchingPositions)
+	}
+	s.json(w, http.StatusOK, map[string]any{"items": items, "total": total, "offset": offset, "next_offset": nextOffset, "has_more": hasMore, "generated_at": now, "mode": mode, "pools": poolNames, "selected_pool": pool, "pool_keywords": pools[pool], "openai": map[string]any{"enabled": settings["discoveries_ai_enabled"] == "true", "running": aiRunning, "completed": aiCompleted, "total": aiTotal, "error": aiError}})
 }
