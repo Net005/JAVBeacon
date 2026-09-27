@@ -83,7 +83,7 @@ func (s *Service) Rank(ctx context.Context, cfg Config, candidates []Candidate, 
 	}
 	failureStatus := ollamaFailureStatus(err, cfg.RequestTimeout)
 	if !cfg.OpenAIFallbackEnabled {
-		return Result{Skipped: true, Status: failureStatus + "; OpenAI fallback disabled"}
+		return Result{Skipped: true, ValidationRejected: errors.As(err, &invalid), Status: failureStatus + "; OpenAI fallback disabled"}
 	}
 	s.log.Info("Using OpenAI fallback after Ollama inference failure", "model", status.Model)
 	ranks, usage, fallbackErr := s.openAIRank(ctx, cfg, candidates, pools)

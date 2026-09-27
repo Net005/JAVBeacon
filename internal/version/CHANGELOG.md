@@ -5,6 +5,16 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.250] - 2026-09-27
+
+### Fixed
+
+- Retry rejected Ollama ranking output up to three times with stronger grounding
+  instructions when a reason invents story evidence.
+- Continue AI enrichment after an exhausted validation failure, retaining
+  successful batches and showing rejected batch and release counts in progress.
+  Rejected releases remain eligible for the next sweep.
+
 ## [1.0.249] - 2026-09-27
 
 ### Fixed

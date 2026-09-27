@@ -314,18 +314,18 @@ STRUCTURED RELEASE CANDIDATES (subtitle_excerpt is optional supporting evidence,
 
 func (s *Service) ollamaRank(ctx context.Context, cfg Config, candidates []Candidate, pools string) ([]Rank, error) {
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; attempt < 3; attempt++ {
 		ranks, err := s.ollamaRankOnce(ctx, cfg, candidates, pools, attempt > 0, lastErr)
 		if err == nil {
 			return ranks, nil
 		}
 		lastErr = err
 		var invalid validationError
-		if !errors.As(err, &invalid) || attempt > 0 {
+		if !errors.As(err, &invalid) || attempt == 2 {
 			return nil, err
 		}
 		// A reachable Ollama model that returned structurally or semantically
-		// invalid output gets one constrained repair attempt before provider
+		// invalid output gets two constrained repair attempts before provider
 		// fallback is considered. Regenerate from the original candidates and
 		// validator category only; never echo rejected model prose back into the
 		// prompt or allow any part of it to reach persistence.
@@ -350,7 +350,7 @@ func (s *Service) ollamaRankOnce(ctx context.Context, cfg Config, candidates []C
 		if errors.As(previousErr, &invalid) {
 			kind = invalid.kind
 		}
-		userPrompt = "REPAIR REQUIRED: The previous response was rejected for " + kind + ". Regenerate the complete batch from scratch. Do not repeat or discuss the rejected response. Write each reason as a natural sentence citing specific grounded evidence for that candidate, without labels or prefixes.\n\n" + userPrompt
+		userPrompt = "REPAIR REQUIRED: The previous response was rejected for " + kind + ". Regenerate the complete batch from scratch. Do not repeat or discuss the rejected response. Write each reason as a natural sentence citing specific grounded evidence for that candidate, without labels or prefixes. For any candidate whose story field is empty, never use the words story or stories in its reason; describe only its supplied title, studio, cast, genres, and other non-empty fields.\n\n" + userPrompt
 	}
 	body, _ := json.Marshal(map[string]any{"model": cfg.OllamaModel, "stream": false, "think": false, "format": rankingSchema(candidates, pools), "options": map[string]any{"temperature": 0.1, "num_predict": maxOutputTokens}, "messages": []map[string]string{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}}})
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, normalizeURL(cfg.OllamaURL, "http://127.0.0.1:11434")+"/api/chat", bytes.NewReader(body))

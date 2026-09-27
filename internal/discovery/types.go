@@ -101,12 +101,13 @@ type OllamaStatus struct {
 }
 
 type Result struct {
-	Ranks             []Rank
-	Provider          string
-	AttemptedProvider string
-	Usage             Usage
-	Skipped           bool
-	Status            string
+	Ranks              []Rank
+	Provider           string
+	AttemptedProvider  string
+	Usage              Usage
+	Skipped            bool
+	ValidationRejected bool
+	Status             string
 }
 
 type Usage struct {

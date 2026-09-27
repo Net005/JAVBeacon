@@ -376,6 +376,8 @@ var discoveryAIStatus = struct {
 	Batches           int
 	Current           int
 	Error             string
+	FailedBatches     int
+	FailedItems       int
 	StartedAt         time.Time
 	BatchStartedAt    time.Time
 	LastBatchSeconds  float64
@@ -803,6 +805,7 @@ func (s *Server) enhanceDiscoveriesWithSweep(ctx context.Context, settings map[s
 	discoveryAIStatus.CurrentItems = discoveryBatchLabels(missingBatches[0])
 	discoveryAIStatus.StartingCompleted, discoveryAIStatus.Provider, discoveryAIStatus.Model = len(persisted), provider, model
 	discoveryAIStatus.InputTokens, discoveryAIStatus.OutputTokens, discoveryAIStatus.EstimatedCostUSD = 0, 0, 0
+	discoveryAIStatus.FailedBatches, discoveryAIStatus.FailedItems = 0, 0
 	discoveryAIStatus.Unlock()
 	discoveryRankCache.Lock()
 	discoveryRankCache.entries[cacheKey] = discoveryRankCacheEntry{created: time.Now(), ranks: slices.Clone(persisted)}
@@ -867,7 +870,19 @@ func (s *Server) enhanceDiscoveriesWithSweep(ctx context.Context, settings map[s
 			if result.Skipped || len(result.Ranks) == 0 {
 				discoveryAIStatus.Lock()
 				discoveryAIStatus.Error = fmt.Sprintf("Batch %d/%d: %s", index+1, len(missingBatches), result.Status)
+				if result.ValidationRejected {
+					// Keep successful batches durable and try later candidates.
+					// Rejected candidates remain missing for the next sweep.
+					discoveryAIStatus.FailedBatches++
+					discoveryAIStatus.FailedItems += len(batch)
+					completed += len(batch)
+					discoveryAIStatus.Completed = min(completed, limit)
+					discoveryAIStatus.LastBatchSeconds = time.Since(discoveryAIStatus.BatchStartedAt).Seconds()
+				}
 				discoveryAIStatus.Unlock()
+				if result.ValidationRejected {
+					continue
+				}
 				return
 			}
 			// The batch's own candidates are the ground truth for whether a
@@ -935,6 +950,7 @@ func reserveDiscoveryEnrichmentSweep(settings map[string]string) bool {
 	discoveryAIStatus.Completed, discoveryAIStatus.Total = 0, 0
 	discoveryAIStatus.Batch, discoveryAIStatus.Batches, discoveryAIStatus.Current = 0, 0, 0
 	discoveryAIStatus.Error, discoveryAIStatus.CurrentItems = "", nil
+	discoveryAIStatus.FailedBatches, discoveryAIStatus.FailedItems = 0, 0
 	discoveryAIStatus.StartedAt = time.Now().UTC()
 	discoveryAIStatus.Provider = discoveryAIProvider(settings)
 	return true
