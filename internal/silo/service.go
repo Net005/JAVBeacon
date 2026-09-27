@@ -213,6 +213,7 @@ type LibrarySyncSnapshot struct {
 	Watchlist     []LibrarySyncItem        `json:"watchlist"`
 	Watched       []LibrarySyncItem        `json:"watched"`
 	FilterPresets []FilterPresetCollection `json:"filter_presets"`
+	ReleaseCodes  map[int64]string         `json:"release_codes,omitempty"`
 }
 
 // FilterPresetCollection is one saved filter set resolved to its current,
@@ -745,6 +746,42 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 		return LibrarySyncSnapshot{}, err
 	}
 	out.FilterPresets = presetCollections
+	seen := map[int64]bool{}
+	ids := []int64{}
+	for _, item := range out.Watchlist {
+		if item.ReleaseID > 0 && !seen[item.ReleaseID] {
+			ids = append(ids, item.ReleaseID)
+			seen[item.ReleaseID] = true
+		}
+	}
+	for _, preset := range presetCollections {
+		for _, id := range preset.ReleaseIDs {
+			if id > 0 && !seen[id] {
+				ids = append(ids, id)
+				seen[id] = true
+			}
+		}
+	}
+	if len(ids) > 0 {
+		if bulk, ok := s.store.(interface {
+			ReleaseCodes(context.Context, []int64) (map[int64]string, error)
+		}); ok {
+			out.ReleaseCodes, err = bulk.ReleaseCodes(ctx, ids)
+			if err != nil {
+				return LibrarySyncSnapshot{}, err
+			}
+		} else {
+			out.ReleaseCodes = map[int64]string{}
+			for _, id := range ids {
+				r, err := s.store.Release(ctx, id)
+				if err == nil {
+					out.ReleaseCodes[id] = r.VideoID
+				} else if !errors.Is(err, sql.ErrNoRows) {
+					return LibrarySyncSnapshot{}, err
+				}
+			}
+		}
+	}
 	return out, nil
 }
 

@@ -266,6 +266,9 @@ func TestLibrarySyncRetriesFailedPresetIndexInsteadOfCachingEmpty(t *testing.T) 
 	if len(snapshot.FilterPresets) != 1 || len(snapshot.FilterPresets[0].ReleaseIDs) != 1 || snapshot.FilterPresets[0].ReleaseIDs[0] != release.ID {
 		t.Fatalf("retry omitted saved-filter membership: %+v", snapshot.FilterPresets)
 	}
+	if snapshot.ReleaseCodes[release.ID] != release.VideoID {
+		t.Fatalf("snapshot release code = %q, want %q", snapshot.ReleaseCodes[release.ID], release.VideoID)
+	}
 }
 
 func TestSiloWatchlistUsesStashAndNewestUpdateFirst(t *testing.T) {

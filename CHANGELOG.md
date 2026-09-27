@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.259] - 2026-09-27
+
+### Fixed
+
+- Include saved-filter release ID-to-code pairs in the Silo library snapshot using bounded SQL batches, so Silo collection sync can map large filters without thousands of per-release metadata requests.
+
 ## [1.0.258] - 2026-09-27
 
 ### Fixed
