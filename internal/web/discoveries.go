@@ -591,7 +591,7 @@ func discoveryAIBatches(items []discoveryItem, settings map[string]string, limit
 	// Subtitle dialogue is weak supporting evidence. Large excerpts dominate
 	// prompt evaluation time on small local models without improving ranking
 	// quality, so each candidate receives a compact cleaned sample.
-	configuredSubtitleChars := min(max(discoveryInt(settings, "discoveries_subtitle_max_chars", 4000), 0), 4000)
+	configuredSubtitleChars := max(discoveryInt(settings, "discoveries_subtitle_max_chars", 4000), 0)
 	configuredPools := discoveryPools(settings["discoveries_pools"])
 	batches, payloads := make([][]discoveryAICandidate, 0, (len(items)+batchSize-1)/batchSize), make([][]byte, 0, (len(items)+batchSize-1)/batchSize)
 	for start := 0; start < len(items); start += batchSize {

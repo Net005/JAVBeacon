@@ -5,6 +5,13 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.266] - 2026-09-27
+
+### Fixed
+
+- Honor the configured subtitle character limit above 4,000 during AI enrichment. The provider's per-request input budget still bounds the actual excerpt, and changed excerpts invalidate cached AI results without a subtitle rescan.
+- Clarify the subtitle setting and remove the inactive cleaned-text storage checkbox; subtitles are read from sidecars on demand and cleaned text is not stored separately.
+
 ## [1.0.265] - 2026-09-27
 
 ### Fixed
