@@ -263,7 +263,7 @@ global.Image = class {
   // position without also scaling an equally-sized image would point at the
   // right offset in the wrong (unscaled) image.
   {
-    const url = "https://stash.bondt.network/scene/test_sprite.jpg";
+    const url = "https://stash.example.invalid/scene/test_sprite.jpg";
     global.__fakeImageSizes = { [url]: { width: 5760, height: 3240 } };
     const source = fakeElement(
       {
@@ -292,7 +292,7 @@ global.Image = class {
   // letterboxed to exactly 905x509.06 within it (never larger - a taller
   // frame is exactly what let an adjacent sprite row bleed in).
   {
-    const url = "https://stash.bondt.network/scene/regression_sprite.jpg";
+    const url = "https://stash.example.invalid/scene/regression_sprite.jpg";
     global.__fakeImageSizes = { ...global.__fakeImageSizes, [url]: { width: 5760, height: 3240 } };
     const source = fakeElement(
       {
@@ -401,10 +401,10 @@ global.Image = class {
   {
     const cue = parseCueImageLine(
       "67ef3d000f0466e2_sprite.jpg#xywh=640,0,640,360",
-      "https://stash.bondt.network/scene/1/vtt/sprite.vtt"
+      "https://stash.example.invalid/scene/1/vtt/sprite.vtt"
     );
     assert.deepEqual(cue, {
-      url: "https://stash.bondt.network/scene/1/vtt/67ef3d000f0466e2_sprite.jpg",
+      url: "https://stash.example.invalid/scene/1/vtt/67ef3d000f0466e2_sprite.jpg",
       x: 640,
       y: 0,
       w: 640,
@@ -428,7 +428,7 @@ global.Image = class {
       "sprite.jpg#xywh=640,0,640,360",
       "",
     ].join("\n");
-    const cues = parseSpriteVtt(vttText, "https://stash.bondt.network/scene/1/vtt/sprite.vtt");
+    const cues = parseSpriteVtt(vttText, "https://stash.example.invalid/scene/1/vtt/sprite.vtt");
     assert.equal(cues.length, 2);
     assert.equal(cues[0].start, 0);
     assert.equal(cues[0].x, 0);
@@ -456,7 +456,7 @@ global.Image = class {
   // cue for comparison) that frameEl must never be larger than the cue,
   // or the adjacent sprite row/column bleeds into the extra viewport space.
   {
-    const url = "https://stash.bondt.network/scene/1/vtt/sprite.jpg";
+    const url = "https://stash.example.invalid/scene/1/vtt/sprite.jpg";
     global.__fakeImageSizes = { ...global.__fakeImageSizes, [url]: { width: 5760, height: 3240 } };
     const backdrop = fakeElement({});
     const frame = fakeElement({});
@@ -495,7 +495,7 @@ global.Image = class {
   // bleed in below the intended frame (confirmed live by comparing against
   // a direct <canvas> crop of the identical cue, which was always clean).
   {
-    const url = "https://stash.bondt.network/scene/1/vtt/regression_sprite.jpg";
+    const url = "https://stash.example.invalid/scene/1/vtt/regression_sprite.jpg";
     global.__fakeImageSizes = { ...global.__fakeImageSizes, [url]: { width: 5760, height: 3240 } };
     const backdrop = fakeElement({});
     const frame = fakeElement({});
