@@ -3575,3 +3575,35 @@ func TestMigrateJellyfinPlaybackReleaseNullable(t *testing.T) {
 		t.Fatalf("scene-only session round-trip mismatch: %+v", readBack)
 	}
 }
+
+func TestReleaseCodesReturnsRequestedIDsAcrossBatches(t *testing.T) {
+	ctx := context.Background()
+	st, err := OpenSQLite(filepath.Join(t.TempDir(), "codes.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Codes", Type: "Site", Name: "Codes", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]int64, 0, 405)
+	for i := 0; i < 405; i++ {
+		code := fmt.Sprintf("CODE-%d", i)
+		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: code, Title: code}); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := st.Releases(ctx, domain.ReleaseFilter{VideoID: code, Limit: 1})
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("%s: rows=%v err=%v", code, rows, err)
+		}
+		ids = append(ids, rows[0].ID)
+	}
+	codes, err := st.ReleaseCodes(ctx, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(codes) != len(ids) || codes[ids[404]] != "CODE-404" {
+		t.Fatalf("codes=%d last=%q", len(codes), codes[ids[404]])
+	}
+}

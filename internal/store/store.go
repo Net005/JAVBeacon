@@ -2313,6 +2313,40 @@ func parseFilterEntries(value string) []string {
 	return strings.Split(value, ",")
 }
 
+// ReleaseCodes returns release ID/code pairs in bounded SQL batches for
+// collection snapshots without loading full release metadata per member.
+func (s *SQLite) ReleaseCodes(ctx context.Context, ids []int64) (map[int64]string, error) {
+	codes := make(map[int64]string, len(ids))
+	for start := 0; start < len(ids); start += 400 {
+		end := min(start+400, len(ids))
+		args := make([]any, 0, end-start)
+		placeholders := make([]string, 0, end-start)
+		for _, id := range ids[start:end] {
+			args = append(args, id)
+			placeholders = append(placeholders, "?")
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT id,video_id FROM releases WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id int64
+			var code string
+			if err := rows.Scan(&id, &code); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			codes[id] = code
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return codes, nil
+}
+
 func (s *SQLite) Release(ctx context.Context, id int64) (domain.Release, error) {
 	return scanRelease(s.db.QueryRowContext(ctx, releaseSelect(s.dialect)+` WHERE r.id=?`, id))
 }
