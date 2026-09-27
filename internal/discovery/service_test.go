@@ -131,6 +131,55 @@ func TestRejectedConversationalOllamaResultGetsOneLocalRepairAttempt(t *testing.
 	}
 }
 
+func TestUnsupportedStoryClaimRecoversOnThirdAttempt(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "qwen3:8b"}}})
+		case "/api/chat":
+			body, _ := io.ReadAll(r.Body)
+			call := calls.Add(1)
+			if call > 1 && !strings.Contains(string(body), "never use the words story or stories") {
+				t.Error("repair prompt did not constrain absent story claims")
+			}
+			reason := "The story and creampie themes align with established interests, while the familiar studio adds another strong signal."
+			if call == 3 {
+				reason = "The supplied studio and title provide a clear match."
+			}
+			content, _ := json.Marshal(map[string]any{"rankings": []map[string]any{{"id": 7, "score": 80, "reason": reason, "pools": []string{}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": string(content)}})
+		}
+	}))
+	defer server.Close()
+	candidates := testCandidates()
+	candidates[0].Story = ""
+	result := New(nil).Rank(context.Background(), baseConfig(server.URL), candidates, "")
+	if result.Provider != "ollama" || len(result.Ranks) != 1 || calls.Load() != 3 {
+		t.Fatalf("third Ollama attempt should recover: %+v calls=%d", result, calls.Load())
+	}
+}
+
+func TestUnsupportedStoryClaimExhaustsThreeAttempts(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "qwen3:8b"}}})
+		case "/api/chat":
+			calls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": `{"rankings":[{"id":7,"score":80,"reason":"The story and creampie themes align with established interests, while the familiar studio adds another strong signal.","pools":[]}]}`}})
+		}
+	}))
+	defer server.Close()
+	candidates := testCandidates()
+	candidates[0].Story = ""
+	result := New(nil).Rank(context.Background(), baseConfig(server.URL), candidates, "")
+	if !result.ValidationRejected || !result.Skipped || calls.Load() != 3 || !strings.Contains(result.Status, "unsupported story claim") {
+		t.Fatalf("validation exhaustion should be classified: %+v calls=%d", result, calls.Load())
+	}
+}
+
 func TestOllamaAvailabilityConnectionRefused(t *testing.T) {
 	server := ollamaServer(t, nil, http.StatusOK, "", 0)
 	url := server.URL

@@ -48,6 +48,8 @@ type discoveryJobStatus struct {
 	OpenAIBatches          int       `json:"openai_batches"`
 	OpenAICurrent          int       `json:"openai_current"`
 	OpenAIError            string    `json:"openai_error,omitempty"`
+	OpenAIFailedBatches    int       `json:"openai_failed_batches"`
+	OpenAIFailedItems      int       `json:"openai_failed_items"`
 	CurrentItem            string    `json:"current_item,omitempty"`
 	ElapsedSeconds         float64   `json:"elapsed_seconds"`
 	ItemsPerSecond         float64   `json:"items_per_second"`
@@ -159,6 +161,7 @@ func discoveryJobSnapshot(settings map[string]string) discoveryJobStatus {
 	}
 	discoveryAIStatus.RLock()
 	status.OpenAIRunning, status.OpenAICompleted, status.OpenAITotal, status.OpenAIBatch, status.OpenAIBatches, status.OpenAICurrent, status.OpenAIError = discoveryAIStatus.Running, discoveryAIStatus.Completed, discoveryAIStatus.Total, discoveryAIStatus.Batch, discoveryAIStatus.Batches, discoveryAIStatus.Current, discoveryAIStatus.Error
+	status.OpenAIFailedBatches, status.OpenAIFailedItems = discoveryAIStatus.FailedBatches, discoveryAIStatus.FailedItems
 	status.OpenAIStartedAt, status.OpenAIBatchAt, status.OpenAILastBatch = discoveryAIStatus.StartedAt, discoveryAIStatus.BatchStartedAt, discoveryAIStatus.LastBatchSeconds
 	status.OpenAIItems = append([]string(nil), discoveryAIStatus.CurrentItems...)
 	status.AIProvider, status.AIModel = discoveryAIStatus.Provider, discoveryAIStatus.Model
