@@ -52,3 +52,32 @@ func TestSiloLookupMatchesExactStashFilenameWithoutSceneCode(t *testing.T) {
 		t.Fatalf("full=%+v err=%v", full, err)
 	}
 }
+
+func TestSiloWatchlistScenesReadsConfiguredStashTagAndUpdatedAt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(request.Query, "updated_at tags { id } files { path }") {
+			t.Fatalf("query omitted Stash update date or tag ID: %s", request.Query)
+		}
+		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[{"id":"one","updated_at":"2026-09-27T10:00:00Z","tags":[{"id":"watch"}],"files":[{"path":"/media/one.mp4"}]},{"id":"two","updated_at":"2026-09-26T10:00:00Z","tags":[{"id":"other"}],"files":[{"path":"/media/two.mp4"}]}]}}}`))
+	}))
+	defer server.Close()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "watchlist.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(context.Background(), map[string]string{"stash_base_url": server.URL, "stash_watchlist_tag_id": "watch"}); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(st, time.Second, slog.Default(), nil, nil)
+	scenes, configured, err := svc.SiloWatchlistScenes(context.Background())
+	if err != nil || !configured || len(scenes) != 1 || scenes["one"].UTC().Format(time.RFC3339) != "2026-09-27T10:00:00Z" {
+		t.Fatalf("scenes=%+v configured=%v err=%v", scenes, configured, err)
+	}
+}
