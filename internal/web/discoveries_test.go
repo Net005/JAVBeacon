@@ -344,7 +344,7 @@ func TestDiscoveryTextMatchesIsWholeWordNotSubstring(t *testing.T) {
 	}
 }
 
-func TestDiscoveryAttachPoolMatchesScoresKeywordCoverage(t *testing.T) {
+func TestDiscoveryAttachPoolMatchesReportsKeywordEvidence(t *testing.T) {
 	pools := map[string][]string{
 		"Brainwashing / Drugs": {"drug", "brainwashing"},
 		"Office Lady":          {"office lady"},
@@ -357,14 +357,14 @@ func TestDiscoveryAttachPoolMatchesScoresKeywordCoverage(t *testing.T) {
 	}
 	discoveryAttachPoolMatches(items, pools)
 
-	if got := items[0].PoolMatches; len(got) != 1 || got[0].Name != "Brainwashing / Drugs" || got[0].MatchPercent != 50 {
-		t.Fatalf("partial keyword coverage = %#v, want a single 50%% match (duplicate pool name deduplicated)", got)
+	if got := items[0].PoolMatches; len(got) != 1 || got[0].Name != "Brainwashing / Drugs" || got[0].MatchCount != 1 || got[0].KeywordCount != 2 {
+		t.Fatalf("partial keyword evidence = %#v, want one of two terms (duplicate pool name deduplicated)", got)
 	}
-	if got := items[1].PoolMatches; len(got) != 1 || got[0].MatchPercent != 100 {
-		t.Fatalf("full keyword coverage = %#v, want 100%%", got)
+	if got := items[1].PoolMatches; len(got) != 1 || got[0].MatchCount != 2 {
+		t.Fatalf("full keyword evidence = %#v, want two matches", got)
 	}
-	if got := items[2].PoolMatches; len(got) != 1 || got[0].MatchPercent != 100 {
-		t.Fatalf("single-keyword pool match = %#v, want 100%%", got)
+	if got := items[2].PoolMatches; len(got) != 1 || got[0].MatchCount != 1 {
+		t.Fatalf("single-keyword pool match = %#v, want one match", got)
 	}
 	if got := items[3].PoolMatches; got != nil {
 		t.Fatalf("item with no pools should have nil PoolMatches, got %#v", got)

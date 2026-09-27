@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.263] - 2026-09-27
+
+### Changed
+
+- Show concrete matching-theme counts for Discovery pools instead of dividing matches by every configured alternative keyword. Label pools selected from AI story/subtitle evidence when no metadata keyword matches. The affinity score remains separate.
+
 ## [1.0.262] - 2026-09-27
 
 ### Fixed

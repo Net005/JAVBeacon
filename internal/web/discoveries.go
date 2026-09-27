@@ -43,27 +43,21 @@ type discoveryItem struct {
 	// shared character budget across a batch, so an eligible release can
 	// still receive no subtitle excerpt at all if the budget ran out first.
 	SubtitleUsed bool `json:"subtitle_used"`
-	// PoolMatches mirrors Pools with, for each pool, the share of that
-	// pool's own configured keywords which actually matched this release's
-	// metadata - a deterministic, zero-cost "how well does this fit that
-	// pool" figure computed locally, never sent to or returned by an AI
-	// provider.
+	// PoolMatches reports concrete keyword evidence for each selected pool.
 	PoolMatches []discoveryPoolMatch `json:"discovery_pool_matches,omitempty"`
 }
 
 type discoveryPoolMatch struct {
 	Name         string `json:"name"`
-	MatchPercent int    `json:"match_percent"`
+	MatchCount   int    `json:"match_count"`
+	KeywordCount int    `json:"keyword_count"`
 }
 
-// discoveryPoolMatchPercent scores how strongly release matches one pool's
-// configured keyword list: the percentage of that pool's own keywords which
-// are actually present in the release's metadata. A pool with no keywords
-// (name-only) always matches fully, matching discoveryPools' own fallback of
-// treating the pool name itself as its sole keyword.
-func discoveryPoolMatchPercent(release domain.Release, keywords []string) int {
+// Pool rules are alternatives: matching one of many configured synonyms is
+// meaningful evidence, not a low confidence percentage.
+func discoveryPoolMatchEvidence(release domain.Release, keywords []string) (int, int) {
 	if len(keywords) == 0 {
-		return 100
+		return 1, 1
 	}
 	matched := 0
 	for _, keyword := range keywords {
@@ -71,13 +65,9 @@ func discoveryPoolMatchPercent(release domain.Release, keywords []string) int {
 			matched++
 		}
 	}
-	return int(math.Round(float64(matched) / float64(len(keywords)) * 100))
+	return matched, len(keywords)
 }
 
-// discoveryAttachPoolMatches computes PoolMatches for every item already
-// carrying one or more pool names, ordered strongest match first. It must
-// run after AI enhancement, since an AI-enhanced item's Pools can include
-// pools the model selected in addition to any deterministic pool filter.
 func discoveryAttachPoolMatches(items []discoveryItem, pools map[string][]string) {
 	for i := range items {
 		if len(items[i].Pools) == 0 {
@@ -90,13 +80,14 @@ func discoveryAttachPoolMatches(items []discoveryItem, pools map[string][]string
 				continue
 			}
 			seen[name] = true
-			matches = append(matches, discoveryPoolMatch{Name: name, MatchPercent: discoveryPoolMatchPercent(items[i].Release, pools[name])})
+			count, total := discoveryPoolMatchEvidence(items[i].Release, pools[name])
+			matches = append(matches, discoveryPoolMatch{Name: name, MatchCount: count, KeywordCount: total})
 		}
 		sort.SliceStable(matches, func(a, b int) bool {
-			if matches[a].MatchPercent == matches[b].MatchPercent {
+			if matches[a].MatchCount == matches[b].MatchCount {
 				return matches[a].Name < matches[b].Name
 			}
-			return matches[a].MatchPercent > matches[b].MatchPercent
+			return matches[a].MatchCount > matches[b].MatchCount
 		})
 		items[i].PoolMatches = matches
 	}
