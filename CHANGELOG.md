@@ -5,6 +5,15 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.255] - 2026-09-27
+
+### Fixed
+
+- Resolve saved filter set membership against local Stash-linked releases in
+  SQL, instead of paging through the entire remote JAV catalog. Return a
+  retryable error when any preset lookup fails, so a partial empty tag index
+  cannot remain cached for the current library revision.
+
 ## [1.0.254] - 2026-09-27
 
 ### Fixed

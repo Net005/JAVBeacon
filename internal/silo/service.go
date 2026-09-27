@@ -341,7 +341,7 @@ func likelyReleaseCode(query string) bool {
 const stashLookupTimeout = 5 * time.Second
 
 // collectionIndexTimeout bounds collectionMembershipIndex's rebuild pass.
-const collectionIndexTimeout = 10 * time.Second
+const collectionIndexTimeout = 20 * time.Second
 
 func (s *Service) stashSceneMetadata(ctx context.Context, sceneID string) (stash.StashSceneMetadata, bool) {
 	if s.stash == nil || sceneID == "" {
@@ -543,7 +543,9 @@ func (s *Service) collectionIndexAndPresets(ctx context.Context) (map[int64][]st
 		}
 		ids, err := filterpreset.ResolveReleaseIDs(boundedCtx, s.store, filter)
 		if err != nil {
-			continue
+			// Never cache a partial index as a complete revision: otherwise
+			// tags stay absent until an unrelated library change arrives.
+			return nil, nil, fmt.Errorf("resolve saved filter %q: %w", preset.Name, err)
 		}
 		if tagName := filterpreset.SanitizeTagName(preset.Name); tagName != "" {
 			for _, id := range ids {
