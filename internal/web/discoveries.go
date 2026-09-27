@@ -1620,6 +1620,7 @@ func discoveryFilterFromQuery(q url.Values, settings map[string]string, category
 	// AI text is produced after the database query, so it must be filtered
 	// after enrichment rather than being mistaken for a release column.
 	if strings.EqualFold(strings.TrimSpace(filter.Category), "AI text") {
+		filter.AITextEntries = filter.Entries
 		filter.Category, filter.Entries = "", ""
 	}
 	if keywords := pools[pool]; pool != "" {
@@ -1929,17 +1930,10 @@ func (s *Server) discoveries(w http.ResponseWriter, r *http.Request) {
 		items, enhanced = s.enhanceDiscoveries(r.Context(), settings, items)
 	}
 	discoveryAttachPoolMatches(items, pools)
-	aiTextEntries := ""
-	if strings.EqualFold(strings.TrimSpace(q.Get("filter_category")), "AI text") {
-		aiTextEntries = q.Get("entries")
-	}
-	if aiOnly || aiTextEntries != "" {
+	if aiOnly {
 		filtered := items[:0]
 		for _, item := range items {
 			if aiOnly && !item.AIEnhanced {
-				continue
-			}
-			if aiTextEntries != "" && (!item.AIEnhanced || !discoveryAITextMatches(item.AIText, aiTextEntries, filter.WildcardLogic)) {
 				continue
 			}
 			filtered = append(filtered, item)
