@@ -218,6 +218,48 @@ func TestClearDiscoveryAIRanksOnlyClearsAIRankings(t *testing.T) {
 	}
 }
 
+func TestReleaseFilterAITextCountsAndPagesAcrossWholeSet(t *testing.T) {
+	ctx := context.Background()
+	st, err := OpenSQLite(filepath.Join(t.TempDir(), "ai-text-filter.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "AI", Type: "Site", Name: "AI", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range []string{"other theme", "story and cast", "other theme", "story and studio", "other theme"} {
+		if _, err := st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: fmt.Sprintf("AI-TEXT-%d", i), Title: fmt.Sprintf("Release %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := st.Releases(ctx, domain.ReleaseFilter{Limit: 10, ShowNonPreferred: true, Sort: "added", Direction: "asc"})
+	if err != nil || len(all) != 5 {
+		t.Fatalf("all=%#v err=%v", all, err)
+	}
+	for i, release := range all {
+		reason := []string{"other theme", "story and cast", "other theme", "story and studio", "other theme"}[i]
+		if err := st.SaveDiscoveryAIRanks(ctx, []domain.DiscoveryAIRank{{ReleaseID: release.ID, Fingerprint: "current", Reason: reason}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	filter := domain.ReleaseFilter{AITextEntries: `["story"]`, Limit: 1, ShowNonPreferred: true, Sort: "added", Direction: "asc"}
+	total, err := st.ReleasesCount(ctx, filter)
+	if err != nil || total != 2 {
+		t.Fatalf("total=%d err=%v", total, err)
+	}
+	first, err := st.Releases(ctx, filter)
+	if err != nil || len(first) != 1 || first[0].VideoID != "AI-TEXT-1" {
+		t.Fatalf("first=%#v err=%v", first, err)
+	}
+	filter.Offset = 1
+	second, err := st.Releases(ctx, filter)
+	if err != nil || len(second) != 1 || second[0].VideoID != "AI-TEXT-3" {
+		t.Fatalf("second=%#v err=%v", second, err)
+	}
+}
+
 func TestReleaseFilterAIEnhancedCountsAndPagesStoredRankings(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenSQLite(filepath.Join(t.TempDir(), "ai-enhanced-filter.db"))

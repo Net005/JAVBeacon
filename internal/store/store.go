@@ -1646,6 +1646,31 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 	if f.AIEnhanced {
 		q += ` AND EXISTS (SELECT 1 FROM discovery_ai_ranks dar WHERE dar.release_id=r.id)`
 	}
+	if strings.TrimSpace(f.AITextEntries) != "" {
+		var entries []string
+		if strings.HasPrefix(strings.TrimSpace(f.AITextEntries), "[") {
+			_ = json.Unmarshal([]byte(f.AITextEntries), &entries)
+		} else {
+			entries = strings.Split(f.AITextEntries, ",")
+		}
+		clauses := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			pattern := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`, `*`, `%`, `?`, `_`).Replace(strings.ToLower(entry))
+			clauses = append(clauses, `LOWER(dar.reason) LIKE ? ESCAPE '\'`)
+			a = append(a, "%"+pattern+"%")
+		}
+		if len(clauses) > 0 {
+			logic := " OR "
+			if strings.EqualFold(f.WildcardLogic, "and") {
+				logic = " AND "
+			}
+			q += ` AND EXISTS (SELECT 1 FROM discovery_ai_ranks dar WHERE dar.release_id=r.id AND (` + strings.Join(clauses, logic) + `))`
+		}
+	}
 	if f.Source != "" {
 		q += ` AND LOWER(r.source)=LOWER(?)`
 		a = append(a, f.Source)

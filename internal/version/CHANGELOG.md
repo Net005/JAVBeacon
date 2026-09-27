@@ -5,6 +5,15 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.251] - 2026-09-27
+
+### Fixed
+
+- Continue loading Discoveries as the user scrolls and when a loaded page
+  still leaves the viewport near the end of the results.
+- Apply AI explanation filters to the full persisted ranking set before
+  counting and paging, so filtered totals and infinite scroll remain accurate.
+
 ## [1.0.250] - 2026-09-27
 
 ### Fixed

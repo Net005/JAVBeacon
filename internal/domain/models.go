@@ -344,6 +344,8 @@ type ReleaseFilter struct {
 	// Discoveries uses it before count and pagination so the AI-only total and
 	// infinite-scroll offsets describe the same result set as the cards.
 	AIEnhanced bool
+	// AITextEntries searches persisted ranking explanations before pagination.
+	AITextEntries string
 	// SearchWildcards enables the web UI's generic search syntax: comma-
 	// separated alternatives combined with OR, with * and ? wildcards.
 	// Programmatic callers keep the original literal substring semantics.
