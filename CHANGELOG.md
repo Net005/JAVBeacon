@@ -5,6 +5,13 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.264] - 2026-09-27
+
+### Fixed
+
+- Always select one Stash scene for duplicate exact-code Silo matches. Metadata and playback still take priority; a full tie selects the higher Stash scene ID consistently for manual and automatic matching.
+- Retry Stash scene lookup without separators when a filename code such as `PMID-008` has no result, then require the returned scene code or file stem to match that normalized code exactly.
+
 ## [1.0.263] - 2026-09-27
 
 ### Changed

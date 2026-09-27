@@ -29,6 +29,30 @@ type SiloScene struct {
 }
 
 func (s *Service) SearchSiloScenes(ctx context.Context, query string) ([]SiloScene, error) {
+	rows, err := s.searchSiloScenesQuery(ctx, query, query)
+	if err != nil || len(rows) > 0 {
+		return rows, err
+	}
+	// Stash text search treats separators literally. A file named PMID-008
+	// can still refer to a scene whose code and title are PMID008.
+	compact := siloCodeKey(query)
+	if compact == "" || strings.EqualFold(compact, strings.TrimSpace(query)) {
+		return rows, nil
+	}
+	return s.searchSiloScenesQuery(ctx, query, compact)
+}
+
+func siloCodeKey(value string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(strings.TrimSpace(value)) {
+		if r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func (s *Service) searchSiloScenesQuery(ctx context.Context, query, searchTerm string) ([]SiloScene, error) {
 	base, key, err := s.stashConfig(ctx)
 	if err != nil {
 		return nil, err
@@ -37,7 +61,7 @@ func (s *Service) SearchSiloScenes(ctx context.Context, query string) ([]SiloSce
 	if query == "" {
 		return nil, nil
 	}
-	gql := fmt.Sprintf(`query { findScenes(filter: { q: %s, per_page: 25 }) { scenes { id title code details date studio { name } performers { id name image_path birthdate } tags { id name } files { path } paths { screenshot } play_count o_counter last_played_at play_duration } } }`, strconv.Quote(query))
+	gql := fmt.Sprintf(`query { findScenes(filter: { q: %s, per_page: 25 }) { scenes { id title code details date studio { name } performers { id name image_path birthdate } tags { id name } files { path } paths { screenshot } play_count o_counter last_played_at play_duration } } }`, strconv.Quote(searchTerm))
 	var payload struct {
 		Data struct {
 			FindScenes struct {
@@ -71,10 +95,10 @@ func (s *Service) SearchSiloScenes(ctx context.Context, query string) ([]SiloSce
 	out := make([]SiloScene, 0)
 	for _, scene := range payload.Data.FindScenes.Scenes {
 		code := strings.TrimSpace(scene.Code)
-		matched := strings.EqualFold(code, query)
+		matched := code != "" && siloCodeKey(code) == siloCodeKey(query)
 		for _, file := range scene.Files {
 			stem := strings.TrimSuffix(filepath.Base(file.Path), filepath.Ext(file.Path))
-			if strings.EqualFold(stem, query) {
+			if siloCodeKey(stem) == siloCodeKey(query) {
 				matched = true
 				// Silo scores against its filename-derived title. Keep the
 				// exact file stem even if Stash's scene code differs.
@@ -83,6 +107,8 @@ func (s *Service) SearchSiloScenes(ctx context.Context, query string) ([]SiloSce
 			}
 		}
 		if matched {
+			// Preserve Silo's filename spelling for the provider's exact-code match.
+			code = query
 			item := SiloScene{ID: scene.ID, Code: code, Title: scene.Title, Details: scene.Details, Date: scene.Date, ScreenshotURL: scene.Paths.Screenshot, PlayCount: scene.PlayCount, OCounter: scene.OCounter, LastPlayedAt: scene.LastPlayedAt, PlayDuration: scene.PlayDuration}
 			if scene.Studio != nil {
 				item.Studio = scene.Studio.Name
