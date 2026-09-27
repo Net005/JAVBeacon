@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -92,6 +93,49 @@ func TestOllamaLengthStopReportsUsefulFailure(t *testing.T) {
 	result := New(nil).Rank(context.Background(), baseConfig(server.URL), testCandidates(), "")
 	if !result.Skipped || !strings.Contains(result.Status, "token limit") {
 		t.Fatalf("length stop did not return a useful status: %+v", result)
+	}
+}
+
+func TestOllamaLengthStopSplitsBatchAndCompletes(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "qwen3:8b"}}})
+		case "/api/chat":
+			calls.Add(1)
+			var request struct {
+				Format struct {
+					Properties map[string]struct {
+						MinItems int `json:"minItems"`
+						Items    struct {
+							Properties map[string]struct {
+								Enum []int64 `json:"enum"`
+							} `json:"properties"`
+						} `json:"items"`
+					} `json:"properties"`
+				} `json:"format"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode: %v", err)
+				return
+			}
+			batch := request.Format.Properties["rankings"]
+			if batch.MinItems > 1 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": `{"rankings":[`}, "done_reason": "length"})
+				return
+			}
+			id := batch.Items.Properties["id"].Enum[0]
+			content := fmt.Sprintf(`{"rankings":[{"id":%d,"score":80,"reason":"The supplied title and studio match established interests.","pools":[]}]}`, id)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": content}})
+		}
+	}))
+	defer server.Close()
+	candidates := []Candidate{testCandidates()[0], testCandidates()[0]}
+	candidates[1].ID = 8
+	result := New(nil).Rank(context.Background(), baseConfig(server.URL), candidates, "")
+	if result.Skipped || len(result.Ranks) != 2 || result.Ranks[0].ID != 7 || result.Ranks[1].ID != 8 || calls.Load() < 3 {
+		t.Fatalf("batch was not recovered: %+v; calls=%d", result, calls.Load())
 	}
 }
 
