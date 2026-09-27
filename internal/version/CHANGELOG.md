@@ -5,6 +5,20 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.244] - 2026-09-27
+
+### Changed
+
+- Replaced the real homelab hostname (`example.com`) used as a
+  placeholder URL in `contrib/stash-javbeacon-realtime/test_javbeacon_scrubber.js`'s
+  test fixtures with `stash.example.invalid` (RFC 2606 reserved, guaranteed
+  never to resolve). These URLs were never actually fetched (image sizes are
+  mocked via `global.__fakeImageSizes`), so this is a pure string swap with
+  no behavior change - found while auditing this repo and its sibling plugin
+  repos for the same personal-info leak fixed in the Silo plugin's manifest
+  `publisher_name`. Git history here was already clean (every commit is
+  already authored as `Net005`), so no history rewrite was needed.
+
 ## [1.0.243] - 2026-09-27
 
 ### Changed
