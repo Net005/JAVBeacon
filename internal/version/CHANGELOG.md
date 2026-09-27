@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.267] - 2026-09-27
+
+### Fixed
+
+- Crop two-panel Stash fallback covers to the right-hand front panel for Silo posters, including FSDSS-661 and JUFE-538. Keep the original scene image for backdrops and leave other screenshot shapes unchanged.
+
 ## [1.0.266] - 2026-09-27
 
 ### Fixed

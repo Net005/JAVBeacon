@@ -173,6 +173,7 @@ type Metadata struct {
 	// package's own dedicated /api/v1/integrations/silo/releases/{id}/
 	// stash-cover endpoint, not Jellyfin's.
 	StashScreenshotURL string `json:"stash_screenshot_url,omitempty"`
+	StashPosterURL     string `json:"stash_poster_url,omitempty"`
 	SourceURL          string `json:"source_url,omitempty"`
 	// CollectionNames lists every saved filter set (see FilterPresetCollection)
 	// this release currently matches. Only populated by Metadata (a
@@ -463,7 +464,8 @@ func (s *Service) stashOnlyMetadata(ctx context.Context, scene stash.SiloScene) 
 	}
 	if scene.ScreenshotURL != "" {
 		m.StashScreenshotURL = "/api/v1/integrations/silo/stash/scenes/" + url.PathEscape(scene.ID) + "/cover"
-		m.CoverPath = m.StashScreenshotURL
+		m.StashPosterURL = m.StashScreenshotURL + "?variant=poster"
+		m.CoverPath = m.StashPosterURL
 	}
 	m.PerformerImages = map[string]string{}
 	m.PerformerDetails = map[string]PerformerDetail{}
@@ -764,6 +766,9 @@ func applyStashScene(r domain.Release, m Metadata, scene stash.StashSceneMetadat
 	}
 	if missingImage && scene.ScreenshotURL != "" {
 		m.StashScreenshotURL = fmt.Sprintf("/api/v1/integrations/silo/releases/%d/stash-cover", r.ID)
+		m.StashPosterURL = m.StashScreenshotURL + "?variant=poster"
+		m.CoverPath = m.StashPosterURL
+		m.CoverBackdropPath = m.StashScreenshotURL
 	}
 	return m
 }
