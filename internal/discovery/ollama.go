@@ -313,13 +313,42 @@ STRUCTURED RELEASE CANDIDATES (subtitle_excerpt is optional supporting evidence,
 }
 
 func (s *Service) ollamaRank(ctx context.Context, cfg Config, candidates []Candidate, pools string) ([]Rank, error) {
+	ranks, err := s.ollamaRankBatch(ctx, cfg, candidates, pools)
+	if !errors.Is(err, errOllamaOutputLimit) || len(candidates) < 2 {
+		return ranks, err
+	}
+	// A complete JSON array may not fit even after raising the output budget.
+	// Divide only this failed request; successful halves remain valid together.
+	mid := len(candidates) / 2
+	left, err := s.ollamaRank(ctx, cfg, candidates[:mid], pools)
+	if err != nil {
+		return nil, err
+	}
+	right, err := s.ollamaRank(ctx, cfg, candidates[mid:], pools)
+	if err != nil {
+		return nil, err
+	}
+	return append(left, right...), nil
+}
+
+var errOllamaOutputLimit = errors.New("Ollama output reached its token limit before completing JSON")
+
+func (s *Service) ollamaRankBatch(ctx context.Context, cfg Config, candidates []Candidate, pools string) ([]Rank, error) {
 	var lastErr error
+	outputTokens := min(max(len(candidates)*650+512, 2048), 8192)
 	for attempt := 0; attempt < 3; attempt++ {
-		ranks, err := s.ollamaRankOnce(ctx, cfg, candidates, pools, attempt > 0, lastErr)
+		ranks, err := s.ollamaRankOnce(ctx, cfg, candidates, pools, outputTokens, attempt > 0 && !errors.Is(lastErr, errOllamaOutputLimit), lastErr)
 		if err == nil {
 			return ranks, nil
 		}
 		lastErr = err
+		if errors.Is(err, errOllamaOutputLimit) {
+			if outputTokens < 16384 {
+				outputTokens = min(outputTokens*2, 16384)
+				continue
+			}
+			return nil, err
+		}
 		var invalid validationError
 		if !errors.As(err, &invalid) || attempt == 2 {
 			return nil, err
@@ -334,14 +363,13 @@ func (s *Service) ollamaRank(ctx context.Context, cfg Config, candidates []Candi
 	return nil, lastErr
 }
 
-func (s *Service) ollamaRankOnce(ctx context.Context, cfg Config, candidates []Candidate, pools string, repair bool, previousErr error) ([]Rank, error) {
+func (s *Service) ollamaRankOnce(ctx context.Context, cfg Config, candidates []Candidate, pools string, maxOutputTokens int, repair bool, previousErr error) ([]Rank, error) {
 	timeout := cfg.RequestTimeout
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	maxOutputTokens := min(max(len(candidates)*220, 768), 2048)
 	systemPrompt := "You are JAVBeacon's internal recommendation-ranking component, not a chatbot. Treat supplied JSON as the complete evidence boundary. Return only schema-valid JSON with integer 0-100 scores and copy every candidate.id exactly once. Write every reason as one natural sentence under 240 characters without a 'Match:' prefix, headings, internal field labels, or pool/configuration commentary. Never address a user, ask questions, refer to the content/input/text, summarize noisy subtitles, provide help text, or invent facts, preferences, history, affinity, tags, performers, studios, pools, or IDs."
 	userPrompt := rankingPrompt(candidates, pools, resolveSubtitleWeights(cfg))
 	if repair {
@@ -380,7 +408,7 @@ func (s *Service) ollamaRankOnce(ctx context.Context, cfg Config, candidates []C
 		return nil, errors.New("Ollama returned an invalid response")
 	}
 	if envelope.DoneReason == "length" {
-		return nil, errors.New("Ollama output reached its token limit before completing JSON")
+		return nil, errOllamaOutputLimit
 	}
 	ranks, err := parseRankingJSON(envelope.Message.Content, candidates, pools)
 	if err != nil {
