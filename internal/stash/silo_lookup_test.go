@@ -53,6 +53,39 @@ func TestSiloLookupMatchesExactStashFilenameWithoutSceneCode(t *testing.T) {
 	}
 }
 
+func TestSiloLookupFindsCompactStashCodeForHyphenatedFilename(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(request.Query, `q: "PMID008"`) {
+			_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[{"id":"6650","code":"PMID008","title":"PMID008","files":[{"path":"/stash/PMID008.mp4"}]}]}}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[]}}}`))
+	}))
+	defer server.Close()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "compact.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(context.Background(), map[string]string{"stash_base_url": server.URL, "stash_api_key": "test"}); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(st, time.Second, slog.Default(), nil, nil)
+	rows, err := svc.SearchSiloScenes(context.Background(), "PMID-008")
+	if err != nil || calls != 2 || len(rows) != 1 || rows[0].ID != "6650" || rows[0].Code != "PMID-008" {
+		t.Fatalf("rows=%+v calls=%d err=%v", rows, calls, err)
+	}
+}
+
 func TestSiloWatchlistScenesReadsConfiguredStashTagAndUpdatedAt(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {

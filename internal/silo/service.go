@@ -310,10 +310,7 @@ func (s *Service) SearchStashScenes(ctx context.Context, query string) ([]Metada
 		return nil, nil
 	}
 	if len(scenes) > 1 {
-		best, ok := bestStashScene(scenes)
-		if !ok {
-			return nil, nil // Equal evidence cannot identify the right scene.
-		}
+		best, _ := bestStashScene(scenes)
 		scenes = []stash.SiloScene{best}
 	}
 	out := make([]Metadata, 0, len(scenes))
@@ -338,25 +335,35 @@ func (s *Service) SearchStashScenes(ctx context.Context, query string) ([]Metada
 }
 
 // bestStashScene chooses one exact-code/file-stem candidate using metadata
-// completeness and playback evidence. A tie remains ambiguous so Silo never
-// force-links an arbitrary Stash scene to a local file.
+// completeness and playback evidence. Exact ties use the Stash scene ID so
+// manual and automatic matching choose the same scene regardless of result order.
 func bestStashScene(scenes []stash.SiloScene) (stash.SiloScene, bool) {
 	if len(scenes) == 0 {
 		return stash.SiloScene{}, false
 	}
 	best := scenes[0]
 	bestTotal, bestPlayback, bestMetadata := stashSceneScore(best)
-	tied := false
 	for _, scene := range scenes[1:] {
 		total, playback, metadata := stashSceneScore(scene)
-		switch {
-		case total > bestTotal || (total == bestTotal && playback > bestPlayback) || (total == bestTotal && playback == bestPlayback && metadata > bestMetadata) || (total == bestTotal && playback == bestPlayback && metadata == bestMetadata && stashPlayedAfter(scene.LastPlayedAt, best.LastPlayedAt)):
-			best, bestTotal, bestPlayback, bestMetadata, tied = scene, total, playback, metadata, false
-		case total == bestTotal && playback == bestPlayback && metadata == bestMetadata && !stashPlayedAfter(best.LastPlayedAt, scene.LastPlayedAt):
-			tied = true
+		if total > bestTotal ||
+			(total == bestTotal && playback > bestPlayback) ||
+			(total == bestTotal && playback == bestPlayback && metadata > bestMetadata) ||
+			(total == bestTotal && playback == bestPlayback && metadata == bestMetadata &&
+				(stashPlayedAfter(scene.LastPlayedAt, best.LastPlayedAt) ||
+					(!stashPlayedAfter(best.LastPlayedAt, scene.LastPlayedAt) && stashSceneIDAfter(scene.ID, best.ID)))) {
+			best, bestTotal, bestPlayback, bestMetadata = scene, total, playback, metadata
 		}
 	}
-	return best, !tied
+	return best, true
+}
+
+func stashSceneIDAfter(a, b string) bool {
+	first, errA := strconv.ParseUint(a, 10, 64)
+	second, errB := strconv.ParseUint(b, 10, 64)
+	if errA == nil && errB == nil {
+		return first > second
+	}
+	return a > b
 }
 
 func stashPlayedAfter(a, b string) bool {

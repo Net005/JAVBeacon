@@ -524,15 +524,17 @@ func TestStashOnlyFilenameFallback(t *testing.T) {
 	}
 }
 
-func TestBestStashSceneFavorsPlaybackAndRetainsTrueTies(t *testing.T) {
+func TestBestStashSceneFavorsPlaybackAndBreaksTrueTies(t *testing.T) {
 	plain := stash.SiloScene{ID: "plain", Code: "ANIX-01", Title: "ANIX-01"}
 	rich := stash.SiloScene{ID: "rich", Code: "ANIX-01", Title: "ANIX-01", Details: "Detailed story", Date: "2024-01-01", Studio: "Studio", Tags: []string{"Drama"}, ScreenshotURL: "/screenshot.jpg"}
 	played := stash.SiloScene{ID: "played", Code: "ANIX-01", Title: "ANIX-01", Details: "Detailed story", PlayCount: 3, OCounter: 2, LastPlayedAt: "2026-09-27T10:00:00Z"}
 	if best, ok := bestStashScene([]stash.SiloScene{plain, rich, played}); !ok || best.ID != "played" {
 		t.Fatalf("best=%+v ok=%v, want played", best, ok)
 	}
-	if _, ok := bestStashScene([]stash.SiloScene{plain, {ID: "other", Code: "ANIX-01", Title: "ANIX-01"}}); ok {
-		t.Fatal("equal candidates must remain ambiguous")
+	for _, scenes := range [][]stash.SiloScene{{{ID: "10596", Code: "TZZ-07", Title: "TZZ-07"}, {ID: "10597", Code: "TZZ-07", Title: "TZZ-07"}}, {{ID: "10597", Code: "TZZ-07", Title: "TZZ-07"}, {ID: "10596", Code: "TZZ-07", Title: "TZZ-07"}}} {
+		if best, ok := bestStashScene(scenes); !ok || best.ID != "10597" {
+			t.Fatalf("stable duplicate choice: best=%+v ok=%v", best, ok)
+		}
 	}
 	older := stash.SiloScene{ID: "older", Title: "ANIX-01", PlayCount: 1, LastPlayedAt: "2026-09-20T10:00:00Z"}
 	newer := stash.SiloScene{ID: "newer", Title: "ANIX-01", PlayCount: 1, LastPlayedAt: "2026-09-27T10:00:00Z"}
