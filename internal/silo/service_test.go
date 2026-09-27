@@ -153,6 +153,26 @@ func TestSearchNeverCallsStash(t *testing.T) {
 // Metadata.Watchlist must mirror domain.Release.Watchlist and (unlike
 // CollectionNames/PerformerImages) cost nothing extra, so it is populated
 // everywhere, including Search.
+func TestSearchOnlyReturnsLocalStashLinkedReleases(t *testing.T) {
+	svc, st, _, _ := testService(t)
+	defer st.Close()
+	site, err := st.SaveSite(context.Background(), domain.Site{Title: "Other", Name: "Other", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(context.Background(), domain.Release{SiteID: site.ID, VideoID: "REMOTE-123", Title: "REMOTE-123"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := svc.Search(context.Background(), "REMOTE-123", 10)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("nonlocal release leaked into Silo search: %+v err=%v", rows, err)
+	}
+	rows, err = svc.Search(context.Background(), "ABC-123", 10)
+	if err != nil || len(rows) != 1 || rows[0].StashSceneID != "stash-1" {
+		t.Fatalf("local Stash release missing: %+v err=%v", rows, err)
+	}
+}
+
 func TestSearchCodeMissDoesNotFallBackToBroadText(t *testing.T) {
 	svc, st, _, _ := testService(t)
 	defer st.Close()
@@ -343,6 +363,37 @@ func TestPlaybackIgnoresOutOfOrderCallbacks(t *testing.T) {
 	}
 	if result.Accumulated != 35 || result.Forwarded != 35 || len(bridge.saves) != 1 {
 		t.Fatalf("progress after reorder=%+v saves=%+v", result, bridge.saves)
+	}
+}
+
+func TestNonlocalJAVReleaseDoesNotBlockStashFilenameFallback(t *testing.T) {
+	svc, st, bridge, _ := testService(t)
+	defer st.Close()
+	site, err := st.SaveSite(context.Background(), domain.Site{Title: "Other", Name: "Other", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(context.Background(), domain.Release{SiteID: site.ID, VideoID: "REMOTE-123", Title: "REMOTE-123"}); err != nil {
+		t.Fatal(err)
+	}
+	bridge.siloScenes = []stash.SiloScene{{ID: "local-scene", Code: "REMOTE-123", Title: "Local scene"}}
+	catalog, err := svc.Search(context.Background(), "REMOTE-123", 10)
+	if err != nil || len(catalog) != 0 {
+		t.Fatalf("nonlocal catalog result blocked fallback: %+v err=%v", catalog, err)
+	}
+	fallback, err := svc.SearchStashScenes(context.Background(), "REMOTE-123")
+	if err != nil || len(fallback) != 1 || fallback[0].ProviderID != "stash:local-scene" {
+		t.Fatalf("Stash filename fallback missing: %+v err=%v", fallback, err)
+	}
+}
+
+func TestStashFilenamePrefersLinkedLocalRelease(t *testing.T) {
+	svc, st, bridge, release := testService(t)
+	defer st.Close()
+	bridge.siloScenes = []stash.SiloScene{{ID: "stash-1", Code: "alternate-filename", Title: "Scene"}}
+	rows, err := svc.SearchStashScenes(context.Background(), "alternate-filename")
+	if err != nil || len(rows) != 1 || rows[0].ReleaseID != release.ID || rows[0].Code != "alternate-filename" {
+		t.Fatalf("rows=%+v err=%v", rows, err)
 	}
 }
 

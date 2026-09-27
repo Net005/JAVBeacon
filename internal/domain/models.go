@@ -337,7 +337,9 @@ type ReleaseFilter struct {
 	StashFilePath string
 	// StashSceneID resolves the exact JAVBeacon release linked to a StashApp
 	// scene. It is used by the authenticated Stash scene-page integration.
-	StashSceneID                                                       string
+	StashSceneID string
+	// StashLinked keeps provider searches inside the actual local Stash library.
+	StashLinked                                                        bool
 	SiteID                                                             int64
 	Watchlist, HideLocal, HideMonitored, MonitorDownload, UsePreferred bool
 	// AIEnhanced restricts releases to those with a persisted AI ranking.
