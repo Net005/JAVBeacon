@@ -204,6 +204,72 @@ func canonical(raw string) string {
 	return letters + numbers
 }
 
+// bestReleaseCandidate picks the single candidate with strictly the most
+// scraped metadata among releases that all share the same canonical release
+// code (see canonical) - see Match's own doc comment for why a tie must
+// return ok=false rather than guess.
+func bestReleaseCandidate(candidates []domain.Release) (domain.Release, bool) {
+	bestIdx := 0
+	bestScore := releaseCompletenessScore(candidates[0])
+	tied := false
+	for i := 1; i < len(candidates); i++ {
+		score := releaseCompletenessScore(candidates[i])
+		switch {
+		case score > bestScore:
+			bestIdx, bestScore, tied = i, score, false
+		case score == bestScore:
+			tied = true
+		}
+	}
+	if tied {
+		return domain.Release{}, false
+	}
+	return candidates[bestIdx], true
+}
+
+// releaseCompletenessScore is a rough "how much did we actually scrape for
+// this release" signal, used only to break a tie between two or more
+// releases sharing the same canonical release code. Weighted toward fields a
+// real scrape either clearly has or clearly doesn't (release date, cast, a
+// linked StashApp scene, a cover image) over less telling ones like Duration
+// - the exact weights matter far less than the ordering, which is unlikely
+// to be close in practice: a duplicate is normally one fully-scraped row and
+// one essentially-empty placeholder, not two competitively-scraped rows.
+func releaseCompletenessScore(r domain.Release) int {
+	score := 0
+	if strings.TrimSpace(r.ReleaseDate) != "" {
+		score += 2
+	}
+	if len(r.Actresses) > 0 {
+		score += 2
+	}
+	if strings.TrimSpace(r.ImageURL) != "" {
+		score += 2
+	}
+	if strings.TrimSpace(r.StashSceneID) != "" {
+		score += 2
+	}
+	if strings.TrimSpace(r.Studio) != "" {
+		score++
+	}
+	if len(r.Genres) > 0 {
+		score++
+	}
+	if strings.TrimSpace(r.Director) != "" {
+		score++
+	}
+	if strings.TrimSpace(r.Duration) != "" {
+		score++
+	}
+	if strings.TrimSpace(r.Story) != "" {
+		score++
+	}
+	if releaseTitle(r.VideoID, r.Title) != "" {
+		score++
+	}
+	return score
+}
+
 func (s *Service) Match(ctx context.Context, path, query string) (MatchResult, error) {
 	if s.repo == nil {
 		return MatchResult{}, errors.New("Jellyfin integration storage is unavailable")
@@ -240,11 +306,32 @@ func (s *Service) Match(ctx context.Context, path, query string) (MatchResult, e
 	if err != nil {
 		return MatchResult{}, err
 	}
+	var candidates []domain.Release
 	for _, r := range rows {
 		if canonical(r.VideoID) == want {
-			m := s.metadataForRelease(ctx, r)
-			return MatchResult{Matched: true, MatchMethod: "release_code", Release: &m}, nil
+			candidates = append(candidates, r)
 		}
+	}
+	switch len(candidates) {
+	case 0:
+		return MatchResult{Matched: false}, nil
+	case 1:
+		m := s.metadataForRelease(ctx, candidates[0])
+		return MatchResult{Matched: true, MatchMethod: "release_code", Release: &m}, nil
+	}
+	// More than one release shares this exact canonical code - a genuine
+	// JAVBeacon-side duplicate (confirmed live: the Release Library can show
+	// two cards for the same code, one fully scraped and one an essentially
+	// empty placeholder). This is the automatic scan-time match path, so it
+	// must pick confidently or not at all: bestReleaseCandidate only returns
+	// ok=true when one candidate strictly has the most metadata. A tie falls
+	// back to Matched=false, leaving the item unidentified for a human to
+	// resolve through Jellyfin's own manual Identify flow, which calls
+	// Search (always returns every candidate, never auto-picks) rather than
+	// through this automatic path.
+	if best, ok := bestReleaseCandidate(candidates); ok {
+		m := s.metadataForRelease(ctx, best)
+		return MatchResult{Matched: true, MatchMethod: "release_code", Release: &m}, nil
 	}
 	return MatchResult{Matched: false}, nil
 }

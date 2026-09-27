@@ -5,6 +5,23 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.240] - 2026-09-27
+
+### Fixed
+
+- Fixed Jellyfin auto-matching (library scan) picking an arbitrary release
+  when two JAVBeacon releases share the exact same release code - a genuine
+  duplicate that can arise from two different site/scraper registrations
+  (confirmed live: two "THPA-15" cards in the Release Library, one fully
+  scraped, one an essentially empty placeholder). `Match`'s release-code
+  fallback now picks the single candidate with strictly the most scraped
+  metadata (release date, cast, studio, genres, a linked StashApp scene,
+  etc.) rather than whichever row the database happened to return first. If
+  two or more duplicates tie for the most metadata, there is no confident
+  automatic choice, so the item is left unmatched exactly as before -
+  `Search` (used for manual Identify) is unaffected and still returns every
+  duplicate for a human to pick from.
+
 ## [1.0.239] - 2026-09-27
 
 ### Changed

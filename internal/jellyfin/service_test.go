@@ -506,6 +506,102 @@ func TestMatchSupportsJellyfinToStashPathRemaps(t *testing.T) {
 	}
 }
 
+// TestMatchPicksMostCompleteDuplicateReleaseCode guards a real production
+// scenario: the Release Library can show two cards for the exact same
+// release code (e.g. "THPA-15"), one fully scraped and one an essentially
+// empty placeholder - both canonical()-equal, so the release-code fallback
+// used to just return whichever row store.Releases happened to return first.
+// Auto-matching (this function - the scan-time path with no exact file-path
+// hit) must instead pick the candidate with strictly more scraped metadata.
+// Manual search (Search, unaffected by this change) still returns every
+// duplicate for a human to choose from.
+func TestMatchPicksMostCompleteDuplicateReleaseCode(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "dup.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	// Two different sites are required: releases.(site_id, video_id) is
+	// unique, so a real duplicate like "THPA-15" arises from two different
+	// site/scraper registrations landing on the same release code, not from
+	// upserting the same site twice.
+	siteA, err := st.SaveSite(context.Background(), domain.Site{Title: "Site A", Name: "SiteA", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	siteB, err := st.SaveSite(context.Background(), domain.Site{Title: "Site B", Name: "SiteB", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(context.Background(), domain.Release{SiteID: siteA.ID, VideoID: "DUP-15", Title: "DUP-15", Source: "SourceBlank"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(context.Background(), domain.Release{SiteID: siteB.ID, VideoID: "DUP-15", Title: "DUP-15 A Real Title", Source: "SourceRich", ReleaseDate: "2026-01-02", Studio: "Studio A", ImageURL: "https://source.invalid/cover.jpg", Actresses: []string{"Someone"}, Genres: []string{"Drama"}}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.Releases(context.Background(), domain.ReleaseFilter{Search: "DUP-15", Limit: 10})
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("expected 2 duplicate rows, got %v %+v", err, rows)
+	}
+	var blankID, richID int64
+	for _, r := range rows {
+		if r.Studio == "Studio A" {
+			richID = r.ID
+			if err := st.SetStashState(context.Background(), r.ID, true, "stash-rich"); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			blankID = r.ID
+		}
+	}
+	if blankID == 0 || richID == 0 {
+		t.Fatalf("expected one blank and one rich duplicate, got rows=%+v", rows)
+	}
+	svc := newService(st, &fakeStash{})
+	result, err := svc.Match(context.Background(), "", "DUP-15")
+	if err != nil || !result.Matched || result.MatchMethod != "release_code" {
+		t.Fatalf("match=%+v err=%v", result, err)
+	}
+	if result.Release.ReleaseID != richID {
+		t.Fatalf("Match picked release %d, want the fully-scraped duplicate %d (blank duplicate was %d)", result.Release.ReleaseID, richID, blankID)
+	}
+}
+
+// TestMatchGivesUpOnTiedDuplicateReleaseCodes guards the safety side of the
+// same fix: when two releases share a canonical code and neither has more
+// scraped metadata than the other, there is no confident automatic choice,
+// so Match must return Matched=false (leaving it for a human to resolve via
+// manual search) rather than guess.
+func TestMatchGivesUpOnTiedDuplicateReleaseCodes(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "dup-tied.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	siteA, err := st.SaveSite(context.Background(), domain.Site{Title: "Site A", Name: "SiteA", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	siteB, err := st.SaveSite(context.Background(), domain.Site{Title: "Site B", Name: "SiteB", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(context.Background(), domain.Release{SiteID: siteA.ID, VideoID: "DUP-16", Title: "DUP-16", Source: "SourceA"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(context.Background(), domain.Release{SiteID: siteB.ID, VideoID: "DUP-16", Title: "DUP-16", Source: "SourceB"}); err != nil {
+		t.Fatal(err)
+	}
+	svc := newService(st, &fakeStash{})
+	result, err := svc.Match(context.Background(), "", "DUP-16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Matched {
+		t.Fatalf("expected Matched=false for tied duplicates with no confident winner, got %+v", result)
+	}
+}
+
 func TestLibrarySyncReturnsOnlyLocalWatchlistItems(t *testing.T) {
 	svc, st, _, r := testService(t)
 	defer st.Close()
