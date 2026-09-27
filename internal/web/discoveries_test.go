@@ -107,6 +107,23 @@ func TestSubtitleScanReportsLiveFoundCount(t *testing.T) {
 	}
 }
 
+func TestSubtitleFullScanCountsOnlyUsableDialogue(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"ABC-1.en.srt": "1\n00:00:01,000 --> 00:00:03,000\nHello there\n",
+		"ABC-2.en.srt": "1\n00:00:01,000 --> 00:00:03,000\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	releases := []domain.Release{{ID: 1, StashFilePath: filepath.Join(dir, "ABC-1.mp4")}, {ID: 2, StashFilePath: filepath.Join(dir, "ABC-2.mp4")}}
+	availability, stats := scanSubtitleAvailabilityWithUsability(releases, true, nil)
+	if len(availability) != 2 || stats.UsableReleases != 1 {
+		t.Fatalf("available=%v usable=%d", availability, stats.UsableReleases)
+	}
+}
+
 // TestSubtitleScanCountsMissingFilePathSeparatelyFromUnreadableDirectories
 // guards the diagnostic distinction added for the "why is subtitles indexed
 // stuck at 0" report: a release with no recorded Stash file path at all

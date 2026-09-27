@@ -18,25 +18,25 @@ import (
 )
 
 type discoveryJobStatus struct {
-	Running         bool      `json:"running"`
-	Mode            string    `json:"mode,omitempty"`
-	Stage           string    `json:"stage,omitempty"`
-	StartedAt       time.Time `json:"started_at,omitempty"`
-	StageStartedAt  time.Time `json:"stage_started_at,omitempty"`
-	FinishedAt      time.Time `json:"finished_at,omitempty"`
-	LastSyncedAt    time.Time `json:"last_synced_at,omitempty"`
-	NextSyncAt      time.Time `json:"next_sync_at,omitempty"`
-	Total           int       `json:"total"`
-	Completed       int       `json:"completed"`
-	SubtitleCount   int       `json:"subtitle_count"`
-	Error           string    `json:"error,omitempty"`
-	SubtitleLastRun time.Time `json:"subtitle_last_run_at,omitempty"`
-	// SubtitleScanned/SubtitleUnreadableDirs/SubtitleMissingPath describe the
-	// most recently completed subtitle availability scan. Unlike
-	// Total/Completed (which later job stages reuse and overwrite), these
-	// persist until the next subtitle scan runs, so the Settings page can
-	// always show what the last scan actually found - most importantly,
-	// whether "0 subtitles" means none exist or the scan couldn't read them.
+	Running                bool      `json:"running"`
+	Mode                   string    `json:"mode,omitempty"`
+	Stage                  string    `json:"stage,omitempty"`
+	StartedAt              time.Time `json:"started_at,omitempty"`
+	StageStartedAt         time.Time `json:"stage_started_at,omitempty"`
+	FinishedAt             time.Time `json:"finished_at,omitempty"`
+	LastSyncedAt           time.Time `json:"last_synced_at,omitempty"`
+	NextSyncAt             time.Time `json:"next_sync_at,omitempty"`
+	Total                  int       `json:"total"`
+	Completed              int       `json:"completed"`
+	SubtitleCount          int       `json:"subtitle_count"`
+	SubtitleUsable         int       `json:"subtitle_usable_count"`
+	SubtitleScanFound      int       `json:"subtitle_scan_found"`
+	SubtitleIndexUpdatedAt time.Time `json:"subtitle_index_updated_at,omitempty"`
+	Error                  string    `json:"error,omitempty"`
+	SubtitleLastRun        time.Time `json:"subtitle_last_run_at,omitempty"`
+	// The subtitle index fields describe the last completed full scan. They
+	// are saved in settings and restored into each job snapshot, unlike
+	// Total/Completed, which report only the current operation.
 	SubtitleScanned        int       `json:"subtitle_scanned"`
 	SubtitleUnreadableDirs int       `json:"subtitle_unreadable_directories"`
 	SubtitleMissingPath    int       `json:"subtitle_missing_file_path"`
@@ -129,6 +129,14 @@ func discoveryJobSnapshot(settings map[string]string) discoveryJobStatus {
 		status.NextSyncAt = time.Time{}
 	}
 	status.SubtitleLastRun, _ = time.Parse(time.RFC3339Nano, settings["discoveries_subtitle_last_run_at"])
+	if indexedAt, err := time.Parse(time.RFC3339Nano, settings["discoveries_subtitle_index_updated_at"]); err == nil && indexedAt.After(status.SubtitleIndexUpdatedAt) {
+		status.SubtitleIndexUpdatedAt = indexedAt
+		status.SubtitleCount = discoveryInt(settings, "discoveries_subtitle_index_available", 0)
+		status.SubtitleUsable = discoveryInt(settings, "discoveries_subtitle_index_usable", 0)
+		status.SubtitleScanned = discoveryInt(settings, "discoveries_subtitle_index_scanned", 0)
+		status.SubtitleUnreadableDirs = discoveryInt(settings, "discoveries_subtitle_index_unreadable_dirs", 0)
+		status.SubtitleMissingPath = discoveryInt(settings, "discoveries_subtitle_index_missing_paths", 0)
+	}
 	status.OpenAILastRun, _ = time.Parse(time.RFC3339Nano, settings["discoveries_openai_last_run_at"])
 	now := time.Now().UTC()
 	if status.Running && !status.StartedAt.IsZero() {
@@ -182,15 +190,12 @@ func discoveryJobSnapshot(settings map[string]string) discoveryJobStatus {
 
 func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mode string) error {
 	jobStartedAt := time.Now().UTC()
-	discoverySubtitleCache.RLock()
-	previousSubtitleCount := len(discoverySubtitleCache.availability)
-	discoverySubtitleCache.RUnlock()
 	discoveryJobs.Lock()
 	if discoveryJobs.status.Running {
 		discoveryJobs.Unlock()
 		return errors.New("a Discoveries refresh is already running")
 	}
-	discoveryJobs.status = discoveryJobStatus{Running: true, Mode: mode, Stage: "Loading changed releases", StartedAt: jobStartedAt, StageStartedAt: jobStartedAt, SubtitleCount: previousSubtitleCount}
+	discoveryJobs.status = discoveryJobStatus{Running: true, Mode: mode, Stage: "Loading changed releases", StartedAt: jobStartedAt, StageStartedAt: jobStartedAt, SubtitleCount: 0}
 	discoveryJobs.Unlock()
 	go func() {
 		jobContext := context.WithoutCancel(ctx)
@@ -292,17 +297,19 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 			discoveryJobs.status.Total = len(releases)
 			discoveryJobs.status.CurrentItem = "Filesystem subtitle paths"
 			discoveryJobs.Unlock()
-			changedAvailability, subtitleStats := scanSubtitleAvailability(discoveryRemapReleases(releases, settings["stash_missing_path_remaps"]), func(completed, found int) {
+			changedAvailability, subtitleStats := scanSubtitleAvailabilityWithUsability(discoveryRemapReleases(releases, settings["stash_missing_path_remaps"]), fullRefresh, func(completed, found int) {
 				discoveryJobs.Lock()
 				discoveryJobs.status.Completed = completed
-				discoveryJobs.status.SubtitleCount = found
+				discoveryJobs.status.SubtitleScanFound = found
 				discoveryJobs.Unlock()
 			})
-			discoveryJobs.Lock()
-			discoveryJobs.status.SubtitleScanned = len(releases)
-			discoveryJobs.status.SubtitleUnreadableDirs = subtitleStats.UnreadableDirectories
-			discoveryJobs.status.SubtitleMissingPath = subtitleStats.MissingFilePath
-			discoveryJobs.Unlock()
+			if fullRefresh {
+				discoveryJobs.Lock()
+				discoveryJobs.status.SubtitleScanned = len(releases)
+				discoveryJobs.status.SubtitleUnreadableDirs = subtitleStats.UnreadableDirectories
+				discoveryJobs.status.SubtitleMissingPath = subtitleStats.MissingFilePath
+				discoveryJobs.Unlock()
+			}
 			if log != nil {
 				if subtitleStats.UnreadableDirectories > 0 {
 					log.Warn("Discovery subtitle scan could not read media directories", "unreadable", subtitleStats.UnreadableDirectories, "directories", subtitleStats.Directories)
@@ -324,6 +331,24 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 			}
 			for _, release := range releases {
 				checked[release.ID] = true
+			}
+			if fullRefresh {
+				indexedAt := time.Now().UTC()
+				discoveryJobs.Lock()
+				discoveryJobs.status.SubtitleCount = len(availability)
+				discoveryJobs.status.SubtitleUsable = subtitleStats.UsableReleases
+				discoveryJobs.status.SubtitleIndexUpdatedAt = indexedAt
+				discoveryJobs.Unlock()
+				if err := st.SaveSettings(jobContext, map[string]string{
+					"discoveries_subtitle_index_updated_at":      indexedAt.Format(time.RFC3339Nano),
+					"discoveries_subtitle_index_available":       strconv.Itoa(len(availability)),
+					"discoveries_subtitle_index_usable":          strconv.Itoa(subtitleStats.UsableReleases),
+					"discoveries_subtitle_index_scanned":         strconv.Itoa(len(releases)),
+					"discoveries_subtitle_index_unreadable_dirs": strconv.Itoa(subtitleStats.UnreadableDirectories),
+					"discoveries_subtitle_index_missing_paths":   strconv.Itoa(subtitleStats.MissingFilePath),
+				}); err != nil && log != nil {
+					log.Warn("Could not persist Discoveries subtitle index summary", "error", err)
+				}
 			}
 			discoverySubtitleCache.Lock()
 			discoverySubtitleCache.created = time.Now()
@@ -404,7 +429,6 @@ func startDiscoveryJob(ctx context.Context, st store.Store, log *slog.Logger, mo
 		}
 		discoveryJobs.Lock()
 		discoveryJobs.status.Completed = len(releases)
-		discoveryJobs.status.SubtitleCount = len(availability)
 		discoveryJobs.Unlock()
 		finish(nil)
 	}()

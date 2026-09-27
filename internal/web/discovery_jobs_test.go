@@ -42,6 +42,26 @@ func TestDiscoveryNextRunsDisabledHasNoForecast(t *testing.T) {
 	}
 }
 
+func TestDiscoveryJobSnapshotRestoresSubtitleIndexAfterRestart(t *testing.T) {
+	discoveryJobs.Lock()
+	previous := discoveryJobs.status
+	discoveryJobs.status = discoveryJobStatus{}
+	discoveryJobs.Unlock()
+	t.Cleanup(func() { discoveryJobs.Lock(); discoveryJobs.status = previous; discoveryJobs.Unlock() })
+	indexedAt := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+	status := discoveryJobSnapshot(map[string]string{
+		"discoveries_subtitle_index_updated_at":      indexedAt,
+		"discoveries_subtitle_index_available":       "42",
+		"discoveries_subtitle_index_usable":          "37",
+		"discoveries_subtitle_index_scanned":         "100",
+		"discoveries_subtitle_index_missing_paths":   "3",
+		"discoveries_subtitle_index_unreadable_dirs": "2",
+	})
+	if status.SubtitleCount != 42 || status.SubtitleUsable != 37 || status.SubtitleScanned != 100 || status.SubtitleMissingPath != 3 || status.SubtitleUnreadableDirs != 2 || status.SubtitleIndexUpdatedAt.IsZero() {
+		t.Fatalf("restored subtitle index = %+v", status)
+	}
+}
+
 func TestDiscoveryJobSnapshotKeepsCompletedRunTiming(t *testing.T) {
 	discoveryJobs.Lock()
 	previous := discoveryJobs.status

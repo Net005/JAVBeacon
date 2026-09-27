@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -442,26 +443,67 @@ func cleanedSubtitleExcerpt(release domain.Release, maxChars int) string {
 	if maxChars <= 0 {
 		return ""
 	}
+	return cleanedSubtitleExcerptFiles(subtitleFiles(release), maxChars)
+}
+
+func cleanedSubtitleLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.Contains(line, "-->") {
+		return ""
+	}
+	if _, err := strconv.Atoi(line); err == nil {
+		return ""
+	}
+	line = strings.NewReplacer("<i>", "", "</i>", "", "<b>", "", "</b>", "", "{\\i1}", "", "{\\i0}", "").Replace(line)
+	line = strings.TrimSpace(line)
+	if !aidiscovery.MeaningfulSubtitleLine(line) {
+		return ""
+	}
+	return line
+}
+
+func usableSubtitleFiles(files []string) bool {
+	for _, path := range files {
+		file, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 4096), 1024*1024)
+		usable := false
+		for scanner.Scan() {
+			if cleanedSubtitleLine(scanner.Text()) != "" {
+				usable = true
+				break
+			}
+		}
+		_ = file.Close()
+		if usable {
+			return true
+		}
+	}
+	return false
+}
+
+func cleanedSubtitleExcerptFiles(files []string, maxChars int) string {
+	if maxChars <= 0 {
+		return ""
+	}
 	var out strings.Builder
 	written := 0
 	seen := map[string]bool{}
-	for _, path := range subtitleFiles(release) {
+	for _, path := range files {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
 		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.Contains(line, "-->") {
+			line = cleanedSubtitleLine(line)
+			if line == "" {
 				continue
 			}
-			if _, err := strconv.Atoi(line); err == nil {
-				continue
-			}
-			line = strings.NewReplacer("<i>", "", "</i>", "", "<b>", "", "</b>", "", "{\\i1}", "", "{\\i0}", "").Replace(line)
-			line = strings.TrimSpace(line)
 			key := strings.ToLower(line)
-			if !aidiscovery.MeaningfulSubtitleLine(line) || seen[key] {
+			if seen[key] {
 				continue
 			}
 			seen[key] = true
@@ -1238,6 +1280,9 @@ type subtitleScanStats struct {
 	// permission/mount problem) is what makes the "why is this zero"
 	// question answerable from the UI instead of guesswork.
 	MissingFilePath int
+	// UsableReleases have at least one readable sidecar that yields dialogue
+	// text after the same cleaning used for AI enrichment.
+	UsableReleases int
 }
 
 func subtitleSidecarMatches(videoBase, name string) bool {
@@ -1256,6 +1301,10 @@ func subtitleSidecarMatches(videoBase, name string) bool {
 }
 
 func scanSubtitleAvailability(releases []domain.Release, progress func(completed, found int)) (map[int64]bool, subtitleScanStats) {
+	return scanSubtitleAvailabilityWithUsability(releases, false, progress)
+}
+
+func scanSubtitleAvailabilityWithUsability(releases []domain.Release, inspectContent bool, progress func(completed, found int)) (map[int64]bool, subtitleScanStats) {
 	directories := map[string][]os.DirEntry{}
 	directoryErrors := map[string]bool{}
 	out := make(map[int64]bool, len(releases))
@@ -1289,10 +1338,16 @@ func scanSubtitleAvailability(releases []domain.Release, progress func(completed
 			continue
 		}
 		prefix := filepath.Base(base)
+		files := make([]string, 0, 2)
 		for _, entry := range entries {
 			if !entry.IsDir() && subtitleSidecarMatches(prefix, entry.Name()) {
-				out[release.ID] = true
-				break
+				files = append(files, filepath.Join(directory, entry.Name()))
+			}
+		}
+		if len(files) > 0 {
+			out[release.ID] = true
+			if inspectContent && usableSubtitleFiles(files) {
+				stats.UsableReleases++
 			}
 		}
 		if progress != nil && (index%25 == 0 || index == len(releases)-1) {
