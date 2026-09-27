@@ -31,7 +31,7 @@ func TestSiloLookupMatchesExactStashFilenameWithoutSceneCode(t *testing.T) {
 			t.Errorf("unexpected query: %s", request.Query)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[{"id":"11631","code":"","title":"Scene","files":[{"path":"/collections/jav/ad-359.avi"}]},{"id":"2","code":"OTHER-1","files":[{"path":"/collections/jav/other-1.avi"}]}]}}}`))
+		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[{"id":"11631","code":"","title":"Scene","details":"Story","date":"2020-01-02","studio":{"name":"Studio"},"performers":[{"id":"9","name":"One"}],"tags":[{"id":"tag1","name":"Drama"}],"paths":{"screenshot":"/screenshot.jpg"},"play_count":2,"o_counter":1,"last_played_at":"2026-09-27T10:00:00Z","files":[{"path":"/collections/jav/ad-359.avi"}]},{"id":"2","code":"OTHER-1","files":[{"path":"/collections/jav/other-1.avi"}]}]}}}`))
 	}))
 	defer server.Close()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "lookup.db"))
@@ -44,7 +44,7 @@ func TestSiloLookupMatchesExactStashFilenameWithoutSceneCode(t *testing.T) {
 	}
 	svc := New(st, time.Second, slog.Default(), nil, nil)
 	scenes, err := svc.SearchSiloScenes(context.Background(), "AD-359")
-	if err != nil || len(scenes) != 1 || scenes[0].ID != "11631" || !strings.EqualFold(scenes[0].Code, "AD-359") {
+	if err != nil || len(scenes) != 1 || scenes[0].ID != "11631" || !strings.EqualFold(scenes[0].Code, "AD-359") || scenes[0].PlayCount != 2 || scenes[0].OCounter != 1 || scenes[0].Details != "Story" || len(scenes[0].Performers) != 1 || scenes[0].ScreenshotURL != "/screenshot.jpg" {
 		t.Fatalf("scenes=%+v err=%v", scenes, err)
 	}
 	full, err := svc.SiloSceneByID(context.Background(), "11631")

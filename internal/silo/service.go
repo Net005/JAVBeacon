@@ -310,8 +310,11 @@ func (s *Service) SearchStashScenes(ctx context.Context, query string) ([]Metada
 		return nil, nil
 	}
 	if len(scenes) > 1 {
-		// Multiple scenes for one filename stem are ambiguous to Silo.
-		return nil, nil
+		best, ok := bestStashScene(scenes)
+		if !ok {
+			return nil, nil // Equal evidence cannot identify the right scene.
+		}
+		scenes = []stash.SiloScene{best}
 	}
 	out := make([]Metadata, 0, len(scenes))
 	for _, scene := range scenes {
@@ -332,6 +335,71 @@ func (s *Service) SearchStashScenes(ctx context.Context, query string) ([]Metada
 		}
 	}
 	return out, nil
+}
+
+// bestStashScene chooses one exact-code/file-stem candidate using metadata
+// completeness and playback evidence. A tie remains ambiguous so Silo never
+// force-links an arbitrary Stash scene to a local file.
+func bestStashScene(scenes []stash.SiloScene) (stash.SiloScene, bool) {
+	if len(scenes) == 0 {
+		return stash.SiloScene{}, false
+	}
+	best := scenes[0]
+	bestTotal, bestPlayback, bestMetadata := stashSceneScore(best)
+	tied := false
+	for _, scene := range scenes[1:] {
+		total, playback, metadata := stashSceneScore(scene)
+		switch {
+		case total > bestTotal || (total == bestTotal && playback > bestPlayback) || (total == bestTotal && playback == bestPlayback && metadata > bestMetadata) || (total == bestTotal && playback == bestPlayback && metadata == bestMetadata && stashPlayedAfter(scene.LastPlayedAt, best.LastPlayedAt)):
+			best, bestTotal, bestPlayback, bestMetadata, tied = scene, total, playback, metadata, false
+		case total == bestTotal && playback == bestPlayback && metadata == bestMetadata && !stashPlayedAfter(best.LastPlayedAt, scene.LastPlayedAt):
+			tied = true
+		}
+	}
+	return best, !tied
+}
+
+func stashPlayedAfter(a, b string) bool {
+	first, errA := time.Parse(time.RFC3339Nano, a)
+	second, errB := time.Parse(time.RFC3339Nano, b)
+	return errA == nil && (errB != nil || first.After(second))
+}
+
+func stashSceneScore(scene stash.SiloScene) (total, playback, metadata int) {
+	if scene.Title != "" {
+		metadata++
+	}
+	if scene.Details != "" {
+		metadata += 3
+	}
+	if scene.Date != "" {
+		metadata += 2
+	}
+	if scene.Studio != "" {
+		metadata += 2
+	}
+	if len(scene.Performers) > 0 {
+		metadata += 2 + min(len(scene.Performers), 3)
+	}
+	if len(scene.Tags) > 0 {
+		metadata += 1 + min(len(scene.Tags), 2)
+	}
+	if scene.ScreenshotURL != "" {
+		metadata += 2
+	}
+	if scene.PlayCount > 0 {
+		playback += 6 + min(scene.PlayCount, 5)
+	}
+	if scene.OCounter > 0 {
+		playback += 3 + min(scene.OCounter, 3)
+	}
+	if scene.LastPlayedAt != "" {
+		playback += 2
+	}
+	if scene.PlayDuration > 0 {
+		playback++
+	}
+	return metadata + playback, playback, metadata
 }
 
 func (s *Service) StashMetadata(ctx context.Context, sceneID string) (Metadata, error) {
