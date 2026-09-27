@@ -331,31 +331,13 @@ func TestMetadataReflectsWatchlistState(t *testing.T) {
 	}
 }
 
-// TestSanitizeCollectionTagNameCleansUpBeforeBecomingASiloGenre guards the
-// Silo "Collection: <name>" genre/tag against a saved filter set's name -
-// free text an admin can type into the web UI - producing a garbled or
-// unbounded genre entry. Jellyfin's own collection name is never sanitized
-// this way; only the genre/tag value is.
-func TestSanitizeCollectionTagNameCleansUpBeforeBecomingASiloGenre(t *testing.T) {
-	for _, test := range []struct{ name, in, want string }{
-		{"unchanged", "My Favorites", "My Favorites"},
-		{"collapses internal whitespace", "My\t\tFavorites\n\nList", "My Favorites List"},
-		{"trims ends", "  Padded  ", "Padded"},
-		{"strips control characters", "Weird\x00Name", "Weird Name"},
-		{"empty after cleanup", "\x00\x01\x02", ""},
-		{"unicode preserved", "お気に入り", "お気に入り"},
-	} {
-		if got := sanitizeCollectionTagName(test.in); got != test.want {
-			t.Errorf("%s: sanitizeCollectionTagName(%q) = %q, want %q", test.name, test.in, got, test.want)
-		}
-	}
-	long := strings.Repeat("a", maxCollectionTagNameRunes+50)
-	got := sanitizeCollectionTagName(long)
-	if runes := []rune(got); len(runes) != maxCollectionTagNameRunes {
-		t.Fatalf("long name not capped: got %d runes, want %d", len(runes), maxCollectionTagNameRunes)
-	}
-	// A preset actually named this way must be skipped entirely (no empty
-	// genre entry), not crash or add a blank tag.
+// TestMetadataSkipsUnsanitizableFilterPresetTag guards the Silo
+// "Collection: <name>" genre/tag against a saved filter set named entirely
+// with control characters (see filterpreset.SanitizeTagName, which owns the
+// actual cleanup rules and their own test coverage): such a preset must be
+// skipped entirely for tag purposes, never crash or add a blank tag, while
+// still counting toward the release's real Jellyfin collection membership.
+func TestMetadataSkipsUnsanitizableFilterPresetTag(t *testing.T) {
 	svc, st, _, r := testService(t)
 	defer st.Close()
 	if err := st.SaveUser(context.Background(), "admin", "hash"); err != nil {

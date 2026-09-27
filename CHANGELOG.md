@@ -5,6 +5,43 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.239] - 2026-09-27
+
+### Changed
+
+- Split the Silo integration off of the Jellyfin integration's shared Go
+  service. `internal/web/silo.go`'s routes (`search`, `releases/{id}`,
+  `library-sync`) now call a new, independent `internal/silo` package instead
+  of `internal/jellyfin.Service` - the two integrations no longer share any
+  mutable state (their saved-filter-set membership caches are now separate
+  instances) or Metadata DTO. Every cross-integration bug fixed in this
+  project so far (the FilterPresets null crash, the reversed-performer-name
+  fix, the `Search` slowdown, the missing Watchlist/collection tags) traced
+  back to this sharing, and Silo's plugin SDK has consistently been easier to
+  extend than Jellyfin's provider model, so `internal/silo` is now free to
+  diverge from `internal/jellyfin`'s shape where that's useful.
+  - `internal/silo.Metadata` drops two fields Jellyfin needs but Silo's
+    plugin never reads (`PerformerIDs`, `Tags` - confirmed unused against the
+    Silo plugin's own source) and adds a new `StashScreenshotURL` fallback
+    field Silo never had before, served by a new dedicated
+    `GET /api/v1/integrations/silo/releases/{id}/stash-cover` endpoint
+    (mirroring Jellyfin's own stash-cover endpoint, not reusing it).
+  - The saved-filter-set ("collection") resolution logic that both
+    integrations need identically (to avoid a release showing up in one
+    integration's collection but not the other's) was extracted into a new
+    shared `internal/filterpreset` package, used by both
+    `internal/jellyfin` and `internal/silo` rather than copy-pasted.
+  - Playback reporting (`internal/jellyfin.Service.Playback`, the
+    checkpoint/resume/completion-threshold engine) and the
+    `/covers/{id}/jellyfin-primary` image-crop endpoint remain intentionally
+    shared - both are already fully provider-agnostic with no
+    Jellyfin-specific behavior, so duplicating them into `internal/silo`
+    would be pure drift risk for no benefit.
+  - No client-visible change for the Jellyfin plugin, and no breaking change
+    for the Silo plugin - its existing four routes keep the exact same JSON
+    shape for every field it already reads; only the two now-unused fields
+    disappear from the response.
+
 ## [1.0.238] - 2026-09-27
 
 ### Fixed

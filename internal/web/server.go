@@ -31,6 +31,7 @@ import (
 	"github.com/Net005/JAVBeacon/internal/logging"
 	"github.com/Net005/JAVBeacon/internal/monitor"
 	"github.com/Net005/JAVBeacon/internal/screenshots"
+	siloIntegration "github.com/Net005/JAVBeacon/internal/silo"
 	"github.com/Net005/JAVBeacon/internal/stash"
 	"github.com/Net005/JAVBeacon/internal/store"
 	buildversion "github.com/Net005/JAVBeacon/internal/version"
@@ -51,6 +52,7 @@ type Server struct {
 	downloads     *download.Service
 	discoveryAI   *aidiscovery.Service
 	jellyfin      *jellyfinintegration.Service
+	silo          *siloIntegration.Service
 	covers        *covers.Cache
 	screenshots   *screenshots.Cache
 	key           string
@@ -164,7 +166,7 @@ type screenshotBackfillStatus struct {
 // database" source option (setupMigrationSource) needs to know it even
 // when the app is presently running on PostgreSQL.
 func New(st store.Store, authService *auth.Service, m *monitor.Service, historical *backfill.Service, stashSync *stash.Service, downloadService *download.Service, covers *covers.Cache, key string, dbEngine string, sqlitePath string, l *slog.Logger, logs *logging.RingHandler, screenshotCaches ...*screenshots.Cache) http.Handler {
-	s := &Server{store: st, auth: authService, monitor: m, historical: historical, stash: stashSync, downloads: downloadService, discoveryAI: aidiscovery.New(l), jellyfin: jellyfinintegration.New(st, stashSync, screenshotCaches...), covers: covers, key: key, dbEngine: dbEngine, sqlitePath: sqlitePath, log: l, logs: logs, mux: http.NewServeMux(), clients: map[*websocket.Conn]bool{}, releaseCountCache: map[string]cachedReleaseCount{}, filterOptionCache: map[string]cachedFilterOptions{}}
+	s := &Server{store: st, auth: authService, monitor: m, historical: historical, stash: stashSync, downloads: downloadService, discoveryAI: aidiscovery.New(l), jellyfin: jellyfinintegration.New(st, stashSync, screenshotCaches...), silo: siloIntegration.New(st, stashSync, screenshotCaches...), covers: covers, key: key, dbEngine: dbEngine, sqlitePath: sqlitePath, log: l, logs: logs, mux: http.NewServeMux(), clients: map[*websocket.Conn]bool{}, releaseCountCache: map[string]cachedReleaseCount{}, filterOptionCache: map[string]cachedFilterOptions{}}
 	if len(screenshotCaches) > 0 {
 		s.screenshots = screenshotCaches[0]
 	}
@@ -286,6 +288,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/integrations/silo/releases/{id}", s.siloMetadata)
 	s.mux.HandleFunc("POST /api/v1/integrations/silo/playback", s.siloPlayback)
 	s.mux.HandleFunc("GET /api/v1/integrations/silo/library-sync", s.siloLibrarySync)
+	s.mux.HandleFunc("GET /api/v1/integrations/silo/releases/{id}/stash-cover", s.siloStashCover)
 	s.mux.HandleFunc("GET /api/v1/integrations/performers/{performerId}/image", s.performerImage)
 	s.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
