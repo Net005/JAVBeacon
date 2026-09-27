@@ -3,6 +3,3 @@ scripts/
 vendor/
 cmd/javbeacon/javbeacon
 .env
-integrations/jellyfin/dist/
-integrations/jellyfin/**/bin/
-integrations/jellyfin/**/obj/
