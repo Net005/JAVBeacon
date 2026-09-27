@@ -272,6 +272,27 @@ func TestDiscoveryAIBatchesBoundInputAndAdaptSubtitleExcerpt(t *testing.T) {
 	}
 }
 
+func TestDiscoveryAIBatchesAllowsSubtitleExcerptAboveOldCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "LONG-001.mp4")
+	var subtitle strings.Builder
+	for i := 0; i < 500; i++ {
+		fmt.Fprintf(&subtitle, "Unique conversation line number %d with enough words to carry context.\n", i)
+	}
+	if err := os.WriteFile(strings.TrimSuffix(path, ".mp4")+".en.srt", []byte(subtitle.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items := []discoveryItem{{Release: domain.Release{ID: 1, VideoID: "LONG-001", Title: "Title", StashFilePath: path}, HasSubtitle: true}}
+	settings := map[string]string{"discoveries_subtitle_analysis_enabled": "true", "discoveries_subtitle_max_chars": "16000"}
+	batches, payloads := discoveryAIBatches(items, settings, 1, 1, 50000)
+	if got := len(batches[0][0].Subtitle); got <= 4000 || got > 16000 {
+		t.Fatalf("subtitle excerpt length = %d, want >4000 and <=16000", got)
+	}
+	if got := len(payloads[0]) + discoveryAIPromptOverheadChars; got > 50000 {
+		t.Fatalf("request character budget exceeded: %d", got)
+	}
+}
+
 // TestDiscoveryAIBatchesDoesNotStarveSubtitlesWithModestStories guards
 // against an overcautious prompt-overhead reserve zeroing out perSubtitle
 // for a whole batch (every candidate's Subtitle left empty, surfaced to the
