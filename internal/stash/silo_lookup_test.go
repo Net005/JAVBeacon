@@ -61,7 +61,7 @@ func TestSiloWatchlistScenesReadsConfiguredStashTagAndUpdatedAt(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(request.Query, "updated_at tags { id } files { path }") {
+		if !strings.Contains(request.Query, "updated_at tags { id } files { path }") || !strings.Contains(request.Query, `tags: { value: ["watch"], modifier: INCLUDES }`) {
 			t.Fatalf("query omitted Stash update date or tag ID: %s", request.Query)
 		}
 		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[{"id":"one","updated_at":"2026-09-27T10:00:00Z","tags":[{"id":"watch"}],"files":[{"path":"/media/one.mp4"}]},{"id":"two","updated_at":"2026-09-26T10:00:00Z","tags":[{"id":"other"}],"files":[{"path":"/media/two.mp4"}]}]}}}`))

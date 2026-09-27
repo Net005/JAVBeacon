@@ -170,7 +170,9 @@ func (s *Service) SiloWatchlistScenes(ctx context.Context) (map[string]time.Time
 	if err != nil {
 		return nil, true, err
 	}
-	const gql = `query JAVBeaconSiloWatchlist { findScenes(filter: { per_page: -1 }) { scenes { id updated_at tags { id } files { path } } } }`
+	// Filter in Stash before transferring scenes. Fetching every scene just to
+	// inspect one tag can exceed Silo's scheduled-task RPC deadline.
+	gql := fmt.Sprintf(`query JAVBeaconSiloWatchlist { findScenes(filter: { per_page: -1 }, scene_filter: { tags: { value: [%s], modifier: INCLUDES } }) { scenes { id updated_at tags { id } files { path } } } }`, strconv.Quote(tagID))
 	var payload struct {
 		Data struct {
 			FindScenes struct {
