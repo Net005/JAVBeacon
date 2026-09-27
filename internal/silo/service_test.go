@@ -519,7 +519,24 @@ func TestStashOnlyFilenameFallback(t *testing.T) {
 	}
 	bridge.siloScenes = append(bridge.siloScenes, stash.SiloScene{ID: "2", Code: "ad-359"})
 	rows, err = svc.SearchStashScenes(context.Background(), "AD-359")
-	if err != nil || len(rows) != 0 {
-		t.Fatalf("ambiguous rows=%+v err=%v", rows, err)
+	if err != nil || len(rows) != 1 || rows[0].ProviderID != "stash:11631" {
+		t.Fatalf("richer Stash candidate not selected: rows=%+v err=%v", rows, err)
+	}
+}
+
+func TestBestStashSceneFavorsPlaybackAndRetainsTrueTies(t *testing.T) {
+	plain := stash.SiloScene{ID: "plain", Code: "ANIX-01", Title: "ANIX-01"}
+	rich := stash.SiloScene{ID: "rich", Code: "ANIX-01", Title: "ANIX-01", Details: "Detailed story", Date: "2024-01-01", Studio: "Studio", Tags: []string{"Drama"}, ScreenshotURL: "/screenshot.jpg"}
+	played := stash.SiloScene{ID: "played", Code: "ANIX-01", Title: "ANIX-01", Details: "Detailed story", PlayCount: 3, OCounter: 2, LastPlayedAt: "2026-09-27T10:00:00Z"}
+	if best, ok := bestStashScene([]stash.SiloScene{plain, rich, played}); !ok || best.ID != "played" {
+		t.Fatalf("best=%+v ok=%v, want played", best, ok)
+	}
+	if _, ok := bestStashScene([]stash.SiloScene{plain, {ID: "other", Code: "ANIX-01", Title: "ANIX-01"}}); ok {
+		t.Fatal("equal candidates must remain ambiguous")
+	}
+	older := stash.SiloScene{ID: "older", Title: "ANIX-01", PlayCount: 1, LastPlayedAt: "2026-09-20T10:00:00Z"}
+	newer := stash.SiloScene{ID: "newer", Title: "ANIX-01", PlayCount: 1, LastPlayedAt: "2026-09-27T10:00:00Z"}
+	if best, ok := bestStashScene([]stash.SiloScene{older, newer}); !ok || best.ID != "newer" {
+		t.Fatalf("most recently played tie-break: best=%+v ok=%v", best, ok)
 	}
 }

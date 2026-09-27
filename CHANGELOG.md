@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.261] - 2026-09-27
+
+### Fixed
+
+- Resolve multiple exact StashApp scene matches for a Silo filename by choosing the scene with the strongest combined metadata and playback evidence. Fetch that evidence in the Stash search query, use recent playback to break otherwise equal scores, and keep truly equal candidates ambiguous instead of returning no candidates for every duplicate.
+
 ## [1.0.260] - 2026-09-27
 
 ### Fixed

@@ -22,6 +22,10 @@ type SiloScene struct {
 	Tags          []string
 	TagIDs        []string
 	ScreenshotURL string
+	PlayCount     int
+	OCounter      int
+	LastPlayedAt  string
+	PlayDuration  float64
 }
 
 func (s *Service) SearchSiloScenes(ctx context.Context, query string) ([]SiloScene, error) {
@@ -33,13 +37,26 @@ func (s *Service) SearchSiloScenes(ctx context.Context, query string) ([]SiloSce
 	if query == "" {
 		return nil, nil
 	}
-	gql := fmt.Sprintf(`query { findScenes(filter: { q: %s, per_page: 25 }) { scenes { id title code files { path } } } }`, strconv.Quote(query))
+	gql := fmt.Sprintf(`query { findScenes(filter: { q: %s, per_page: 25 }) { scenes { id title code details date studio { name } performers { id name image_path birthdate } tags { id name } files { path } paths { screenshot } play_count o_counter last_played_at play_duration } } }`, strconv.Quote(query))
 	var payload struct {
 		Data struct {
 			FindScenes struct {
 				Scenes []struct {
-					ID, Title, Code string
-					Files           []struct{ Path string }
+					ID, Title, Code, Details, Date string
+					Studio                         *struct{ Name string }
+					Performers                     []struct {
+						ID        string `json:"id"`
+						Name      string `json:"name"`
+						ImagePath string `json:"image_path"`
+						Birthdate string `json:"birthdate"`
+					} `json:"performers"`
+					Tags         []struct{ ID, Name string }
+					Files        []struct{ Path string }
+					Paths        struct{ Screenshot string }
+					PlayCount    int     `json:"play_count"`
+					OCounter     int     `json:"o_counter"`
+					LastPlayedAt string  `json:"last_played_at"`
+					PlayDuration float64 `json:"play_duration"`
 				}
 			} `json:"findScenes"`
 		} `json:"data"`
@@ -66,7 +83,18 @@ func (s *Service) SearchSiloScenes(ctx context.Context, query string) ([]SiloSce
 			}
 		}
 		if matched {
-			out = append(out, SiloScene{ID: scene.ID, Code: code, Title: scene.Title})
+			item := SiloScene{ID: scene.ID, Code: code, Title: scene.Title, Details: scene.Details, Date: scene.Date, ScreenshotURL: scene.Paths.Screenshot, PlayCount: scene.PlayCount, OCounter: scene.OCounter, LastPlayedAt: scene.LastPlayedAt, PlayDuration: scene.PlayDuration}
+			if scene.Studio != nil {
+				item.Studio = scene.Studio.Name
+			}
+			for _, p := range scene.Performers {
+				item.Performers = append(item.Performers, StashPerformer{ID: p.ID, Name: p.Name, ImagePath: p.ImagePath, Birthdate: p.Birthdate})
+			}
+			for _, tag := range scene.Tags {
+				item.Tags = append(item.Tags, tag.Name)
+				item.TagIDs = append(item.TagIDs, tag.ID)
+			}
+			out = append(out, item)
 		}
 	}
 	return out, nil
