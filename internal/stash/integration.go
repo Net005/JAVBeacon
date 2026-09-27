@@ -10,9 +10,14 @@ import (
 	"time"
 )
 
-// JellyfinActivity is the small, stable activity contract exposed to the
-// Jellyfin integration. It deliberately hides Stash's GraphQL schema.
-type JellyfinActivity struct {
+// Activity is the small, stable playback-activity contract exposed to
+// JAVBeacon's media-server integrations (Jellyfin, Silo). It deliberately
+// hides Stash's GraphQL schema. Named generically rather than after either
+// integration - both Jellyfin's and Silo's own Playback engines write to and
+// read from the exact same StashApp scene state through this type, since a
+// scene's play/O counts are physical StashApp state, not something owned by
+// whichever frontend happened to report the play.
+type Activity struct {
 	StashSceneID string  `json:"stash_scene_id"`
 	OCount       int     `json:"o_count"`
 	PlayCount    int     `json:"play_count"`
@@ -22,7 +27,7 @@ type JellyfinActivity struct {
 	LastOCountAt string  `json:"last_o_count_at,omitempty"`
 }
 
-func (s *Service) jellyfinConfig(ctx context.Context) (string, string, error) {
+func (s *Service) stashConfig(ctx context.Context) (string, string, error) {
 	settings, err := s.store.Settings(ctx)
 	if err != nil {
 		return "", "", err
@@ -34,10 +39,10 @@ func (s *Service) jellyfinConfig(ctx context.Context) (string, string, error) {
 	return base, strings.TrimSpace(settings["stash_api_key"]), nil
 }
 
-// SaveJellyfinActivity forwards a checkpoint to StashApp. playDuration is a
-// delta, while resumeTime is the current absolute media position.
-func (s *Service) SaveJellyfinActivity(ctx context.Context, sceneID string, resumeTime, playDuration float64) error {
-	base, key, err := s.jellyfinConfig(ctx)
+// SaveActivity forwards a checkpoint to StashApp. playDuration is a delta,
+// while resumeTime is the current absolute media position.
+func (s *Service) SaveActivity(ctx context.Context, sceneID string, resumeTime, playDuration float64) error {
+	base, key, err := s.stashConfig(ctx)
 	if err != nil {
 		return err
 	}
@@ -62,16 +67,16 @@ func (s *Service) SaveJellyfinActivity(ctx context.Context, sceneID string, resu
 	return nil
 }
 
-func (s *Service) AddJellyfinPlay(ctx context.Context, sceneID string, at time.Time) (int, error) {
-	return s.addJellyfinHistory(ctx, "sceneAddPlay", sceneID, at)
+func (s *Service) AddPlay(ctx context.Context, sceneID string, at time.Time) (int, error) {
+	return s.addHistory(ctx, "sceneAddPlay", sceneID, at)
 }
 
-func (s *Service) AddJellyfinO(ctx context.Context, sceneID string, at time.Time) (int, error) {
-	return s.addJellyfinHistory(ctx, "sceneAddO", sceneID, at)
+func (s *Service) AddO(ctx context.Context, sceneID string, at time.Time) (int, error) {
+	return s.addHistory(ctx, "sceneAddO", sceneID, at)
 }
 
-func (s *Service) addJellyfinHistory(ctx context.Context, mutation, sceneID string, at time.Time) (int, error) {
-	base, key, err := s.jellyfinConfig(ctx)
+func (s *Service) addHistory(ctx context.Context, mutation, sceneID string, at time.Time) (int, error) {
+	base, key, err := s.stashConfig(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -96,10 +101,10 @@ func (s *Service) addJellyfinHistory(ctx context.Context, mutation, sceneID stri
 	return payload.Data[mutation].Count, nil
 }
 
-func (s *Service) JellyfinActivity(ctx context.Context, sceneID string) (JellyfinActivity, error) {
-	base, key, err := s.jellyfinConfig(ctx)
+func (s *Service) Activity(ctx context.Context, sceneID string) (Activity, error) {
+	base, key, err := s.stashConfig(ctx)
 	if err != nil {
-		return JellyfinActivity{}, err
+		return Activity{}, err
 	}
 	query := fmt.Sprintf(`query { findScene(id: "%s") { id o_counter play_count play_duration resume_time last_played_at o_history } }`, escapeGraphQL(sceneID))
 	var payload struct {
@@ -119,16 +124,16 @@ func (s *Service) JellyfinActivity(ctx context.Context, sceneID string) (Jellyfi
 		} `json:"errors"`
 	}
 	if err = s.graphql(ctx, base, key, query, &payload); err != nil {
-		return JellyfinActivity{}, err
+		return Activity{}, err
 	}
 	if len(payload.Errors) > 0 {
-		return JellyfinActivity{}, errors.New(payload.Errors[0].Message)
+		return Activity{}, errors.New(payload.Errors[0].Message)
 	}
 	if payload.Data.Scene == nil {
-		return JellyfinActivity{}, errors.New("StashApp scene not found")
+		return Activity{}, errors.New("StashApp scene not found")
 	}
 	x := payload.Data.Scene
-	out := JellyfinActivity{StashSceneID: x.ID, OCount: x.OCount, PlayCount: x.PlayCount, PlayDuration: x.PlayDuration, ResumeTime: x.ResumeTime, LastPlayedAt: x.LastPlayedAt}
+	out := Activity{StashSceneID: x.ID, OCount: x.OCount, PlayCount: x.PlayCount, PlayDuration: x.PlayDuration, ResumeTime: x.ResumeTime, LastPlayedAt: x.LastPlayedAt}
 	for _, value := range x.OHistory {
 		if value > out.LastOCountAt {
 			out.LastOCountAt = value
@@ -147,10 +152,11 @@ type StashPerformer struct {
 	ImagePath string
 }
 
-// StashSceneMetadata is the small, stable metadata contract exposed to the
-// Jellyfin integration for gap-filling a JAVBeacon release's own scraped
-// metadata (see internal/jellyfin's metadata()). Every field is left empty
-// when StashApp itself doesn't have it, never guessed.
+// StashSceneMetadata is the small, stable metadata contract exposed to
+// JAVBeacon's media-server integrations for gap-filling a JAVBeacon
+// release's own scraped metadata (see internal/jellyfin's and
+// internal/silo's own metadata()). Every field is left empty when StashApp
+// itself doesn't have it, never guessed.
 type StashSceneMetadata struct {
 	Title         string
 	Details       string
@@ -178,7 +184,7 @@ func (m StashSceneMetadata) PerformerNames() []string {
 // JAVBeacon's own scraped release metadata or images are incomplete - it
 // never overwrites data JAVBeacon already has.
 func (s *Service) StashSceneMetadata(ctx context.Context, sceneID string) (StashSceneMetadata, error) {
-	base, key, err := s.jellyfinConfig(ctx)
+	base, key, err := s.stashConfig(ctx)
 	if err != nil {
 		return StashSceneMetadata{}, err
 	}
@@ -269,7 +275,7 @@ type StashPerformerDetails struct {
 // gap-filling a Jellyfin/Silo Person page - JAVBeacon itself never scrapes
 // this data, so StashApp (when linked) is the only source for it.
 func (s *Service) PerformerDetails(ctx context.Context, performerID string) (StashPerformerDetails, error) {
-	base, key, err := s.jellyfinConfig(ctx)
+	base, key, err := s.stashConfig(ctx)
 	if err != nil {
 		return StashPerformerDetails{}, err
 	}
@@ -332,7 +338,7 @@ func (s *Service) PerformerDetails(ctx context.Context, performerID string) (Sta
 // fetches it with the same authenticated client used for every other Stash
 // request. The caller is responsible for closing the returned response body.
 func (s *Service) FetchPerformerImage(ctx context.Context, performerID string) (*http.Response, error) {
-	base, key, err := s.jellyfinConfig(ctx)
+	base, key, err := s.stashConfig(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -384,7 +390,7 @@ func (s *Service) FetchPerformerImage(ctx context.Context, performerID string) (
 // requests (not only GraphQL) still works. The caller is responsible for
 // closing the returned response body.
 func (s *Service) FetchSceneScreenshot(ctx context.Context, sceneID string) (*http.Response, error) {
-	base, key, err := s.jellyfinConfig(ctx)
+	base, key, err := s.stashConfig(ctx)
 	if err != nil {
 		return nil, err
 	}

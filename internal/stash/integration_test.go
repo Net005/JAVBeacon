@@ -13,12 +13,12 @@ import (
 	"github.com/Net005/JAVBeacon/internal/store"
 )
 
-type jellyfinRoundTrip func(*http.Request) (*http.Response, error)
+type stubRoundTrip func(*http.Request) (*http.Response, error)
 
-func (f jellyfinRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+func (f stubRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func TestJellyfinMutationsStayBehindJAVBeacon(t *testing.T) {
-	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "stash-jellyfin.db"))
+func TestActivityMutationsStayBehindJAVBeacon(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "stash-activity.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestJellyfinMutationsStayBehindJAVBeacon(t *testing.T) {
 	}
 	var queries []string
 	svc := New(st, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
-	svc.client.Transport = jellyfinRoundTrip(func(r *http.Request) (*http.Response, error) {
+	svc.client.Transport = stubRoundTrip(func(r *http.Request) (*http.Response, error) {
 		if r.Header.Get("ApiKey") != "stash-secret" {
 			t.Fatalf("missing Stash API key")
 		}
@@ -43,13 +43,13 @@ func TestJellyfinMutationsStayBehindJAVBeacon(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
 	})
-	if err = svc.SaveJellyfinActivity(context.Background(), "scene-1", 44, 30); err != nil {
+	if err = svc.SaveActivity(context.Background(), "scene-1", 44, 30); err != nil {
 		t.Fatal(err)
 	}
-	if count, e := svc.AddJellyfinO(context.Background(), "scene-1", time.Date(2026, 9, 8, 13, 0, 0, 0, time.UTC)); e != nil || count != 4 {
+	if count, e := svc.AddO(context.Background(), "scene-1", time.Date(2026, 9, 8, 13, 0, 0, 0, time.UTC)); e != nil || count != 4 {
 		t.Fatalf("count=%d err=%v", count, e)
 	}
-	activity, err := svc.JellyfinActivity(context.Background(), "scene-1")
+	activity, err := svc.Activity(context.Background(), "scene-1")
 	if err != nil || activity.OCount != 4 || activity.PlayDuration != 125.5 || activity.ResumeTime != 44 {
 		t.Fatalf("activity=%+v err=%v", activity, err)
 	}

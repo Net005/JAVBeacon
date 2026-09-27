@@ -62,19 +62,19 @@ const (
 // stashBridge no longer omits playback writeback now that Playback lives on
 // this package too (see the package doc comment) - it needs the checkpoint
 // and play-count methods internal/jellyfin's own stashBridge declares.
-// These names carry a "Jellyfin" prefix only because stash.Service was
-// written before this package existed; they write to StashApp's per-scene
+// stash.Service's own method names are provider-neutral (SaveActivity/AddPlay/
+// AddO/Activity - renamed off their original "Jellyfin"-prefixed names once
+// Silo started calling them too, since they write to StashApp's per-scene
 // play counters, which are shared physical state regardless of which
-// integration drove playback, not something specific to the Jellyfin
-// integration. Silo has no "+1 O"/activity-readback route of its own (unlike
-// Jellyfin's releases/{id}/activity and releases/{id}/o), so
-// AddJellyfinO/JellyfinActivity aren't declared here; add them if that ever
-// changes. GetPersonDetail still always returns empty (confirmed against the
-// plugin's own main.go), so no performer-bio method is declared either.
+// integration drove playback). Silo has no "+1 O"/activity-readback route of
+// its own (unlike Jellyfin's releases/{id}/activity and releases/{id}/o), so
+// AddO/Activity aren't declared here; add them if that ever changes.
+// GetPersonDetail still always returns empty (confirmed against the plugin's
+// own main.go), so no performer-bio method is declared either.
 type stashBridge interface {
 	StashSceneMetadata(context.Context, string) (stash.StashSceneMetadata, error)
-	SaveJellyfinActivity(context.Context, string, float64, float64) error
-	AddJellyfinPlay(context.Context, string, time.Time) (int, error)
+	SaveActivity(context.Context, string, float64, float64) error
+	AddPlay(context.Context, string, time.Time) (int, error)
 }
 
 // repository is satisfied by *store.SQLite via a type assertion in
@@ -650,7 +650,7 @@ func (s *Service) Playback(ctx context.Context, event PlaybackEvent) (PlaybackRe
 	pending := math.Max(x.Accumulated-x.Forwarded, 0)
 	write := event.Event == "start" || event.Event == "stop" || pending >= p.checkpoint
 	if write {
-		if err = s.stash.SaveJellyfinActivity(ctx, x.StashSceneID, x.LastPosition, pending); err != nil {
+		if err = s.stash.SaveActivity(ctx, x.StashSceneID, x.LastPosition, pending); err != nil {
 			return playbackResult(x, false), err
 		}
 		x.Forwarded = x.Accumulated
@@ -666,7 +666,7 @@ func (s *Service) Playback(ctx context.Context, event PlaybackEvent) (PlaybackRe
 		complete = complete || x.Accumulated/x.RuntimeSeconds*100 >= p.percent || (x.RuntimeSeconds > p.remaining && x.RuntimeSeconds-x.LastPosition <= p.remaining)
 	}
 	if complete && !x.PlayCounted {
-		if _, err = s.stash.AddJellyfinPlay(ctx, x.StashSceneID, now); err != nil {
+		if _, err = s.stash.AddPlay(ctx, x.StashSceneID, now); err != nil {
 			return playbackResult(x, write), err
 		}
 		x.PlayCounted = true

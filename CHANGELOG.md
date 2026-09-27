@@ -5,6 +5,20 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.243] - 2026-09-27
+
+### Changed
+
+- Renamed the `internal/stash.Service` methods Jellyfin's and Silo's
+  Playback engines both call - `SaveJellyfinActivity`/`AddJellyfinPlay`/
+  `AddJellyfinO`/`JellyfinActivity` are now `SaveActivity`/`AddPlay`/`AddO`/
+  `Activity` (and the `JellyfinActivity` type is now `stash.Activity`).
+  These names only ever said "Jellyfin" because that file predated Silo's
+  own integration; they write to StashApp's per-scene play/O counters,
+  physical state shared regardless of which frontend reported the play, not
+  something owned by the Jellyfin integration. Pure rename - no behavior
+  change. `internal/stash/jellyfin.go` is now `internal/stash/integration.go`.
+
 ## [1.0.242] - 2026-09-27
 
 ### Changed
