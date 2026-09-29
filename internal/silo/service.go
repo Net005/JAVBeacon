@@ -78,6 +78,7 @@ type stashBridge interface {
 	SearchSiloScenes(context.Context, string) ([]stash.SiloScene, error)
 	SiloSceneByID(context.Context, string) (stash.SiloScene, error)
 	SiloWatchlistScenes(context.Context) (map[string]time.Time, bool, error)
+	SiloWatchedScenes(context.Context) (map[string]stash.SiloWatchedScene, bool, error)
 	SaveActivity(context.Context, string, float64, float64) error
 	AddPlay(context.Context, string, time.Time) (int, error)
 }
@@ -204,9 +205,11 @@ type PerformerDetail struct {
 type LibrarySyncItem struct {
 	ReleaseID     int64     `json:"release_id"`
 	StashSceneID  string    `json:"stash_scene_id"`
+	Title         string    `json:"title,omitempty"`
 	Path          string    `json:"path,omitempty"`
 	WatchlistedAt time.Time `json:"watchlisted_at,omitempty"`
 	WatchedAt     time.Time `json:"watched_at,omitempty"`
+	PlayCount     int       `json:"play_count,omitempty"`
 }
 
 type LibrarySyncSnapshot struct {
@@ -779,6 +782,19 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 		return LibrarySyncSnapshot{}, err
 	}
 	out := LibrarySyncSnapshot{Revision: settings["jellyfin_library_revision"], Watchlist: []LibrarySyncItem{}, Watched: []LibrarySyncItem{}}
+	linkedByScene := make(map[string]domain.Release)
+	for offset := 0; ; offset += 500 {
+		rows, err := s.store.Releases(ctx, domain.ReleaseFilter{StashLinked: true, Limit: 500, Offset: offset})
+		if err != nil {
+			return LibrarySyncSnapshot{}, err
+		}
+		for _, r := range rows {
+			linkedByScene[r.StashSceneID] = r
+		}
+		if len(rows) < 500 {
+			break
+		}
+	}
 	var stashWatchlist map[string]time.Time
 	var configured bool
 	var stashErr error
@@ -788,19 +804,6 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 	if configured && stashErr == nil {
 		// Include Stash-only scenes too: no JAVBeacon release row is needed for
 		// a local file or for Silo's Stash provider ID.
-		linkedByScene := make(map[string]domain.Release)
-		for offset := 0; ; offset += 500 {
-			rows, err := s.store.Releases(ctx, domain.ReleaseFilter{StashLinked: true, Limit: 500, Offset: offset})
-			if err != nil {
-				return LibrarySyncSnapshot{}, err
-			}
-			for _, r := range rows {
-				linkedByScene[r.StashSceneID] = r
-			}
-			if len(rows) < 500 {
-				break
-			}
-		}
 		sceneIDs := make([]string, 0, len(stashWatchlist))
 		for sceneID := range stashWatchlist {
 			sceneIDs = append(sceneIDs, sceneID)
@@ -844,19 +847,44 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 		return a.StashSceneID < b.StashSceneID
 	})
 
-	for offset := 0; ; offset += 500 {
-		rows, err := s.store.Releases(ctx, domain.ReleaseFilter{StashWatched: true, Limit: 500, Offset: offset})
-		if err != nil {
-			return LibrarySyncSnapshot{}, err
+	var stashWatched map[string]stash.SiloWatchedScene
+	var watchedConfigured bool
+	var watchedErr error
+	if s.stash != nil {
+		stashWatched, watchedConfigured, watchedErr = s.stash.SiloWatchedScenes(ctx)
+	}
+	if watchedConfigured && watchedErr == nil {
+		sceneIDs := make([]string, 0, len(stashWatched))
+		for id := range stashWatched {
+			sceneIDs = append(sceneIDs, id)
 		}
-		for _, r := range rows {
-			watchedAt, _ := time.Parse(time.RFC3339, r.LastPlayedAt)
-			out.Watched = append(out.Watched, LibrarySyncItem{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Path: r.StashFilePath, WatchedAt: watchedAt})
+		sort.Strings(sceneIDs)
+		for _, sceneID := range sceneIDs {
+			state := stashWatched[sceneID]
+			item := LibrarySyncItem{StashSceneID: sceneID, Title: state.Title, Path: state.Path, WatchedAt: state.LastPlayedAt, PlayCount: state.PlayCount}
+			if r, ok := linkedByScene[sceneID]; ok {
+				item.ReleaseID = r.ID
+				item.Path = r.StashFilePath
+			}
+			out.Watched = append(out.Watched, item)
 		}
-		if len(rows) < 500 {
-			break
+	} else {
+		// Preserve the mirrored release history if Stash is temporarily unavailable.
+		for offset := 0; ; offset += 500 {
+			rows, err := s.store.Releases(ctx, domain.ReleaseFilter{StashWatched: true, Limit: 500, Offset: offset})
+			if err != nil {
+				return LibrarySyncSnapshot{}, err
+			}
+			for _, r := range rows {
+				watchedAt, _ := time.Parse(time.RFC3339, r.LastPlayedAt)
+				out.Watched = append(out.Watched, LibrarySyncItem{ReleaseID: r.ID, StashSceneID: r.StashSceneID, Path: r.StashFilePath, WatchedAt: watchedAt, PlayCount: r.PlayCount})
+			}
+			if len(rows) < 500 {
+				break
+			}
 		}
 	}
+
 	presetCollections, err := s.collectionPresets(ctx)
 	if err != nil {
 		return LibrarySyncSnapshot{}, err

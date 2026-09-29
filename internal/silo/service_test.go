@@ -20,6 +20,9 @@ type fakeStash struct {
 	siloScene           stash.SiloScene
 	watchlistScenes     map[string]time.Time
 	watchlistConfigured bool
+	watchedScenes       map[string]stash.SiloWatchedScene
+	watchedConfigured   bool
+	watchedErr          error
 	sceneMetaErr        error
 	sceneMetaCalls      int
 	saves               []struct{ resume, duration float64 }
@@ -46,6 +49,9 @@ func (f *fakeStash) SiloSceneByID(context.Context, string) (stash.SiloScene, err
 }
 func (f *fakeStash) SiloWatchlistScenes(context.Context) (map[string]time.Time, bool, error) {
 	return f.watchlistScenes, f.watchlistConfigured, nil
+}
+func (f *fakeStash) SiloWatchedScenes(context.Context) (map[string]stash.SiloWatchedScene, bool, error) {
+	return f.watchedScenes, f.watchedConfigured, f.watchedErr
 }
 
 func (f *fakeStash) SaveActivity(_ context.Context, _ string, resume, duration float64) error {
@@ -552,5 +558,24 @@ func TestManualStashSceneIDSearch(t *testing.T) {
 		if err != nil || len(rows) != 1 || rows[0].ProviderID != "stash:4392" {
 			t.Fatalf("query=%q rows=%+v err=%v", query, rows, err)
 		}
+	}
+}
+
+func TestLibrarySyncIncludesStashOnlyWatchedScenes(t *testing.T) {
+	svc, st, bridge, _ := testService(t)
+	defer st.Close()
+	played := time.Date(2026, 9, 29, 8, 30, 0, 0, time.UTC)
+	bridge.watchedConfigured = true
+	bridge.watchedScenes = map[string]stash.SiloWatchedScene{"stash-only": {Title: "Washing Time", Path: "/media/Washing Time.mp4", PlayCount: 3, LastPlayedAt: played}}
+	snapshot, err := svc.LibrarySync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Watched) != 1 {
+		t.Fatalf("watched=%+v", snapshot.Watched)
+	}
+	item := snapshot.Watched[0]
+	if item.ReleaseID != 0 || item.StashSceneID != "stash-only" || item.Title != "Washing Time" || item.Path != "/media/Washing Time.mp4" || item.PlayCount != 3 || !item.WatchedAt.Equal(played) {
+		t.Fatalf("item=%+v", item)
 	}
 }
