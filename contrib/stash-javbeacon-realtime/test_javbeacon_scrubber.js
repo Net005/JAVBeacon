@@ -80,6 +80,11 @@ assert.match(
 );
 
 const cssSource = fs.readFileSync(require.resolve("./javbeacon_scrubber.css"), "utf8");
+assert.match(pluginSource, /paths\?\.preview|paths\.preview/, "details hover must use Stash's native preview URL");
+assert.match(pluginSource, /video\.muted = true/, "hover preview must be muted");
+assert.match(pluginSource, /video\.loop = true/, "hover preview must loop");
+assert.match(pluginSource, /playerVideo\?\.addEventListener\("play", onPosterLeave\)/, "normal playback must stop the hover preview");
+
 assert.match(
   cssSource,
   /\.javbeacon-scrub-overlay\s*\{[^}]*position:\s*absolute/,

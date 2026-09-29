@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.271] - 2026-09-29
+
+### Improved
+
+- Use Stash's native grid MP4 preview when hovering the cover on a scene details page. The muted preview loops, stops on pointer leave or normal playback, and falls back to the existing sprite cycle when unavailable. Keep the large seek-bar preview unchanged.
+
 ## [1.0.270] - 2026-09-29
 
 ### Fixed
