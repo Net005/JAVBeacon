@@ -1,6 +1,6 @@
 name: JAVBeacon Realtime Sync + Subtitles
-description: Syncs changed scenes, links scene pages to JAVBeacon releases, requests subtitles, adds scene-card Watchlist controls, and replaces the scene player's cover and seek-bar previews with large sprite-based scrubbing.
-version: 1.12.12
+description: Syncs changed scenes, links scene pages to JAVBeacon releases, requests subtitles, adds scene-card Watchlist controls, and uses the native Stash video preview on scene-detail hover and enlarges seek-bar thumbnails.
+version: 1.12.13
 ui:
   javascript:
     - javbeacon_subtitles.js
@@ -78,8 +78,8 @@ settings:
     description: Optional advanced JSON overrides for the JAVBeacon-Subs request. Blank uses the individual settings and documented defaults. inputs is always controlled by the current scene.
     type: STRING
   scrubber_cover_enabled:
-    displayName: Enable cover-area sprite scrubbing
-    description: On the scene page, hovering the cover/poster area before playback cycles through the scene's generated sprite screenshots, the same source images used for the scene grid's hover preview. Defaults to true.
+    displayName: Enable cover-area video preview
+    description: On the scene page, hovering the cover/poster area before playback plays Stash's native scene preview video, as in the scene grid. Falls back to sprite screenshots when preview video is unavailable. Defaults to true.
     type: BOOLEAN
   scrubber_seek_preview_enabled:
     displayName: Enable large seek-bar preview
@@ -90,8 +90,8 @@ settings:
     description: How long the pointer must stay over the cover area before sprite scrubbing starts. Defaults to 400ms.
     type: NUMBER
   scrubber_interval_ms:
-    displayName: Time between sprites (ms)
-    description: How long each sprite screenshot is shown before advancing to the next one during cover-area scrubbing. Defaults to 700ms; minimum 100ms.
+    displayName: Sprite fallback interval (ms)
+    description: How long each sprite screenshot is shown if the scene has no playable preview video. Defaults to 700ms; minimum 100ms.
     type: NUMBER
 exec:
   - python3

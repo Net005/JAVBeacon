@@ -58,6 +58,19 @@
   position: absolute;
 }
 
+.javbeacon-hover-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.javbeacon-hover-video[hidden] {
+  display: none;
+}
+
 /* While the overlay is showing a scrubbed frame (seek-bar hover or
    cover-area cycling), hide the underlying static poster/cover image so it
    never shows through outside the overlay's letterboxed crop. This is a

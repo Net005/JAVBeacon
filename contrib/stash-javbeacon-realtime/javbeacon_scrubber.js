@@ -14,6 +14,12 @@
   const PLAYER_ATTACH_RETRY_MS = 250;
   const PLAYER_ATTACH_MAX_ATTEMPTS = 40;
 
+  const FIND_SCENE_PREVIEW = gql`
+    query JAVBeaconScenePreview($id: ID!) {
+      findScene(id: $id) { paths { preview vtt } }
+    }
+  `;
+
   const FIND_PLUGIN_SETTINGS = gql`
     query JAVBeaconScrubberSettings {
       configuration {
@@ -353,13 +359,21 @@
     const frame = document.createElement("div");
     frame.className = "javbeacon-scrub-frame";
     backdrop.appendChild(frame);
+    const video = document.createElement("video");
+    video.className = "javbeacon-hover-video";
+    video.muted = true;
+    video.loop = true;
+    video.playsInline = true;
+    video.preload = "none";
+    video.hidden = true;
+    backdrop.appendChild(video);
     const controlBar = playerEl.querySelector(".vjs-control-bar");
     if (controlBar) {
       playerEl.insertBefore(backdrop, controlBar);
     } else {
       playerEl.appendChild(backdrop);
     }
-    return { backdrop, frame };
+    return { backdrop, frame, video };
   }
 
   // backdropEl is positioned absolutely within playerEl's own box (playerEl
@@ -412,10 +426,11 @@
   }
 
   function attachScrubber(playerEl, cuesPromise, options) {
-    const { hoverDelayMs, cycleIntervalMs, coverEnabled, seekEnabled } = options;
-    const { backdrop, frame } = createOverlay(playerEl);
+    const { hoverDelayMs, cycleIntervalMs, coverEnabled, seekEnabled, previewURL } = options;
+    const { backdrop, frame, video } = createOverlay(playerEl);
     const poster = playerEl.querySelector(".vjs-poster");
     const progress = playerEl.querySelector(".vjs-progress-control");
+    const playerVideo = playerEl.querySelector("video.vjs-tech");
     let cues = null;
     cuesPromise.then((resolved) => {
       cues = resolved;
@@ -436,6 +451,7 @@
 
     let hoverTimer = null;
     let cycleTimer = null;
+    let posterHovered = false;
 
     function stopCycle() {
       clearTimeout(hoverTimer);
@@ -444,29 +460,59 @@
       cycleTimer = null;
     }
 
+    function stopPreviewVideo() {
+      video.pause();
+      video.hidden = true;
+    }
+
+    function startSpriteFallback() {
+      if (!posterHovered || !cues || cues.length === 0) return;
+      let index = 0;
+      showOverlay(backdrop);
+      const step = () => {
+        paintCue(backdrop, frame, cues[index], coverBox());
+        index = (index + 1) % cues.length;
+      };
+      step();
+      cycleTimer = setInterval(step, cycleIntervalMs);
+    }
+
     function onPosterEnter() {
-      if (!coverEnabled || playerHasStarted() || !cues || cues.length === 0) return;
+      if (!coverEnabled || playerHasStarted()) return;
+      posterHovered = true;
       stopCycle();
       hoverTimer = setTimeout(() => {
-        let index = 0;
-        showOverlay(backdrop);
-        const step = () => {
-          paintCue(backdrop, frame, cues[index], coverBox());
-          index = (index + 1) % cues.length;
-        };
-        step();
-        cycleTimer = setInterval(step, cycleIntervalMs);
+        if (!posterHovered || playerHasStarted()) return;
+        if (!previewURL) {
+          startSpriteFallback();
+          return;
+        }
+        if (!video.src) video.src = previewURL;
+        video.play().then(() => {
+          if (!posterHovered || playerHasStarted()) {
+            stopPreviewVideo();
+            return;
+          }
+          video.hidden = false;
+          showOverlay(backdrop);
+        }).catch(() => {
+          stopPreviewVideo();
+          startSpriteFallback();
+        });
       }, hoverDelayMs);
     }
 
     function onPosterLeave() {
+      posterHovered = false;
       stopCycle();
+      stopPreviewVideo();
       hideOverlay(backdrop);
     }
 
     function onSeekMove() {
       if (!seekEnabled) return;
       stopCycle();
+      stopPreviewVideo();
       showOverlay(backdrop);
       const box = playerBox(playerEl);
       requestAnimationFrame(() => mirrorFromThumbnail(box));
@@ -476,6 +522,7 @@
       hideOverlay(backdrop);
     }
 
+    playerVideo?.addEventListener("play", onPosterLeave);
     poster?.addEventListener("mouseenter", onPosterEnter);
     poster?.addEventListener("mouseleave", onPosterLeave);
     progress?.addEventListener("mousemove", onSeekMove);
@@ -483,6 +530,11 @@
 
     return function detach() {
       stopCycle();
+      posterHovered = false;
+      stopPreviewVideo();
+      video.removeAttribute("src");
+      video.load();
+      playerVideo?.removeEventListener("play", onPosterLeave);
       poster?.removeEventListener("mouseenter", onPosterEnter);
       poster?.removeEventListener("mouseleave", onPosterLeave);
       progress?.removeEventListener("mousemove", onSeekMove);
@@ -509,6 +561,7 @@
     // mirror reads Stash's own already-computed thumbnail instead), but
     // fetching it is harmless when only seek-preview is enabled - it just
     // goes unused.
+    const previewURL = coverEnabled ? scene?.paths?.preview : null;
     const cuesPromise = coverEnabled && scene?.paths?.vtt
       ? fetchSpriteCues(scene.paths.vtt)
       : Promise.resolve([]);
@@ -526,7 +579,7 @@
         }
         return;
       }
-      detach = attachScrubber(playerEl, cuesPromise, { coverEnabled, cycleIntervalMs, hoverDelayMs, seekEnabled });
+      detach = attachScrubber(playerEl, cuesPromise, { coverEnabled, cycleIntervalMs, hoverDelayMs, seekEnabled, previewURL });
     };
     tryAttach();
 
@@ -538,12 +591,18 @@
 
   function ScenePlayerScrubber({ scene }) {
     const settings = usePluginSettings();
+    const previewResult = useQuery(FIND_SCENE_PREVIEW, {
+      variables: { id: scene.id },
+      skip: Boolean(scene?.paths?.preview),
+    });
+    const previewPath = scene?.paths?.preview || previewResult.data?.findScene?.paths?.preview;
+    const vttPath = scene?.paths?.vtt || previewResult.data?.findScene?.paths?.vtt;
 
     React.useEffect(() => {
       if (!scene?.id) return undefined;
-      return setupScrubberForScene(scene, settings);
+      return setupScrubberForScene({ ...scene, paths: { ...scene.paths, preview: previewPath, vtt: vttPath } }, settings);
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [scene?.id, settings]);
+    }, [scene?.id, settings, previewPath, vttPath]);
 
     return null;
   }

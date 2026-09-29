@@ -10,7 +10,7 @@ This plugin provides two integrations:
 - an always-visible Watchlist toggle on Stash scene cards.
 - scene details beneath the scene ID on Stash scene cards, with a compact
   two-line preview, full-text hover tooltip, and click-to-expand display.
-- large, sprite-based cover and seek-bar previews on the scene player (see
+- native video cover preview and large seek-bar thumbnail preview on the scene player (see
   **Player previews** below).
 
 The subtitle request runs in Python inside the Stash plugin process. It does
@@ -152,58 +152,25 @@ only the configured browser URL and final release path reach the page.
 
 ## Player previews
 
-The scene player's cover/video area gets two large, sprite-based previews,
-built from two different sources:
+On a scene details page, hovering the cover before playback starts plays the
+same native MP4 preview that Stash serves to its scene grid (`scene.paths.preview`).
+The preview is muted, loops, and stops when the pointer leaves or normal
+playback starts. It loads only when needed. If Stash has no playable preview,
+the cover falls back to cycling through the scene's sprite screenshots.
 
-- **Large seek-bar preview.** Stash already renders a small seek-bar
-  thumbnail preview (the sprite/VTT screenshots also used by the scene
-  grid's hover preview) whenever the pointer moves over the seek bar. This
-  plugin hides that small preview and mirrors its already-computed image,
-  crop, and position onto a large overlay covering the cover/video area
-  instead, scaled up proportionally, so the previewed frame is always
-  exactly what Stash itself would have shown for that point on the seek
-  bar - just displayed larger.
-- **Cover-area scrubbing.** Hovering the cover/poster area before playback
-  starts cycles through the scene's sprite screenshots in the same
-  cover/video area. This can't reuse Stash's seek-bar hover mechanism (there
-  is no real pointer continuously moving over the seek bar), so instead the
-  plugin fetches and parses the scene's own sprite VTT file directly and
-  cycles through its frames, cropping each one with the same scaling
-  technique used for the seek-bar mirror above.
+Moving over the seek bar still enlarges Stash's own thumbnail preview into the
+player area. The cover preview and seek-bar preview leave the normal player
+controls visible and interactive. The plugin adds one inert overlay beneath
+the control bar; it does not replace or resize Stash's player.
 
-Either way, the one limit scaling cannot remove is the sprite sheet's own
-source resolution: Stash's generated sprite screenshots are intentionally
-low-resolution to keep the sprite sheet small, so the large preview is that
-same resolution enlarged, not a higher-resolution capture.
+Settings:
 
-The preview is letterboxed to the frame's own aspect ratio, and it always
-leaves the control bar and seek bar visible and interactive while scrubbing.
-It's built from two layered pieces inserted directly into the player itself
-(as the element right before the control bar, so it naturally paints above
-the cover/video but below the control bar - no gap in the seek bar's own
-hit-area can ever expose the native cover, and no part of the overlay can
-ever cover the seek bar): an opaque backdrop that always covers the entire
-video area (so the player's native cover image, which sits behind it, can
-never show through around the edges) and an inner frame sized to exactly
-the scaled preview image (so an adjacent sprite frame can never bleed in
-above or below the intended one).
+- **Enable cover-area video preview** (default on)
+- **Enable large seek-bar preview** (default on)
+- **Cover hover delay (ms)** (default 400)
+- **Sprite fallback interval (ms)** (default 700, minimum 100)
 
-Both behaviors are on by default and can be turned off independently:
-
-- **Enable cover-area sprite scrubbing**
-- **Enable large seek-bar preview**
-
-Two timings are configurable:
-
-- **Cover hover delay (ms)** - how long the pointer must rest over the cover
-  area before scrubbing starts. Defaults to 400ms.
-- **Time between sprites (ms)** - how long each frame is shown before
-  advancing to the next one during cover-area scrubbing. Defaults to 700ms;
-  values below 100ms are treated as 100ms.
-
-If a scene has no sprite preview data yet (for example, one added before
-Stash generated it), both previews are silently unavailable for that scene;
-nothing else on the page is affected.
+Scenes without generated preview media keep the regular cover image.
 
 ## Realtime sync
 
