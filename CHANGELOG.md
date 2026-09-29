@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.270] - 2026-09-29
+
+### Fixed
+
+- Include watched Stash-only scenes in Silo sync using a filtered Stash playback query. Preserve their scene title, local file path, play count, and last watched time without requiring a JAVBeacon release.
+
 ## [1.0.269] - 2026-09-27
 
 ### Added

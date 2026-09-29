@@ -237,3 +237,53 @@ func (s *Service) SiloWatchlistScenes(ctx context.Context) (map[string]time.Time
 	}
 	return out, true, nil
 }
+
+// SiloWatchedScene is the current Stash playback state used for Silo imports.
+// It includes only scenes backed by a local file.
+type SiloWatchedScene struct {
+	Title        string
+	Path         string
+	PlayCount    int
+	LastPlayedAt time.Time
+}
+
+// SiloWatchedScenes asks Stash for watched scenes only. Filtering in GraphQL
+// keeps a watch-sync snapshot fast even when the full scene library is large.
+func (s *Service) SiloWatchedScenes(ctx context.Context) (map[string]SiloWatchedScene, bool, error) {
+	base, key, err := s.stashConfig(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	const gql = `query JAVBeaconSiloWatched { findScenes(filter: { per_page: -1 }, scene_filter: { play_count: { value: 0, modifier: GREATER_THAN } }) { scenes { id title play_count last_played_at files { path } } } }`
+	var payload struct {
+		Data struct {
+			FindScenes struct {
+				Scenes []struct {
+					ID           string `json:"id"`
+					Title        string `json:"title"`
+					PlayCount    int    `json:"play_count"`
+					LastPlayedAt string `json:"last_played_at"`
+					Files        []struct {
+						Path string `json:"path"`
+					} `json:"files"`
+				} `json:"scenes"`
+			} `json:"findScenes"`
+		} `json:"data"`
+		Errors []struct{ Message string } `json:"errors"`
+	}
+	if err := s.graphql(ctx, base, key, gql, &payload); err != nil {
+		return nil, true, err
+	}
+	if len(payload.Errors) > 0 {
+		return nil, true, fmt.Errorf("StashApp watched scenes: %s", payload.Errors[0].Message)
+	}
+	out := make(map[string]SiloWatchedScene, len(payload.Data.FindScenes.Scenes))
+	for _, scene := range payload.Data.FindScenes.Scenes {
+		if scene.ID == "" || scene.PlayCount < 1 || len(scene.Files) == 0 {
+			continue
+		}
+		played, _ := time.Parse(time.RFC3339Nano, scene.LastPlayedAt)
+		out[scene.ID] = SiloWatchedScene{Title: scene.Title, Path: scene.Files[0].Path, PlayCount: scene.PlayCount, LastPlayedAt: played}
+	}
+	return out, true, nil
+}
