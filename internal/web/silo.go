@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Net005/JAVBeacon/internal/covers"
 
@@ -155,20 +156,9 @@ func (s *Server) siloPlayback(w http.ResponseWriter, r *http.Request) {
 	s.json(w, http.StatusOK, result)
 }
 
-// siloLibrarySync exposes internal/silo.Service.LibrarySync's own
-// revision/filter-preset-membership snapshot under the Silo integration
-// path - independent of internal/jellyfin.Service.LibrarySync, though both
-// resolve saved filter sets through the same internal/filterpreset package,
-// so membership never disagrees between the two integrations. The Silo
-// plugin's scheduled_task.v1 "collection-sync" task polls this to notice
-// when a saved filter set's membership changed since its last run, then
-// calls Silo's own POST /api/v2/admin/items/{id}/refresh-metadata for every
-// affected item it can map to a Silo media ID (see
-// watchsync.go/collectionsync.go in the Silo plugin repo) - there is no host
-// API for a plugin to push new metadata or invalidate an item directly, so
-// this poll-and-refresh loop is the closest available substitute for the
-// realtime push Jellyfin's own plugin gets from running in-process against
-// ICollectionManager.
+// siloLibrarySync provides collection membership and watched-state snapshots.
+// Metadata edits use the separate incremental metadata-changes feed, so a
+// large collection pass cannot delay a release or Stash scene refresh.
 func (s *Server) siloLibrarySync(w http.ResponseWriter, r *http.Request) {
 	value, err := s.silo.LibrarySync(r.Context())
 	if err != nil {
@@ -197,4 +187,38 @@ func serveSiloStashPoster(w http.ResponseWriter, resp *http.Response) {
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
+}
+
+// siloMetadataChanges exposes a bounded incremental feed for the plugin's
+// targeted refresh worker. It is read-only and protected by the normal API key.
+func (s *Server) siloMetadataChanges(w http.ResponseWriter, r *http.Request) {
+	since := time.Time{}
+	var err error
+	if r.URL.Query().Has("since") {
+		since, err = time.Parse(time.RFC3339Nano, r.URL.Query().Get("since"))
+	}
+	if err != nil {
+		s.problem(w, http.StatusBadRequest, "since must be RFC3339")
+		return
+	}
+	value, err := s.silo.MetadataChanges(r.Context(), since)
+	if err != nil {
+		s.problem(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, value)
+}
+
+func (s *Server) siloMetadataChangesAck(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CheckedAt time.Time `json:"checked_at"`
+	}
+	if !s.decode(w, r, &payload) {
+		return
+	}
+	if err := s.silo.AckMetadataChanges(r.Context(), payload.CheckedAt); err != nil {
+		s.problem(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, map[string]any{"status": "ok"})
 }

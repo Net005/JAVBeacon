@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.272] - 2026-09-30
+
+### Improved
+
+- Expose a cursor-based feed of changed local JAVBeacon releases and Stash scenes for Silo. Page Stash scenes newest first, overlap polling windows, and persist the cursor only after Silo acknowledges queued item refreshes. This avoids full-library metadata refreshes for ordinary edits and retries failed batches after restarts.
+
 ## [1.0.271] - 2026-09-29
 
 ### Improved

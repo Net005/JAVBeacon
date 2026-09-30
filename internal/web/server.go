@@ -291,6 +291,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/integrations/silo/stash/scenes/{id}/cover", s.siloStashSceneCover)
 	s.mux.HandleFunc("POST /api/v1/integrations/silo/playback", s.siloPlayback)
 	s.mux.HandleFunc("GET /api/v1/integrations/silo/library-sync", s.siloLibrarySync)
+	s.mux.HandleFunc("GET /api/v1/integrations/silo/metadata-changes", s.siloMetadataChanges)
+	s.mux.HandleFunc("POST /api/v1/integrations/silo/metadata-changes/ack", s.siloMetadataChangesAck)
 	s.mux.HandleFunc("GET /api/v1/integrations/silo/releases/{id}/stash-cover", s.siloStashCover)
 	s.mux.HandleFunc("GET /api/v1/integrations/performers/{performerId}/image", s.performerImage)
 	s.mux.HandleFunc("GET /api/v1/integrations/performers/{performerId}/stash", s.performerStashRedirect)
