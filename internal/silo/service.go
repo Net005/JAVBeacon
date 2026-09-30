@@ -79,6 +79,7 @@ type stashBridge interface {
 	SiloSceneByID(context.Context, string) (stash.SiloScene, error)
 	SiloWatchlistScenes(context.Context) (map[string]time.Time, bool, error)
 	SiloWatchedScenes(context.Context) (map[string]stash.SiloWatchedScene, bool, error)
+	SiloChangedScenes(context.Context, time.Time) ([]stash.SiloChangedScene, error)
 	SaveActivity(context.Context, string, float64, float64) error
 	AddPlay(context.Context, string, time.Time) (int, error)
 }

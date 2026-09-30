@@ -23,6 +23,8 @@ type fakeStash struct {
 	watchedScenes       map[string]stash.SiloWatchedScene
 	watchedConfigured   bool
 	watchedErr          error
+	changedScenes       []stash.SiloChangedScene
+	changedErr          error
 	sceneMetaErr        error
 	sceneMetaCalls      int
 	saves               []struct{ resume, duration float64 }
@@ -52,6 +54,10 @@ func (f *fakeStash) SiloWatchlistScenes(context.Context) (map[string]time.Time, 
 }
 func (f *fakeStash) SiloWatchedScenes(context.Context) (map[string]stash.SiloWatchedScene, bool, error) {
 	return f.watchedScenes, f.watchedConfigured, f.watchedErr
+}
+
+func (f *fakeStash) SiloChangedScenes(context.Context, time.Time) ([]stash.SiloChangedScene, error) {
+	return f.changedScenes, f.changedErr
 }
 
 func (f *fakeStash) SaveActivity(_ context.Context, _ string, resume, duration float64) error {
@@ -577,5 +583,54 @@ func TestLibrarySyncIncludesStashOnlyWatchedScenes(t *testing.T) {
 	item := snapshot.Watched[0]
 	if item.ReleaseID != 0 || item.StashSceneID != "stash-only" || item.Title != "Washing Time" || item.Path != "/media/Washing Time.mp4" || item.PlayCount != 3 || !item.WatchedAt.Equal(played) {
 		t.Fatalf("item=%+v", item)
+	}
+}
+
+func TestMetadataChangesIncludesJAVAndStashOnlyLocalEdits(t *testing.T) {
+	svc, st, bridge, release := testService(t)
+	defer st.Close()
+	since := time.Now().UTC().Add(-time.Hour)
+	if err := st.SaveSettings(context.Background(), map[string]string{"stash_base_url": "https://stash.example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	bridge.changedScenes = []stash.SiloChangedScene{{ID: "stash-only", Title: "Changed scene", Path: "/media/changed.mp4", UpdatedAt: time.Now().UTC()}}
+	result, err := svc.MetadataChanges(context.Background(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CheckedAt.IsZero() || len(result.Items) != 2 {
+		t.Fatalf("result=%+v", result)
+	}
+	if result.Items[0].ReleaseID != release.ID || result.Items[0].Code != release.VideoID {
+		t.Fatalf("release change=%+v", result.Items[0])
+	}
+	if result.Items[1].StashSceneID != "stash-only" || result.Items[1].Title != "Changed scene" {
+		t.Fatalf("stash change=%+v", result.Items[1])
+	}
+}
+
+func TestMetadataChangeCursorIsAcknowledgedAndRetained(t *testing.T) {
+	svc, st, _, _ := testService(t)
+	defer st.Close()
+	first, err := svc.MetadataChanges(context.Background(), time.Time{})
+	if err != nil || first.CheckedAt.IsZero() {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	if err := svc.AckMetadataChanges(context.Background(), first.CheckedAt); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := st.Settings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings["silo_metadata_sync_cursor"] != first.CheckedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("saved cursor=%q", settings["silo_metadata_sync_cursor"])
+	}
+	if err := svc.AckMetadataChanges(context.Background(), first.CheckedAt.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ = st.Settings(context.Background())
+	if settings["silo_metadata_sync_cursor"] != first.CheckedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("cursor went backwards: %q", settings["silo_metadata_sync_cursor"])
 	}
 }

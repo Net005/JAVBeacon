@@ -114,3 +114,35 @@ func TestSiloWatchlistScenesReadsConfiguredStashTagAndUpdatedAt(t *testing.T) {
 		t.Fatalf("scenes=%+v configured=%v err=%v", scenes, configured, err)
 	}
 }
+
+func TestSiloChangedScenesStopsAtCursorAndSkipsScenesWithoutFiles(t *testing.T) {
+	since := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var request struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(request.Query, `sort: "updated_at"`) {
+			t.Errorf("unsorted query: %s", request.Query)
+		}
+		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[{"id":"new","code":"NEW-1","title":"New","updated_at":"2026-09-29T10:01:00Z","files":[{"path":"/media/new.mp4"}]},{"id":"remote","updated_at":"2026-09-29T10:00:30Z","files":[]},{"id":"old","updated_at":"2026-09-29T09:59:00Z","files":[{"path":"/media/old.mp4"}]}]}}}`))
+	}))
+	defer server.Close()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "changed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveSettings(context.Background(), map[string]string{"stash_base_url": server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(st, time.Second, slog.Default(), nil, nil)
+	rows, err := svc.SiloChangedScenes(context.Background(), since)
+	if err != nil || calls != 1 || len(rows) != 1 || rows[0].ID != "new" || rows[0].Path != "/media/new.mp4" {
+		t.Fatalf("rows=%+v calls=%d err=%v", rows, calls, err)
+	}
+}
