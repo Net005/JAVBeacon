@@ -634,3 +634,26 @@ func TestMetadataChangeCursorIsAcknowledgedAndRetained(t *testing.T) {
 		t.Fatalf("cursor went backwards: %q", settings["silo_metadata_sync_cursor"])
 	}
 }
+
+func TestSiloSearchMatchesHyphenatedAndCompactCodeVariants(t *testing.T) {
+	svc, st, _, _ := testService(t)
+	defer st.Close()
+	// The test fixture contains a local ABC-123 release. Both filename forms
+	// must use exact video_id lookups and resolve the same local release.
+	for _, q := range []string{"ABC123", "ABC_123", "ABC-123"} {
+		rows, err := svc.Search(context.Background(), q, 10)
+		if err != nil || len(rows) != 1 || rows[0].Code != "ABC-123" {
+			t.Fatalf("query %q: rows=%+v err=%v", q, rows, err)
+		}
+	}
+}
+
+func TestSiloSearchFallbackKeepsJAVReleaseForCompactExactCode(t *testing.T) {
+	svc, st, bridge, _ := testService(t)
+	defer st.Close()
+	bridge.siloScenes = []stash.SiloScene{{ID: "other", Code: "ABC123", Title: "Other Stash scene"}}
+	rows, err := svc.SearchWithStashFallback(context.Background(), "ABC123", 10)
+	if err != nil || len(rows) != 1 || rows[0].ReleaseID == 0 || rows[0].Code != "ABC-123" {
+		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
+}
