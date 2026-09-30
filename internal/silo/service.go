@@ -249,7 +249,13 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Metada
 		// Scan filenames commonly contain a release code. An exact miss is
 		// definitive for Silo's matcher: a broad text search cannot turn a
 		// different code into a safe match, and costs seconds on large catalogs.
-		rows, err = s.store.Releases(ctx, domain.ReleaseFilter{VideoID: needle, Limit: limit, StashLinked: true})
+		variants := releaseCodeVariants(needle)
+		for _, variant := range variants {
+			rows, err = s.store.Releases(ctx, domain.ReleaseFilter{VideoID: variant, Limit: limit, StashLinked: true})
+			if err != nil || len(rows) > 0 {
+				break
+			}
+		}
 	} else {
 		rows, err = s.store.Releases(ctx, domain.ReleaseFilter{Search: needle, Limit: limit, StashLinked: true})
 	}
@@ -296,7 +302,7 @@ func (s *Service) SearchWithStashFallback(ctx context.Context, query string, lim
 		return nil, err
 	}
 	for _, row := range rows {
-		if strings.EqualFold(strings.TrimSpace(row.Code), strings.TrimSpace(query)) {
+		if sameReleaseCode(row.Code, query) {
 			return rows, nil
 		}
 	}
@@ -484,15 +490,57 @@ func (s *Service) stashOnlyMetadata(ctx context.Context, scene stash.SiloScene) 
 }
 
 func likelyReleaseCode(query string) bool {
-	if !strings.Contains(query, "-") || strings.ContainsAny(query, " \t\n") {
+	query = strings.TrimSpace(query)
+	if query == "" || len(query) > 32 || strings.ContainsAny(query, " \t\n") {
 		return false
 	}
+	letters, digits := 0, 0
 	for _, r := range query {
-		if r >= '0' && r <= '9' {
-			return true
+		switch {
+		case r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z':
+			letters++
+		case r >= '0' && r <= '9':
+			digits++
+		case r == '-' || r == '_':
+		default:
+			return false
 		}
 	}
-	return false
+	return letters >= 2 && digits >= 1
+}
+
+// releaseCodeVariants handles filename separators without falling through to
+// an expensive broad text search. Only exact video_id predicates are used.
+func sameReleaseCode(a, b string) bool {
+	normalize := func(value string) string {
+		var out strings.Builder
+		for _, r := range strings.ToUpper(strings.TrimSpace(value)) {
+			if r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+				out.WriteRune(r)
+			}
+		}
+		return out.String()
+	}
+	return normalize(a) == normalize(b)
+}
+
+func releaseCodeVariants(query string) []string {
+	out := []string{query}
+	seen := map[string]bool{strings.ToUpper(query): true}
+	add := func(value string) {
+		key := strings.ToUpper(value)
+		if value != "" && !seen[key] {
+			out = append(out, value)
+			seen[key] = true
+		}
+	}
+	compact := strings.NewReplacer("-", "", "_", "").Replace(query)
+	add(compact)
+	firstDigit := strings.IndexFunc(compact, func(r rune) bool { return r >= '0' && r <= '9' })
+	if firstDigit > 0 && firstDigit < len(compact) {
+		add(compact[:firstDigit] + "-" + compact[firstDigit:])
+	}
+	return out
 }
 
 // stashLookupTimeout bounds every individual Stash round trip made while

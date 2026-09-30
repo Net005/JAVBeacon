@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.273] - 2026-09-30
+
+### Improved
+
+- Match local release codes in Silo when filenames omit or change the hyphen or underscore (for example, `DMG13` and `DMG-13`). Try only exact code variants, keeping broad text searches out of scan-time matching.
+
 ## [1.0.272] - 2026-09-30
 
 ### Improved
