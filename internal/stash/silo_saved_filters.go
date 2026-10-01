@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -54,9 +55,66 @@ func (s *Service) savedFilterGraphQL(ctx context.Context, base, key, query strin
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
+		var problem struct {
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&problem)
+		if len(problem.Errors) > 0 {
+			return fmt.Errorf("StashApp HTTP %d: %s", resp.StatusCode, problem.Errors[0].Message)
+		}
 		return fmt.Errorf("StashApp returned HTTP %d", resp.StatusCode)
 	}
 	return json.NewDecoder(resp.Body).Decode(target)
+}
+
+// Stash persists saved filters in its UI representation. GraphQL findScenes
+// expects scalar criterion values and ID lists instead of the UI wrappers.
+func sceneFilterInput(saved map[string]any) map[string]any {
+	out := make(map[string]any, len(saved))
+	for name, raw := range saved {
+		criterion, ok := raw.(map[string]any)
+		if !ok {
+			out[name] = raw
+			continue
+		}
+		converted := make(map[string]any, len(criterion))
+		for key, value := range criterion {
+			converted[key] = value
+		}
+		if value, ok := converted["value"].(map[string]any); ok {
+			if items, exists := value["items"]; exists {
+				converted["value"] = criterionIDs(items)
+				converted["excludes"] = criterionIDs(value["excluded"])
+				if depth, exists := value["depth"]; exists {
+					converted["depth"] = depth
+				}
+			} else if scalar, exists := value["value"]; exists {
+				converted["value"] = scalar
+				if second, exists := value["value2"]; exists {
+					converted["value2"] = second
+				}
+			}
+		}
+		out[name] = converted
+	}
+	return out
+}
+
+func criterionIDs(raw any) []string {
+	items, _ := raw.([]any)
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if object, ok := item.(map[string]any); ok {
+			if id, ok := object["id"].(string); ok && id != "" {
+				ids = append(ids, id)
+			}
+		} else if id, ok := item.(string); ok && id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // SiloSavedFilters resolves only selected Stash scene filters. An empty
@@ -130,7 +188,7 @@ func (s *Service) SiloSavedFilters(ctx context.Context, selection string) ([]Sil
 					Message string `json:"message"`
 				} `json:"errors"`
 			}
-			vars := map[string]any{"findFilter": ff, "sceneFilter": filter.ObjectFilter}
+			vars := map[string]any{"findFilter": ff, "sceneFilter": sceneFilterInput(filter.ObjectFilter)}
 			query := `query($findFilter: FindFilterType, $sceneFilter: SceneFilterType) { findScenes(filter: $findFilter, scene_filter: $sceneFilter) { count scenes { id code title files { path } } } }`
 			if err = s.savedFilterGraphQL(ctx, base, key, query, vars, &result); err != nil {
 				return nil, err

@@ -30,7 +30,7 @@ func TestSiloSavedFiltersSelectsScenesAndPreservesQuery(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(req.Query, "findSavedFilters") {
-			_, _ = w.Write([]byte(`{"data":{"findSavedFilters":[{"id":"7","name":"Scenes I Like","find_filter":{"q":"test","sort":"date","direction":"DESC"},"object_filter":{"title":{"value":"scene","modifier":"INCLUDES"}}},{"id":"8","name":"Other","find_filter":{},"object_filter":null}]}}`))
+			_, _ = w.Write([]byte(`{"data":{"findSavedFilters":[{"id":"7","name":"Scenes I Like","find_filter":{"q":"test","sort":"date","direction":"DESC"},"object_filter":{"title":{"value":"scene","modifier":"INCLUDES"},"o_counter":{"value":{"value":1},"modifier":"GREATER_THAN"},"tags":{"value":{"items":[{"id":"1355","label":"Watchlist"}],"excluded":[{"id":"3","label":"Other"}],"depth":0},"modifier":"INCLUDES_ALL"}}},{"id":"8","name":"Other","find_filter":{},"object_filter":null}]}}`))
 			return
 		}
 		find := req.Variables["findFilter"].(map[string]any)
@@ -40,6 +40,16 @@ func TestSiloSavedFiltersSelectsScenesAndPreservesQuery(t *testing.T) {
 		scene := req.Variables["sceneFilter"].(map[string]any)
 		if _, ok := scene["title"]; !ok {
 			t.Errorf("scene filter=%v", scene)
+		}
+		if n := scene["o_counter"].(map[string]any)["value"]; n != float64(1) {
+			t.Errorf("counter=%v", n)
+		}
+		tags := scene["tags"].(map[string]any)
+		if ids := tags["value"].([]any); len(ids) != 1 || ids[0] != "1355" {
+			t.Errorf("tags=%v", tags)
+		}
+		if ids := tags["excludes"].([]any); len(ids) != 1 || ids[0] != "3" {
+			t.Errorf("tags=%v", tags)
 		}
 		_, _ = w.Write([]byte(`{"data":{"findScenes":{"count":1,"scenes":[{"id":"42","code":"AB-1","title":"Scene","files":[{"path":"/movies/AB-1.mp4"}]}]}}}`))
 	}))
