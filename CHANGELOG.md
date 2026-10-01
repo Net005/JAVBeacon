@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.274] - 2026-10-01
+
+### Added
+
+- Expose selected StashApp scene saved filters to the Silo plugin, resolving each filter through Stash GraphQL with its saved search, conditions, and sort order. Return exact scene file paths so Silo imports only local members. An empty selection avoids a Stash query; unknown names or IDs fail safely.
+
 ## [1.0.273] - 2026-09-30
 
 ### Improved

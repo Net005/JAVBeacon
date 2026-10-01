@@ -229,6 +229,19 @@ type FilterPresetCollection struct {
 	ReleaseIDs []int64 `json:"release_ids"`
 }
 
+// StashSavedFilters keeps Stash scene saved filters separate from JAVBeacon's
+// Release Library presets. A Stash outage fails the requested collection sync
+// instead of silently clearing its collections.
+func (s *Service) StashSavedFilters(ctx context.Context, selection string) ([]stash.SiloSavedFilter, error) {
+	source, ok := s.stash.(interface {
+		SiloSavedFilters(context.Context, string) ([]stash.SiloSavedFilter, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("Stash saved filter source is unavailable")
+	}
+	return source.SiloSavedFilters(ctx, selection)
+}
+
 // Search is deliberately DB-only - no per-result Stash enrichment (text/
 // image gap-fill or performer images). See internal/jellyfin.Service.Search's
 // doc comment for the full history: this exact policy is what fixed Silo's

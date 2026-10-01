@@ -168,6 +168,15 @@ func (s *Server) siloLibrarySync(w http.ResponseWriter, r *http.Request) {
 	s.json(w, http.StatusOK, value)
 }
 
+func (s *Server) siloStashSavedFilters(w http.ResponseWriter, r *http.Request) {
+	value, err := s.silo.StashSavedFilters(r.Context(), r.URL.Query().Get("selection"))
+	if err != nil {
+		s.problem(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, map[string]any{"items": value})
+}
+
 func serveSiloStashPoster(w http.ResponseWriter, resp *http.Response) {
 	const maxImage = 16 << 20
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxImage+1))
