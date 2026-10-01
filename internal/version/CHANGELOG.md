@@ -5,6 +5,13 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.275] - 2026-10-01
+
+### Fixed
+
+- Convert Stash saved-filter UI values to valid GraphQL input before loading scenes for Silo collections. This fixes scheduled collection sync failures for counters, dates, and tag-based filters such as Watchlist.
+- Include Stash GraphQL validation messages in saved-filter errors so future schema mismatches are diagnosable.
+
 ## [1.0.274] - 2026-10-01
 
 ### Added
