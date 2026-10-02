@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.276] - 2026-10-02
+
+### Fixed
+
+- Unwrap Boolean conditions such as Favorite performers when loading Stash scene saved filters for Silo collections. Stash expects a Boolean rather than the saved-filter UI wrapper; passing the wrapper made the whole collection sync fail immediately.
+
 ## [1.0.275] - 2026-10-01
 
 ### Fixed
