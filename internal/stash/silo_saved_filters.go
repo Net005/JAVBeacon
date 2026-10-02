@@ -79,6 +79,18 @@ func sceneFilterInput(saved map[string]any) map[string]any {
 			out[name] = raw
 			continue
 		}
+		// Stash stores Boolean scene filters in its UI criterion wrapper,
+		// while SceneFilterType expects the Boolean itself. The generic
+		// criterion conversion below would send {value: true}, which
+		// GraphQL rejects with "cannot use map as Boolean".
+		if name == "performer_favorite" || name == "organized" || name == "interactive" {
+			value := criterion["value"]
+			if nested, ok := value.(map[string]any); ok {
+				value = nested["value"]
+			}
+			out[name] = value
+			continue
+		}
 		converted := make(map[string]any, len(criterion))
 		for key, value := range criterion {
 			converted[key] = value
