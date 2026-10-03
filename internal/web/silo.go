@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/covers"
+	"github.com/Net005/JAVBeacon/internal/stash"
 
 	siloIntegration "github.com/Net005/JAVBeacon/internal/silo"
 )
@@ -230,4 +231,20 @@ func (s *Server) siloMetadataChangesAck(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.json(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+func (s *Server) siloPlaybackBackfill(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		SceneID string                    `json:"scene_id"`
+		Plays   []stash.SiloCompletedPlay `json:"plays"`
+	}
+	if !s.decode(w, r, &request) {
+		return
+	}
+	result, err := s.stash.BackfillSiloPlays(r.Context(), request.SceneID, request.Plays)
+	if err != nil {
+		s.problem(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.json(w, http.StatusOK, result)
 }

@@ -68,6 +68,8 @@ func (s *Service) SaveActivity(ctx context.Context, sceneID string, resumeTime, 
 }
 
 func (s *Service) AddPlay(ctx context.Context, sceneID string, at time.Time) (int, error) {
+	s.playMu.Lock()
+	defer s.playMu.Unlock()
 	return s.addHistory(ctx, "sceneAddPlay", sceneID, at)
 }
 
