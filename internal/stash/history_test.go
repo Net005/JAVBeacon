@@ -184,3 +184,85 @@ func TestHistoryWritebackReviewRejectsUncomparableRemoteTimestamp(t *testing.T) 
 		t.Fatalf("review must fail closed when duplicate comparison is unsafe, got %v", err)
 	}
 }
+
+func TestHistoryWritebackSceneIDFallbackRequiresMatchingIdentity(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "history-scene-id.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	play := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for _, scene := range []domain.StashHistoryScene{
+		{StashSceneID: "same", VideoID: "123", Title: "Moved Scene", FilePath: "/old/renamed.mp4"},
+		{StashSceneID: "reused", VideoID: "124", Title: "Old Title", FilePath: "/old/other.mp4"},
+		{StashSceneID: "wrong-code", VideoID: "ATID-123", Title: "Same Title", FilePath: "/old/code.mp4"},
+	} {
+		if err := st.UpsertStashHistory(ctx, scene, []time.Time{play}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[{"id":"same","title":"Moved Scene","code":"","play_history":[],"o_history":[],"files":[{"path":"/new/replaced.mp4"}]},{"id":"reused","title":"Unrelated Title","code":"","play_history":[],"o_history":[],"files":[{"path":"/new/unrelated.mp4"}]},{"id":"wrong-code","title":"Same Title","code":"ATID-999","play_history":[],"o_history":[],"files":[{"path":"/new/code-changed.mp4"}]}]}}}`))
+	}))
+	defer server.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	review, err := New(st, 2*time.Second, slog.Default(), nil, nil).ReviewHistoryWriteback(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Changes != 1 || review.Unmatched != 2 {
+		t.Fatalf("unexpected review counts: %+v", review)
+	}
+	for _, item := range review.Items {
+		if item.SourceSceneID == "same" && (item.TargetSceneID != "same" || item.MatchMethod != "Stash scene ID + title" || len(item.PlayTimes) != 1) {
+			t.Fatalf("moved scene not recovered: %+v", item)
+		}
+		if item.SourceSceneID != "same" && item.TargetSceneID != "" {
+			t.Fatalf("unrelated scene matched by reused ID: %+v", item)
+		}
+	}
+}
+
+func TestHistoryWritebackMatchesUniqueStudioDateTitleAcrossFileVariants(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "history-studio-date.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	play := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	orgasm := play.Add(10 * time.Minute)
+	for _, scene := range []domain.StashHistoryScene{
+		{StashSceneID: "old-1080", Title: "Sample Scene", FilePath: "/old/Pure Taboo/Pure Taboo - 2026-07-28 - Sample Scene [WEBDL-1080p].mp4"},
+		{StashSceneID: "old-ambiguous", Title: "Another Scene", FilePath: "/old/Pure Taboo/Pure Taboo - 2026-07-29 - Another Scene [WEBDL-1080p].mp4"},
+	} {
+		if err := st.UpsertStashHistory(ctx, scene, []time.Time{play}, []time.Time{orgasm}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"findScenes":{"scenes":[{"id":"new-2160","title":"Sample Scene","play_history":[],"o_history":[],"files":[{"path":"/new/Pure Taboo/Pure Taboo - 2026-07-28 - Sample Scene [WEBDL-2160p].mp4"}]},{"id":"ambiguous-1","title":"Another Scene","play_history":[],"o_history":[],"files":[{"path":"/new/Pure Taboo/Pure Taboo - 2026-07-29 - Another Scene [WEBDL-2160p].mp4"}]},{"id":"ambiguous-2","title":"Another Scene","play_history":[],"o_history":[],"files":[{"path":"/new/Pure Taboo/Pure Taboo - 2026-07-29 - Another Scene [WEBDL-720p].mp4"}]}]}}}`))
+	}))
+	defer server.Close()
+	if err := st.SaveSettings(ctx, map[string]string{"stash_base_url": server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	review, err := New(st, 2*time.Second, slog.Default(), nil, nil).ReviewHistoryWriteback(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Changes != 1 || review.Unmatched != 1 {
+		t.Fatalf("unexpected review counts: %+v", review)
+	}
+	for _, item := range review.Items {
+		if item.SourceSceneID == "old-1080" && (item.TargetSceneID != "new-2160" || item.MatchMethod != "Studio + release date + title" || len(item.PlayTimes) != 1 || len(item.OrgasmTimes) != 1) {
+			t.Fatalf("file variant not recovered: %+v", item)
+		}
+		if item.SourceSceneID == "old-ambiguous" && item.TargetSceneID != "" {
+			t.Fatalf("ambiguous variant matched: %+v", item)
+		}
+	}
+}

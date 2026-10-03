@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -56,6 +57,36 @@ func normalizeHistoryURL(raw string) string {
 	return strings.TrimRight(strings.ToLower(strings.TrimSpace(raw)), "/")
 }
 func historyFileKey(raw string) string { return strings.ToLower(strings.TrimSpace(filepath.Base(raw))) }
+
+// A Stash scene ID is useful when a file was moved or replaced, but IDs may
+// be reused after a database rebuild. Require the scene title to agree before
+// using it as a fallback, and reject conflicting release codes.
+func historySceneIDTarget(source domain.StashHistoryScene, remote map[string]playbackStats) string {
+	target, ok := remote[source.StashSceneID]
+	if !ok || strings.TrimSpace(source.Title) == "" || !strings.EqualFold(strings.TrimSpace(source.Title), strings.TrimSpace(target.Title)) {
+		return ""
+	}
+	if sourceCode, targetCode := canonical(source.VideoID), canonical(target.Code); sourceCode != "" && targetCode != "" && sourceCode != targetCode {
+		return ""
+	}
+	return source.StashSceneID
+}
+
+var historyPathDate = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}\b`)
+
+// Match a replaced file only when the scene title, release date in its
+// filename, and immediate studio folder all agree. Ambiguous matches stay
+// unmatched for manual review.
+func historyTitleDateKey(title, path string) string {
+	title = strings.ToLower(strings.TrimSpace(title))
+	studio := strings.ToLower(strings.TrimSpace(filepath.Base(filepath.Dir(path))))
+	date := historyPathDate.FindString(filepath.Base(path))
+	if title == "" || path == "" || studio == "" || studio == "." || studio == "/" || date == "" {
+		return ""
+	}
+	return studio + "|" + date + "|" + title
+}
+
 func historyEventKey(value time.Time) string {
 	return value.UTC().Truncate(time.Second).Format(time.RFC3339)
 }
@@ -125,7 +156,7 @@ func (s *Service) ReviewHistoryWriteback(ctx context.Context) (HistoryReview, er
 	if err != nil {
 		return HistoryReview{}, err
 	}
-	byURL, byID, byFile := map[string][]string{}, map[string][]string{}, map[string][]string{}
+	byURL, byID, byFile, byTitleDate := map[string][]string{}, map[string][]string{}, map[string][]string{}, map[string][]string{}
 	for id, scene := range remote {
 		for _, u := range scene.URLs {
 			if k := normalizeHistoryURL(u); k != "" && strings.Contains(k, "javlibrary") {
@@ -137,6 +168,9 @@ func (s *Service) ReviewHistoryWriteback(ctx context.Context) (HistoryReview, er
 		}
 		if k := historyFileKey(scene.FilePath); k != "" {
 			byFile[k] = append(byFile[k], id)
+		}
+		if k := historyTitleDateKey(scene.Title, scene.FilePath); k != "" {
+			byTitleDate[k] = append(byTitleDate[k], id)
 		}
 	}
 	var review HistoryReview
@@ -174,7 +208,23 @@ func (s *Service) ReviewHistoryWriteback(ctx context.Context) (HistoryReview, er
 			}
 		}
 		if item.TargetSceneID == "" {
-			item.Reason = "No StashApp scene matched by JavLibrary URL, release ID, or filename"
+			item.TargetSceneID = historySceneIDTarget(scene, remote)
+			if item.TargetSceneID != "" {
+				item.MatchMethod = "Stash scene ID + title"
+			}
+		}
+		if item.TargetSceneID == "" {
+			if k := historyTitleDateKey(scene.Title, scene.FilePath); k != "" && len(byTitleDate[k]) == 1 {
+				candidate := byTitleDate[k][0]
+				sourceCode, targetCode := canonical(scene.VideoID), canonical(remote[candidate].Code)
+				if sourceCode == "" || targetCode == "" || sourceCode == targetCode {
+					item.TargetSceneID = candidate
+					item.MatchMethod = "Studio + release date + title"
+				}
+			}
+		}
+		if item.TargetSceneID == "" {
+			item.Reason = "No StashApp scene matched by JavLibrary URL, release ID, filename, confirmed scene ID, or studio/date/title"
 			review.Unmatched++
 			review.Items = append(review.Items, item)
 			continue
