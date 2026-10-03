@@ -30,7 +30,7 @@ func TestSiloSavedFiltersSelectsScenesAndPreservesQuery(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(req.Query, "findSavedFilters") {
-			_, _ = w.Write([]byte(`{"data":{"findSavedFilters":[{"id":"7","name":"Scenes I Like","find_filter":{"q":"test","sort":"date","direction":"DESC"},"object_filter":{"title":{"value":"scene","modifier":"INCLUDES"},"performer_favorite":{"value":true},"o_counter":{"value":{"value":1},"modifier":"GREATER_THAN"},"tags":{"value":{"items":[{"id":"1355","label":"Watchlist"}],"excluded":[{"id":"3","label":"Other"}],"depth":0},"modifier":"INCLUDES_ALL"}}},{"id":"8","name":"Other","find_filter":{},"object_filter":null}]}}`))
+			_, _ = w.Write([]byte(`{"data":{"findSavedFilters":[{"id":"7","name":"Scenes I Like","find_filter":{"q":"test","sort":"date","direction":"DESC"},"object_filter":{"title":{"value":"scene","modifier":"INCLUDES"},"performer_favorite":{"value":"true"},"o_counter":{"value":{"value":1},"modifier":"GREATER_THAN"},"tags":{"value":{"items":[{"id":"1355","label":"Watchlist"}],"excluded":[{"id":"3","label":"Other"}],"depth":0},"modifier":"INCLUDES_ALL"}}},{"id":"8","name":"Other","find_filter":{},"object_filter":null}]}}`))
 			return
 		}
 		find := req.Variables["findFilter"].(map[string]any)
@@ -80,9 +80,9 @@ func TestSiloSavedFiltersSelectsScenesAndPreservesQuery(t *testing.T) {
 
 func TestSceneFilterInputUnwrapsBooleanCriteria(t *testing.T) {
 	input := map[string]any{
-		"performer_favorite": map[string]any{"value": true},
-		"organized":          map[string]any{"value": map[string]any{"value": false}},
-		"interactive":        true,
+		"performer_favorite": map[string]any{"value": "true"},
+		"organized":          map[string]any{"value": map[string]any{"value": "false"}},
+		"interactive":        "true",
 		"title":              map[string]any{"value": "test", "modifier": "INCLUDES"},
 	}
 	got := sceneFilterInput(input)

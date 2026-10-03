@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -74,21 +75,29 @@ func (s *Service) savedFilterGraphQL(ctx context.Context, base, key, query strin
 func sceneFilterInput(saved map[string]any) map[string]any {
 	out := make(map[string]any, len(saved))
 	for name, raw := range saved {
+		// Stash stores Boolean scene filters in several UI shapes,
+		// including the strings "true" and "false". SceneFilterType
+		// expects the Boolean itself rather than a criterion wrapper.
+		if name == "performer_favorite" || name == "organized" || name == "interactive" {
+			value := raw
+			for {
+				nested, ok := value.(map[string]any)
+				if !ok {
+					break
+				}
+				value = nested["value"]
+			}
+			if text, ok := value.(string); ok {
+				if parsed, err := strconv.ParseBool(strings.TrimSpace(text)); err == nil {
+					value = parsed
+				}
+			}
+			out[name] = value
+			continue
+		}
 		criterion, ok := raw.(map[string]any)
 		if !ok {
 			out[name] = raw
-			continue
-		}
-		// Stash stores Boolean scene filters in its UI criterion wrapper,
-		// while SceneFilterType expects the Boolean itself. The generic
-		// criterion conversion below would send {value: true}, which
-		// GraphQL rejects with "cannot use map as Boolean".
-		if name == "performer_favorite" || name == "organized" || name == "interactive" {
-			value := criterion["value"]
-			if nested, ok := value.(map[string]any); ok {
-				value = nested["value"]
-			}
-			out[name] = value
 			continue
 		}
 		converted := make(map[string]any, len(criterion))
