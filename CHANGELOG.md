@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.278] - 2026-10-03
+
+### Added
+
+- Backfill completed Silo playback sessions to StashApp only when timestamped Stash history proves the plays are missing. Retries reuse Silo session timestamps; scenes with unrelated or incomplete Stash history are skipped to avoid duplicate plays. Partial sessions and O counts are not imported.
+
 ## [1.0.277] - 2026-10-03
 
 ### Improved

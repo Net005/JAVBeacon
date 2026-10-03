@@ -126,6 +126,8 @@ type Service struct {
 	scheduleNextAttempt map[string]time.Time
 	historyReviewMu     sync.Mutex
 	historyReviews      map[string]HistoryReview
+	backfillMu          sync.Mutex
+	playMu              sync.Mutex
 	realtimeMu          sync.RWMutex
 	realtimeStatus      RealtimeStatus
 	realtimePending     map[string]time.Time
