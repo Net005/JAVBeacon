@@ -266,6 +266,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /covers/{id}/original", s.coverOriginal)
 	s.mux.HandleFunc("GET /covers/{id}/jellyfin-primary", s.coverJellyfinPrimary)
 	s.mux.HandleFunc("GET /covers/{id}/silo-primary", s.coverSiloPrimary)
+	s.mux.HandleFunc("GET /covers/{id}/stash-poster", s.serveConformedCover)
 	s.mux.HandleFunc("GET /screenshots/{id}/{index}", s.screenshot)
 	s.mux.HandleFunc("GET /api/releases/{id}/screenshots", s.releaseScreenshots)
 	s.mux.HandleFunc("POST /api/v1/media/match", s.jellyfinMatch)
@@ -546,6 +547,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/hooks/stash/scene", s.stashRealtimeEvent)
 	s.mux.HandleFunc("POST /api/hooks/stash/test", s.stashRealtimeTest)
 	s.mux.HandleFunc("POST /api/hooks/stash/release-link", s.stashReleaseLink)
+	s.mux.HandleFunc("GET /api/v1/integrations/stash/enrichment/{sceneId}", s.stashEnrichment)
 	s.mux.HandleFunc("POST /api/jobs/stash/watchlist", func(w http.ResponseWriter, r *http.Request) {
 		x, e := s.stash.SyncWatchlist(r.Context())
 		if e != nil {

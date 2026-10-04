@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.280] - 2026-10-04
+
+### Added
+
+- Provide API-key-protected, exact-scene JAVBeacon enrichment and conformed cover endpoints for the dedicated Stash.Metadata plugin. Stash remains the owner of scene metadata and playback history.
+
 ## [1.0.279] - 2026-10-03
 
 ### Fixed
