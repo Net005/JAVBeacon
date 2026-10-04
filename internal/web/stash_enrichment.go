@@ -33,21 +33,30 @@ func (s *Server) stashEnrichment(w http.ResponseWriter, r *http.Request) {
 	}
 	release := releases[0]
 	posterPath := ""
+	backdropPaths := []string{}
 	if strings.TrimSpace(release.ImageURL) != "" {
-		posterPath = "/covers/" + strconv.FormatInt(release.ID, 10) + "/stash-poster"
+		coverBase := "/covers/" + strconv.FormatInt(release.ID, 10)
+		posterPath = coverBase + "/stash-poster"
+		backdropPaths = append(backdropPaths, coverBase+"/original")
+	}
+	if s.screenshots != nil {
+		for _, index := range s.screenshots.Available(release.VideoID, release.Screenshots) {
+			backdropPaths = append(backdropPaths, "/screenshots/"+strconv.FormatInt(release.ID, 10)+"/"+strconv.Itoa(index))
+		}
 	}
 	s.json(w, http.StatusOK, map[string]any{
-		"scene_id":    sceneID,
-		"release_id":  release.ID,
-		"code":        strings.TrimSpace(release.VideoID),
-		"title":       strings.TrimSpace(release.Title),
-		"details":     strings.TrimSpace(release.Story),
-		"director":    strings.TrimSpace(release.Director),
-		"date":        strings.TrimSpace(release.ReleaseDate),
-		"studio":      strings.TrimSpace(release.Studio),
-		"performers":  release.Actresses,
-		"tags":        release.Genres,
-		"source_url":  strings.TrimSpace(release.ProductURL),
-		"poster_path": posterPath,
+		"scene_id":       sceneID,
+		"release_id":     release.ID,
+		"code":           strings.TrimSpace(release.VideoID),
+		"title":          strings.TrimSpace(release.Title),
+		"details":        strings.TrimSpace(release.Story),
+		"director":       strings.TrimSpace(release.Director),
+		"date":           strings.TrimSpace(release.ReleaseDate),
+		"studio":         strings.TrimSpace(release.Studio),
+		"performers":     release.Actresses,
+		"tags":           release.Genres,
+		"source_url":     strings.TrimSpace(release.ProductURL),
+		"poster_path":    posterPath,
+		"backdrop_paths": backdropPaths,
 	})
 }

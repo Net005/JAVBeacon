@@ -6,11 +6,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
+	"github.com/Net005/JAVBeacon/internal/screenshots"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
 
@@ -25,7 +28,7 @@ func TestStashEnrichmentUsesExactLinkedRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "ATID-705", Title: "Enriched title", Story: "Details", Studio: "Studio", Actress: "Actor", Actresses: []string{"Actor"}, Genres: []string{"Genre"}, ReleaseDate: "2026-10-01", ImageURL: "https://example.invalid/cover.jpg", ProductURL: "https://example.invalid/release"})
+	_, err = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "ATID-705", Title: "Enriched title", Story: "Details", Studio: "Studio", Actress: "Actor", Actresses: []string{"Actor"}, Genres: []string{"Genre"}, ReleaseDate: "2026-10-01", ImageURL: "https://example.invalid/cover.jpg", ProductURL: "https://example.invalid/release", Screenshots: []string{"https://example.invalid/screenshot.jpg"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +39,18 @@ func TestStashEnrichmentUsesExactLinkedRelease(t *testing.T) {
 	if err = st.SetStashState(ctx, rows[0].ID, true, "43250"); err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{store: st, log: slog.Default()}
+	cache, err := screenshots.New(filepath.Join(t.TempDir(), "screenshots"), time.Second, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	shotPath := cache.Path("ATID-705", 0)
+	if err := os.MkdirAll(filepath.Dir(shotPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shotPath, []byte("cached screenshot"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, screenshots: cache, log: slog.Default()}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/integrations/stash/enrichment/43250", nil)
 	req.SetPathValue("sceneId", "43250")
 	rec := httptest.NewRecorder()
@@ -50,6 +64,10 @@ func TestStashEnrichmentUsesExactLinkedRelease(t *testing.T) {
 	}
 	if got["scene_id"] != "43250" || got["code"] != "ATID-705" || got["title"] != "Enriched title" || got["poster_path"] != "/covers/"+strconv.FormatInt(rows[0].ID, 10)+"/stash-poster" {
 		t.Fatalf("unexpected enrichment: %#v", got)
+	}
+	backdrops, ok := got["backdrop_paths"].([]any)
+	if !ok || len(backdrops) != 2 || backdrops[0] != "/covers/"+strconv.FormatInt(rows[0].ID, 10)+"/original" || backdrops[1] != "/screenshots/"+strconv.FormatInt(rows[0].ID, 10)+"/0" {
+		t.Fatalf("unexpected backdrops: %#v", got["backdrop_paths"])
 	}
 	req.SetPathValue("sceneId", "missing")
 	rec = httptest.NewRecorder()

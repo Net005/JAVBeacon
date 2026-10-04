@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.284] - 2026-10-04
+
+### Added
+
+- Include the original release cover and cached screenshot paths in exact-scene Stash enrichment so Stash.Metadata can use them as Silo backdrop candidates beside a conformed poster.
+
 ## [1.0.283] - 2026-10-04
 
 ### Changed
