@@ -214,11 +214,15 @@ type LibrarySyncItem struct {
 }
 
 type LibrarySyncSnapshot struct {
-	Revision      string                   `json:"revision"`
-	Watchlist     []LibrarySyncItem        `json:"watchlist"`
-	Watched       []LibrarySyncItem        `json:"watched"`
-	FilterPresets []FilterPresetCollection `json:"filter_presets"`
-	ReleaseCodes  map[int64]string         `json:"release_codes,omitempty"`
+	Revision                  string                   `json:"revision"`
+	CollectionIdentityVersion int                      `json:"collection_identity_version"`
+	Watchlist                 []LibrarySyncItem        `json:"watchlist"`
+	WatchlistAuthoritative    bool                     `json:"watchlist_authoritative"`
+	Watched                   []LibrarySyncItem        `json:"watched"`
+	FilterPresets             []FilterPresetCollection `json:"filter_presets"`
+	ReleaseCodes              map[int64]string         `json:"release_codes,omitempty"`
+	ReleasePaths              map[int64]string         `json:"release_paths,omitempty"`
+	ReleaseSceneIDs           map[int64]string         `json:"release_scene_ids,omitempty"`
 }
 
 // FilterPresetCollection is one saved filter set resolved to its current,
@@ -843,8 +847,10 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 	if err != nil {
 		return LibrarySyncSnapshot{}, err
 	}
-	out := LibrarySyncSnapshot{Revision: settings["jellyfin_library_revision"], Watchlist: []LibrarySyncItem{}, Watched: []LibrarySyncItem{}}
+	out := LibrarySyncSnapshot{Revision: settings["jellyfin_library_revision"], CollectionIdentityVersion: 1, Watchlist: []LibrarySyncItem{}, Watched: []LibrarySyncItem{}}
 	linkedByScene := make(map[string]domain.Release)
+	out.ReleasePaths = map[int64]string{}
+	out.ReleaseSceneIDs = map[int64]string{}
 	for offset := 0; ; offset += 500 {
 		rows, err := s.store.Releases(ctx, domain.ReleaseFilter{StashLinked: true, Limit: 500, Offset: offset})
 		if err != nil {
@@ -852,6 +858,12 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 		}
 		for _, r := range rows {
 			linkedByScene[r.StashSceneID] = r
+			if r.StashFilePath != "" {
+				out.ReleasePaths[r.ID] = r.StashFilePath
+			}
+			if r.StashSceneID != "" {
+				out.ReleaseSceneIDs[r.ID] = r.StashSceneID
+			}
 		}
 		if len(rows) < 500 {
 			break
@@ -864,6 +876,7 @@ func (s *Service) LibrarySync(ctx context.Context) (LibrarySyncSnapshot, error) 
 		stashWatchlist, configured, stashErr = s.stash.SiloWatchlistScenes(ctx)
 	}
 	if configured && stashErr == nil {
+		out.WatchlistAuthoritative = true
 		// Include Stash-only scenes too: no JAVBeacon release row is needed for
 		// a local file or for Silo's Stash provider ID.
 		sceneIDs := make([]string, 0, len(stashWatchlist))

@@ -5,6 +5,13 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.285] - 2026-10-04
+
+### Added
+
+- Include exact local release paths and linked Stash scene IDs in the Silo collection snapshot so Stash.Metadata can preserve saved-filter membership after switching metadata providers or when Stash and Silo file paths differ.
+- Mark WatchList snapshots authoritative only when the configured Stash tag source was read successfully. Stash.Metadata uses this marker before reconciling the existing Silo WatchList collection.
+
 ## [1.0.284] - 2026-10-04
 
 ### Added

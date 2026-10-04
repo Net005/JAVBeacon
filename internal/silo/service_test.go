@@ -281,6 +281,15 @@ func TestLibrarySyncRetriesFailedPresetIndexInsteadOfCachingEmpty(t *testing.T) 
 	if snapshot.ReleaseCodes[release.ID] != release.VideoID {
 		t.Fatalf("snapshot release code = %q, want %q", snapshot.ReleaseCodes[release.ID], release.VideoID)
 	}
+	if snapshot.ReleaseSceneIDs[release.ID] != release.StashSceneID {
+		t.Fatalf("release scene ID missing: %+v", snapshot.ReleaseSceneIDs)
+	}
+	if snapshot.CollectionIdentityVersion != 1 {
+		t.Fatalf("identity version=%d", snapshot.CollectionIdentityVersion)
+	}
+	if snapshot.ReleasePaths[release.ID] != "/media/ABC-123.mp4" {
+		t.Fatalf("release path missing: %+v", snapshot.ReleasePaths)
+	}
 }
 
 func TestSiloWatchlistUsesStashAndNewestUpdateFirst(t *testing.T) {
@@ -293,6 +302,9 @@ func TestSiloWatchlistUsesStashAndNewestUpdateFirst(t *testing.T) {
 	snapshot, err := svc.LibrarySync(context.Background())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !snapshot.WatchlistAuthoritative {
+		t.Fatal("Stash-backed WatchList snapshot must be marked authoritative")
 	}
 	if len(snapshot.Watchlist) != 2 || snapshot.Watchlist[0].StashSceneID != "stash-only" || snapshot.Watchlist[0].ReleaseID != 0 || snapshot.Watchlist[1].ReleaseID != release.ID || !snapshot.Watchlist[1].WatchlistedAt.Equal(older) {
 		t.Fatalf("Watchlist must follow Stash update order: %+v", snapshot.Watchlist)
