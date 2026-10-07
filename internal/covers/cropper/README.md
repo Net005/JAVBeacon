@@ -7,4 +7,4 @@ https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet
 
 Model SHA256: 8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4
 
-HTTP callers authenticate using the existing JAVBeacon API key. Rendering accepts at most 16 MiB / 30 MP and two concurrent processes with a 45-second deadline. No network calls or generative image service are used by the renderer.
+HTTP callers authenticate using the existing JAVBeacon API key. Rendering accepts at most 16 MiB / 64 MP and two concurrent processes with a 45-second deadline. No network calls or generative image service are used by the renderer.

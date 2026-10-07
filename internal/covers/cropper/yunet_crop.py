@@ -111,7 +111,7 @@ def select_crop(image, model):
 
 def render_bytes(raw, model):
     image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
-    if image is None or image.shape[0]*image.shape[1] > 30000000:
+    if image is None or image.shape[0]*image.shape[1] > 64000000:
         raise ValueError("Invalid or oversized image")
     rect, confidence, mode = select_crop(image, model)
     if rect is None:

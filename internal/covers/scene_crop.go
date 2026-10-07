@@ -24,7 +24,7 @@ func RenderSceneCrop(ctx context.Context, raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("poster source exceeds 16 MiB")
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
-	if err != nil || cfg.Width < 2 || cfg.Height < 3 || int64(cfg.Width)*int64(cfg.Height) > 30000000 {
+	if err != nil || cfg.Width < 2 || cfg.Height < 3 || int64(cfg.Width)*int64(cfg.Height) > 64000000 {
 		return nil, fmt.Errorf("invalid or oversized poster source")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)

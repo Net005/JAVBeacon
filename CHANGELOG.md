@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.287] - 2026-10-08
+
+### Fixed
+
+- Accept bounded scene-cover sources up to 64 megapixels, including valid 8K Stash JPEGs that exceeded the previous 30-megapixel limit. The 16 MiB upload bound, two-process limit and 45-second deadline remain in place.
+
 ## [1.0.286] - 2026-10-08
 
 ### Added
