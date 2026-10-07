@@ -33,6 +33,8 @@ RUN apk add --no-cache \
     curl \
     ca-certificates \
     ffmpeg \
+    python3 \
+    py3-opencv \
     su-exec \
     tzdata \
     && addgroup -S javbeacon \
@@ -42,6 +44,7 @@ WORKDIR /app
 
 COPY --from=build /javbeacon /usr/local/bin/javbeacon
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY internal/covers/cropper/yunet_crop.py internal/covers/cropper/face_detection_yunet_2023mar.onnx internal/covers/cropper/LICENSE /app/cropper/
 
 RUN mkdir -p /app/data \
     && chown -R javbeacon:javbeacon /app \

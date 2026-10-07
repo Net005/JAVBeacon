@@ -49,6 +49,14 @@ jobs:
             exit 1
           }
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test crop composition
+        run: |
+          pip install opencv-python-headless==4.13.0.92
+          python -m unittest discover -s internal/covers/cropper -q
+
       - name: Test
         run: go test -mod=mod ./...
 

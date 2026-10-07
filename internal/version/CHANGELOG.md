@@ -5,6 +5,13 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.286] - 2026-10-08
+
+### Added
+
+- Local OpenCV/YuNet scene-cover rendering for Stash Metadata: sharp 1200×1800 covers preserve surrounding scene detail, prefer a fitting face over an oversized close-up, and leave already-tight originals unchanged. The authenticated renderer runs at most two processes concurrently with bounded input and execution time.
+- Smart scene-cover image variant so later Silo metadata refreshes use the same contextual composition. Existing JAV release artwork remains separate.
+
 ## [1.0.285] - 2026-10-04
 
 ### Added

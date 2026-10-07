@@ -71,6 +71,10 @@ func (s *Server) siloStashSceneCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if r.URL.Query().Get("variant") == "smart" {
+		s.serveSiloContextPoster(w, r, resp)
+		return
+	}
 	if r.URL.Query().Get("variant") == "poster" {
 		serveSiloStashPoster(w, resp)
 		return
