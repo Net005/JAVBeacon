@@ -1,6 +1,7 @@
 import unittest
 import numpy as np
-from yunet_crop import crop_for_faces
+from yunet_crop import crop_for_faces, select_crop
+from unittest.mock import patch
 
 
 def face(x, y, w, h, confidence=.95):
@@ -49,6 +50,22 @@ class CropTests(unittest.TestCase):
     def test_face_that_fits_without_scene_context_stays_unchanged(self):
         r,mode=self.check(900,600,[face(300,20,200,450)])
         self.assertIsNone(r)
+
+    def test_retries_smaller_profile_when_confident_face_is_too_large(self):
+        large=face(251,84,324,416)
+        smaller=face(703,0,150,120,.825)
+        clipped=face(2,40,130,310,.847)
+        with patch('yunet_crop.detect_faces', side_effect=[[large],[large,smaller,clipped]]) as detector:
+            rect, confidence, mode=select_crop(np.zeros((500,1500,3),dtype=np.uint8),'model')
+        self.assertIsNotNone(rect)
+        self.assertTrue(rect[0]<=703 and rect[2]>=853)
+        self.assertEqual(detector.call_count,2)
+
+    def test_retry_does_not_replace_successful_high_confidence_crop(self):
+        with patch('yunet_crop.detect_faces',return_value=[face(700,100,100,150)]) as detector:
+            rect, confidence, mode=select_crop(np.zeros((500,1500,3),dtype=np.uint8),'model')
+        self.assertIsNotNone(rect)
+        self.assertEqual(detector.call_count,1)
 
     def test_portrait_source_preserves_context(self):
         r,mode=self.check(600,1200,[face(40,700,200,250)])

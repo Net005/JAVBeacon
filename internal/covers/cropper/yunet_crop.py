@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 
-def detect_faces(image, model):
+def detect_faces(image, model, threshold=0.85):
     h, w = image.shape[:2]
     scale = min(1.0, 1200 / max(w, h))
     small = cv2.resize(image, (max(1, round(w * scale)), max(1, round(h * scale))))
@@ -19,7 +19,7 @@ def detect_faces(image, model):
     for rotation in range(4):
         rotated = np.ascontiguousarray(np.rot90(small, -rotation))
         rh, rw = rotated.shape[:2]
-        detector = cv2.FaceDetectorYN.create(str(model), "", (rw, rh), 0.85, 0.3, 5000)
+        detector = cv2.FaceDetectorYN.create(str(model), "", (rw, rh), threshold, 0.3, 5000)
         _, detected = detector.detect(rotated)
         if detected is None:
             continue
@@ -106,7 +106,18 @@ def crop_for_faces(width, height, faces):
 
 def select_crop(image, model):
     h, w = image.shape[:2]
-    return crop_for_faces(w, h, detect_faces(image, model))
+    result = crop_for_faces(w, h, detect_faces(image, model))
+    if result[0] is not None and result[2] != "center-fallback":
+        return result
+    # A confident oversized face can hide a smaller profile in a montage.
+    # Retry only when the first pass cannot provide a contextual composition.
+    # Reject faces clipped against the side edges before choosing an anchor.
+    relaxed = [(box, score) for box, score in detect_faces(image, model, .75)
+               if box[0] > max(2, w*.01) and box[2] < w-max(2, w*.01)]
+    retry = crop_for_faces(w, h, relaxed)
+    if retry[0] is not None and retry[2] != "center-fallback":
+        return retry
+    return result
 
 
 def render_bytes(raw, model):
