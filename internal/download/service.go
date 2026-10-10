@@ -227,7 +227,7 @@ var resolutionTokens = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(2160p?|4k|uhd|384
 
 func candidateResolution(result domain.SearchResult) int {
 	name := normalizedMatchedFilename(result)
-	if name == "" {
+	if name == "" || name == "." {
 		name = result.Title
 	}
 	best := 0

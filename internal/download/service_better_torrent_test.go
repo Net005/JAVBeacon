@@ -13,6 +13,7 @@ func TestBetterTorrentCandidate(t *testing.T) {
 		want    bool
 	}{
 		{"equal keeps HTTP", domain.SearchResult{Accepted: true, MatchedFile: "ABC-123 1080p.mp4", Seeds: 10}, false},
+		{"title-only quality", domain.SearchResult{Accepted: true, Title: "ABC-123 4K", Seeds: 3}, true},
 		{"4K meets threshold", domain.SearchResult{Accepted: true, MatchedFile: "ABC-123 4K.mp4", Seeds: 3}, true},
 		{"4K too few seeds", domain.SearchResult{Accepted: true, MatchedFile: "ABC-123 4K.mp4", Seeds: 2}, false},
 		{"earlier filename pattern", domain.SearchResult{Accepted: true, MatchedFile: "ABC-123.mp4", Seeds: 3, PreferredFilenameMatch: true, PreferredFilenamePriority: 1}, true},
