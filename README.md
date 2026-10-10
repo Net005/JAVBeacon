@@ -391,6 +391,11 @@ These caches live inside JAVBeacon and invalidate as data changes, so the
 recommended single-instance Compose stack does not need Redis. PostgreSQL 18,
 JAVBeacon, and Byparr remain the complete supported stack.
 
+Search also reuses matching metadata ID sets, bulk selection reads only IDs,
+and director filters use a matching PostgreSQL expression index. See the
+[search performance notes](docs/SEARCH_PERFORMANCE.md) for synthetic benchmarks
+and validation steps.
+
 ## Credential recovery
 
 Stop the running application and use either or both reset flags:

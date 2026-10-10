@@ -2818,10 +2818,9 @@ func (s *Server) releasesCount(w http.ResponseWriter, r *http.Request) {
 }
 
 // releaseIDs returns the complete ID set matching the Release Library's
-// active filters. It deliberately pages through the store instead of obeying
-// the normal 500-row response cap, allowing the infinite-scroll UI's "Select
-// all matching" action to select the entire result set rather than only the
-// cards that happen to be mounted in the browser.
+// active filters. The primary stores read IDs directly without hydrating
+// release metadata; alternate stores retain the paginated fallback. Neither
+// path applies the display-page cap to "Select all matching".
 func (s *Server) releaseIDs(w http.ResponseWriter, r *http.Request) {
 	settings, err := s.store.Settings(r.Context())
 	if err != nil {
@@ -2829,6 +2828,18 @@ func (s *Server) releaseIDs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter := releaseFilterFromQuery(r.URL.Query(), settings)
+	if selection, ok := s.store.(interface {
+		ReleaseIDs(context.Context, domain.ReleaseFilter) ([]int64, error)
+	}); ok {
+		ids, err := selection.ReleaseIDs(r.Context(), filter)
+		if err != nil {
+			s.problem(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.json(w, http.StatusOK, map[string]any{"ids": ids, "total": len(ids)})
+		return
+	}
+	// Compatibility for alternate Store implementations without ID-only reads.
 	filter.Limit = 500
 	filter.Offset = 0
 	ids := make([]int64, 0)

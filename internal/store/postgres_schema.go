@@ -656,6 +656,9 @@ func (s *SQLite) migratePostgres(ctx context.Context, report MigrationProgressFu
 		// contributor to discovery pool filtering being slow on a large
 		// library.
 		`CREATE INDEX IF NOT EXISTS idx_releases_director_trgm ON releases USING gin(director gin_trgm_ops)`,
+		// Category filters and suggestions search LOWER(director), whose
+		// expression must match the index rather than the raw-column index.
+		`CREATE INDEX IF NOT EXISTS idx_releases_director_filter_trgm ON releases USING gin(LOWER(director) gin_trgm_ops)`,
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err

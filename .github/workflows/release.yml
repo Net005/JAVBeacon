@@ -57,6 +57,11 @@ jobs:
           pip install opencv-python-headless==4.13.0.92
           python -m unittest discover -s internal/covers/cropper -q
 
+      - name: Test search UI requests
+        run: |
+          node --check internal/web/static/app.js
+          node --test internal/web/release_load_test.js
+
       - name: Test
         run: go test -mod=mod ./...
 

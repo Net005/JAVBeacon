@@ -1583,7 +1583,7 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		// URL, actress, studio, tag, and the release's site/"Label") matches
 		// regardless of case on both engines - plain "LIKE ?" happens to
 		// already be case-insensitive on SQLite (its default collation),
-		// which is why this drifted: only the two EXISTS subqueries below
+		// which is why this drifted: only the related-metadata subqueries
 		// were ever routed through the dialect helper, leaving the rest
 		// silently case-sensitive on PostgreSQL (whose LIKE always is) even
 		// though SQLite deployments never showed a symptom.
@@ -1593,20 +1593,23 @@ func releaseFilterWhere(d Dialect, f domain.ReleaseFilter) (string, []any) {
 		// from) can be used as the search term - the community StashApp
 		// JavLibrary scraper's optional JAVBeacon-backed mode does this to
 		// resolve an already-tagged scene without re-scraping JavLibrary.
+		// Uncorrelated membership subqueries let the database find matching
+		// metadata once (using its text indexes), rather than rechecking
+		// actress/tag/site rows for every release in this wide OR search.
 		terms := []string{f.Search}
 		if f.SearchWildcards {
 			terms = splitWildcardValues(f.Search)
 		}
 		termClauses := make([]string, 0, len(terms))
 		for _, term := range terms {
-			clause := `(` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.story") + ` OR ` + d.CaseInsensitiveLike("r.director") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR ` + d.CaseInsensitiveLike("r.scraper_id") + ` OR ` + d.CaseInsensitiveLike("r.product_url") + ` OR EXISTS (SELECT 1 FROM release_actresses rsa WHERE rsa.release_id=r.id AND ` + d.CaseInsensitiveLike("rsa.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_tags rst WHERE rst.release_id=r.id AND ` + d.CaseInsensitiveLike("rst.name_normalized") + `) OR EXISTS (SELECT 1 FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE rss.release_id=r.id AND ` + d.CaseInsensitiveLike("ss.title") + `)`
+			clause := `(` + d.CaseInsensitiveLike("r.video_id") + ` OR ` + d.CaseInsensitiveLike("r.title") + ` OR ` + d.CaseInsensitiveLike("r.story") + ` OR ` + d.CaseInsensitiveLike("r.director") + ` OR ` + d.CaseInsensitiveLike("r.studio") + ` OR ` + d.CaseInsensitiveLike("r.label") + ` OR ` + d.CaseInsensitiveLike("r.scraper_id") + ` OR ` + d.CaseInsensitiveLike("r.product_url") + ` OR r.id IN (SELECT rsa.release_id FROM release_actresses rsa WHERE ` + d.CaseInsensitiveLike("rsa.name_normalized") + `) OR r.id IN (SELECT rst.release_id FROM release_tags rst WHERE ` + d.CaseInsensitiveLike("rst.name_normalized") + `) OR r.id IN (SELECT rss.release_id FROM release_sites rss JOIN sites ss ON ss.id=rss.site_id WHERE ` + d.CaseInsensitiveLike("ss.title") + `)`
 			v := "%" + term + "%"
 			if f.SearchWildcards {
 				v = genericSearchLikePattern(term)
 			}
 			a = append(a, v, v, v, v, v, v, v, v, v, v, v)
 			if reversed := reverseTwoWordName(term); reversed != "" {
-				clause += ` OR EXISTS (SELECT 1 FROM release_actresses a2 WHERE a2.release_id=r.id AND ` + d.CaseInsensitiveLike("a2.name") + `)`
+				clause += ` OR r.id IN (SELECT a2.release_id FROM release_actresses a2 WHERE ` + d.CaseInsensitiveLike("a2.name") + `)`
 				if f.SearchWildcards {
 					a = append(a, genericSearchLikePattern(reversed))
 				} else {
@@ -1932,25 +1935,7 @@ func releasePoolSearchWhere(d Dialect, keywordsCSV string) (string, []any) {
 func (s *SQLite) Releases(ctx context.Context, f domain.ReleaseFilter) ([]domain.Release, error) {
 	where, a := releaseFilterWhere(s.dialect, f)
 	q := releaseSelect(s.dialect) + where
-	direction, sortColumn := releaseSort(f)
-	// r.id (an INTEGER PRIMARY KEY / SQLite rowid) is a strictly
-	// monotonically increasing tiebreaker matching true insertion order,
-	// unlike a wall-clock timestamp column which can tie - most commonly
-	// r.added_at itself when sortColumn IS r.added_at (sort=added), where
-	// a same-column tiebreaker is a no-op and leaves ties in whatever
-	// order SQLite's query plan happens to produce. That previously made
-	// "Date added" look unsorted/random whenever a bulk scrape or import
-	// inserted many releases within the same timestamp.
-	// Keep releases whose selected date has not been synchronized at the end
-	// in both directions. PostgreSQL otherwise puts NULL values first for a
-	// descending sort, which made an "Added Locally · newest first" result
-	// start with releases that had no StashApp created_at at all. The explicit
-	// CASE is portable across both PostgreSQL and SQLite.
-	if f.Sort == "release_score" {
-		q += ` ORDER BY r.release_date ` + direction + ` NULLS LAST,COALESCE((SELECT ds.score FROM discovery_scores ds WHERE ds.release_id=r.id),-1) ` + direction + `,r.id ` + direction
-	} else {
-		q += ` ORDER BY ` + sortColumn + ` ` + direction + ` NULLS LAST,r.id ` + direction
-	}
+	q += releaseOrderBy(f)
 	if f.Limit <= 0 || f.Limit > 500 {
 		f.Limit = 100
 	}
@@ -1970,6 +1955,37 @@ func (s *SQLite) Releases(ctx context.Context, f domain.ReleaseFilter) ([]domain
 		out = append(out, x)
 	}
 	return out, rows.Err()
+}
+
+// releaseOrderBy is shared by full records and ID-only selection so bulk
+// selection preserves the same stable ordering without hydrating every row.
+// Missing dates sort last in both directions; IDs break timestamp ties.
+func releaseOrderBy(f domain.ReleaseFilter) string {
+	direction, column := releaseSort(f)
+	if f.Sort == "release_score" {
+		return ` ORDER BY r.release_date ` + direction + ` NULLS LAST,COALESCE((SELECT ds.score FROM discovery_scores ds WHERE ds.release_id=r.id),-1) ` + direction + `,r.id ` + direction
+	}
+	return ` ORDER BY ` + column + ` ` + direction + ` NULLS LAST,r.id ` + direction
+}
+
+// ReleaseIDs reads the entire matching selection in one lightweight query.
+// Limit and offset describe display pages and never restrict bulk selection.
+func (s *SQLite) ReleaseIDs(ctx context.Context, f domain.ReleaseFilter) ([]int64, error) {
+	where, args := releaseFilterWhere(s.dialect, f)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id`+releaseFrom+where+releaseOrderBy(f), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 type releasePageCursor struct {
@@ -2141,7 +2157,7 @@ func (s *SQLite) ReleaseFilterOptions(ctx context.Context, category, search stri
 		query = `SELECT MIN(director) AS value FROM releases WHERE director<>'' AND LOWER(director) LIKE LOWER(?) ESCAPE '\' GROUP BY LOWER(director) ORDER BY LOWER(director) LIMIT 250`
 		args = append(args, pattern)
 	case "label":
-		query = `SELECT MIN(value) AS value FROM (SELECT label AS value FROM releases WHERE label<>'' AND LOWER(label) LIKE LOWER(?) ESCAPE '\' UNION ALL SELECT s.title AS value FROM sites s JOIN release_sites rs ON rs.site_id=s.id WHERE s.title<>'' AND LOWER(s.title) LIKE LOWER(?) ESCAPE '\') filter_values GROUP BY LOWER(value) ORDER BY LOWER(value) LIMIT 250`
+		query = `SELECT MIN(value) AS value FROM (SELECT label AS value FROM releases WHERE label<>'' AND LOWER(label) LIKE LOWER(?) ESCAPE '\' UNION ALL SELECT s.title AS value FROM sites s WHERE s.title<>'' AND LOWER(s.title) LIKE LOWER(?) ESCAPE '\' AND EXISTS (SELECT 1 FROM release_sites rs WHERE rs.site_id=s.id)) filter_values GROUP BY LOWER(value) ORDER BY LOWER(value) LIMIT 250`
 		args = append(args, pattern, pattern)
 	default:
 		return []string{}, nil

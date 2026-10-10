@@ -585,10 +585,14 @@ async function loadReleases(background=false){
   updateReleaseFiltersSummary();releaseFilterIndicatorSummary();missingFilterIndicatorSummary();
   if(!background){if(releaseLibraryCount)releaseLibraryCount.textContent='Loading…';setReleaseLibraryLoading(true,'Refreshing release list…')}
   api('/releases/count?'+releaseQuery(0),{signal:releaseCountAbort.signal}).then(count=>{if(mySeq!==releasesLoadSeq)return;if(releaseLibraryCount)releaseLibraryCount.textContent=(releasesGrandTotal!=null&&count.total!==releasesGrandTotal)?`${count.total.toLocaleString()} of ${releasesGrandTotal.toLocaleString()}`:`${count.total.toLocaleString()} release${count.total===1?'':'s'}`;updateReleaseFiltersSummary()}).catch(error=>{if(error?.name!=='AbortError'&&mySeq===releasesLoadSeq&&releaseLibraryCount){releaseLibraryCount.textContent='Count unavailable';updateReleaseFiltersSummary()}});
-  await loadMoreReleases(mySeq);
-  if(background){while(mySeq===releasesLoadSeq&&releasesHasMore&&releases.length<priorReleaseCount){await loadMoreReleases(mySeq)}}
-  populateEntries();
-  if(!background)setReleaseLibraryLoading(false);
+  try{
+    await loadMoreReleases(mySeq);
+    if(background){while(mySeq===releasesLoadSeq&&releasesHasMore&&releases.length<priorReleaseCount){await loadMoreReleases(mySeq)}}
+    if(mySeq===releasesLoadSeq)populateEntries();
+  }finally{
+    // An aborted older search must not hide a newer search's overlay.
+    if(mySeq===releasesLoadSeq)setReleaseLibraryLoading(false);
+  }
 }
 // loadMoreReleases appends the next batch to the cumulative `releases`
 // array - the fuzzy infinite scroll behind both the cover grid and
