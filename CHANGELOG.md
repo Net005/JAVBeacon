@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.293] - 2026-10-10
+
+### Fixed
+
+- Keep unchanged download activity release cells mounted during automatic refresh, even when a source favicon hides itself after failing to load. Prevent repeated text/icon flicker while continuing to update changed download details.
+
 ## [1.0.292] - 2026-10-10
 
 ### Added
