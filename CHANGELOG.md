@@ -5,6 +5,13 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.294] - 2026-10-10
+
+### Fixed
+
+- Wait for qBittorrent checking to finish before video validation, completion pipelines, or cleanup, including previously completed downloads being rechecked.
+- Only manage torrents recorded by hash in JAVBeacon download history. Leave manually added torrents alone, remove name-based adoption and deletion, and exclude existing torrents when confirming a new add.
+
 ## [1.0.293] - 2026-10-10
 
 ### Fixed

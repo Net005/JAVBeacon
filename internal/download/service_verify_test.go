@@ -59,3 +59,38 @@ func TestVerifyAddedToQBittorrentFailsWhenTorrentNeverAppears(t *testing.T) {
 		t.Fatal("expected no match when the torrent never appears in qBittorrent's list")
 	}
 }
+
+func TestVerifyAddedToQBittorrentDoesNotClaimExistingManualTorrent(t *testing.T) {
+	const existing = "0123456789abcdef0123456789abcdef01234567"
+	const added = "abcdef0123456789abcdef0123456789abcdef0123"
+	s := &Service{}
+	qb := fakeQBittorrentList{torrents: []Torrent{
+		{Hash: existing, Name: "SAME-250 manual"},
+		{Hash: added, Name: "SAME-250 added by JAVBeacon"},
+	}}
+	hash, ok := s.verifyAddedToQBittorrent(context.Background(), qb, "https://example.com/new.torrent", "SAME-250", map[string]bool{existing: true})
+	if !ok || hash != added {
+		t.Fatalf("hash=%q ok=%v; must select new torrent and leave manual torrent alone", hash, ok)
+	}
+}
+
+func TestVerifyAddedToQBittorrentDoesNotFallBackFromMagnetHashToName(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // After the first observation, stop retries deterministically.
+	s := &Service{}
+	qb := fakeQBittorrentList{torrents: []Torrent{{Hash: "abcdef0123456789abcdef0123456789abcdef0123", Name: "SAME-250 manual"}}}
+	if hash, ok := s.verifyAddedToQBittorrent(ctx, qb, "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567", "SAME-250"); ok {
+		t.Fatalf("claimed manual same-name torrent %q", hash)
+	}
+}
+
+func TestVerifyAddedToQBittorrentRejectsDuplicateManualTorrent(t *testing.T) {
+	const hash = "0123456789abcdef0123456789abcdef01234567"
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	qb := fakeQBittorrentList{torrents: []Torrent{{Hash: hash, Name: "SAME-250 manual"}}}
+	s := &Service{}
+	if got, ok := s.verifyAddedToQBittorrent(ctx, qb, "magnet:?xt=urn:btih:"+hash, "SAME-250", map[string]bool{hash: true}); ok {
+		t.Fatalf("claimed pre-existing manual torrent %q", got)
+	}
+}

@@ -1107,6 +1107,20 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 		return x, e
 	}
 	qb := NewQB(settings["qb_url"], settings["qb_username"], settings["qb_password"])
+	// Snapshot before adding so an existing manual torrent cannot be adopted
+	// when qBittorrent returns "Ok." for a duplicate or unsuccessful add.
+	existing, e := qb.Torrents(ctx)
+	if e != nil {
+		x.Status = "failed"
+		x.Error = e.Error()
+		x, _ = s.store.SaveDownload(ctx, x)
+		s.logDownloadFailure(x)
+		return x, e
+	}
+	excluded := make(map[string]bool, len(existing))
+	for _, torrent := range existing {
+		excluded[strings.ToLower(torrent.Hash)] = true
+	}
 	response, e := qb.Add(ctx, result.Link, settings["qb_category"])
 	x.QBResponse = response
 	if e != nil {
@@ -1125,7 +1139,7 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 	// it is downloading; otherwise the record sat at "downloading" forever
 	// with nothing to show for it, which is indistinguishable from "Force
 	// Download did nothing" (the reported bug this guards against).
-	if hash, ok := s.verifyAddedToQBittorrent(ctx, qb, result.Link, r.VideoID); ok {
+	if hash, ok := s.verifyAddedToQBittorrent(ctx, qb, result.Link, r.VideoID, excluded); ok {
 		x.TorrentHash = hash
 		x.Status = "downloading"
 		x, _ = s.store.SaveDownload(ctx, x)
@@ -1180,15 +1194,10 @@ func magnetInfoHash(link string) (string, bool) {
 	return strings.ToLower(m[1]), true
 }
 
-// verifyAddedToQBittorrent confirms a just-submitted torrent actually
-// registered in qBittorrent's own torrent list, matching it the same two
-// ways the periodic reconciliation in pollTorrents does: by info-hash
-// parsed straight out of the magnet link when available, falling back to
-// the torrent's reported name containing the release's video ID. It gives
-// qBittorrent a handful of short retries so a slower non-magnet (.torrent
-// URL) add - which has to be fetched and parsed server-side before it shows
-// up - isn't mistaken for a silent failure.
-func (s *Service) verifyAddedToQBittorrent(ctx context.Context, qb QBittorrent, link, videoID string) (string, bool) {
+// verifyAddedToQBittorrent confirms an add by magnet hash, or by name when
+// the source is a .torrent URL. The pre-add snapshot excludes existing manual
+// torrents; periodic polling never uses name matching. Retry briefly for metadata.
+func (s *Service) verifyAddedToQBittorrent(ctx context.Context, qb QBittorrent, link, videoID string, excluded ...map[string]bool) (string, bool) {
 	wantHash, _ := magnetInfoHash(link)
 	wantVideo := canonical(videoID)
 	const attempts = 5
@@ -1205,7 +1214,10 @@ func (s *Service) verifyAddedToQBittorrent(ctx context.Context, qb QBittorrent, 
 			continue
 		}
 		for _, t := range torrents {
-			if (wantHash != "" && strings.EqualFold(t.Hash, wantHash)) || (wantVideo != "" && strings.Contains(canonical(t.Name), wantVideo)) {
+			if t.Hash == "" || (len(excluded) > 0 && excluded[0][strings.ToLower(t.Hash)]) {
+				continue
+			}
+			if (wantHash != "" && strings.EqualFold(t.Hash, wantHash)) || (wantHash == "" && wantVideo != "" && strings.Contains(canonical(t.Name), wantVideo)) {
 				return t.Hash, true
 			}
 		}
@@ -2623,28 +2635,13 @@ func (s *Service) removeReleaseDownloads(ctx context.Context, releaseID int64, q
 		qb := NewQB(settings["qb_url"], settings["qb_username"], settings["qb_password"])
 		qb.Client.Timeout = s.client.Timeout
 		hashes := map[string]bool{}
-		activeHistory := false
 		for _, row := range rows {
-			if row.ReleaseID != releaseID {
-				continue
-			}
-			if row.TorrentHash != "" {
+			if row.ReleaseID == releaseID && row.Transport != "http" && row.TorrentHash != "" && !downloadGoneFromQBHandled(row.PostStatus) {
 				hashes[row.TorrentHash] = true
 			}
-			activeHistory = activeHistory || row.Status == "downloading" || row.Status == "processing"
 		}
-		if torrents, torrentErr := qb.Torrents(ctx); torrentErr != nil {
-			if activeHistory || len(hashes) > 0 {
-				return 0, torrentErr
-			}
-		} else {
-			query := canonical(query)
-			for _, torrent := range torrents {
-				if query != "" && strings.Contains(canonical(torrent.Name), query) {
-					hashes[torrent.Hash] = true
-				}
-			}
-		}
+		// A matching title/category is not proof that JAVBeacon added a torrent.
+		// Only remove hashes already recorded in this release's download history.
 		for hash := range hashes {
 			var removeErr error
 			if deleteFiles {
@@ -3770,30 +3767,27 @@ func (s *Service) tryTorrentHTTPFallback(ctx context.Context, d *domain.Download
 	return true
 }
 
+// torrentCompletionState only accepts settled seeding states. In particular,
+// checkingUP must finish checking before validation, pipelines, or cleanup run.
+func torrentCompletionState(state string) bool {
+	switch strings.ToLower(state) {
+	case "uploading", "stalledup", "queuedup", "forcedup", "pausedup", "stoppedup":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Download, torrents []Torrent, minRatio float64, rule string) {
+	// Once our torrent is gone, the same hash re-added manually is not ours.
+	if d.Transport == "http" || d.TorrentHash == "" || downloadGoneFromQBHandled(d.PostStatus) {
+		return
+	}
 	matched := false
 	for _, t := range torrents {
-		// A download's torrent hash is qBittorrent's own unique ID for
-		// that torrent (its info-hash) - Download() always records it
-		// (via verifyAddedToQBittorrent) before a row's Status ever
-		// becomes "downloading" or "completed", so every row this loop
-		// sees normally already has one. Once a hash is known, matching
-		// MUST be by that hash alone: falling back to a name-substring
-		// match even when the hash disagreed used to let this download
-		// get silently re-pointed at a completely different torrent
-		// whose name happened to contain the same query text (e.g. a
-		// different release sharing part of a video ID) - the actual
-		// torrent could have been removed from qBittorrent while this
-		// row kept "monitoring" whatever unrelated torrent matched by
-		// name, showing its stale/unrelated progress forever. The
-		// name-substring fallback is now used only for the one
-		// legitimate case where no hash has been recorded yet (a
-		// brand-new row - see the comment below the loop).
-		if d.TorrentHash != "" {
-			if d.TorrentHash != t.Hash {
-				continue
-			}
-		} else if !strings.Contains(canonical(t.Name), canonical(d.Query)) {
+		// Never adopt manually added torrents by name, including old rows that
+		// have no confirmed hash. Only the hash recorded after our add can match.
+		if d.TorrentHash != t.Hash {
 			continue
 		}
 		matched = true
@@ -3807,8 +3801,7 @@ func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Downl
 		d.Peers = t.Peers
 		d.ETASeconds = t.ETA
 		d.SeenComplete = t.SeenComplete
-		state := strings.ToLower(t.State)
-		isCompleteState := strings.Contains(state, "upload") || strings.HasSuffix(state, "up")
+		isCompleteState := torrentCompletionState(t.State)
 		if fallbackReason != "" && s.httpFallbackDue(d.ID) {
 			d.PostStatus = "http_fallback_searching"
 			d.Error = ""
@@ -3842,7 +3835,7 @@ func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Downl
 				s.log.Info("qBittorrent download completed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "state", t.State, "seed_ratio", t.Ratio, "cleanup_rule", rule)
 			}
 		}
-		if d.Status == "completed" {
+		if d.Status == "completed" && isCompleteState {
 			// isPipelineInFlight is checked first, before ever looking at
 			// the stored PipelineRun state, and is what actually prevents
 			// the same (download, trigger) pipeline from being started

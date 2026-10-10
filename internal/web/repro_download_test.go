@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -54,10 +55,12 @@ func qbAddEchoStub(reject bool) *httptest.Server {
 		rows := make([]torrent, 0, len(links))
 		for i, link := range links {
 			name := ""
+			hash := fmt.Sprintf("%040d", i)
 			if u, e := url.Parse(link); e == nil {
 				name = u.Query().Get("dn")
+				hash = strings.TrimPrefix(u.Query().Get("xt"), "urn:btih:")
 			}
-			rows = append(rows, torrent{Hash: fmt.Sprintf("%040d", i), Name: name})
+			rows = append(rows, torrent{Hash: hash, Name: name})
 		}
 		_ = json.NewEncoder(w).Encode(rows)
 	})

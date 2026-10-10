@@ -692,7 +692,7 @@ func TestPollTorrentsRemovesByRatioDespiteFailedCompletionPipelineStep(t *testin
 	if err != nil || len(releases) != 1 {
 		t.Fatalf("releases=%+v err=%v", releases, err)
 	}
-	download, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, Status: "completed"})
+	download, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, TorrentHash: "hash-ratio", Status: "completed"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -829,7 +829,7 @@ func TestPollTorrentsSkipsKickoffWhilePipelineAlreadyInFlight(t *testing.T) {
 	if err != nil || len(releases) != 1 {
 		t.Fatalf("releases=%+v err=%v", releases, err)
 	}
-	download, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, Status: "downloading"})
+	download, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, TorrentHash: "hash-dup", Status: "downloading"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -908,7 +908,7 @@ func TestPollTorrentsDoesNotBlockOnSlowCompletionPipeline(t *testing.T) {
 	if err != nil || len(releases) != 1 {
 		t.Fatalf("releases=%+v err=%v", releases, err)
 	}
-	download, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, Status: "downloading", Progress: 0.16})
+	download, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, TorrentHash: "hash-slow", Status: "downloading", Progress: 0.16})
 	if err != nil {
 		t.Fatal(err)
 	}

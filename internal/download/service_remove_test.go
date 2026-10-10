@@ -22,7 +22,7 @@ func TestRemoveDownloadRemovesTorrentAndAllReleaseHistory(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /api/v2/torrents/info", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`[{"hash":"abc123","name":"PRED-888 trusted release"}]`))
+		_, _ = w.Write([]byte(`[{"hash":"abc123","name":"PRED-888 trusted release"},{"hash":"manualhash","name":"PRED-888 manual torrent"}]`))
 	})
 	mux.HandleFunc("POST /api/v2/torrents/delete", func(w http.ResponseWriter, r *http.Request) {
 		if r.FormValue("hashes") != "abc123" || r.FormValue("deleteFiles") != "false" {
