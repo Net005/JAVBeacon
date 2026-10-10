@@ -137,3 +137,33 @@ func TestUpdateDownloadPrioritiesUpdatesStoredRowsAndHTTPWaiter(t *testing.T) {
 		}
 	}
 }
+
+func TestRetryHTTPDownloadRejectsSearchPlaceholderWithoutMutatingIt(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "search-retry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, _ := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+	_, err = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "FAX-008", Title: "Test", Source: "JavLibrary", Released: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "FAX-008", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("releases=%v err=%v", releases, err)
+	}
+	row, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: "FAX-008", Provider: "Search + Download", Transport: "http", Status: "failed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, time.Second, slog.Default())
+	if _, err := service.RetryHTTPDownload(ctx, row.ID); err == nil {
+		t.Fatal("search task was accepted as an HTTP transfer")
+	}
+	rows, err := st.Downloads(ctx, "failed")
+	if err != nil || len(rows) != 1 || rows[0].ID != row.ID {
+		t.Fatalf("placeholder mutated: rows=%v err=%v", rows, err)
+	}
+}

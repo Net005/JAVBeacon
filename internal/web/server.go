@@ -1230,8 +1230,8 @@ func (s *Server) retryDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, row := range mustDownloads(s.store) {
-		if row.ID == n && row.Transport == "http" && row.Status == "not_available" {
-			result, retryErr := s.retryNotAvailableDownloads(r.Context(), []int64{n}, false)
+		if row.ID == n && row.Transport == "http" && (row.Status == "not_available" || row.Status == "failed" && download.RequiresHTTPProviderSearch(row)) {
+			result, retryErr := s.retryHTTPDownloads(r.Context(), []int64{n}, false, row.Status)
 			if retryErr != nil {
 				s.problem(w, http.StatusBadRequest, retryErr.Error())
 				return
@@ -1261,7 +1261,7 @@ func (s *Server) bulkRetryDownloads(w http.ResponseWriter, r *http.Request) {
 	if payload.Status == "not_available" {
 		result, err = s.retryNotAvailableDownloads(r.Context(), payload.IDs, payload.All)
 	} else {
-		result, err = s.downloads.RetryFailedHTTPDownloads(r.Context(), payload.IDs, payload.All)
+		result, err = s.retryHTTPDownloads(r.Context(), payload.IDs, payload.All, "failed")
 	}
 	if err != nil {
 		s.problem(w, http.StatusUnprocessableEntity, err.Error())
@@ -1312,10 +1312,16 @@ func (s *Server) updateDownloadPriorities(w http.ResponseWriter, r *http.Request
 // a not-available row has no download URL to retry directly: its provider page
 // must be searched again to discover whether a link has since been published.
 func (s *Server) retryNotAvailableDownloads(ctx context.Context, downloadIDs []int64, all bool) (map[string]any, error) {
+	return s.retryHTTPDownloads(ctx, downloadIDs, all, "not_available")
+}
+
+// retryHTTPDownloads routes retained search tasks back through discovery;
+// only materialized provider files may enter the direct HTTP transfer queue.
+func (s *Server) retryHTTPDownloads(ctx context.Context, downloadIDs []int64, all bool, status string) (map[string]any, error) {
 	if !all && len(downloadIDs) == 0 {
-		return nil, errors.New("select at least one not-available HTTP download")
+		return nil, fmt.Errorf("select at least one %s HTTP download", status)
 	}
-	rows, err := s.store.Downloads(ctx, "not_available")
+	rows, err := s.store.Downloads(ctx, status)
 	if err != nil {
 		return nil, err
 	}
@@ -1326,12 +1332,24 @@ func (s *Server) retryNotAvailableDownloads(ctx context.Context, downloadIDs []i
 	seenReleases := make(map[int64]bool)
 	items := make([]bulkReleaseItem, 0, len(rows))
 	failures := make([]string, 0)
-	const sourceType = "Manual Not Available Retry"
+	sourceType := "Manual Search + Download Retry"
+	retried := 0
+	if status == "not_available" {
+		sourceType = "Manual Not Available Retry"
+	}
 	for _, row := range rows {
 		if row.Transport != "http" || (!all && !wanted[row.ID]) || seenReleases[row.ReleaseID] {
 			continue
 		}
 		seenReleases[row.ReleaseID] = true
+		if status == "failed" && !download.RequiresHTTPProviderSearch(row) {
+			if _, retryErr := s.downloads.RetryHTTPDownload(ctx, row.ID); retryErr != nil {
+				failures = append(failures, fmt.Sprintf("%s: %v", row.Query, retryErr))
+			} else {
+				retried++
+			}
+			continue
+		}
 		release, releaseErr := s.store.Release(ctx, row.ReleaseID)
 		if releaseErr != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", row.Query, releaseErr))
@@ -1352,13 +1370,13 @@ func (s *Server) retryNotAvailableDownloads(ctx context.Context, downloadIDs []i
 		}
 		items = append(items, bulkReleaseItem{Release: release, TaskID: row.ID, SourceType: sourceType, Priority: row.Priority})
 	}
-	if len(items) == 0 && len(failures) == 0 {
-		return nil, errors.New("no not-available HTTP downloads matched this request")
+	if len(items) == 0 && retried == 0 && len(failures) == 0 {
+		return nil, fmt.Errorf("no %s HTTP downloads matched this request", status)
 	}
 	if len(items) > 0 {
 		s.enqueueBulkReleaseItems(items)
 	}
-	return map[string]any{"matched": len(items) + len(failures), "retried": len(items), "failed": len(failures), "errors": failures}, nil
+	return map[string]any{"matched": retried + len(items) + len(failures), "retried": retried + len(items), "failed": len(failures), "errors": failures}, nil
 }
 func (s *Server) removeDownload(w http.ResponseWriter, r *http.Request) {
 	n, err := id(r)

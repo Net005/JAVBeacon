@@ -2250,6 +2250,13 @@ func httpDestinationPath(dir, releaseID string) string {
 	return filepath.Join(dir, releaseID+".mp4")
 }
 
+// RequiresHTTPProviderSearch identifies search tasks that never selected a
+// downloadable file. Replaying one as a transfer cannot resolve any source.
+func RequiresHTTPProviderSearch(row domain.Download) bool {
+	return row.Provider == "Search + Download" ||
+		strings.TrimSpace(row.SourceReference) == "" && row.ProviderFileID == "" && row.RestoredFileID == ""
+}
+
 func (s *Service) RetryHTTPDownload(ctx context.Context, downloadID int64) (domain.Download, error) {
 	rows, err := s.store.Downloads(ctx, "")
 	if err != nil {
@@ -2257,6 +2264,9 @@ func (s *Service) RetryHTTPDownload(ctx context.Context, downloadID int64) (doma
 	}
 	for _, row := range rows {
 		if row.ID == downloadID && row.Transport == "http" {
+			if RequiresHTTPProviderSearch(row) {
+				return domain.Download{}, errors.New("download has no selected HTTP source; retry provider search instead")
+			}
 			if row.Status != "failed" && row.Status != "not_available" {
 				return domain.Download{}, errors.New("only failed or not-available HTTP downloads can be retried")
 			}

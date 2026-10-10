@@ -86,7 +86,7 @@ func TestAISettingsPersistUsingExistingSettingsStore(t *testing.T) {
 		"discoveries_ai_primary_provider":            "openai",
 		"discoveries_ollama_url":                     "http://192.0.2.50:11434",
 		"discoveries_ollama_model":                   "qwen3:8b",
-		"discoveries_ollama_max_output_tokens":      "4096",
+		"discoveries_ollama_max_output_tokens":       "4096",
 		"discoveries_ollama_request_timeout_seconds": "60",
 		"discoveries_ollama_health_timeout_seconds":  "2",
 		"discoveries_openai_fallback_enabled":        "false",
@@ -3171,4 +3171,58 @@ func TestReleaseUpgradeManualRunEndpoint(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("release upgrade run did not finish in time")
+}
+
+func TestRetryFailedSearchTaskRequeuesProviderSearch(t *testing.T) {
+	for _, mode := range []string{"single", "selected", "all"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "retry-not-available.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			if err := st.SaveSettings(ctx, map[string]string{"default_download_method": "http"}); err != nil {
+				t.Fatal(err)
+			}
+			site, err := st.SaveSite(ctx, domain.Site{Title: "Test", Type: "Site", Name: "JavLibrary", Enabled: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "RETRY-NA-1", Title: "Retry", Source: "JavLibrary", Released: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "RETRY-NA-1", Limit: 1})
+			if err != nil || len(releases) != 1 {
+				t.Fatalf("release setup: rows=%v err=%v", releases, err)
+			}
+			row, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Query: releases[0].VideoID, Transport: "http", Status: "failed", Provider: "Search + Download", QBResponse: `{"force":true}`, Error: "no HTTP provider can resolve Search + Download", Priority: 7})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := &Server{store: st, downloads: download.New(st, time.Second, slog.Default()), bulkReleaseRunning: true}
+			if mode == "single" {
+				req := httptest.NewRequest(http.MethodPost, "/api/downloads/"+strconv.FormatInt(row.ID, 10)+"/retry", nil)
+				req.SetPathValue("id", strconv.FormatInt(row.ID, 10))
+				rec := httptest.NewRecorder()
+				s.retryDownload(rec, req)
+				if rec.Code != http.StatusAccepted {
+					t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+				}
+			} else {
+				result, err := s.retryHTTPDownloads(ctx, []int64{row.ID}, mode == "all", "failed")
+				if err != nil || result["retried"] != 1 {
+					t.Fatalf("retry result=%#v error=%v", result, err)
+				}
+			}
+			if len(s.bulkReleaseQueue) != 1 || s.bulkReleaseQueue[0].TaskID != row.ID {
+				t.Fatalf("queue=%#v", s.bulkReleaseQueue)
+			}
+			rows, err := st.Downloads(ctx, "search_queued")
+			if err != nil || len(rows) != 1 || rows[0].ID != row.ID || rows[0].Priority != 7 || rows[0].Error != "" || rows[0].QBResponse != `{"force":true}` {
+				t.Fatalf("requeued rows=%#v err=%v", rows, err)
+			}
+		})
+	}
 }
