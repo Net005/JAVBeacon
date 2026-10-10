@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.292] - 2026-10-10
+
+### Added
+
+- Optional HTTP → better seeded Torrent download mode: prefer HTTP unless an accepted Torrent has higher advertised resolution or an earlier preferred filename pattern and meets the configurable minimum seed count (default 3). Retain Torrent fallback when HTTP is unavailable or fails, including transfer failures. Apply the same priority in interactive searches; preserve release-specific transport overrides and existing defaults.
+
 ## [1.0.291] - 2026-10-10
 
 ### Fixed

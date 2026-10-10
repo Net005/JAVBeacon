@@ -164,14 +164,17 @@ const httpFallbackRetryInterval = 30 * time.Minute
 type downloadMethod string
 
 const (
-	downloadTorrentHTTP downloadMethod = "torrent_http"
-	downloadHTTPTorrent downloadMethod = "http_torrent"
-	downloadTorrentOnly downloadMethod = "torrent_only"
-	downloadHTTPOnly    downloadMethod = "http_only"
+	downloadTorrentHTTP       downloadMethod = "torrent_http"
+	downloadHTTPTorrent       downloadMethod = "http_torrent"
+	downloadHTTPBetterTorrent downloadMethod = "http_better_torrent"
+	downloadTorrentOnly       downloadMethod = "torrent_only"
+	downloadHTTPOnly          downloadMethod = "http_only"
 )
 
 func normalizeDownloadMethod(raw string) downloadMethod {
 	switch downloadMethod(strings.ToLower(strings.TrimSpace(raw))) {
+	case downloadHTTPBetterTorrent:
+		return downloadHTTPBetterTorrent
 	case downloadHTTPTorrent:
 		return downloadHTTPTorrent
 	case downloadTorrentOnly:
@@ -185,6 +188,8 @@ func normalizeDownloadMethod(raw string) downloadMethod {
 
 func downloadMethodLabel(method downloadMethod) string {
 	switch method {
+	case downloadHTTPBetterTorrent:
+		return "HTTP → better seeded Torrent"
 	case downloadHTTPTorrent:
 		return "HTTP → Torrent fallback"
 	case downloadTorrentOnly:
@@ -208,6 +213,50 @@ func effectiveDownloadMethod(settings map[string]string, release domain.Release)
 
 func methodAllowsTorrent(method downloadMethod) bool { return method != downloadHTTPOnly }
 func methodAllowsHTTP(method downloadMethod) bool    { return method != downloadTorrentOnly }
+
+// The seed threshold applies only to replacing an available HTTP candidate.
+func betterTorrentMinimumSeeds(settings map[string]string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(settings["better_torrent_min_seeds"]))
+	if err != nil || n < 1 || n > 1000000 {
+		return 3
+	}
+	return n
+}
+
+var resolutionTokens = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(2160p?|4k|uhd|3840x2160|1080p?|fhd|full[ ._-]?hd|1920x1080|720p?|hd|1280x720)(?:$|[^a-z0-9])`)
+
+func candidateResolution(result domain.SearchResult) int {
+	name := normalizedMatchedFilename(result)
+	if name == "" {
+		name = result.Title
+	}
+	best := 0
+	for _, match := range resolutionTokens.FindAllStringSubmatch(name, -1) {
+		token := strings.ToLower(match[1])
+		rank := 720
+		if strings.Contains(token, "2160") || token == "4k" || token == "uhd" {
+			rank = 2160
+		} else if strings.Contains(token, "1080") || token == "fhd" || strings.HasPrefix(token, "full") {
+			rank = 1080
+		}
+		if rank > best {
+			best = rank
+		}
+	}
+	return best
+}
+func betterTorrentCandidate(rows []domain.SearchResult, http domain.SearchResult, minimum int) (domain.SearchResult, bool) {
+	for _, torrent := range sortSearchResults(rows) {
+		if !torrent.Accepted || torrent.BlacklistedFilenameMatch || torrent.Seeds < minimum {
+			continue
+		}
+		betterName := torrent.PreferredFilenameMatch && (!http.PreferredFilenameMatch || (torrent.PreferredFilenamePriority > 0 && (http.PreferredFilenamePriority <= 0 || torrent.PreferredFilenamePriority < http.PreferredFilenamePriority)))
+		if betterName || candidateResolution(torrent) > candidateResolution(http) {
+			return torrent, true
+		}
+	}
+	return domain.SearchResult{}, false
+}
 
 func preferredMatchSize(result domain.SearchResult) int64 {
 	for _, file := range result.FileDetails {
@@ -594,6 +643,23 @@ func (s *Service) SearchAll(ctx context.Context, release domain.Release) ([]doma
 	httpRows, httpErr := s.SearchHTTP(ctx, release)
 	if torrentErr != nil && httpErr != nil {
 		return nil, fmt.Errorf("torrent: %v; HTTP: %v", torrentErr, httpErr)
+	}
+	if method == downloadHTTPBetterTorrent {
+		for _, h := range httpRows {
+			if h.Accepted && !h.BlacklistedFilenameMatch {
+				if better, ok := betterTorrentCandidate(torrent, h, betterTorrentMinimumSeeds(settings)); ok {
+					ordered := []domain.SearchResult{better}
+					for _, t := range torrent {
+						if t.Link != better.Link || t.Title != better.Title {
+							ordered = append(ordered, t)
+						}
+					}
+					return append(ordered, httpRows...), nil
+				}
+				return append(httpRows, torrent...), nil
+			}
+		}
+		return append(torrent, httpRows...), nil
 	}
 	if method == downloadHTTPTorrent {
 		return append(append(make([]domain.SearchResult, 0, len(httpRows)+len(torrent)), httpRows...), torrent...), nil
@@ -1391,11 +1457,11 @@ func (s *Service) resumeHTTPDownloads() {
 func (s *Service) tryFailedHTTPTorrentFallback(d domain.Download, httpFailure string) {
 	ctx := context.Background()
 	settings, err := s.store.Settings(ctx)
-	if err != nil || !strings.Contains(d.MatchReason, "Download method: HTTP → Torrent fallback") {
+	if err != nil || (!strings.Contains(d.MatchReason, "Download method: HTTP → Torrent fallback") && !strings.Contains(d.MatchReason, "Download method: HTTP → better seeded Torrent")) {
 		return
 	}
 	release, err := s.store.Release(ctx, d.ReleaseID)
-	if err != nil || effectiveDownloadMethod(settings, release) != downloadHTTPTorrent {
+	if err != nil || (effectiveDownloadMethod(settings, release) != downloadHTTPTorrent && effectiveDownloadMethod(settings, release) != downloadHTTPBetterTorrent) {
 		return
 	}
 	native, err := s.searchNative(ctx, release, "Automatic Torrent fallback after HTTP failure")
@@ -1414,7 +1480,7 @@ func (s *Service) tryFailedHTTPTorrentFallback(d domain.Download, httpFailure st
 		s.logDownloadFailure(d)
 		return
 	}
-	candidate.DownloadPreferenceReason = "Download method: HTTP → Torrent fallback — Torrent selected after HTTP transfer failed"
+	candidate.DownloadPreferenceReason = "Download method: " + downloadMethodLabel(effectiveDownloadMethod(settings, release)) + " — Torrent selected after HTTP transfer failed"
 	downloaded, fallbackErr := s.Download(ctx, release, candidate, "Automatic Torrent fallback after HTTP failure", candidate.Link)
 	if fallbackErr != nil || (downloaded.Status != "queued" && downloaded.Status != "downloading") {
 		d.PostStatus = "torrent_fallback_failed"
@@ -2877,6 +2943,27 @@ func (s *Service) SearchAndDownloadDetailed(ctx context.Context, r domain.Releas
 		return err != nil || outcome.Download.Status == "failed"
 	}
 
+	if method == downloadHTTPBetterTorrent {
+		loadHTTP()
+		loadTorrent()
+		if httpFound {
+			if better, ok := betterTorrentCandidate(torrentRows, httpCandidate, betterTorrentMinimumSeeds(settings)); ok {
+				outcome, err := attempt(better, "Torrent improves resolution or preferred filename and meets the seed minimum")
+				if !failed(outcome, err) {
+					return outcome, err
+				}
+				// Retry HTTP if the better torrent could not be queued.
+				return attempt(httpCandidate, "HTTP selected after better Torrent failed")
+			}
+			outcome, err := attempt(httpCandidate, "HTTP retained; no better Torrent meets the seed minimum")
+			if !failed(outcome, err) || !torrentFound {
+				return outcome, err
+			}
+		}
+		if torrentFound {
+			return attempt(torrentCandidate, "Torrent fallback after HTTP was unavailable or failed")
+		}
+	}
 	if method == downloadHTTPTorrent || method == downloadHTTPOnly {
 		loadHTTP()
 		if httpFound {

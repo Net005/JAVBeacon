@@ -2942,6 +2942,9 @@ func TestSettingsRejectsInvalidDownloadMethod(t *testing.T) {
 	s := &Server{store: st, log: slog.Default()}
 	for _, body := range []string{
 		`{"default_download_method":"automatic"}`,
+		`{"better_torrent_min_seeds":"0"}`,
+		`{"better_torrent_min_seeds":"1.5"}`,
+		`{"better_torrent_min_seeds":"1000001"}`,
 		`{"prefer_http_equivalent":"yes"}`,
 		`{"pikpak_release_id_folder_fallback":"yes"}`,
 		`{"qb_poll_interval_seconds":"14"}`,
