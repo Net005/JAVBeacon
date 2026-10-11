@@ -857,10 +857,13 @@ func (s *Service) graphql(ctx context.Context, base, key, query string, target a
 }
 func escapeGraphQL(v string) string { return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(v) }
 
+var canonicalLetters = regexp.MustCompile(`[^A-Z]`)
+var canonicalNumbers = regexp.MustCompile(`[^0-9]`)
+
 func canonical(raw string) string {
 	raw = strings.ToUpper(raw)
-	letters := regexp.MustCompile(`[^A-Z]`).ReplaceAllString(raw, "")
-	numbers := regexp.MustCompile(`[^0-9]`).ReplaceAllString(raw, "")
+	letters := canonicalLetters.ReplaceAllString(raw, "")
+	numbers := canonicalNumbers.ReplaceAllString(raw, "")
 	numbers = strings.TrimLeft(numbers, "0")
 	if numbers == "" && strings.ContainsAny(raw, "0123456789") {
 		numbers = "0"

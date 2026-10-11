@@ -122,15 +122,13 @@ func (s *Service) realtimeWorker() {
 				break
 			}
 			debounce := time.Duration(settingInt(settings, "stash_realtime_debounce_seconds", 3, 0)) * time.Second
-			if debounce > 0 {
-				time.Sleep(debounce)
-			}
 			s.realtimeMu.Lock()
 			var sceneID string
-			for id := range s.realtimePending {
-				sceneID = id
-				delete(s.realtimePending, id)
-				break
+			var queuedAt time.Time
+			for id, at := range s.realtimePending {
+				if sceneID == "" || at.Before(queuedAt) {
+					sceneID, queuedAt = id, at
+				}
 			}
 			if sceneID == "" {
 				s.realtimeStatus.Running = false
@@ -138,6 +136,13 @@ func (s *Service) realtimeWorker() {
 				s.realtimeMu.Unlock()
 				break
 			}
+			// Already-aged backlog items do not need another debounce delay.
+			if remaining := time.Until(queuedAt.Add(debounce)); remaining > 0 {
+				s.realtimeMu.Unlock()
+				time.Sleep(remaining)
+				continue
+			}
+			delete(s.realtimePending, sceneID)
 			s.realtimeStatus.Running, s.realtimeStatus.CurrentScene = true, sceneID
 			s.realtimeStatus.Queued = len(s.realtimePending)
 			s.realtimeMu.Unlock()
@@ -147,7 +152,9 @@ func (s *Service) realtimeWorker() {
 			var matched string
 			for attempt := 1; attempt <= attempts; attempt++ {
 				s.log.Debug("realtime Stash scene sync attempt", "scene_id", sceneID, "attempt", attempt, "max_attempts", attempts)
-				matched, err = s.syncRealtimeScene(context.Background(), settings, sceneID)
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				matched, err = s.syncRealtimeScene(ctx, settings, sceneID)
+				cancel()
 				if err == nil {
 					break
 				}
@@ -228,23 +235,9 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 	if err != nil {
 		return "", err
 	}
-	var match *domain.Release
-	sceneKeys := realtimeSceneMatchKeys(scene)
-	for offset := 0; ; offset += 500 {
-		releases, e := s.store.Releases(ctx, domain.ReleaseFilter{Limit: 500, Offset: offset})
-		if e != nil {
-			return "", e
-		}
-		for i := range releases {
-			if releases[i].StashSceneID == sceneID || sceneKeys[canonical(releases[i].VideoID)] {
-				r := releases[i]
-				match = &r
-				break
-			}
-		}
-		if match != nil || len(releases) < 500 {
-			break
-		}
+	match, err := s.matchRealtimeRelease(ctx, sceneID, scene)
+	if err != nil {
+		return "", err
 	}
 	if scene == nil {
 		if match == nil {
@@ -272,7 +265,7 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 		// file or applying scraper metadata. Returning a retryable error lets the
 		// existing bounded retry policy fetch the scene again instead of silently
 		// treating that incomplete first snapshot as synchronized.
-		s.log.Debug("changed Stash scene is not matchable yet", "scene_id", sceneID, "code", scene.Code, "candidate_keys", len(sceneKeys), "elapsed", time.Since(started))
+		s.log.Debug("changed Stash scene is not matchable yet", "scene_id", sceneID, "code", scene.Code, "candidate_keys", len(realtimeSceneMatchKeys(scene)), "elapsed", time.Since(started))
 		return "", errRealtimeSceneUnmatched
 	}
 	if err := s.store.SetStashState(ctx, match.ID, true, scene.ID); err != nil {
@@ -307,7 +300,11 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 			// (e.g. it was marked while still downloading, before this scene
 			// existed to tag) - push it now instead of silently discarding
 			// the mark the instant the release becomes local.
-			if synced, _ := s.store.WatchlistSynced(ctx, match.ID, scene.ID, tagID); synced {
+			synced, err := s.store.WatchlistSynced(ctx, match.ID, scene.ID, tagID)
+			if err != nil {
+				return "", err
+			}
+			if synced {
 				if err := s.store.PatchRelease(ctx, match.ID, nil, nil, nil, nil, &hasTag, nil, nil, nil); err != nil {
 					return "", err
 				}
@@ -315,7 +312,7 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 				withScene := *match
 				withScene.StashSceneID = scene.ID
 				if _, err := s.setWatchlistTag(ctx, withScene, base, strings.TrimSpace(settings["stash_api_key"]), tagID, true); err != nil {
-					s.log.Warn("failed to push pending Watchlist tag for newly-local release", "release_id", match.ID, "video_id", match.VideoID, "error", err)
+					return "", fmt.Errorf("push pending Watchlist tag: %w", err)
 				}
 			}
 		default:
@@ -371,6 +368,62 @@ func (s *Service) syncRealtimeScene(ctx context.Context, settings map[string]str
 	s.markJellyfinLibraryChanged(ctx)
 	s.log.Debug("changed Stash scene applied to JAVBeacon", "scene_id", sceneID, "release", match.VideoID, "file_path", path, "plays", scene.PlayCount, "orgasms", scene.OCounter, "elapsed", time.Since(started))
 	return match.VideoID, nil
+}
+
+// Match existing scene links first, then the exact code. Canonical fallback
+// reads only identities, avoiding detail joins and download/tag aggregates for
+// every catalog row on every Stash hook.
+func (s *Service) matchRealtimeRelease(ctx context.Context, sceneID string, scene *realtimeScene) (*domain.Release, error) {
+	filters := []domain.ReleaseFilter{{StashSceneID: sceneID, Limit: 1}}
+	if scene != nil && strings.TrimSpace(scene.Code) != "" {
+		filters = append(filters, domain.ReleaseFilter{VideoID: strings.TrimSpace(scene.Code), Limit: 1})
+	}
+	for _, filter := range filters {
+		releases, err := s.store.Releases(ctx, filter)
+		if err != nil {
+			return nil, err
+		}
+		if len(releases) > 0 {
+			return &releases[0], nil
+		}
+	}
+	if scene == nil {
+		return nil, nil
+	}
+	keys := realtimeSceneMatchKeys(scene)
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	if lookup, ok := s.store.(interface {
+		StashReleaseIdentities(context.Context) ([]domain.ReleaseIdentity, error)
+	}); ok {
+		identities, err := lookup.StashReleaseIdentities(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, identity := range identities {
+			if keys[canonical(identity.VideoID)] {
+				release, err := s.store.Release(ctx, identity.ID)
+				return &release, err
+			}
+		}
+		return nil, nil
+	}
+	// Compatibility with store implementations without the lightweight lookup.
+	for offset := 0; ; offset += 500 {
+		releases, err := s.store.Releases(ctx, domain.ReleaseFilter{Limit: 500, Offset: offset})
+		if err != nil {
+			return nil, err
+		}
+		for i := range releases {
+			if keys[canonical(releases[i].VideoID)] {
+				return &releases[i], nil
+			}
+		}
+		if len(releases) < 500 {
+			return nil, nil
+		}
+	}
 }
 
 func realtimeSceneMatchKeys(scene *realtimeScene) map[string]bool {

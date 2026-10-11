@@ -5,6 +5,13 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.296] - 2026-10-11
+
+### Fixed
+
+- Apply pending Watchlist tags after Stash imports without scanning full release details for every hook; retry failed tag writes instead of reporting success.
+- Process older Stash hooks first, debounce from each scene’s latest event, and bound synchronization attempts so import backlogs can progress.
+
 ## [1.0.295] - 2026-10-10
 
 ### Performance
