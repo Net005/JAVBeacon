@@ -1,0 +1,27 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const source = fs.readFileSync(path.join(__dirname, 'static/app.js'), 'utf8');
+const names = ['rankProviderSearchResults', 'normalizedSearchFilename', 'matchedSearchSize', 'equivalentPreferredSearchResults', 'downloadMethodLabel', 'candidateSearchResolution', 'betterSearchTorrent', 'combineProviderSearchResults'];
+const functions = names.map(name => {
+  const line = source.split('\n').find(line => line.startsWith(`function ${name}(`));
+  assert.ok(line, `Missing ${name}`);
+  return line;
+}).join('\n');
+const context = vm.createContext({ settings: { better_torrent_min_seeds: '3' } });
+vm.runInContext(functions, context);
+const http = { transport: 'http', accepted: true, preferred_filename_match: true, preferred_filename_priority: 20, matched_file: 'preferred@ABC-123.mp4', size_bytes: 6_000_000_000 };
+const low = { transport: 'torrent', accepted: true, seeds: 3, title: '[HD/720p] ABC-123', size_bytes: 1_500_000_000 };
+assert.equal(context.betterSearchTorrent(low, http), false);
+const equal = { ...low, preferred_filename_match: true, preferred_filename_priority: 20, matched_file: http.matched_file, seeds: 10 };
+assert.equal(context.betterSearchTorrent(equal, http), false);
+assert.equal(context.betterSearchTorrent({ ...equal, matched_file: 'preferred@ABC-123-720p.mp4', preferred_filename_priority: 10 }, { ...http, matched_file: 'preferred@ABC-123-1080p.mp4' }), false);
+assert.equal(context.betterSearchTorrent({ ...equal, matched_file: 'preferred@ABC-123-2160p.mp4' }, { ...http, matched_file: 'preferred@ABC-123-1080p.mp4' }), true);
+assert.equal(context.betterSearchTorrent({ ...equal, seeds: 2, preferred_filename_priority: 10 }, http), false);
+assert.equal(context.betterSearchTorrent({ ...equal, seeds: undefined, preferred_filename_priority: 10 }, http), false);
+const ordered = context.combineProviderSearchResults({ torrent: [low, equal], http: [http] }, 'http_better_torrent');
+assert.equal(ordered[0], http);
+assert.equal(http._downloadPriority, true);
+assert.equal(low._downloadPriority, undefined);
+console.log('Browser acquisition ranking regressions passed');
