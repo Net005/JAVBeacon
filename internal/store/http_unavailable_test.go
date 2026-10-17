@@ -72,3 +72,45 @@ func TestUnavailableHTTPHistoryRepairPreservesTransferFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestPostgresStartupRepairsUnavailableHTTPHistory(t *testing.T) {
+	cfg := testPostgresConfig(t)
+	ctx := context.Background()
+	st, err := OpenPostgresStore(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Synthetic history", Type: "Site", Name: "JavLibrary", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "SYNTH-101", Title: "Synthetic", Source: "JavLibrary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{Search: "SYNTH-101", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("setup: %v", err)
+	}
+	defer st.db.ExecContext(ctx, `DELETE FROM downloads WHERE release_id=?`, releases[0].ID)
+	row, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Transport: "http", Status: "failed", Error: "HTTP result did not exactly match the release ID"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		reopened, err := OpenPostgresStore(ctx, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var status, reason, failure string
+		err = reopened.db.QueryRowContext(ctx, `SELECT status,match_reason,error FROM downloads WHERE id=?`, row.ID).Scan(&status, &reason, &failure)
+		reopened.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status != "not_available" || reason != row.Error || failure != "" {
+			t.Fatalf("startup repair: %q %q %q", status, reason, failure)
+		}
+	}
+}
