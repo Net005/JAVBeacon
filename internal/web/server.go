@@ -3255,13 +3255,8 @@ func (s *Server) runBulkReleaseJobs() {
 				return
 			}
 			if status == "not_available" {
-				// Not a failure: the exact release was found on the provider's
-				// own site, it just has no downloadable share link published
-				// yet (a common JavDB pattern for a release announced ahead of
-				// its actual upload). Keep the provider's page link so the
-				// user can check it themselves, and let a later search retry
-				// find it once it is published, without cluttering the Failed
-				// tab with something that never actually failed.
+				// The search completed without an exact downloadable match.
+				// Keep any provider page and diagnostic for a later search retry.
 				task.Status, task.Error, task.MatchReason = "not_available", "", detail
 				if outcome.Result.SourceURL != "" {
 					task.SourcePageURL = outcome.Result.SourceURL
@@ -3287,7 +3282,7 @@ func (s *Server) runBulkReleaseJobs() {
 			finishTask("not_available", outcome.Reason)
 			notAvailable++
 			if s.log != nil {
-				s.log.Info(item.SourceType+" search matched the release but no download link is published yet", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "source_page_url", outcome.Result.SourceURL, "reason", outcome.Reason)
+				s.log.Info(item.SourceType+" search found no exact downloadable match", "release_id", release.ID, "video_id", release.VideoID, "download_method", release.DownloadMethodOverride, "source_page_url", outcome.Result.SourceURL, "reason", outcome.Reason)
 			}
 		case !outcome.Found:
 			finishTask("failed", outcome.Reason)

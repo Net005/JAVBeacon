@@ -520,6 +520,9 @@ CREATE INDEX IF NOT EXISTS idx_release_tags_release_position ON release_tags(rel
 		err = s.normalizeReleaseTimestamps(context.Background())
 	}
 	if err == nil {
+		err = s.reclassifyUnavailableHTTPMatches(context.Background())
+	}
+	if err == nil {
 		// is_local=1 with an empty stash_scene_id is an invariant violation:
 		// every active code path that sets is_local true (the full StashApp
 		// sync and the realtime webhook plugin) always sets it together with
@@ -3645,6 +3648,17 @@ func (s *SQLite) ReleaseUpgradeRuns(ctx context.Context, limit int) ([]domain.Re
 		out = append(out, x)
 	}
 	return out, rows.Err()
+}
+
+// reclassifyUnavailableHTTPMatches repairs only known pre-transfer mismatch
+// diagnostics. Preserve real transfer failures, destination files, and timestamps.
+// The guarded update is idempotent and works with SQLite and PostgreSQL.
+func (s *SQLite) reclassifyUnavailableHTTPMatches(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE downloads SET status='not_available',match_reason=error,error=''
+		WHERE transport='http' AND status='failed' AND bytes_downloaded=0 AND progress=0 AND destination_path=''
+		AND (error='HTTP result did not exactly match the release ID'
+		OR error LIKE 'JavDB returned search results but no exact release ID match (%')`)
+	return err
 }
 
 func (s *SQLite) SaveDownload(ctx context.Context, x domain.Download) (domain.Download, error) {

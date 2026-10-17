@@ -774,14 +774,9 @@ type SearchResult struct {
 	PublishedAt string `json:"published_at,omitempty"`
 	Accepted    bool   `json:"accepted"`
 	Reason      string `json:"reason"`
-	// Unavailable marks a result that exactly matched the release on the
-	// provider's own site but has no downloadable file published yet (for
-	// example, a JavDB release page found by exact ID with no Keepshare or
-	// PikPak share link listed - often a release announced ahead of its
-	// actual upload). It is distinct from an ordinary non-match: the
-	// download queue treats it as "not available yet" rather than a failure,
-	// since nothing about the request itself was wrong and the same search
-	// may succeed once the provider publishes a link.
+	// Unavailable marks a completed provider search with no exact downloadable
+	// match, including an exact release page with no published share link.
+	// Network, access and parsing errors remain errors, rather than absence.
 	Unavailable bool `json:"unavailable,omitempty"`
 	// Forced marks a result that was downloaded via an explicit manual
 	// override after automatic matching rejected it (Phase 5B), so the

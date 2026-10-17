@@ -1227,14 +1227,23 @@ func (s *Service) verifyAddedToQBittorrent(ctx context.Context, qb QBittorrent, 
 
 func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, result domain.SearchResult, sourceType, sourceRef string) (domain.Download, error) {
 	priority := PriorityForRelease(r, time.Now())
+	if result.Unavailable {
+		return s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "not_available", MatchReason: result.Reason, Priority: priority})
+	}
 	if result.BlacklistedFilenameMatch {
 		d, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", MatchReason: result.Reason, Error: "result rejected by filename blacklist", Priority: priority})
 		s.logDownloadFailure(d)
 		return d, err
 	}
 	if !result.Accepted && !result.Forced {
-		d, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", Error: "HTTP result did not exactly match the release ID", Priority: priority})
-		s.logDownloadFailure(d)
+		status, reason, failure := "not_available", firstNonEmpty(result.Reason, "HTTP result did not exactly match the release ID"), ""
+		if strings.Contains(result.Reason, "Keepshare filename inspection failed:") {
+			status, failure = "failed", result.Reason
+		}
+		d, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: status, MatchReason: reason, Error: failure, Priority: priority})
+		if status == "failed" {
+			s.logDownloadFailure(d)
+		}
 		return d, err
 	}
 	if result.ReplaceExisting {

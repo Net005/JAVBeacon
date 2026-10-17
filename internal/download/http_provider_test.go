@@ -579,7 +579,7 @@ func TestJavDBResolveSkipsUnsupportedSourceReferenceWithoutNetworkCalls(t *testi
 }
 
 func TestReleaseIDMatchesTextIsCaseInsensitiveAndRejectsHalfMatches(t *testing.T) {
-	for _, value := range []string{"ADN-803", "adn803.mp4", "[source] AdN_803-U.mp4", "Pred 899", "pred_899", "PRED.899", "pReD-899"} {
+	for _, value := range []string{"ADN-803", "adn803.mp4", "ADN–803.mp4", "ADN‑803.mp4", "ADN　803.mp4", "[source] AdN_803-U.mp4", "Pred 899", "pred_899", "PRED.899", "pReD-899"} {
 		releaseID := "ADN-803"
 		if strings.Contains(strings.ToUpper(value), "PRED") || strings.Contains(value, "Pred") {
 			releaseID = "PRED-899"
@@ -588,13 +588,21 @@ func TestReleaseIDMatchesTextIsCaseInsensitiveAndRejectsHalfMatches(t *testing.T
 			t.Fatalf("expected %q to match", value)
 		}
 	}
-	for _, value := range []string{"ADN-8030.mp4", "XADN-803.mp4", "ADN-80.mp4", "PRED-8990", "PRED-899A", "XPRED-899"} {
+	for _, value := range []string{"ADN-8030.mp4", "ADN–8030.mp4", "XADN‑803.mp4", "XADN-803.mp4", "ADN-80.mp4", "PRED-8990", "PRED-899A", "XPRED-899"} {
 		releaseID := "ADN-803"
 		if strings.Contains(value, "PRED") {
 			releaseID = "PRED-899"
 		}
 		if releaseIDMatchesText(value, releaseID) {
 			t.Fatalf("expected half-match %q to be rejected", value)
+		}
+	}
+}
+
+func TestJavDBLabeledExactIDsAcceptTypographicSeparators(t *testing.T) {
+	for _, text := range []string{"ID: SYNTH–101", "ID： SYNTH‑101", "ID: SYNTH　101"} {
+		if got := extractJavDBReleaseID(text); !releaseIDsEqual(got, "SYNTH-101") {
+			t.Fatalf("labeled exact ID %q was parsed as %q", text, got)
 		}
 	}
 }
@@ -931,9 +939,7 @@ func TestJavDBSearchClassifiesPipelineFailures(t *testing.T) {
 		{name: "no parsable cards", requested: "PRPM-002", storedDate: "2026-09-15", want: "no parsable release results", handler: func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`<html><body>ordinary empty result markup</body></html>`))
 		}},
-		{name: "no exact ID", requested: "PRPM-002", storedDate: "2026-09-15", want: "no exact release ID match", handler: func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(javDBSearchPage("PRPM-003", "2026-09-15", "/v/wrong")))
-		}},
+
 		{name: "detail forbidden", requested: "PRPM-002", storedDate: "2026-09-15", want: "detail page fetch failed", handler: func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/search" {
 				_, _ = w.Write([]byte(javDBSearchPage("PRPM-002", "2026-09-15", "/v/blocked")))
@@ -958,6 +964,23 @@ func TestJavDBSearchClassifiesPipelineFailures(t *testing.T) {
 				t.Fatalf("error=%v, want stage %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestJavDBNoExactMatchIsUnavailable(t *testing.T) {
+	provider, closeServer := javDBFixtureProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" {
+			t.Errorf("non-matching release detail was fetched: %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(javDBSearchPage("SYNTH-102", "2026-09-15", "/v/wrong")))
+	})
+	defer closeServer()
+	rows, err := provider.Search(context.Background(), domain.Release{VideoID: "SYNTH-101"})
+	if err != nil || len(rows) != 1 || !rows[0].Unavailable || rows[0].Accepted || rows[0].Link != "" {
+		t.Fatalf("expected unavailable exact match, got rows=%+v err=%v", rows, err)
+	}
+	if !strings.Contains(rows[0].Reason, "no exact release ID match") {
+		t.Fatalf("missing diagnostic: %+v", rows[0])
 	}
 }
 

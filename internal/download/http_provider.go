@@ -242,7 +242,7 @@ func releaseIDsEqual(a, b string) bool {
 	return a != "" && a == b
 }
 
-var javDBLabeledIDPattern = regexp.MustCompile(`(?i)\bID\s*[:：]\s*([A-Z]{2,}[-_ .]*[0-9]{2,}(?:[-_ .]*U)?)`)
+var javDBLabeledIDPattern = regexp.MustCompile(`(?i)\bID\s*[:：]\s*([A-Z]{2,}[-_ .\p{Pd}\p{Zs}]*[0-9]{2,}(?:[-_ .\p{Pd}\p{Zs}]*U)?)`)
 
 func extractJavDBReleaseID(text string) string {
 	text = strings.TrimSpace(text)
@@ -253,6 +253,13 @@ func extractJavDBReleaseID(text string) string {
 }
 
 func releaseIDMatchesText(text, releaseID string) bool {
+	// Accept typographic separators without changing release-ID boundaries.
+	text = strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Pd, r) || unicode.IsSpace(r) {
+			return '-'
+		}
+		return r
+	}, text)
 	parts := regexp.MustCompile(`[A-Z]+|[0-9]+`).FindAllString(strings.ToUpper(normalizeReleaseID(releaseID)), -1)
 	if len(parts) == 0 {
 		return false
@@ -357,7 +364,7 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 		}
 	}
 	if len(exact) == 0 {
-		return nil, fmt.Errorf("JavDB returned search results but no exact release ID match (requested_id=%s normalized_requested_id=%s search_results=%d)", release.VideoID, normalizeReleaseID(release.VideoID), len(hits))
+		return []domain.SearchResult{{Provider: p.Name(), Title: release.VideoID, Transport: "http", Unavailable: true, Reason: fmt.Sprintf("JavDB returned search results but no exact release ID match (requested_id=%s normalized_requested_id=%s search_results=%d)", release.VideoID, normalizeReleaseID(release.VideoID), len(hits))}}, nil
 	}
 	var rows []domain.SearchResult
 	var unavailable []domain.SearchResult
