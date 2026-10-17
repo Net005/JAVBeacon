@@ -250,8 +250,15 @@ func betterTorrentCandidate(rows []domain.SearchResult, http domain.SearchResult
 		if !torrent.Accepted || torrent.BlacklistedFilenameMatch || torrent.Seeds < minimum {
 			continue
 		}
+		torrentResolution, httpResolution := candidateResolution(torrent), candidateResolution(http)
+		// Missing resolution labels are unknown, not evidence of low quality.
+		// A filename preference must not override a known resolution downgrade.
+		if torrentResolution > 0 && httpResolution > 0 && torrentResolution < httpResolution {
+			continue
+		}
 		betterName := torrent.PreferredFilenameMatch && (!http.PreferredFilenameMatch || (torrent.PreferredFilenamePriority > 0 && (http.PreferredFilenamePriority <= 0 || torrent.PreferredFilenamePriority < http.PreferredFilenamePriority)))
-		if betterName || candidateResolution(torrent) > candidateResolution(http) {
+		betterResolution := httpResolution > 0 && torrentResolution > httpResolution
+		if betterName || betterResolution {
 			return torrent, true
 		}
 	}

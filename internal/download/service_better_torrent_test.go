@@ -17,6 +17,7 @@ func TestBetterTorrentCandidate(t *testing.T) {
 		{"4K meets threshold", domain.SearchResult{Accepted: true, MatchedFile: "ABC-123 4K.mp4", Seeds: 3}, true},
 		{"4K too few seeds", domain.SearchResult{Accepted: true, MatchedFile: "ABC-123 4K.mp4", Seeds: 2}, false},
 		{"earlier filename pattern", domain.SearchResult{Accepted: true, MatchedFile: "ABC-123.mp4", Seeds: 3, PreferredFilenameMatch: true, PreferredFilenamePriority: 1}, true},
+		{"preferred name cannot downgrade resolution", domain.SearchResult{Accepted: true, MatchedFile: "ABC-123 720p.mp4", Seeds: 100, PreferredFilenameMatch: true, PreferredFilenamePriority: 1}, false},
 		{"later pattern", domain.SearchResult{Accepted: true, MatchedFile: "ABC-123.mp4", Seeds: 3, PreferredFilenameMatch: true, PreferredFilenamePriority: 3}, false},
 		{"blacklisted", domain.SearchResult{Accepted: true, BlacklistedFilenameMatch: true, MatchedFile: "ABC-123 4K.mp4", Seeds: 100}, false},
 		{"unaccepted", domain.SearchResult{MatchedFile: "ABC-123 4K.mp4", Seeds: 100}, false},
@@ -39,5 +40,19 @@ func TestBetterTorrentCandidate(t *testing.T) {
 	}
 	if effectiveDownloadMethod(map[string]string{"default_download_method": "http_better_torrent"}, domain.Release{DownloadMethodOverride: "http"}) != downloadHTTPOnly {
 		t.Fatal("release override lost")
+	}
+}
+
+func TestBetterTorrentCannotInferHTTPQualityFromMissingLabels(t *testing.T) {
+	http := domain.SearchResult{Accepted: true, MatchedFile: "preferred@ABC-123.mp4", SizeBytes: 6 << 30, PreferredFilenameMatch: true, PreferredFilenamePriority: 20}
+	for _, title := range []string{"[HD/720p] ABC-123", "[FHD] ABC-123", "[4K] ABC-123"} {
+		torrent := domain.SearchResult{Accepted: true, Title: title, SizeBytes: 1 << 30, Seeds: 100}
+		if got, ok := betterTorrentCandidate([]domain.SearchResult{torrent}, http, 3); ok {
+			t.Fatalf("unknown HTTP resolution was treated as worse than %q: %+v", title, got)
+		}
+	}
+	equivalent := domain.SearchResult{Accepted: true, MatchedFile: http.MatchedFile, PreferredFilenameMatch: true, PreferredFilenamePriority: 20, Seeds: 100}
+	if _, ok := betterTorrentCandidate([]domain.SearchResult{equivalent}, http, 3); ok {
+		t.Fatal("equivalent preferred file must keep HTTP regardless of seed count")
 	}
 }
