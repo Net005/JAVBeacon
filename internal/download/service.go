@@ -1234,8 +1234,17 @@ func (s *Service) verifyAddedToQBittorrent(ctx context.Context, qb QBittorrent, 
 
 func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, result domain.SearchResult, sourceType, sourceRef string) (domain.Download, error) {
 	priority := PriorityForRelease(r, time.Now())
+	unavailable := func(reason string) (domain.Download, error) {
+		// A provider miss is a search outcome, not a transfer. SearchHTTP already
+		// records the provider diagnostic; do not create another download queue row.
+		d := domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "not_available", MatchReason: reason, Priority: priority}
+		if s.log != nil {
+			s.log.Info("HTTP search unavailable; no download queued", "release_id", r.ID, "provider", result.Provider, "reason", reason)
+		}
+		return d, nil
+	}
 	if result.Unavailable {
-		return s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "not_available", MatchReason: result.Reason, Priority: priority})
+		return unavailable(result.Reason)
 	}
 	if result.BlacklistedFilenameMatch {
 		d, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: "failed", MatchReason: result.Reason, Error: "result rejected by filename blacklist", Priority: priority})
@@ -1246,6 +1255,9 @@ func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, resul
 		status, reason, failure := "not_available", firstNonEmpty(result.Reason, "HTTP result did not exactly match the release ID"), ""
 		if strings.Contains(result.Reason, "Keepshare filename inspection failed:") {
 			status, failure = "failed", result.Reason
+		}
+		if status == "not_available" {
+			return unavailable(reason)
 		}
 		d, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: status, MatchReason: reason, Error: failure, Priority: priority})
 		if status == "failed" {

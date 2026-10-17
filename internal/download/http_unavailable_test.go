@@ -37,9 +37,13 @@ func TestHTTPUnavailableCandidatesDoNotFailOrStartTransfers(t *testing.T) {
 		{Provider: "JavDB / Keepshare", Reason: "Different release ID"},
 	} {
 		row, err := svc.queueHTTPDownload(ctx, releases[0], candidate, "Synthetic test", "")
-		if err != nil || row.Status != "not_available" || row.Error != "" || row.MatchReason != candidate.Reason {
+		if err != nil || row.ID != 0 || row.Status != "not_available" || row.Error != "" || row.MatchReason != candidate.Reason {
 			t.Fatalf("candidate %+v produced %+v, %v", candidate, row, err)
 		}
+	}
+	all, err := st.Downloads(ctx, "")
+	if err != nil || len(all) != 0 {
+		t.Fatalf("unavailable searches accumulated download rows: %+v %v", all, err)
 	}
 	failed, err := st.Downloads(ctx, "failed")
 	if err != nil || len(failed) != 0 {

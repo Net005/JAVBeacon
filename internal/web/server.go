@@ -3250,21 +3250,8 @@ func (s *Server) runBulkReleaseJobs() {
 			if task.ID == 0 {
 				return
 			}
-			if status == "completed" || outcome.Download.ID > 0 {
+			if status == "completed" || status == "not_available" || outcome.Download.ID > 0 {
 				_, _ = s.store.DeleteDownload(context.Background(), task.ID)
-				return
-			}
-			if status == "not_available" {
-				// The search completed without an exact downloadable match.
-				// Keep any provider page and diagnostic for a later search retry.
-				task.Status, task.Error, task.MatchReason = "not_available", "", detail
-				if outcome.Result.SourceURL != "" {
-					task.SourcePageURL = outcome.Result.SourceURL
-				}
-				if outcome.Result.Provider != "" {
-					task.Provider = outcome.Result.Provider
-				}
-				_, _ = s.store.SaveDownload(context.Background(), task)
 				return
 			}
 			task.Status, task.Error, task.MatchReason = "failed", detail, "Search + Download did not queue a file"
