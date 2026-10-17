@@ -2652,7 +2652,7 @@ func (s *Service) removeReleaseDownloads(ctx context.Context, releaseID int64, q
 		qb.Client.Timeout = s.client.Timeout
 		hashes := map[string]bool{}
 		for _, row := range rows {
-			if row.ReleaseID == releaseID && row.Transport != "http" && row.TorrentHash != "" && !downloadGoneFromQBHandled(row.PostStatus) {
+			if row.ReleaseID == releaseID && normalizedDownloadTransport(row.Transport) == "torrent" && row.TorrentHash != "" && !downloadGoneFromQBHandled(row.PostStatus) {
 				hashes[row.TorrentHash] = true
 			}
 		}
@@ -2671,7 +2671,7 @@ func (s *Service) removeReleaseDownloads(ctx context.Context, releaseID int64, q
 		}
 	}
 
-	deleted, err := s.store.DeleteDownloadsForRelease(ctx, releaseID)
+	deleted, err := s.store.DeleteDownloadsForReleaseTransport(ctx, releaseID, "torrent")
 	if err == nil {
 		s.log.Info("download removed and history cleared", "release_id", releaseID, "video_id", query, "delete_files", deleteFiles, "history_rows", deleted)
 	}
@@ -2740,7 +2740,11 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 		query      string
 		transport  string
 	}
-	selected := map[int64]selectedRelease{}
+	type selectionKey struct {
+		releaseID int64
+		transport string
+	}
+	selected := map[selectionKey]selectedRelease{}
 	localHistory := make([]domain.Download, 0)
 	for _, row := range rows {
 		if wanted[row.ID] {
@@ -2751,7 +2755,7 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 			if row.ReleaseID == 0 {
 				continue
 			}
-			selected[row.ReleaseID] = selectedRelease{id: row.ReleaseID, downloadID: row.ID, query: row.Query, transport: normalizedDownloadTransport(row.Transport)}
+			selected[selectionKey{row.ReleaseID, normalizedDownloadTransport(row.Transport)}] = selectedRelease{id: row.ReleaseID, downloadID: row.ID, query: row.Query, transport: normalizedDownloadTransport(row.Transport)}
 		}
 	}
 	if len(selected) == 0 && len(localHistory) == 0 {
@@ -2771,7 +2775,8 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 	}
 	s.replacementJob = job
 	s.mu.Unlock()
-	go func(items map[int64]selectedRelease, historyRows []domain.Download) {
+	go func(items map[selectionKey]selectedRelease, historyRows []domain.Download) {
+		replacements := map[int64]selectedRelease{}
 		background := context.Background()
 		defer func() {
 			job.Running = false
@@ -2804,17 +2809,22 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 				continue
 			}
 			job.Removed++
-			if !replace {
-				job.Processed++
-				s.setReplacementJob(job)
-				continue
+			if replace {
+				replacements[item.id] = item
 			}
+			job.Processed++
+			s.setReplacementJob(job)
+		}
+		// Finish all explicitly selected transport cleanups before starting a
+		// replacement, so a second selected transport cannot delete the new job.
+		for _, item := range replacements {
+			job.CurrentItem = item.query
+			s.setReplacementJob(job)
 			release, err := s.store.Release(background, item.id)
 			if err != nil {
 				s.log.Error("bulk replacement release lookup failed", "release_id", item.id, "error", err)
 				job.Failed++
 				job.LastError = err.Error()
-				job.Processed++
 				s.setReplacementJob(job)
 				continue
 			}
@@ -2830,7 +2840,6 @@ func (s *Service) StartBulkRemoveAndReplace(ctx context.Context, downloadIDs []i
 			} else {
 				job.Downloaded++
 			}
-			job.Processed++
 			s.setReplacementJob(job)
 		}
 		for _, row := range historyRows {

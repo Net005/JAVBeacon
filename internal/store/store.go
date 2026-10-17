@@ -89,6 +89,7 @@ type Store interface {
 	DownloadActivity(context.Context, domain.DownloadFilter) ([]domain.Download, int, error)
 	DeleteDownload(context.Context, int64) (int64, error)
 	DeleteDownloadsForRelease(context.Context, int64) (int64, error)
+	DeleteDownloadsForReleaseTransport(context.Context, int64, string) (int64, error)
 	PathMappings(context.Context) ([]domain.PathMapping, error)
 	SavePathMapping(context.Context, domain.PathMapping) (domain.PathMapping, error)
 	DeletePathMapping(context.Context, int64) error
@@ -3875,6 +3876,33 @@ func (s *SQLite) DeleteDownloadsForRelease(ctx context.Context, releaseID int64)
 		return 0, err
 	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM downloads WHERE release_id=?`, releaseID)
+	if err != nil {
+		return 0, err
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return deleted, tx.Commit()
+}
+
+// DeleteDownloadsForReleaseTransport leaves the other transport's transfers and
+// history intact. Release-wide notifications are retained while that other
+// transport has history because notifications do not identify a transport.
+func (s *SQLite) DeleteDownloadsForReleaseTransport(ctx context.Context, releaseID int64, transport string) (int64, error) {
+	transport = strings.ToLower(strings.TrimSpace(transport))
+	if transport != "http" && transport != "torrent" {
+		return 0, errors.New("invalid download transport")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM notifications WHERE release_id=? AND type IN ('download_started','downloaded','download_failed') AND NOT EXISTS (SELECT 1 FROM downloads WHERE release_id=? AND COALESCE(NULLIF(LOWER(TRIM(transport)),''),'torrent')<>?)`, releaseID, releaseID, transport); err != nil {
+		return 0, err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM downloads WHERE release_id=? AND COALESCE(NULLIF(LOWER(TRIM(transport)),''),'torrent')=?`, releaseID, transport)
 	if err != nil {
 		return 0, err
 	}

@@ -339,3 +339,140 @@ func TestBestSeededCandidateOnlyConsidersAcceptedResults(t *testing.T) {
 		t.Fatal("rejected-only results should not be selected")
 	}
 }
+
+func TestRemovalKeepsOtherTransport(t *testing.T) {
+	for _, tc := range []struct {
+		name, transport string
+		bulk, both      bool
+	}{
+		{name: "single torrent", transport: "torrent"}, {name: "single HTTP", transport: "http"},
+		{name: "bulk torrent", transport: "torrent", bulk: true}, {name: "bulk HTTP", transport: "http", bulk: true},
+		{name: "bulk both explicitly selected", bulk: true, both: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "transport-removal.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			var torrentRemovals, cloudRemovals atomic.Int64
+			qb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v2/auth/login":
+					w.WriteHeader(http.StatusNoContent)
+				case "/api/v2/torrents/delete":
+					if r.FormValue("hashes") != "owned-torrent" {
+						t.Errorf("unexpected torrent: %q", r.FormValue("hashes"))
+					}
+					torrentRemovals.Add(1)
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					t.Errorf("unexpected qBittorrent request: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer qb.Close()
+			if err := st.SaveSettings(ctx, map[string]string{"qb_url": qb.URL}); err != nil {
+				t.Fatal(err)
+			}
+			site, err := st.SaveSite(ctx, domain.Site{Title: "Synthetic", Type: "Site", Name: "JavLibrary", Enabled: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "SYNTH-101", Title: "Synthetic", Source: "JavLibrary"}); err != nil {
+				t.Fatal(err)
+			}
+			releases, err := st.Releases(ctx, domain.ReleaseFilter{Limit: 1})
+			if err != nil || len(releases) != 1 {
+				t.Fatalf("setup: %v", err)
+			}
+			releaseID := releases[0].ID
+			torrent, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releaseID, Transport: "torrent", Status: "downloading", TorrentHash: "owned-torrent"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			httpRow, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releaseID, Transport: "http", Status: "downloading", RestoredFileID: "owned-cloud-copy", RestoredFileOwned: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, transport := range []string{"http", "torrent"} {
+				if _, err = st.SaveDownload(ctx, domain.Download{ReleaseID: releaseID, Transport: transport, Status: "search_accepted"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err = st.CreateNotification(ctx, releaseID, "download_started", "Synthetic download"); err != nil {
+				t.Fatal(err)
+			}
+			service := New(st, time.Second, slog.Default())
+			var canceled atomic.Bool
+			done := make(chan struct{})
+			run := &httpDownloadRun{cancel: func() {
+				if canceled.CompareAndSwap(false, true) {
+					close(done)
+				}
+			}, done: done}
+			service.httpRuns[httpRow.ID] = run
+			service.pikPakDeleteFile = func(context.Context, string) error { cloudRemovals.Add(1); return nil }
+			selected := torrent.ID
+			if tc.transport == "http" {
+				selected = httpRow.ID
+			}
+			if tc.bulk {
+				ids := []int64{selected}
+				if tc.both {
+					ids = []int64{torrent.ID, httpRow.ID}
+				}
+				if _, err = service.StartBulkRemoveAndReplace(ctx, ids, false); err != nil {
+					t.Fatal(err)
+				}
+				deadline := time.Now().Add(2 * time.Second)
+				for service.ReplacementStatus().Running && time.Now().Before(deadline) {
+					time.Sleep(time.Millisecond)
+				}
+				job := service.ReplacementStatus()
+				expected := 1
+				if tc.both {
+					expected = 2
+				}
+				if job.Running || job.Failed != 0 || job.Removed != expected {
+					t.Fatalf("cleanup: %+v", job)
+				}
+			} else if deleted, err := service.RemoveDownload(ctx, selected); err != nil || deleted != 2 {
+				t.Fatalf("deleted=%d err=%v", deleted, err)
+			}
+			remaining, err := st.Downloads(ctx, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.both {
+				if len(remaining) != 0 {
+					t.Fatalf("explicit selections remain: %+v", remaining)
+				}
+			} else {
+				if len(remaining) != 2 {
+					t.Fatalf("other transport history changed: %+v", remaining)
+				}
+				for _, row := range remaining {
+					if row.Transport == tc.transport {
+						t.Fatalf("selected transport remains: %+v", row)
+					}
+				}
+				notifications, err := st.Notifications(ctx, "")
+				if err != nil || len(notifications) != 1 {
+					t.Fatalf("other transport notification lost: %v %v", notifications, err)
+				}
+			}
+			wantTorrent, wantHTTP := int64(0), int64(0)
+			if tc.transport == "torrent" || tc.both {
+				wantTorrent = 1
+			}
+			if tc.transport == "http" || tc.both {
+				wantHTTP = 1
+			}
+			if torrentRemovals.Load() != wantTorrent || cloudRemovals.Load() != wantHTTP || canceled.Load() != (wantHTTP == 1) {
+				t.Fatalf("cross-transport side effect: torrents=%d cloud=%d HTTP canceled=%v", torrentRemovals.Load(), cloudRemovals.Load(), canceled.Load())
+			}
+		})
+	}
+}
