@@ -5,6 +5,16 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.297] - 2026-10-17
+
+### Fixed
+
+- Refresh recorded torrent progress independently of slow video checks and fallback searches, preserving newer transfer telemetry during completion updates.
+- Preserve downloads and retry state when video validation is interrupted.
+- Recheck recorded ownership and live torrent progress before replacing stalled downloads with HTTP fallbacks.
+- Match download path mappings at directory boundaries so similarly named sibling directories are not remapped.
+- Synchronize scheduler tests with the observed queue instead of a fixed startup deadline.
+
 ## [1.0.296] - 2026-10-11
 
 ### Fixed

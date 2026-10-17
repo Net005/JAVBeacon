@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -335,4 +336,67 @@ func TestSearchAndDownloadNowFindsAnyAcceptedResultRegardlessOfFilenamePattern(t
 			t.Fatalf("expected found=false since the only result does not contain the release ID")
 		}
 	})
+}
+
+func TestTorrentHTTPFallbackRechecksLiveTransfer(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "fallback-recheck.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	site, err := st.SaveSite(ctx, domain.Site{Title: "Example", Name: "Example", Type: "Site"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.UpsertRelease(ctx, domain.Release{SiteID: site.ID, VideoID: "EXAMPLE-123", Source: "Example"}); err != nil {
+		t.Fatal(err)
+	}
+	releases, err := st.Releases(ctx, domain.ReleaseFilter{VideoID: "EXAMPLE-123", Limit: 1})
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("release setup: %v", err)
+	}
+	d, err := st.SaveDownload(ctx, domain.Download{ReleaseID: releases[0].ID, Transport: "torrent", TorrentHash: "owned-hash", Status: "downloading", Progress: .25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.AddedAt = time.Now().Add(-defaultTorrentHTTPFallbackDelay - time.Hour)
+	service := New(st, time.Second, slog.Default())
+	for _, tc := range []struct {
+		name, state, hash string
+		progress          float64
+		want              bool
+	}{
+		{"still stalled", "stalledDL", "owned-hash", .25, true},
+		{"complete", "uploading", "owned-hash", 1, false},
+		{"checking complete", "checkingUP", "owned-hash", 1, false},
+		{"resumed", "downloading", "owned-hash", .25, false},
+		{"advanced", "stalledDL", "owned-hash", .5, false},
+		{"unrelated", "stalledDL", "unrelated-hash", .25, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v2/auth/login":
+					_, _ = w.Write([]byte("Ok."))
+				case "/api/v2/torrents/info":
+					_ = json.NewEncoder(w).Encode([]Torrent{{Hash: tc.hash, State: tc.state, Progress: tc.progress}})
+				default:
+					t.Errorf("unexpected mutating request: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			if got := service.torrentHTTPFallbackStillNeeded(ctx, NewQB(server.URL, "", ""), d); got != tc.want {
+				t.Fatalf("fallback still needed = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if _, err := st.DeleteDownload(ctx, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Removed records must stop before contacting qBittorrent.
+	if service.torrentHTTPFallbackStillNeeded(ctx, nil, d) {
+		t.Fatal("removed download remained eligible")
+	}
 }

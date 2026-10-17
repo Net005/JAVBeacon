@@ -168,3 +168,49 @@ func TestCorruptTorrentIsRedownloadedOnceThenFailsClearly(t *testing.T) {
 		t.Fatalf("terminal row = %+v, err=%v", failed, err)
 	}
 }
+
+func TestInterruptedTorrentVideoCheckPreservesDownload(t *testing.T) {
+	for _, postStatus := range []string{"", postStatusVideoRetry} {
+		for _, outcome := range []string{"canceled", "deadline", "canceled-success"} {
+			t.Run(postStatus+"/"+outcome, func(t *testing.T) {
+				st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "interrupted.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer st.Close()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				service := New(st, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+				service.videoProbe = func(context.Context, string) error {
+					switch outcome {
+					case "deadline":
+						return context.DeadlineExceeded
+					case "canceled-success":
+						cancel()
+						return nil
+					default:
+						cancel()
+						return context.Canceled
+					}
+				}
+				before := domain.Download{ID: 7, Status: "downloading", PostStatus: postStatus, TorrentHash: "owned-hash", Progress: 1, TransferReference: "magnet:?xt=urn:btih:owned-hash"}
+				d := before
+				// A nil client proves interruption cannot reach deletion or re-add.
+				if !service.handleTorrentVideoCheck(ctx, nil, &d, Torrent{Hash: d.TorrentHash, ContentPath: "/media/example.mp4"}) {
+					t.Fatal("interrupted validation allowed completion")
+				}
+				if d.Status != before.Status || d.PostStatus != before.PostStatus || d.Error != "" || d.MatchReason != "" || d.Progress != before.Progress {
+					t.Fatalf("interrupted check changed download: %+v", d)
+				}
+			})
+		}
+	}
+}
+
+func TestFFprobeVideoPreservesParentCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := ffprobeVideo(ctx, "unused.mp4"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("probe error = %v, want context cancellation", err)
+	}
+}

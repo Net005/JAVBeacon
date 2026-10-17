@@ -54,9 +54,7 @@ func TestScheduledScrapeCoordinatorQueuesDueScansByConfiguredPriority(t *testing
 		t.Fatal(err)
 	}
 	defer st.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Millisecond)
-	defer cancel()
-	if err := st.SaveSettings(ctx, map[string]string{
+	if err := st.SaveSettings(context.Background(), map[string]string{
 		"full_enabled": "true", "new_enabled": "true", "quick_enabled": "true",
 		JobPrioritySettingKey(PriorityKindScheduledFull):  "20",
 		JobPrioritySettingKey(PriorityKindScheduledNew):   "40",
@@ -65,11 +63,37 @@ func TestScheduledScrapeCoordinatorQueuesDueScansByConfiguredPriority(t *testing
 		t.Fatal(err)
 	}
 	service := &Service{store: st, log: slog.Default(), worker: true}
-	service.runScrapeSchedules(ctx, []scrapeSchedule{
-		{mode: "full", enabledKey: "full_enabled", priorityKind: PriorityKindScheduledFull, fallback: 10 * time.Millisecond},
-		{mode: "new", enabledKey: "new_enabled", priorityKind: PriorityKindScheduledNew, fallback: 10 * time.Millisecond},
-		{mode: "quick", enabledKey: "quick_enabled", priorityKind: PriorityKindScheduledQuick, fallback: 10 * time.Millisecond},
-	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		service.runScrapeSchedules(ctx, []scrapeSchedule{
+			{mode: "full", enabledKey: "full_enabled", priorityKind: PriorityKindScheduledFull, fallback: 10 * time.Millisecond},
+			{mode: "new", enabledKey: "new_enabled", priorityKind: PriorityKindScheduledNew, fallback: 10 * time.Millisecond},
+			{mode: "quick", enabledKey: "quick_enabled", priorityKind: PriorityKindScheduledQuick, fallback: 10 * time.Millisecond},
+		})
+	}()
+	// Wait for the state being asserted instead of assuming database setup
+	// and scheduling always fit inside a few milliseconds under suite load.
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+waitForQueue:
+	for {
+		select {
+		case <-done:
+			break waitForQueue
+		case <-ticker.C:
+			service.mu.RLock()
+			ready := len(service.queue) >= 3
+			service.mu.RUnlock()
+			if ready {
+				cancel()
+				<-done
+				break waitForQueue
+			}
+		}
+	}
 	if len(service.queue) != 3 {
 		t.Fatalf("queued scans = %+v, want exactly three distinct scheduled modes", service.queue)
 	}

@@ -60,6 +60,9 @@ func ffprobeVideo(ctx context.Context, path string) error {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
 		return errors.New("ffprobe timed out after 30 minutes")
 	}
@@ -197,7 +200,13 @@ func (s *Service) failTorrentVideoCheck(ctx context.Context, d *domain.Download,
 // stop because the payload is being replaced or has terminally failed.
 func (s *Service) handleTorrentVideoCheck(ctx context.Context, qb *QBClient, d *domain.Download, torrent Torrent) bool {
 	path := s.mapPath(ctx, torrent.ContentPath)
-	if err := s.verifyDownloadedVideo(ctx, path); err == nil {
+	err := s.verifyDownloadedVideo(ctx, path)
+	// An interrupted check says nothing about the payload's integrity. Leave
+	// the torrent and retry state intact so the next poll can validate it.
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if err == nil {
 		s.log.Info("qBittorrent video check passed", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", torrent.Hash, "path", path)
 		d.MatchReason = appendDownloadPreference("ffprobe video check passed", d.MatchReason)
 		return false

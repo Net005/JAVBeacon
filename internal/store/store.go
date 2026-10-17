@@ -84,8 +84,11 @@ type Store interface {
 	SaveReleaseUpgradeRun(context.Context, domain.ReleaseUpgradeRun) (domain.ReleaseUpgradeRun, error)
 	ReleaseUpgradeRuns(context.Context, int) ([]domain.ReleaseUpgradeRun, error)
 	SaveDownload(context.Context, domain.Download) (domain.Download, error)
+	UpdateTorrentProgress(context.Context, domain.Download) error
+	SaveTorrentState(context.Context, domain.Download) error
 	UpdateDownloadPriority(context.Context, int64, int) (bool, error)
 	Downloads(context.Context, string) ([]domain.Download, error)
+	LatestReleaseDownload(context.Context, int64) (domain.Download, error)
 	DownloadActivity(context.Context, domain.DownloadFilter) ([]domain.Download, int, error)
 	DeleteDownload(context.Context, int64) (int64, error)
 	DeleteDownloadsForRelease(context.Context, int64) (int64, error)

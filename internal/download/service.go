@@ -77,6 +77,8 @@ type Service struct {
 	// rest of this struct's mutable fields.
 	scheduleNextAttempt map[string]time.Time
 	qbPollLastError     string
+	qbSnapshotMu        sync.RWMutex
+	qbSnapshot          []Torrent
 
 	pipelineJobs chan pipelineJob
 	httpMu       sync.Mutex
@@ -3515,6 +3517,7 @@ func (s *Service) qbPollInterval(ctx context.Context) time.Duration {
 }
 
 func (s *Service) Schedule(ctx context.Context) {
+	go s.scheduleTorrentProgress(ctx)
 	for {
 		s.tick(ctx)
 		timer := time.NewTimer(s.qbPollInterval(ctx))
@@ -3677,6 +3680,7 @@ func (s *Service) pollTorrents(ctx context.Context) {
 		return
 	}
 	s.logQBPollRecovery()
+	s.rememberTorrentSnapshot(torrents)
 	downloads, e := s.store.Downloads(ctx, "downloading")
 	if e != nil {
 		return
@@ -3758,7 +3762,7 @@ func torrentHTTPFallbackReason(d domain.Download, torrent Torrent, now time.Time
 // removal path (including deleting the unusable partial torrent files) and
 // queues the HTTP transfer. A missing/temporarily unavailable HTTP result
 // leaves the torrent in place and is retried with a bounded cooldown.
-func (s *Service) tryTorrentHTTPFallback(ctx context.Context, d *domain.Download, reason string) bool {
+func (s *Service) tryTorrentHTTPFallback(ctx context.Context, qb *QBClient, d *domain.Download, reason string) bool {
 	settings, err := s.store.Settings(ctx)
 	if err != nil || strings.TrimSpace(settings["http_download_directory"]) == "" {
 		return false
@@ -3784,6 +3788,11 @@ func (s *Service) tryTorrentHTTPFallback(ctx context.Context, d *domain.Download
 		}
 		return false
 	}
+	// Provider searches can outlast the remaining torrent transfer. Recheck
+	// ownership and live progress before allowing replacement to delete files.
+	if !s.torrentHTTPFallbackStillNeeded(ctx, qb, *d) {
+		return true
+	}
 	candidate := rows[0]
 	candidate.ReplaceExisting = true
 	downloaded, err := s.Download(ctx, release, candidate, "Automatic HTTP fallback", candidate.Link)
@@ -3804,6 +3813,27 @@ func (s *Service) tryTorrentHTTPFallback(ctx context.Context, d *domain.Download
 	return true
 }
 
+// torrentHTTPFallbackStillNeeded rejects stale searches after completion,
+// resumed progress, removal, or replacement of the recorded transfer.
+func (s *Service) torrentHTTPFallbackStillNeeded(ctx context.Context, qb *QBClient, d domain.Download) bool {
+	current, err := s.store.LatestReleaseDownload(ctx, d.ReleaseID)
+	if err != nil || current.ID != d.ID || current.TorrentHash != d.TorrentHash || current.Transport == "http" || current.Status != "downloading" || downloadGoneFromQBHandled(current.PostStatus) {
+		return false
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	torrents, err := qb.Torrents(checkCtx)
+	if err != nil {
+		return false
+	}
+	for _, torrent := range torrents {
+		if torrent.Hash == d.TorrentHash {
+			return torrentHTTPFallbackReason(d, torrent, time.Now(), s.torrentHTTPFallbackDelay(ctx)) != ""
+		}
+	}
+	return false
+}
+
 // torrentCompletionState only accepts settled seeding states. In particular,
 // checkingUP must finish checking before validation, pipelines, or cleanup run.
 func torrentCompletionState(state string) bool {
@@ -3816,6 +3846,7 @@ func torrentCompletionState(state string) bool {
 }
 
 func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Download, torrents []Torrent, minRatio float64, rule string) {
+	torrents = s.latestTorrentSnapshot(torrents)
 	// Once our torrent is gone, the same hash re-added manually is not ours.
 	if d.Transport == "http" || d.TorrentHash == "" || downloadGoneFromQBHandled(d.PostStatus) {
 		return
@@ -3838,12 +3869,15 @@ func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Downl
 		d.Peers = t.Peers
 		d.ETASeconds = t.ETA
 		d.SeenComplete = t.SeenComplete
+		if err := s.store.UpdateTorrentProgress(ctx, d); err != nil {
+			return
+		}
 		isCompleteState := torrentCompletionState(t.State)
 		if fallbackReason != "" && s.httpFallbackDue(d.ID) {
 			d.PostStatus = "http_fallback_searching"
 			d.Error = ""
-			_, _ = s.store.SaveDownload(ctx, d)
-			if s.tryTorrentHTTPFallback(ctx, &d, fallbackReason) {
+			_ = s.store.SaveTorrentState(ctx, d)
+			if s.tryTorrentHTTPFallback(ctx, qb, &d, fallbackReason) {
 				return
 			}
 		}
@@ -3888,7 +3922,7 @@ func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Downl
 				// ("processing", set below the first time this was
 				// kicked off) and just let this tick's fresh qBittorrent
 				// fields above get saved as usual below.
-				_, _ = s.store.SaveDownload(ctx, d)
+				_ = s.store.SaveTorrentState(ctx, d)
 				return
 			}
 			run, lookupErr := s.store.PipelineRun(ctx, d.ID, pipelineDownloadCompleted)
@@ -3956,7 +3990,7 @@ func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Downl
 				}
 			}
 		}
-		_, _ = s.store.SaveDownload(ctx, d)
+		_ = s.store.SaveTorrentState(ctx, d)
 		return
 	}
 	// The torrent this download expects is gone from qBittorrent
@@ -3974,7 +4008,7 @@ func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Downl
 		d.PostStatus = postStatusRemovedUnknown
 		d.Error = ""
 		s.log.Info("torrent no longer present in qBittorrent; removing from Download Activity as removed (unknown reason)", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", d.TorrentHash, "previous_status", previousStatus, "previous_post_status", previousPostStatus)
-		_, _ = s.store.SaveDownload(ctx, d)
+		_ = s.store.SaveTorrentState(ctx, d)
 	}
 }
 func (s *Service) runPipelineEvent(ctx context.Context, d *domain.Download, t Torrent, trigger string) error {
@@ -4137,10 +4171,20 @@ func renderPipelineTemplate(query, trigger, path string, d domain.Download, t To
 func renderPipelineValueTemplate(value, trigger, path string, d domain.Download, t Torrent) string {
 	return strings.NewReplacer("{{event}}", trigger, "{{download_path}}", path, "{{release_id}}", d.Query, "{{release_db_id}}", strconv.FormatInt(d.ReleaseID, 10), "{{torrent_hash}}", t.Hash).Replace(value)
 }
+
+// matchesPathPrefix prevents a mapping for one directory from capturing a
+// similarly named sibling. Accept both separators for remote Windows paths.
+func matchesPathPrefix(path, prefix string) bool {
+	if prefix == "" || !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	return len(path) == len(prefix) || strings.ContainsAny(prefix[len(prefix)-1:], "/\\") || strings.ContainsAny(path[len(prefix):len(prefix)+1], "/\\")
+}
+
 func (s *Service) mapPath(ctx context.Context, path string) string {
 	rows, _ := s.store.PathMappings(ctx)
 	for _, m := range rows {
-		if strings.HasPrefix(path, m.DownloadPrefix) {
+		if matchesPathPrefix(path, m.DownloadPrefix) {
 			return m.LocalPrefix + strings.TrimPrefix(path, m.DownloadPrefix)
 		}
 	}
