@@ -52,21 +52,23 @@ var pikPakAlgorithms = []string{
 var pikPakRestoreRetryDelay = time.Second
 
 type javDBProvider struct {
-	client              *http.Client
-	baseURL             string
-	acceptedPatterns    []PreferredFilenamePattern
-	blacklistedPatterns []string
-	pikPakUsername      string
-	pikPakPassword      string
-	cleanupRestored     bool
-	allowFolderMatch    bool
-	authenticate        func(context.Context, string, string) (*pikPakClient, error)
-	log                 *slog.Logger
-	inspectCandidate    func(context.Context, string, string) (pikPakFile, []pikPakFile, error)
-	blacklistCheck      func(context.Context, string) (string, error)
-	solverPool          *scraper.SolverPool
-	gluetun             *gluetunRotator
-	resolutionTimeout   time.Duration
+	client                  *http.Client
+	baseURL                 string
+	acceptedPatterns        []PreferredFilenamePattern
+	blacklistedPatterns     []string
+	pikPakUsername          string
+	pikPakPassword          string
+	cleanupRestored         bool
+	allowFolderMatch        bool
+	authenticate            func(context.Context, string, string) (*pikPakClient, error)
+	log                     *slog.Logger
+	inspectCandidate        func(context.Context, string, string) (pikPakFile, []pikPakFile, error)
+	blacklistCheck          func(context.Context, string) (string, error)
+	sourceRejectionCheck    func(context.Context, string) (string, error)
+	rememberSourceRejection func(context.Context, string, []string, string) error
+	solverPool              *scraper.SolverPool
+	gluetun                 *gluetunRotator
+	resolutionTimeout       time.Duration
 }
 
 // HTTPSourceProvider is the extension point for direct-download sources.
@@ -478,11 +480,30 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 				}
 			}
 			inspect := p.inspectSearchCandidate
+			if p.sourceRejectionCheck != nil {
+				reason, err := p.sourceRejectionCheck(ctx, rows[i].Link)
+				if err != nil || reason != "" {
+					rows[i].Accepted = false
+					rows[i].Reason = "Source excluded for this release: " + reason
+					if err != nil {
+						rows[i].Reason = "Could not verify release/source exclusion; inspection blocked"
+					}
+					return
+				}
+			}
 			if p.inspectCandidate != nil {
 				inspect = p.inspectCandidate
 			}
 			selected, files, inspectErr := inspect(ctx, rows[i].Link, release.VideoID)
 			if inspectErr != nil {
+				var missing *noMatchingShareFileError
+				if errors.As(inspectErr, &missing) && p.rememberSourceRejection != nil {
+					if err := p.rememberSourceRejection(ctx, rows[i].Link, missing.aliases, missing.Error()); err != nil {
+						rows[i].Accepted = false
+						rows[i].Reason = "Could not persist release/source exclusion; matching blocked"
+						return
+					}
+				}
 				atomic.AddInt32(&inspectionFailures, 1)
 				rows[i].Accepted = false
 				rows[i].ProviderFileID = ""
@@ -522,6 +543,10 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 func (p *javDBProvider) inspectSearchCandidate(ctx context.Context, link, releaseID string) (pikPakFile, []pikPakFile, error) {
 	_, _, selected, files, err := inspectPikPakShareWithFolderFallback(ctx, p.client, link, releaseID, p.acceptedPatterns, "", "", 0, p.allowFolderMatch)
 	if err == nil || ctx.Err() != nil {
+		return selected, files, err
+	}
+	var missing *noMatchingShareFileError
+	if errors.As(err, &missing) {
 		return selected, files, err
 	}
 	// Anonymous share endpoints occasionally reject a freshly-created token.
@@ -1939,6 +1964,15 @@ func (p *pikPakClient) listShareFilesScoped(ctx context.Context, shareID, parent
 	}
 }
 
+type noMatchingShareFileError struct {
+	releaseID string
+	aliases   []string
+}
+
+func (e *noMatchingShareFileError) Error() string {
+	return fmt.Sprintf("PikPak share contained no file matching %s", e.releaseID)
+}
+
 func inspectPikPakShare(ctx context.Context, client *http.Client, keepshareURL, releaseID string, preferredPatterns []PreferredFilenamePattern, requestedFileID, expectedName string, expectedSize int64) (*pikPakClient, string, pikPakFile, []pikPakFile, error) {
 	return inspectPikPakShareWithFolderFallback(ctx, client, keepshareURL, releaseID, preferredPatterns, requestedFileID, expectedName, expectedSize, false)
 }
@@ -1976,7 +2010,7 @@ func inspectPikPakShareWithFolderFallback(ctx context.Context, client *http.Clie
 		}
 	}
 	if !found {
-		return nil, "", pikPakFile{}, all, fmt.Errorf("PikPak share contained no file matching %s", releaseID)
+		return nil, "", pikPakFile{}, all, &noMatchingShareFileError{releaseID: releaseID, aliases: []string{keepshareURL, "https://mypikpak.com/s/" + shareID}}
 	}
 	selected.SourceAliases = []string{keepshareURL, "https://mypikpak.com/s/" + shareID}
 	return pp, shareID, selected, all, nil

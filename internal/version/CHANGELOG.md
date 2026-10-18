@@ -5,6 +5,13 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.299] - 2026-10-18
+
+### Fixed
+
+- Stop repeated HTTP share inspections from inflating Download Activity failures. A share that contains no file matching the requested release is now remembered for that release (and its linked Keepshare/PikPak aliases) for 24 hours and skipped by later monitored searches, while other releases and other sources remain eligible.
+- Record share-inspection rejections as search outcomes instead of failed transfers. Transient inspection errors stay retryable and are never persisted as exclusions.
+
 ## [1.0.298] - 2026-10-18
 
 ### Added

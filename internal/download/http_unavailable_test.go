@@ -55,7 +55,7 @@ func TestHTTPUnavailableCandidatesDoNotFailOrStartTransfers(t *testing.T) {
 	}
 	inspectionReason := "release ID matched; Keepshare filename inspection failed: forbidden"
 	failure, err := svc.queueHTTPDownload(ctx, releases[0], domain.SearchResult{Provider: "JavDB / Keepshare", Reason: inspectionReason}, "Synthetic test", "")
-	if err != nil || failure.Status != "failed" || failure.Error != inspectionReason {
-		t.Fatalf("inspection error was hidden as unavailable: %+v %v", failure, err)
+	if err != nil || failure.Status != "not_available" || failure.ID != 0 || failure.MatchReason != inspectionReason {
+		t.Fatalf("inspection error created a transfer or lost its diagnostic: %+v %v", failure, err)
 	}
 }

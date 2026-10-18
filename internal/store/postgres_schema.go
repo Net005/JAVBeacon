@@ -68,6 +68,7 @@ const postgresSchemaDDL = `
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 CREATE TABLE IF NOT EXISTS release_source_aliases (source_key TEXT NOT NULL, alias_key TEXT NOT NULL, alias_url TEXT NOT NULL, PRIMARY KEY(source_key,alias_key));
+CREATE TABLE IF NOT EXISTS release_source_rejections (video_id TEXT NOT NULL,url_key TEXT NOT NULL,reason TEXT NOT NULL,expires_at TIMESTAMPTZ NOT NULL,PRIMARY KEY(video_id,url_key));
 
 CREATE TABLE IF NOT EXISTS blacklisted_releases (
 	url_key TEXT PRIMARY KEY, url TEXT NOT NULL, release_id BIGINT NOT NULL DEFAULT 0,

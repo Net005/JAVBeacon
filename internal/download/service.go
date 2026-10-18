@@ -602,6 +602,19 @@ func (s *Service) searchHTTP(ctx context.Context, release domain.Release, source
 			javdb.blacklistCheck = func(ctx context.Context, ref string) (string, error) {
 				return s.storedBlacklistReason(ctx, domain.Download{SourceReference: ref})
 			}
+			scope := release.VideoID
+			if javdb.allowFolderMatch {
+				scope += "|folder-fallback"
+			}
+			javdb.sourceRejectionCheck = func(ctx context.Context, ref string) (string, error) {
+				return s.store.SourceRejection(ctx, scope, ref)
+			}
+			javdb.rememberSourceRejection = func(ctx context.Context, ref string, aliases []string, reason string) error {
+				if err := s.store.RememberReleaseSourceAliases(ctx, ref, aliases); err != nil {
+					return err
+				}
+				return s.store.SaveSourceRejection(ctx, scope, ref, reason, time.Now().Add(24*time.Hour))
+			}
 		}
 		found, searchErr := provider.Search(ctx, release)
 		history := domain.Download{ReleaseID: release.ID, Provider: provider.Name(), SourceType: sourceType, Query: release.VideoID, Status: "searched", Transport: "http"}
@@ -1274,18 +1287,9 @@ func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, resul
 		return d, err
 	}
 	if !result.Accepted && !result.Forced {
-		status, reason, failure := "not_available", firstNonEmpty(result.Reason, "HTTP result did not exactly match the release ID"), ""
-		if strings.Contains(result.Reason, "Keepshare filename inspection failed:") {
-			status, failure = "failed", result.Reason
-		}
-		if status == "not_available" {
-			return unavailable(reason)
-		}
-		d, err := s.store.SaveDownload(ctx, domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: result.Link, SourcePageURL: result.SourceURL, Query: r.VideoID, Name: result.Title, Transport: "http", Status: status, MatchReason: reason, Error: failure, Priority: priority})
-		if status == "failed" {
-			s.logDownloadFailure(d)
-		}
-		return d, err
+		// Inspection is search/control-plane work, not a started transfer.
+		// SearchHTTP retains its diagnostic without inflating Download Activity.
+		return unavailable(firstNonEmpty(result.Reason, "HTTP result did not exactly match the release ID"))
 	}
 	if result.ReplaceExisting {
 		if _, err := s.removeReleaseDownloads(ctx, r.ID, r.VideoID, true); err != nil {

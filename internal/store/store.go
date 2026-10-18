@@ -25,6 +25,8 @@ type Store interface {
 	RememberReleaseSourceAliases(context.Context, string, []string) error
 	ReleaseSourceAliases(context.Context, string) ([]string, error)
 	SaveBlacklistedRelease(context.Context, domain.BlacklistedRelease) error
+	SaveSourceRejection(context.Context, string, string, string, time.Time) error
+	SourceRejection(context.Context, string, string) (string, error)
 	BlacklistedRelease(context.Context, string) (domain.BlacklistedRelease, bool, error)
 	BlacklistedReleases(context.Context, string, int, int) ([]domain.BlacklistedRelease, int, error)
 	DeleteBlacklistedRelease(context.Context, string) error
@@ -188,6 +190,9 @@ func (s *SQLite) Close() error { return s.db.Close() }
 // IGNORE keep working unmodified against either engine through it.
 func (s *SQLite) DB() *sql.DB { return s.db }
 func (s *SQLite) migrate() error {
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS release_source_rejections (video_id TEXT NOT NULL,url_key TEXT NOT NULL,reason TEXT NOT NULL,expires_at TIMESTAMP NOT NULL,PRIMARY KEY(video_id,url_key))`); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS release_source_aliases (source_key TEXT NOT NULL, alias_key TEXT NOT NULL, alias_url TEXT NOT NULL, PRIMARY KEY(source_key,alias_key))`); err != nil {
 		return err
 	}
