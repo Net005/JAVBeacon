@@ -598,6 +598,11 @@ func (s *Service) searchHTTP(ctx context.Context, release domain.Release, source
 	rows := make([]domain.SearchResult, 0)
 	var providerErrors []string
 	for _, provider := range httpSourceProviders(s.client, settings, s.log, s.authenticatePikPakSession, s.configureHTTPProviderSolver(settings), &s.gluetunRotationMu) {
+		if javdb, ok := provider.(*javDBProvider); ok {
+			javdb.blacklistCheck = func(ctx context.Context, ref string) (string, error) {
+				return s.storedBlacklistReason(ctx, domain.Download{SourceReference: ref})
+			}
+		}
 		found, searchErr := provider.Search(ctx, release)
 		history := domain.Download{ReleaseID: release.ID, Provider: provider.Name(), SourceType: sourceType, Query: release.VideoID, Status: "searched", Transport: "http"}
 		if searchErr != nil {
@@ -610,6 +615,9 @@ func (s *Service) searchHTTP(ctx context.Context, release domain.Release, source
 			continue
 		}
 		accepted := 0
+		if err := s.filterSafeguardedResults(ctx, release, found); err != nil {
+			return nil, err
+		}
 		for _, result := range found {
 			item := history
 			item.Name = result.Title
@@ -705,6 +713,9 @@ func (s *Service) searchNative(ctx context.Context, release domain.Release, sour
 		history, _ = s.store.SaveDownload(ctx, history)
 		s.logDownloadFailure(history)
 	} else {
+		if err := s.filterSafeguardedResults(ctx, release, rows); err != nil {
+			return nil, err
+		}
 		for _, result := range rows {
 			item := history
 			item.Name = result.Title
@@ -1024,6 +1035,9 @@ func PriorityForRelease(r domain.Release, now time.Time) int {
 }
 
 func (s *Service) Download(ctx context.Context, r domain.Release, result domain.SearchResult, sourceType, sourceRef string) (domain.Download, error) {
+	if blocked, stop, err := s.guardCandidate(ctx, r, result, sourceType); stop {
+		return blocked, err
+	}
 	if strings.EqualFold(result.Transport, "http") {
 		return s.queueHTTPDownload(ctx, r, result, sourceType, sourceRef)
 	}
@@ -1063,6 +1077,9 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 	}
 	x := domain.Download{ReleaseID: r.ID, Provider: result.Provider, SourceType: sourceType, SourceReference: sourceRef, TransferReference: result.Link, Query: r.VideoID, Name: result.Title, Status: "queued", MatchReason: matchReason, Seeds: result.Seeds, Peers: result.Peers, Priority: priority}
 	if result.BlacklistedFilenameMatch {
+		if _, err := s.candidateBlockReason(ctx, r, result); err != nil {
+			return x, err
+		}
 		x.Status = "failed"
 		x.Error = "result rejected by filename blacklist"
 		x, e := s.store.SaveDownload(ctx, x)
@@ -1235,6 +1252,9 @@ func (s *Service) verifyAddedToQBittorrent(ctx context.Context, qb QBittorrent, 
 }
 
 func (s *Service) queueHTTPDownload(ctx context.Context, r domain.Release, result domain.SearchResult, sourceType, sourceRef string) (domain.Download, error) {
+	if blocked, stop, err := s.guardCandidate(ctx, r, result, sourceType); stop {
+		return blocked, err
+	}
 	priority := PriorityForRelease(r, time.Now())
 	unavailable := func(reason string) (domain.Download, error) {
 		// A provider miss is a search outcome, not a transfer. SearchHTTP already
@@ -1553,6 +1573,13 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 			s.logHTTPDownloadEvent("HTTP download canceled", d)
 			return
 		}
+		var rejected *releaseSafeguardError
+		if errors.As(e, &rejected) {
+			if err := s.rejectSafeguardedDownload(context.Background(), &d, rejected.reason, rejected.size, rejected.duration); err != nil {
+				s.log.Error("persist rejected HTTP release", "error", err)
+			}
+			return
+		}
 		failure := e.Error()
 		d.Status = "failed"
 		d.Error = failure
@@ -1571,6 +1598,13 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		fail(errors.New("HTTP download folder is not configured under Settings → Downloads → HTTP"))
 		return
 	}
+	if reason, err := s.storedBlacklistReason(ctx, d); err != nil {
+		fail(err)
+		return
+	} else if reason != "" {
+		fail(&releaseSafeguardError{reason: reason})
+		return
+	}
 	if err = os.MkdirAll(dir, 0o755); err != nil {
 		fail(fmt.Errorf("create HTTP download folder: %w", err))
 		return
@@ -1583,6 +1617,20 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	// path (avoiding, among other things, an unnecessary PikPak restore).
 	existingPath := httpDestinationPath(dir, strings.ToUpper(strings.TrimSpace(d.Query)))
 	if info, statErr := os.Stat(existingPath); statErr == nil && info.Size() > 0 {
+		if probeErr := s.verifyDownloadedVideo(ctx, existingPath); probeErr != nil {
+			// A filename collision is not proof that this remote source created it.
+			if d.DestinationPath == existingPath && d.BytesDownloaded > 0 {
+				fail(probeErr)
+				return
+			}
+			d.Status = "failed"
+			d.PostStatus = "blocked_existing_file"
+			d.Error = "Existing local video failed safeguards; remote source was not blacklisted: " + probeErr.Error()
+			d.BytesPerSecond = 0
+			d.ETASeconds = 0
+			_, _ = s.store.SaveDownload(ctx, d)
+			return
+		}
 		d.DestinationPath = existingPath
 		if d.BytesTotal <= 0 {
 			d.BytesTotal = info.Size()
@@ -1626,6 +1674,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 		fail(fmt.Errorf("resolved HTTP filename %q matched blacklist pattern %q", resolved.Name, pattern))
 		return
 	}
+	resolved.MinimumSize = int64(safeguardSetting(settings, "download_min_filesize_mb", 200) * 1_000_000)
 	if resolved.Size > 0 {
 		d.BytesTotal = resolved.Size
 	}
@@ -1646,6 +1695,21 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 			"filename", resolved.Name,
 			"bytes_total", resolved.Size,
 		)
+	}
+	if err := s.store.RememberReleaseSourceAliases(ctx, d.SourceReference, resolved.SourceAliases); err != nil {
+		fail(err)
+		return
+	}
+	if reason, err := s.storedBlacklistReason(ctx, d); err != nil {
+		fail(err)
+		return
+	} else if reason != "" {
+		fail(&releaseSafeguardError{reason: reason})
+		return
+	}
+	if reason := safeguardReason(settings, resolved.Size, 0); reason != "" {
+		fail(&releaseSafeguardError{reason: reason, size: resolved.Size})
+		return
 	}
 	files, _ := json.Marshal([]string{resolved.Name})
 	d.Files = files
@@ -1756,6 +1820,7 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 				d.RestoredParentID = refreshed.RestoredParentID
 				d.RestoredFileOwned = d.RestoredFileOwned || refreshed.NewlyRestored
 			}
+			refreshed.MinimumSize = resolved.MinimumSize
 			if refreshed.Size > 0 {
 				d.BytesTotal = refreshed.Size
 			}
@@ -1800,6 +1865,11 @@ func (s *Service) runHTTPDownload(ctx context.Context, d domain.Download) {
 	}
 	if probeErr := s.verifyDownloadedVideo(ctx, tempPath); probeErr != nil {
 		_ = os.Remove(tempPath)
+		var rejected *releaseSafeguardError
+		if errors.As(probeErr, &rejected) {
+			fail(rejected)
+			return
+		}
 		if ctx.Err() != nil {
 			fail(ctx.Err())
 			return
@@ -2113,6 +2183,10 @@ func downloadHTTPSingleStream(ctx context.Context, client *http.Client, resolved
 		}
 		if err != nil {
 			cancel()
+			var rejected *releaseSafeguardError
+			if errors.As(err, &rejected) {
+				return err
+			}
 			lastErr = err
 		} else {
 			expectedResponse := total - offset
@@ -2316,6 +2390,10 @@ func openHTTPDownloadStream(ctx context.Context, client *http.Client, resolved r
 		}
 		resp, err := client.Do(req)
 		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if resp.StatusCode == http.StatusOK && resolved.MinimumSize > 0 && resp.ContentLength >= 0 && resp.ContentLength < resolved.MinimumSize {
+				resp.Body.Close()
+				return nil, &releaseSafeguardError{reason: fmt.Sprintf("Video filesize %d bytes is below the minimum %.6g MB", resp.ContentLength, float64(resolved.MinimumSize)/1_000_000), size: resp.ContentLength}
+			}
 			return resp, nil
 		}
 		if err != nil {
@@ -2372,6 +2450,11 @@ func (s *Service) RetryHTTPDownload(ctx context.Context, downloadID int64) (doma
 	}
 	for _, row := range rows {
 		if row.ID == downloadID && row.Transport == "http" {
+			if reason, err := s.storedBlacklistReason(ctx, row); err != nil {
+				return row, err
+			} else if reason != "" {
+				return row, errors.New(reason)
+			}
 			if RequiresHTTPProviderSearch(row) {
 				return domain.Download{}, errors.New("download has no selected HTTP source; retry provider search instead")
 			}
@@ -4012,6 +4095,11 @@ func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Downl
 	}
 }
 func (s *Service) runPipelineEvent(ctx context.Context, d *domain.Download, t Torrent, trigger string) error {
+	if reason, err := s.storedBlacklistReason(ctx, *d); err != nil {
+		return err
+	} else if reason != "" {
+		return errors.New(reason)
+	}
 	steps, e := s.store.PipelineSteps(ctx)
 	if e != nil {
 		s.log.Error("pipeline event could not load steps", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "torrent_hash", t.Hash, "pipeline_trigger", trigger, "error", e)

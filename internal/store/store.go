@@ -22,6 +22,12 @@ import (
 )
 
 type Store interface {
+	RememberReleaseSourceAliases(context.Context, string, []string) error
+	ReleaseSourceAliases(context.Context, string) ([]string, error)
+	SaveBlacklistedRelease(context.Context, domain.BlacklistedRelease) error
+	BlacklistedRelease(context.Context, string) (domain.BlacklistedRelease, bool, error)
+	BlacklistedReleases(context.Context, string, int, int) ([]domain.BlacklistedRelease, int, error)
+	DeleteBlacklistedRelease(context.Context, string) error
 	Close() error
 	Sites(context.Context) ([]domain.Site, error)
 	SaveSite(context.Context, domain.Site) (domain.Site, error)
@@ -182,6 +188,16 @@ func (s *SQLite) Close() error { return s.db.Close() }
 // IGNORE keep working unmodified against either engine through it.
 func (s *SQLite) DB() *sql.DB { return s.db }
 func (s *SQLite) migrate() error {
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS release_source_aliases (source_key TEXT NOT NULL, alias_key TEXT NOT NULL, alias_url TEXT NOT NULL, PRIMARY KEY(source_key,alias_key))`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS blacklisted_releases (
+		url_key TEXT PRIMARY KEY, url TEXT NOT NULL, release_id INTEGER NOT NULL DEFAULT 0,
+		video_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', transport TEXT NOT NULL DEFAULT '',
+		reason TEXT NOT NULL DEFAULT '', size_bytes BIGINT NOT NULL DEFAULT 0,
+		duration_seconds REAL NOT NULL DEFAULT 0, created_at DATETIME NOT NULL)`); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY, title TEXT NOT NULL UNIQUE, type TEXT NOT NULL DEFAULT 'Site', name TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', notify INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL);
 CREATE TABLE IF NOT EXISTS releases (id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, video_id TEXT NOT NULL, scraper_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, release_date TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, image_url TEXT NOT NULL DEFAULT '', product_url TEXT NOT NULL DEFAULT '', director TEXT NOT NULL DEFAULT '', studio TEXT NOT NULL DEFAULT '', duration TEXT NOT NULL DEFAULT '', story TEXT NOT NULL DEFAULT '', screenshots TEXT NOT NULL DEFAULT '[]', screenshots_checked_at DATETIME, released INTEGER NOT NULL DEFAULT 0, is_local INTEGER NOT NULL DEFAULT 0, notified INTEGER NOT NULL DEFAULT 0, added_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(site_id, video_id));

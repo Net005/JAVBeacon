@@ -90,6 +90,8 @@ type migrationTableSpec struct {
 }
 
 var migrationTables = []migrationTableSpec{
+	{"blacklisted_releases", []string{"url_key"}, ""},
+	{"release_source_aliases", []string{"source_key", "alias_key"}, ""},
 	{"sites", []string{"id"}, "id"},
 	{"users", []string{"id"}, ""},
 	{"settings", []string{"key"}, ""},

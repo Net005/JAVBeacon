@@ -63,6 +63,7 @@ type javDBProvider struct {
 	authenticate        func(context.Context, string, string) (*pikPakClient, error)
 	log                 *slog.Logger
 	inspectCandidate    func(context.Context, string, string) (pikPakFile, []pikPakFile, error)
+	blacklistCheck      func(context.Context, string) (string, error)
 	solverPool          *scraper.SolverPool
 	gluetun             *gluetunRotator
 	resolutionTimeout   time.Duration
@@ -79,6 +80,8 @@ type HTTPSourceProvider interface {
 }
 
 type resolvedHTTPFile struct {
+	MinimumSize      int64
+	SourceAliases    []string
 	URL              string
 	Name             string
 	Size             int64
@@ -462,6 +465,18 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 			defer wg.Done()
 			defer func() { <-sem }()
 			defer advanceHTTPSearchProgress(release.ID)
+			if p.blacklistCheck != nil {
+				reason, err := p.blacklistCheck(ctx, rows[i].Link)
+				if reason != "" || err != nil {
+					rows[i].Accepted = false
+					rows[i].BlacklistedReleaseMatch = true
+					rows[i].Reason = reason
+					if err != nil {
+						rows[i].Reason = "Could not verify source blacklist; matching blocked"
+					}
+					return
+				}
+			}
 			inspect := p.inspectSearchCandidate
 			if p.inspectCandidate != nil {
 				inspect = p.inspectCandidate
@@ -477,6 +492,7 @@ func (p *javDBProvider) Search(ctx context.Context, release domain.Release) ([]d
 			rows[i].Title = selected.Name
 			rows[i].MatchedFile = selected.Name
 			rows[i].ProviderFileID = selected.ID
+			rows[i].SourceAliases = selected.SourceAliases
 			rows[i].PreferredFilenameMatch, _, rows[i].PreferredFilenamePriority = matchesAcceptedHTTPPattern(selected.Name, p.acceptedPatterns)
 			if blacklisted, pattern := matchesBlacklistedFilename(selected.Name, p.blacklistedPatterns); blacklisted {
 				rows[i].Accepted = false
@@ -1229,11 +1245,12 @@ type pikPakClient struct {
 	verificationURL                     string
 }
 type pikPakFile struct {
-	ID       string `json:"id"`
-	ParentID string `json:"parent_id"`
-	Name     string `json:"name"`
-	Kind     string `json:"kind"`
-	Size     string `json:"size"`
+	SourceAliases []string `json:"-"`
+	ID            string   `json:"id"`
+	ParentID      string   `json:"parent_id"`
+	Name          string   `json:"name"`
+	Kind          string   `json:"kind"`
+	Size          string   `json:"size"`
 	// Hash is PikPak's resource/torrent identity. Despite being 40 hexadecimal
 	// characters, it is not the SHA-1 digest of the bytes returned by the
 	// download URL and must not be used for downloaded-file verification.
@@ -1961,6 +1978,7 @@ func inspectPikPakShareWithFolderFallback(ctx context.Context, client *http.Clie
 	if !found {
 		return nil, "", pikPakFile{}, all, fmt.Errorf("PikPak share contained no file matching %s", releaseID)
 	}
+	selected.SourceAliases = []string{keepshareURL, "https://mypikpak.com/s/" + shareID}
 	return pp, shareID, selected, all, nil
 }
 
@@ -2141,7 +2159,7 @@ func resolvePikPakShareWithFolderFallback(ctx context.Context, client *http.Clie
 	}
 	checksumType, checksum := pikPakFileChecksum(file, selected)
 	return resolvedHTTPFile{
-		URL: direct, Name: selected.Name, Size: selectedSize,
+		URL: direct, Name: selected.Name, Size: selectedSize, SourceAliases: selected.SourceAliases,
 		Headers:  map[string]string{"User-Agent": publicShareUserAgent, "Referer": "https://mypikpak.com/"},
 		Checksum: checksum, ChecksumType: checksumType,
 	}, nil
@@ -2196,6 +2214,7 @@ func resolveAuthenticatedPikPakShareWithFolderFallback(ctx context.Context, clie
 		return resolvedHTTPFile{}, errors.New("PikPak account restored the matching file but returned no authenticated download URL")
 	}
 	resolved := resolvedHTTPFile{
+		SourceAliases:    selected.SourceAliases,
 		URL:              direct,
 		Name:             selected.Name,
 		Size:             selectedSize,

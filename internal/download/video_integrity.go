@@ -142,13 +142,16 @@ func videoFiles(path string) ([]string, error) {
 	return files, nil
 }
 
-func (s *Service) verifyDownloadedVideo(ctx context.Context, path string) error {
+func (s *Service) verifyDownloadedVideo(ctx context.Context, path string, videoIDs ...string) error {
 	if s.videoProbe != nil {
 		return s.videoProbe(ctx, path)
 	}
 	files, err := videoFiles(path)
 	if err != nil {
 		return fmt.Errorf("locate downloaded video: %w", err)
+	}
+	if err := s.payloadSafeguards(ctx, files, videoIDs...); err != nil {
+		return err
 	}
 	for _, file := range files {
 		if err := ffprobeVideo(ctx, file); err != nil {
@@ -199,11 +202,24 @@ func (s *Service) failTorrentVideoCheck(ctx context.Context, d *domain.Download,
 // handleTorrentVideoCheck returns true when normal completion processing must
 // stop because the payload is being replaced or has terminally failed.
 func (s *Service) handleTorrentVideoCheck(ctx context.Context, qb *QBClient, d *domain.Download, torrent Torrent) bool {
+	if reason, err := s.storedBlacklistReason(ctx, *d); err != nil {
+		return true
+	} else if reason != "" {
+		_ = s.rejectSafeguardedDownload(ctx, d, reason, 0, 0)
+		return true
+	}
 	path := s.mapPath(ctx, torrent.ContentPath)
-	err := s.verifyDownloadedVideo(ctx, path)
+	err := s.verifyDownloadedVideo(ctx, path, d.Query)
 	// An interrupted check says nothing about the payload's integrity. Leave
 	// the torrent and retry state intact so the next poll can validate it.
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var rejected *releaseSafeguardError
+	if errors.As(err, &rejected) {
+		if saveErr := s.rejectSafeguardedDownload(ctx, d, rejected.reason, rejected.size, rejected.duration); saveErr != nil {
+			s.log.Error("persist rejected release", "error", saveErr)
+		}
 		return true
 	}
 	if err == nil {

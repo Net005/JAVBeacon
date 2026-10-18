@@ -60,7 +60,7 @@ jobs:
       - name: Test search UI requests
         run: |
           node --check internal/web/static/app.js
-          node --test internal/web/release_load_test.js
+          node --test internal/web/release_load_test.js internal/web/release_safeguards_test.js
 
       - name: Test
         run: go test -mod=mod ./...

@@ -802,6 +802,8 @@ func TestHTTPDownloadSkipsFetchWhenDestinationFileAlreadyExists(t *testing.T) {
 		t.Fatalf("release setup failed: %+v", releases)
 	}
 	service := New(st, time.Second, slog.Default())
+	// Isolate reuse with synthetic bytes; real media validation has separate tests.
+	service.videoProbe = func(context.Context, string) error { return nil }
 	queued, err := service.Download(ctx, releases[0], domain.SearchResult{
 		Provider:  "JavDB / Keepshare",
 		Title:     "HTTPSKIP-1.mp4",

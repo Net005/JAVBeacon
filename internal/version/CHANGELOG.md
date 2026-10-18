@@ -5,6 +5,14 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.298] - 2026-10-18
+
+### Added
+
+- Configurable HTTP and torrent acquisition safeguards, defaulting to a minimum 10-minute video duration and 200 MB filesize. Reject known undersized results before acquisition and verify the actual main video before completion processing; unknown metadata is not treated as proof that a file is safe.
+- A persistent Blacklisted releases tab under Download monitoring, with URL entry, searchable reasons and measurements, URL viewing/copying, pagination, and removal of linked sources.
+- Permanent source exclusions across future matching, manual force downloads, HTTP retries, and processing. Linked Keepshare and PikPak share URLs are blacklisted together, independently of download-history cleanup and threshold changes.
+
 ## [1.0.297] - 2026-10-17
 
 ### Fixed

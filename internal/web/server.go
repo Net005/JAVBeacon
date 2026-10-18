@@ -11,6 +11,7 @@ import (
 	"html"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -336,6 +337,9 @@ func (s *Server) routes() {
 	})
 	s.mux.HandleFunc("GET /api/stats", s.stats)
 	s.mux.HandleFunc("GET /api/settings", s.settings)
+	s.mux.HandleFunc("GET /api/blacklisted-releases", s.blacklistedReleases)
+	s.mux.HandleFunc("POST /api/blacklisted-releases", s.blacklistedReleases)
+	s.mux.HandleFunc("DELETE /api/blacklisted-releases", s.blacklistedReleases)
 	s.mux.HandleFunc("PUT /api/settings", s.settings)
 	s.mux.HandleFunc("POST /api/settings/qb-test", s.testQBittorrent)
 	s.mux.HandleFunc("POST /api/settings/gluetun-test", s.testGluetun)
@@ -1951,6 +1955,12 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(x["discoveries_openai_api_key"]) != "" {
 			x["discoveries_openai_api_key"] = maskedSecret
 		}
+		if x["download_min_duration_minutes"] == "" {
+			x["download_min_duration_minutes"] = "10"
+		}
+		if x["download_min_filesize_mb"] == "" {
+			x["download_min_filesize_mb"] = "200"
+		}
 		s.json(w, 200, x)
 		return
 	}
@@ -1959,6 +1969,17 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	allowed := map[string]bool{"screenshot_directory": true, "page_limit": true, "refresh_interval": true, "quick_refresh_enabled": true, "quick_refresh_schedule_mode": true, "quick_refresh_start_time": true, "quick_refresh_weekdays": true, "quick_refresh_cron": true, "full_refresh_enabled": true, "full_refresh_schedule_mode": true, "full_refresh_interval": true, "full_refresh_start_time": true, "full_refresh_weekdays": true, "full_refresh_cron": true, "full_refresh_page_limit": true, "new_release_refresh_enabled": true, "new_release_refresh_schedule_mode": true, "new_release_refresh_interval": true, "new_release_refresh_start_time": true, "new_release_refresh_weekdays": true, "new_release_refresh_cron": true, "new_release_refresh_page_limit": true, "recent_limit": true, "hide_local": true, "sort": true, "view": true, "notification_sort": true, "flaresolverr_url": true, "flaresolverr_cooldown": true, "byparr_instances": true, "byparr_max_instances_quick": true, "byparr_max_instances_full": true, "byparr_max_instances_new": true, "byparr_max_instances_screenshots": true, "byparr_max_instances_historical": true, "byparr_request_timeout_seconds": true, "byparr_solve_timeout_seconds": true, "cover_directory": true, "stash_base_url": true, "stash_graphql_query": true, "stash_sync_interval": true, "stash_local_sync_enabled": true, "stash_api_key": true, "api_key": true, "stash_watchlist_tag_id": true, "stash_watchlist_sync_enabled": true, "stash_watchlist_sync_interval": true, "session_lifetime": true, "search_url_template": true, "accepted_patterns": true, "blacklisted_filename_patterns": true, "search_auto_close_seconds": true, "search_download_background": true, "qb_url": true, "qb_username": true, "qb_password": true, "qb_category": true, "qb_poll_interval_seconds": true, "minimum_seed_ratio": true, "qb_completed_action": true, "pipeline_timeout_seconds": true, "download_schedule": true, "download_search_enabled": true, "download_search_interval": true, "download_search_older_enabled": true, "download_search_older_interval": true, "monitor_recent_days": true, "monitor_older_days": true, "rss_interval": true, "notification_interval": true, "stash_missing_graphql_query": true, "stash_missing_path_from": true, "stash_missing_path_to": true, "stash_missing_path_remaps": true, "stash_missing_folder_scope": true, "ignore_tags": true, "ignore_titles": true, "release_batch_size": true, "site_group_schedules": true}
+	for _, key := range []string{"download_min_duration_minutes", "download_min_filesize_mb"} {
+		allowed[key] = true
+		if raw, ok := x[key]; ok {
+			value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+			if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1_000_000_000 {
+				s.problem(w, 400, "Download safeguard thresholds must be finite, non-negative numbers no greater than 1000000000")
+				return
+			}
+			x[key] = strconv.FormatFloat(value, 'f', -1, 64)
+		}
+	}
 	for _, prefix := range []string{"download_search", "download_search_older"} {
 		for _, suffix := range []string{"schedule_mode", "start_time", "weekdays", "cron"} {
 			allowed[prefix+"_"+suffix] = true

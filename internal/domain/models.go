@@ -742,13 +742,16 @@ type SearchFile struct {
 }
 
 type SearchResult struct {
-	Provider               string       `json:"provider"`
-	Title                  string       `json:"title"`
-	Files                  []string     `json:"files,omitempty"`
-	FileDetails            []SearchFile `json:"file_details,omitempty"`
-	MatchedFile            string       `json:"matched_file,omitempty"`
-	ProviderFileID         string       `json:"provider_file_id,omitempty"`
-	PreferredFilenameMatch bool         `json:"preferred_filename_match,omitempty"`
+	SourceAliases           []string     `json:"source_aliases,omitempty"`
+	DurationSeconds         float64      `json:"duration_seconds,omitempty"`
+	BlacklistedReleaseMatch bool         `json:"blacklisted_release_match,omitempty"`
+	Provider                string       `json:"provider"`
+	Title                   string       `json:"title"`
+	Files                   []string     `json:"files,omitempty"`
+	FileDetails             []SearchFile `json:"file_details,omitempty"`
+	MatchedFile             string       `json:"matched_file,omitempty"`
+	ProviderFileID          string       `json:"provider_file_id,omitempty"`
+	PreferredFilenameMatch  bool         `json:"preferred_filename_match,omitempty"`
 	// PreferredFilenamePriority is the configured matching-pattern priority.
 	// Lower positive numbers are preferred; zero means no preferred match.
 	PreferredFilenamePriority int `json:"preferred_filename_priority,omitempty"`
