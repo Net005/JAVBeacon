@@ -243,11 +243,14 @@ func (s *Service) candidateBlockReason(ctx context.Context, r domain.Release, re
 	if err != nil {
 		return "", err
 	}
+	// A filename-pattern match is a per-search preference: reject this result
+	// now, but never persist it, so editing the patterns makes the source
+	// eligible again. Only safeguard failures below become permanent.
+	if result.BlacklistedFilenameMatch {
+		return firstNonEmpty(result.Reason, "Filename matched a blacklist pattern"), nil
+	}
 	size := candidateSize(result, r.VideoID)
 	reason := safeguardReason(settings, size, result.DurationSeconds)
-	if result.BlacklistedFilenameMatch {
-		reason = firstNonEmpty(result.Reason, "Filename matched a blacklist pattern")
-	}
 	if reason == "" {
 		return "", nil
 	}

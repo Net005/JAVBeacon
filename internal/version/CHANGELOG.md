@@ -5,6 +5,13 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.300] - 2026-10-18
+
+### Fixed
+
+- Stop filename-pattern matches (for example `-C.mp4`) from being stored as permanent release blacklist entries. They still reject the result for that search, but changing the patterns makes those sources eligible again. Only safeguard failures (too small, too short) remain permanent.
+- Check blacklist filename patterns only against the release's own video file in a torrent, falling back to the torrent name. Bundled ad videos, `.url` and `.html` files no longer decide whether a release is rejected.
+
 ## [1.0.299] - 2026-10-18
 
 ### Fixed

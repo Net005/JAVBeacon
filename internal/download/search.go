@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -85,7 +86,7 @@ func (n *Nyaa) Search(ctx context.Context, releaseID string) ([]domain.SearchRes
 		if directURL == "" {
 			directURL = x.Link
 		}
-		result := n.resolveResult(ctx, x.Title, detailURL, directURL)
+		result := n.resolveResult(ctx, releaseID, x.Title, detailURL, directURL)
 		result.Seeds = x.Seeders
 		result.Peers = x.Leechers
 		result.Size = strings.TrimSpace(x.Size)
@@ -102,7 +103,7 @@ func (n *Nyaa) Search(ctx context.Context, releaseID string) ([]domain.SearchRes
 				continue
 			}
 			preferredMatch, preferredReason, priority, matchedFile := n.matchFiles(title, nil)
-			blacklisted, _, _ := n.blacklistMatch(title, nil)
+			blacklisted, _, _ := n.blacklistMatch(releaseID, title, nil)
 			// Accepted no longer requires a preferred-filename match (see
 			// matchFiles's doc comment) - only a blacklist match rejects a
 			// torrent result outright. The release-ID match that gated this
@@ -118,7 +119,7 @@ func (n *Nyaa) Search(ctx context.Context, releaseID string) ([]domain.SearchRes
 	return results, nil
 }
 
-func (n *Nyaa) resolveResult(ctx context.Context, title, detailURL, directURL string) domain.SearchResult {
+func (n *Nyaa) resolveResult(ctx context.Context, releaseID, title, detailURL, directURL string) domain.SearchResult {
 	title = cleanHTMLText(title)
 	link := strings.TrimSpace(directURL)
 	files := []string{}
@@ -146,7 +147,7 @@ func (n *Nyaa) resolveResult(ctx context.Context, title, detailURL, directURL st
 		}
 	}
 	preferredMatch, preferredReason, priority, matchedFile := n.matchFiles(title, files)
-	blacklisted, _, _ := n.blacklistMatch(title, files)
+	blacklisted, _, _ := n.blacklistMatch(releaseID, title, files)
 	// Accepted no longer requires a preferred-filename match (see
 	// matchFiles's doc comment) - only a blacklist match or a missing
 	// download link rejects a torrent result outright.
@@ -262,8 +263,22 @@ func (n *Nyaa) matchFiles(title string, files []string) (bool, string, int, stri
 	return false, "no preferred filename pattern matched", 0, ""
 }
 
-func (n *Nyaa) blacklistMatch(title string, files []string) (bool, string, string) {
-	candidates := files
+// blacklistMatch checks the configured blacklist patterns against the
+// release's own video file(s) only. Torrents often bundle ad videos, .url
+// and .html files whose names say nothing about the release itself, so they
+// must not decide the outcome. Without an identifiable release video the
+// torrent name is checked instead.
+func (n *Nyaa) blacklistMatch(releaseID, title string, files []string) (bool, string, string) {
+	candidates := []string{}
+	if strings.TrimSpace(releaseID) == "" {
+		candidates = append(candidates, files...)
+	} else {
+		for _, file := range files {
+			if videoExtensions[strings.ToLower(filepath.Ext(file))] && releaseIDMatchesText(filepath.Base(file), releaseID) {
+				candidates = append(candidates, file)
+			}
+		}
+	}
 	if len(candidates) == 0 {
 		candidates = []string{title}
 	}

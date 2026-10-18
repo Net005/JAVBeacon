@@ -71,11 +71,11 @@ func TestNyaaBlacklistOverridesPreferredFilenameMatch(t *testing.T) {
 	if !matched || priority != 1 || matchedFile != "trusted@PRED-888-CAMRIP.mp4" {
 		t.Fatalf("matchFiles alone (no blacklist awareness) should still report the pattern match: matched=%v priority=%d matchedFile=%q", matched, priority, matchedFile)
 	}
-	blacklisted, pattern, filename := p.blacklistMatch("PRED-888", []string{"trusted@PRED-888-CAMRIP.mp4"})
+	blacklisted, pattern, filename := p.blacklistMatch("PRED-888", "PRED-888", []string{"trusted@PRED-888-CAMRIP.mp4"})
 	if !blacklisted || pattern != "camrip" || filename != "trusted@PRED-888-CAMRIP.mp4" {
 		t.Fatalf("blacklisted=%v pattern=%q filename=%q", blacklisted, pattern, filename)
 	}
-	result := p.resolveResult(context.Background(), "PRED-888", "", "magnet:?xt=urn:btih:abc&dn=trusted%40PRED-888-CAMRIP.mp4")
+	result := p.resolveResult(context.Background(), "PRED-888", "PRED-888", "", "magnet:?xt=urn:btih:abc&dn=trusted%40PRED-888-CAMRIP.mp4")
 	if result.Accepted || !result.BlacklistedFilenameMatch || !strings.Contains(strings.ToLower(result.Reason), "blacklisted pattern") {
 		t.Fatalf("blacklist did not override the preferred-filename match in the combined path: %+v", result)
 	}

@@ -1064,7 +1064,7 @@ func (s *Service) Download(ctx context.Context, r domain.Release, result domain.
 	if !strings.Contains(canonical(result.Title), canonical(r.VideoID)) {
 		result.Reason = "torrent filename did not contain release ID"
 	} else if nyaa, ok := provider.(*Nyaa); ok {
-		blacklisted, pattern, candidate := nyaa.blacklistMatch(result.Title, result.Files)
+		blacklisted, pattern, candidate := nyaa.blacklistMatch(r.VideoID, result.Title, result.Files)
 		result.BlacklistedFilenameMatch = blacklisted
 		if blacklisted {
 			result.Accepted = false
