@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.303] - 2026-10-22
+
+### Changed
+
+- The sidebar is now only as wide as its menu items need (about 183px instead of a fixed 230px).
+
 ## [1.0.302] - 2026-10-22
 
 ### Changed
