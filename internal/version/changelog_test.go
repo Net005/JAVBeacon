@@ -113,3 +113,15 @@ func TestExistingInstallWithoutTrackingUsesPreviousRelease(t *testing.T) {
 		t.Fatalf("bootstrap transition = %+v", change)
 	}
 }
+
+func TestAllNotesNewestFirst(t *testing.T) {
+	notes := AllNotes()
+	if len(notes) < 2 {
+		t.Fatalf("expected the full embedded changelog, got %d releases", len(notes))
+	}
+	for i := 1; i < len(notes); i++ {
+		if compareVersions(normalizeVersion(notes[i-1].Version), normalizeVersion(notes[i].Version)) <= 0 {
+			t.Fatalf("not newest first at %d: %s before %s", i, notes[i-1].Version, notes[i].Version)
+		}
+	}
+}

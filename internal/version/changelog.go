@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -125,6 +126,16 @@ func NotesBetween(from, to string) []ReleaseNotes {
 			out = append(out, release)
 		}
 	}
+	return out
+}
+
+// AllNotes returns every released version in the embedded changelog, newest
+// first, for the full changelog viewer.
+func AllNotes() []ReleaseNotes {
+	out := parseChangelog(changelogSource)
+	sort.SliceStable(out, func(i, j int) bool {
+		return compareVersions(normalizeVersion(out[i].Version), normalizeVersion(out[j].Version)) > 0
+	})
 	return out
 }
 

@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.302] - 2026-10-22
+
+### Changed
+
+- Sidebar footer: the version is now a larger, readable button that opens the full changelog (every release, newest first), and Sign out is a compact icon button.
+
 ## [1.0.301] - 2026-10-22
 
 ### Fixed

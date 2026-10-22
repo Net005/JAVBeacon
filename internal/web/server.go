@@ -260,6 +260,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		s.json(w, http.StatusOK, map[string]string{"version": buildversion.Current()})
 	})
+	s.mux.HandleFunc("GET /api/changelog", s.fullChangelog)
 	s.mux.HandleFunc("GET /api/changelog/pending", s.pendingChangelog)
 	s.mux.HandleFunc("POST /api/changelog/acknowledge", s.acknowledgeChangelog)
 	s.mux.Handle("GET /api/ws", websocket.Handler(s.releaseStream))
@@ -608,6 +609,10 @@ func (s *Server) scheduleForecast(w http.ResponseWriter, r *http.Request) {
 	forecasts = append(forecasts, s.stash.ScheduleForecast(r.Context())...)
 	forecasts = append(forecasts, discoveryScheduleForecast(r.Context(), s.store))
 	s.json(w, 200, forecasts)
+}
+
+func (s *Server) fullChangelog(w http.ResponseWriter, r *http.Request) {
+	s.json(w, http.StatusOK, map[string]any{"current": buildversion.Current(), "releases": buildversion.AllNotes()})
 }
 
 func (s *Server) pendingChangelog(w http.ResponseWriter, r *http.Request) {
