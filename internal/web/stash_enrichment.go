@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -18,7 +19,7 @@ func (s *Server) stashEnrichment(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusBadRequest, "scene ID is required")
 		return
 	}
-	releases, err := s.store.Releases(r.Context(), domain.ReleaseFilter{StashSceneID: sceneID, Limit: 2})
+	releases, err := s.store.Releases(r.Context(), domain.ReleaseFilter{StashSceneID: sceneID, Limit: 50})
 	if err != nil {
 		s.problem(w, http.StatusInternalServerError, err.Error())
 		return
@@ -27,10 +28,16 @@ func (s *Server) stashEnrichment(w http.ResponseWriter, r *http.Request) {
 		s.problem(w, http.StatusNotFound, "no JAVBeacon release is linked to this Stash scene")
 		return
 	}
-	if len(releases) != 1 {
-		s.problem(w, http.StatusConflict, "multiple JAVBeacon releases are linked to this Stash scene")
-		return
-	}
+	// The same code is often tracked on a studio site and an aggregator, both
+	// linked to one Stash scene. Pick deterministically instead of refusing:
+	// a release with a cover first, then the oldest (originally tracked) one.
+	sort.SliceStable(releases, func(i, j int) bool {
+		hi, hj := strings.TrimSpace(releases[i].ImageURL) != "", strings.TrimSpace(releases[j].ImageURL) != ""
+		if hi != hj {
+			return hi
+		}
+		return releases[i].ID < releases[j].ID
+	})
 	release := releases[0]
 	posterPath := ""
 	backdropPaths := []string{}

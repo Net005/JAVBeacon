@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.301] - 2026-10-22
+
+### Fixed
+
+- Stash enrichment no longer returns 409 when one Stash scene is linked to the same code on several sites (for example a studio site and JavLibrary). It now picks the release with a cover, oldest first, so Silo receives the trimmed poster instead of falling back to the full untrimmed cover.
+
 ## [1.0.300] - 2026-10-18
 
 ### Fixed

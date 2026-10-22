@@ -76,3 +76,58 @@ func TestStashEnrichmentUsesExactLinkedRelease(t *testing.T) {
 		t.Fatalf("missing scene status=%d", rec.Code)
 	}
 }
+
+// A Stash scene can be linked to the same code from two sites (a studio
+// site and an aggregator). Artwork consumers must still get a cover instead
+// of a 409, otherwise the poster is never trimmed.
+func TestStashEnrichmentPicksOneReleaseWhenSeveralShareAScene(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "enrichment.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ids := []int64{}
+	for i, site := range []string{"Studio", "Aggregator"} {
+		s, err := st.SaveSite(ctx, domain.Site{Title: site, URL: "https://" + strconv.Itoa(i) + ".example.invalid"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		image := "https://example.invalid/" + site + ".jpg"
+		if _, err = st.UpsertRelease(ctx, domain.Release{SiteID: s.ID, VideoID: "SYNTH-022", Title: site + " title", ImageURL: image, ScraperID: site}); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := st.Releases(ctx, domain.ReleaseFilter{VideoID: "SYNTH-022", Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			if r.SiteID == s.ID {
+				ids = append(ids, r.ID)
+				if err = st.SetStashState(ctx, r.ID, true, "32595"); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	if len(ids) != 2 {
+		t.Fatalf("seeded %v", ids)
+	}
+	s := &Server{store: st, log: slog.Default()}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/integrations/stash/enrichment/32595", nil)
+	req.SetPathValue("sceneId", "32595")
+	rec := httptest.NewRecorder()
+	s.stashEnrichment(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	first := ids[0]
+	if ids[1] < first {
+		first = ids[1]
+	}
+	if got["poster_path"] != "/covers/"+strconv.FormatInt(first, 10)+"/stash-poster" {
+		t.Fatalf("expected the oldest linked release's cover, got %#v", got)
+	}
+}
