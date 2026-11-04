@@ -5,6 +5,15 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.304] - 2026-11-04
+
+### Fixed
+
+- Stalled torrents for releases that are no longer monitored, or are already local or in Stash, no longer trigger automatic HTTP fallback searches. They are marked "HTTP fallback skipped" so the leftover torrent can be removed.
+- A provider search that errors (for example a JavDB timeout) is now recorded as search history (`search_failed`) instead of a failed download, so outages no longer inflate the Failed count.
+- Automatic HTTP fallback retries for the same torrent now back off (30 minutes, doubling up to 24 hours) instead of retrying every 30 minutes.
+- When JavDB blocks the VPN address (HTTP 403) and the retry after rotating the VPN gets no response, the request now continues to the anti-bot solver instead of failing with a timeout.
+
 ## [1.0.303] - 2026-10-22
 
 ### Changed

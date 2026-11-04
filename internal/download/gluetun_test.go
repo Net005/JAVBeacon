@@ -85,3 +85,53 @@ func TestJavDB403RotatesThenRetriesBeforeSolver(t *testing.T) {
 		t.Fatalf("status=%d direct=%d solver=%d rotations=%d err=%v", status, directCalls, solverCalls, rotations, err)
 	}
 }
+
+// After a 403 the VPN rotates; a retry that then gets no response at all
+// (the new tunnel is not ready) must still reach the solver instead of
+// failing the search.
+func TestJavDB403RotationWithoutResponseFallsBackToSolver(t *testing.T) {
+	oldDelay := javDBTransientRetryDelay
+	javDBTransientRetryDelay = time.Millisecond
+	defer func() { javDBTransientRetryDelay = oldDelay }()
+	directCalls, solverCalls, rotations := 0, 0, 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/javdb", func(w http.ResponseWriter, _ *http.Request) {
+		directCalls++
+		if directCalls == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	})
+	mux.HandleFunc("/v1/publicip/ip", func(w http.ResponseWriter, _ *http.Request) {
+		ip := "198.51.100.1"
+		if rotations > 0 {
+			ip = "198.51.100.2"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"public_ip": ip})
+	})
+	mux.HandleFunc("/v1/vpn/status", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["status"] == "running" {
+			rotations++
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"outcome": body["status"]})
+	})
+	mux.HandleFunc("/solver", func(w http.ResponseWriter, _ *http.Request) {
+		solverCalls++
+		_, _ = io.WriteString(w, `{"status":"ok","solution":{"response":"<html>via solver</html>"}}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	pool := scraper.NewSolverPool()
+	pool.Configure([]scraper.Instance{{URL: server.URL + "/solver", Priority: 1, Enabled: true}}, 0)
+	provider := &javDBProvider{client: server.Client(), solverPool: pool, gluetun: &gluetunRotator{client: server.Client(), controlURL: server.URL, maxAttempts: 3, waitTimeout: time.Second, pollInterval: time.Millisecond, mu: &sync.Mutex{}}}
+	doc, status, err := provider.getHTML(context.Background(), server.URL+"/javdb")
+	if err != nil || status != http.StatusOK || !strings.Contains(nodeText(doc), "via solver") || solverCalls != 1 || rotations != 1 {
+		t.Fatalf("status=%d direct=%d solver=%d rotations=%d err=%v", status, directCalls, solverCalls, rotations, err)
+	}
+}

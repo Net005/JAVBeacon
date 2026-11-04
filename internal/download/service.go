@@ -54,10 +54,11 @@ type Service struct {
 	// in release_upgrade.go.
 	releaseUpgradeJob domain.ReleaseUpgradeJob
 
-	cleanupRetryMu      sync.Mutex
-	cleanupRetryAt      map[int64]time.Time
-	httpFallbackMu      sync.Mutex
-	httpFallbackRetryAt map[int64]time.Time
+	cleanupRetryMu       sync.Mutex
+	cleanupRetryAt       map[int64]time.Time
+	httpFallbackMu       sync.Mutex
+	httpFallbackRetryAt  map[int64]time.Time
+	httpFallbackAttempts map[int64]int
 
 	// pipelineInFlightMu/pipelineInFlight track which (download ID,
 	// trigger) event pipelines runEventPipelineAsync currently has running
@@ -368,6 +369,20 @@ func (s *Service) clearCleanupRetry(downloadID int64) {
 	delete(s.cleanupRetryAt, downloadID)
 }
 
+// httpFallbackRetryDelay doubles the wait after each fallback attempt for the
+// same torrent (30m, 1h, 2h ... capped at 24h) so a provider outage does not
+// trigger a fresh search every half hour.
+func httpFallbackRetryDelay(attempt int) time.Duration {
+	delay := httpFallbackRetryInterval
+	for i := 1; i < attempt && delay < 24*time.Hour; i++ {
+		delay *= 2
+	}
+	if delay > 24*time.Hour {
+		delay = 24 * time.Hour
+	}
+	return delay
+}
+
 func (s *Service) httpFallbackDue(downloadID int64) bool {
 	s.httpFallbackMu.Lock()
 	defer s.httpFallbackMu.Unlock()
@@ -377,8 +392,18 @@ func (s *Service) httpFallbackDue(downloadID int64) bool {
 	if s.httpFallbackRetryAt == nil {
 		s.httpFallbackRetryAt = map[int64]time.Time{}
 	}
-	s.httpFallbackRetryAt[downloadID] = time.Now().Add(httpFallbackRetryInterval)
+	if s.httpFallbackAttempts == nil {
+		s.httpFallbackAttempts = map[int64]int{}
+	}
+	s.httpFallbackAttempts[downloadID]++
+	s.httpFallbackRetryAt[downloadID] = time.Now().Add(httpFallbackRetryDelay(s.httpFallbackAttempts[downloadID]))
 	return true
+}
+
+// releaseWantsHTTPFallback reports whether a stalled torrent's release is
+// still wanted: monitored for download and not already in the library.
+func releaseWantsHTTPFallback(r domain.Release) bool {
+	return r.MonitorDownload && !r.Local && strings.TrimSpace(r.StashSceneID) == ""
 }
 
 func New(st store.Store, timeout time.Duration, log *slog.Logger) *Service {
@@ -619,7 +644,8 @@ func (s *Service) searchHTTP(ctx context.Context, release domain.Release, source
 		found, searchErr := provider.Search(ctx, release)
 		history := domain.Download{ReleaseID: release.ID, Provider: provider.Name(), SourceType: sourceType, Query: release.VideoID, Status: "searched", Transport: "http"}
 		if searchErr != nil {
-			history.Status, history.Error = "failed", searchErr.Error()
+			// A failed search is search history, not a failed download.
+			history.Status, history.Error = "search_failed", searchErr.Error()
 			_, _ = s.store.SaveDownload(ctx, history)
 			if s.log != nil {
 				s.log.Warn("HTTP provider search failed", "release_id", release.ID, "video_id", release.VideoID, "normalized_video_id", normalizeReleaseID(release.VideoID), "provider", provider.Name(), "source_type", sourceType, "error", searchErr)
@@ -708,7 +734,7 @@ func (s *Service) search(ctx context.Context, release domain.Release, sourceType
 // provider in whatever order the provider itself returned them (typically
 // newest-first for an RSS-based indexer like Nyaa/Sukebei), and records
 // search history for each result (search_accepted/search_rejected, or a
-// single "failed" row if the search itself errored) - exactly what search
+// single "search_failed" row if the search itself errored) - exactly what search
 // always did, before it also sorted the results for display. Kept separate
 // from search's sorting so a caller that needs the provider's original
 // order - SearchAndDownloadNow's "most recent" fallback tier, specifically
@@ -721,7 +747,8 @@ func (s *Service) searchNative(ctx context.Context, release domain.Release, sour
 	rows, e := p.Search(ctx, release.VideoID)
 	history := domain.Download{ReleaseID: release.ID, Provider: p.Name(), SourceType: sourceType, Query: release.VideoID, Status: "searched"}
 	if e != nil {
-		history.Status = "failed"
+		// A failed search is search history, not a failed download.
+		history.Status = "search_failed"
 		history.Error = e.Error()
 		history, _ = s.store.SaveDownload(ctx, history)
 		s.logDownloadFailure(history)
@@ -3858,6 +3885,11 @@ func (s *Service) tryTorrentHTTPFallback(ctx context.Context, qb *QBClient, d *d
 	if err != nil {
 		d.PostStatus = "http_fallback_unavailable"
 		d.Error = "HTTP fallback could not load release: " + err.Error()
+		return false
+	}
+	if !releaseWantsHTTPFallback(release) {
+		d.PostStatus = "http_fallback_skipped"
+		d.Error = "HTTP fallback skipped: release is no longer monitored or is already in the library; remove this stalled torrent"
 		return false
 	}
 	if !methodAllowsHTTP(effectiveDownloadMethod(settings, release)) {

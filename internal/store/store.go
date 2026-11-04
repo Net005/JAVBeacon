@@ -3548,7 +3548,7 @@ func (s *SQLite) JobHistory(ctx context.Context, limit, offset int) ([]domain.Jo
 		offset = 0
 	}
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM job_history)+(SELECT COUNT(*) FROM downloads WHERE status NOT IN ('searched','search_accepted','search_rejected'))`).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM job_history)+(SELECT COUNT(*) FROM downloads WHERE status NOT IN ('searched','search_accepted','search_rejected','search_failed'))`).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id,category,kind,state,mode,title,provider,scheduled,site_count,started_at,finished_at,added,updated,skipped,error,details FROM (
@@ -3564,7 +3564,7 @@ func (s *SQLite) JobHistory(ctx context.Context, limit, offset int) ([]domain.Jo
 			0 AS added,0 AS updated,0 AS skipped,d.error,
 			COALESCE(NULLIF(d.match_reason,''),NULLIF(d.qb_response,''),NULLIF(d.name,''),'') AS details
 		FROM downloads d LEFT JOIN releases r ON r.id=d.release_id
-		WHERE d.status NOT IN ('searched','search_accepted','search_rejected')
+		WHERE d.status NOT IN ('searched','search_accepted','search_rejected','search_failed')
 	) activity ORDER BY started_at DESC,id DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, 0, err

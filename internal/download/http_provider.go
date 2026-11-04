@@ -759,17 +759,22 @@ func (p *javDBProvider) getHTML(ctx context.Context, raw string) (*html.Node, in
 				p.log.Info("JavDB HTTP 403 rotated Gluetun VPN IP", "url", raw, "attempts", attempts, "old_ip", oldIP, "new_ip", newIP)
 			}
 		}
-		// Retry direct exactly once after the rotation sequence. Even when all
+		// Retry direct after the rotation sequence (with the short transient
+		// retries, since a renewed tunnel can need a moment). Even when all
 		// configured rotations returned the same observable IP, the renewed
-		// tunnel may have cleared a transient block; only another 403 proceeds
-		// to the existing priority-aware solver pool.
-		doc, status, err = p.getHTMLDirect(ctx, raw)
-		if status != http.StatusForbidden {
-			if err == nil && p.log != nil {
+		// tunnel may have cleared a transient block. Another 403, or no
+		// response at all, proceeds to the priority-aware solver pool.
+		doc, status, err = p.getHTMLDirectWithRetry(ctx, raw)
+		if err == nil {
+			if p.log != nil {
 				p.log.Info("JavDB HTTP 403 recovered after Gluetun rotation", "url", raw, "rotation_attempts", attempts, "public_ip", newIP)
 			}
 			return doc, status, err
 		}
+		if status != http.StatusForbidden && status != 0 {
+			return doc, status, err
+		}
+		status = http.StatusForbidden
 	}
 	if status == http.StatusForbidden && p.solverPool != nil && p.solverPool.EnabledCount() > 0 {
 		doc, solverErr := p.getHTMLThroughSolver(ctx, raw)
