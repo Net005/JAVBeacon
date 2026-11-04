@@ -154,3 +154,58 @@ func TestSolverPoolZeroInstancesBlocksUntilContextDone(t *testing.T) {
 		t.Fatal("Acquire on an empty pool returned a lease, want it to block until ctx is done")
 	}
 }
+
+// Reapplying identical settings (every monitor run does) must not free busy
+// instances or drop queued waiters.
+func TestSolverPoolConfigureSameSettingsKeepsBusySlots(t *testing.T) {
+	p := NewSolverPool()
+	instances := []Instance{{URL: "http://a", Priority: 1, Enabled: true}}
+	p.Configure(instances, 0)
+	lease, err := p.Acquire(context.Background(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Configure([]Instance{{URL: "http://a", Priority: 1, Enabled: true}}, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if second, err := p.Acquire(ctx, 100); err == nil {
+		second.Release()
+		t.Fatal("reconfigure with identical settings freed a busy instance")
+	}
+	lease.Release()
+}
+
+// Urgent requests (JavDB 403 recovery) are served before every queued
+// background scrape request.
+func TestSolverPoolUrgentPriorityJumpsQueue(t *testing.T) {
+	p := NewSolverPool()
+	p.Configure([]Instance{{URL: "http://a", Priority: 1, Enabled: true}}, 0)
+	held, err := p.Acquire(context.Background(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := make(chan string, 4)
+	for _, name := range []string{"scrape-1", "scrape-2"} {
+		name := name
+		go func() {
+			l, err := p.Acquire(context.Background(), 0)
+			if err == nil {
+				order <- name
+				l.Release()
+			}
+		}()
+	}
+	time.Sleep(20 * time.Millisecond)
+	go func() {
+		l, err := p.Acquire(context.Background(), UrgentSolverPriority)
+		if err == nil {
+			order <- "javdb"
+			l.Release()
+		}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	held.Release()
+	if first := <-order; first != "javdb" {
+		t.Fatalf("first served = %s, want javdb", first)
+	}
+}

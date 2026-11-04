@@ -5,6 +5,13 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.305] - 2026-11-04
+
+### Changed
+
+- JavDB requests that need the anti-bot solver now share the scraper's Byparr/FlareSolverr queue and go to the front of it, so they wait at most for one in-flight solve instead of queuing inside Byparr behind scraping (one recovery took 6.5 minutes before).
+- Reapplying identical solver settings, which every scan does, no longer resets the solver pool, so busy instances stay reserved and queued requests are kept.
+
 ## [1.0.304] - 2026-11-04
 
 ### Fixed

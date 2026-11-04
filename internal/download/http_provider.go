@@ -864,7 +864,7 @@ func (p *javDBProvider) getHTMLThroughSolver(ctx context.Context, raw string) (*
 	attempts := p.solverPool.EnabledCount()
 	var failures []string
 	for attempt := 0; attempt < attempts; attempt++ {
-		lease, err := p.solverPool.Acquire(ctx, 100)
+		lease, err := p.solverPool.Acquire(ctx, scraper.UrgentSolverPriority)
 		if err != nil {
 			return nil, err
 		}

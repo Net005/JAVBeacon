@@ -43,6 +43,11 @@ func ParseInstances(raw string) []Instance {
 // job's requests are never starved behind an uncontextualized one.
 const backgroundSolverPriority = 100
 
+// UrgentSolverPriority sorts ahead of every scrape priority. It is used for
+// interactive download lookups (JavDB 403 recovery) so they wait only for an
+// in-flight solve, never behind queued scraping.
+const UrgentSolverPriority = -1000
+
 type solverPriorityKey struct{}
 
 // WithSolverPriority attaches a solver-pool request priority to ctx. Lower
@@ -136,6 +141,12 @@ func NewSolverPool() *SolverPool {
 // against the new instance list immediately.
 func (p *SolverPool) Configure(instances []Instance, cooldown time.Duration) {
 	p.mu.Lock()
+	if p.sameConfigLocked(instances, cooldown) {
+		// Identical settings are reapplied on every monitor run; keep busy
+		// flags and queued waiters instead of resetting the pool.
+		p.mu.Unlock()
+		return
+	}
 	slots := make([]*poolSlot, 0, len(instances))
 	for _, inst := range instances {
 		slots = append(slots, &poolSlot{instance: inst})
@@ -150,6 +161,18 @@ func (p *SolverPool) Configure(instances []Instance, cooldown time.Duration) {
 // regardless of whether they're free right now. Callers use this to size
 // concurrent worker pools ("use up to N at once") and to decide whether any
 // solver is configured at all.
+func (p *SolverPool) sameConfigLocked(instances []Instance, cooldown time.Duration) bool {
+	if len(p.slots) != len(instances) || p.cooldown != cooldown || (len(instances) == 0 && p.slots == nil) {
+		return false
+	}
+	for i, inst := range instances {
+		if p.slots[i].instance != inst {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *SolverPool) EnabledCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -458,6 +458,7 @@ func finishStartup(cfg config.Config, log *slog.Logger, logs *logging.RingHandle
 	// starts (run() re-Configures too) or a settings save happens.
 	mon.ApplySettings(context.Background())
 	downloadService := download.New(st, cfg.RequestTimeout, log)
+	downloadService.ShareSolverPool(javlibrary.Pool())
 	downloadService.AttachLogs(logs)
 	stashSync := stash.New(st, cfg.RequestTimeout, log, javlibrary, downloadService)
 	authService := auth.New(st)

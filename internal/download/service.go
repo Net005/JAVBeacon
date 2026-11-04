@@ -97,6 +97,7 @@ type Service struct {
 	httpSolverMu       sync.Mutex
 	httpSolverConfig   string
 	httpSolverPool     *scraper.SolverPool
+	httpSolverShared   bool
 	gluetunRotationMu  sync.Mutex
 	// pikPakDeleteFile is an optional test seam. Production removals use the
 	// authenticated session and PikPak API directly when it is nil.
@@ -419,12 +420,28 @@ func New(st store.Store, timeout time.Duration, log *slog.Logger) *Service {
 	return s
 }
 
+// ShareSolverPool makes HTTP providers use the scraper's Byparr/FlareSolverr
+// pool, so their urgent requests queue ahead of scraping on the same
+// instances instead of colliding with it from a separate pool.
+func (s *Service) ShareSolverPool(pool *scraper.SolverPool) {
+	if pool == nil {
+		return
+	}
+	s.httpSolverMu.Lock()
+	s.httpSolverPool, s.httpSolverShared = pool, true
+	s.httpSolverMu.Unlock()
+}
+
 func (s *Service) configureHTTPProviderSolver(settings map[string]string) *scraper.SolverPool {
 	raw := strings.TrimSpace(settings["byparr_instances"])
 	cooldownRaw := strings.TrimSpace(settings["flaresolverr_cooldown"])
 	config := raw + "\x00" + cooldownRaw + "\x00" + strings.TrimSpace(settings["flaresolverr_url"])
 	s.httpSolverMu.Lock()
 	defer s.httpSolverMu.Unlock()
+	if s.httpSolverShared {
+		// The scraper owns the shared pool's configuration.
+		return s.httpSolverPool
+	}
 	if config == s.httpSolverConfig {
 		return s.httpSolverPool
 	}

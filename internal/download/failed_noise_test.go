@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Net005/JAVBeacon/internal/domain"
+	"github.com/Net005/JAVBeacon/internal/scraper"
 	"github.com/Net005/JAVBeacon/internal/store"
 )
 
@@ -127,5 +128,19 @@ func TestSearchErrorsAreNotFailedDownloads(t *testing.T) {
 	}
 	if len(history) != 3 {
 		t.Fatalf("search_failed history = %d, want 3", len(history))
+	}
+}
+
+// JavDB solver requests share the scraper's queue (so they can jump ahead of
+// scraping) instead of a separate pool that blindly hits busy instances.
+func TestHTTPProvidersUseSharedSolverPool(t *testing.T) {
+	st, _ := noiseStore(t)
+	svc := New(st, time.Second, slog.Default())
+	shared := scraper.NewSolverPool()
+	shared.Configure([]scraper.Instance{{URL: "http://solver", Priority: 1, Enabled: true}}, 0)
+	svc.ShareSolverPool(shared)
+	got := svc.configureHTTPProviderSolver(map[string]string{"byparr_instances": "[]", "flaresolverr_url": "http://other"})
+	if got != shared || shared.EnabledCount() != 1 {
+		t.Fatalf("shared pool replaced or reconfigured: same=%v enabled=%d", got == shared, shared.EnabledCount())
 	}
 }
