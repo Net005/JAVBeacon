@@ -5,6 +5,17 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.306] - 2026-11-04
+
+### Fixed
+
+- JavDB requests that get no response at all (JavDB silently dropping the VPN address) now also go to the anti-bot solver instead of failing with a timeout.
+- After rotating the VPN on a JavDB 403, JAVBeacon tries the direct request once before using the solver, instead of up to three timed-out attempts.
+
+### Added
+
+- Each JavDB solver attempt is logged with its queue wait and solve time, so solver delays can be measured.
+
 ## [1.0.305] - 2026-11-04
 
 ### Changed

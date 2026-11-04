@@ -135,3 +135,31 @@ func TestJavDB403RotationWithoutResponseFallsBackToSolver(t *testing.T) {
 		t.Fatalf("status=%d direct=%d solver=%d rotations=%d err=%v", status, directCalls, solverCalls, rotations, err)
 	}
 }
+
+// JavDB sometimes stops answering the VPN address instead of returning 403.
+// A request that never gets a response must also use the solver.
+func TestJavDBNoResponseFallsBackToSolver(t *testing.T) {
+	oldDelay := javDBTransientRetryDelay
+	javDBTransientRetryDelay = time.Millisecond
+	defer func() { javDBTransientRetryDelay = oldDelay }()
+	solverCalls := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/javdb", func(w http.ResponseWriter, _ *http.Request) {
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			_ = conn.Close()
+		}
+	})
+	mux.HandleFunc("/solver", func(w http.ResponseWriter, _ *http.Request) {
+		solverCalls++
+		_, _ = io.WriteString(w, `{"status":"ok","solution":{"response":"<html>via solver</html>"}}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	pool := scraper.NewSolverPool()
+	pool.Configure([]scraper.Instance{{URL: server.URL + "/solver", Priority: 1, Enabled: true}}, 0)
+	provider := &javDBProvider{client: server.Client(), solverPool: pool}
+	doc, status, err := provider.getHTML(context.Background(), server.URL+"/javdb")
+	if err != nil || status != http.StatusOK || !strings.Contains(nodeText(doc), "via solver") || solverCalls != 1 {
+		t.Fatalf("status=%d solver=%d err=%v", status, solverCalls, err)
+	}
+}

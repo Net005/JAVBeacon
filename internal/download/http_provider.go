@@ -764,7 +764,7 @@ func (p *javDBProvider) getHTML(ctx context.Context, raw string) (*html.Node, in
 		// configured rotations returned the same observable IP, the renewed
 		// tunnel may have cleared a transient block. Another 403, or no
 		// response at all, proceeds to the priority-aware solver pool.
-		doc, status, err = p.getHTMLDirectWithRetry(ctx, raw)
+		doc, status, err = p.getHTMLDirect(ctx, raw)
 		if err == nil {
 			if p.log != nil {
 				p.log.Info("JavDB HTTP 403 recovered after Gluetun rotation", "url", raw, "rotation_attempts", attempts, "public_ip", newIP)
@@ -776,7 +776,12 @@ func (p *javDBProvider) getHTML(ctx context.Context, raw string) (*html.Node, in
 		}
 		status = http.StatusForbidden
 	}
-	if status == http.StatusForbidden && p.solverPool != nil && p.solverPool.EnabledCount() > 0 {
+	// JavDB also blocks by not answering at all; a request that never got a
+	// response (status 0) after its retries is treated like a 403 here.
+	if (status == http.StatusForbidden || (status == 0 && err != nil && ctx.Err() == nil)) && p.solverPool != nil && p.solverPool.EnabledCount() > 0 {
+		if status == 0 {
+			status = http.StatusForbidden
+		}
 		doc, solverErr := p.getHTMLThroughSolver(ctx, raw)
 		if solverErr == nil {
 			if p.log != nil {
@@ -864,13 +869,19 @@ func (p *javDBProvider) getHTMLThroughSolver(ctx context.Context, raw string) (*
 	attempts := p.solverPool.EnabledCount()
 	var failures []string
 	for attempt := 0; attempt < attempts; attempt++ {
+		waitStart := time.Now()
 		lease, err := p.solverPool.Acquire(ctx, scraper.UrgentSolverPriority)
 		if err != nil {
 			return nil, err
 		}
+		waited := time.Since(waitStart)
 		solverURL := lease.URL()
+		solveStart := time.Now()
 		body, err := p.solveHTML(ctx, solverURL, raw)
 		lease.Release()
+		if p.log != nil {
+			p.log.Info("JavDB solver attempt", "url", raw, "solver", solverURL, "attempt", attempt+1, "queue_wait_ms", waited.Milliseconds(), "solve_ms", time.Since(solveStart).Milliseconds(), "ok", err == nil)
+		}
 		if err != nil {
 			failures = append(failures, solverURL+": "+err.Error())
 			continue
