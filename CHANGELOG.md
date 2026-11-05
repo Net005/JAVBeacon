@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.307] - 2026-11-05
+
+### Fixed
+
+- When Gluetun cannot report its public IP (its own IP lookup fails while the tunnel works), a JavDB 403 now still restarts the VPN once instead of skipping the rotation. The rotation is logged as unverified.
+
 ## [1.0.306] - 2026-11-04
 
 ### Fixed

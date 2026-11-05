@@ -163,3 +163,28 @@ func TestJavDBNoResponseFallsBackToSolver(t *testing.T) {
 		t.Fatalf("status=%d solver=%d err=%v", status, solverCalls, err)
 	}
 }
+
+// Gluetun sometimes cannot look up its own public IP. Rotation must still
+// restart the VPN once instead of being skipped.
+func TestGluetunRotatesEvenWhenPublicIPIsUnknown(t *testing.T) {
+	starts := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/publicip/ip", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"public_ip": ""})
+	})
+	mux.HandleFunc("/v1/vpn/status", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["status"] == "running" {
+			starts++
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"outcome": body["status"]})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	r := &gluetunRotator{client: server.Client(), controlURL: server.URL, maxAttempts: 3, waitTimeout: 50 * time.Millisecond, pollInterval: time.Millisecond, requireIPChange: true, mu: &sync.Mutex{}}
+	_, _, attempts, err := r.rotateUntilIPChanges(context.Background())
+	if err != nil || starts != 1 || attempts != 1 {
+		t.Fatalf("starts=%d attempts=%d err=%v; want one unverified rotation", starts, attempts, err)
+	}
+}

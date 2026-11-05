@@ -144,9 +144,13 @@ func (r *gluetunRotator) waitForPublicIP(ctx context.Context, previous string) (
 func (r *gluetunRotator) rotateUntilIPChanges(ctx context.Context) (oldIP, newIP string, attempts int, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	oldIP, err = r.publicIP(ctx)
-	if err != nil {
-		return "", "", 0, fmt.Errorf("read current Gluetun public IP: %w", err)
+	// Gluetun's own public-IP lookup can fail while the tunnel works. Rotate
+	// anyway; with no known old IP the change cannot be verified, so a single
+	// restart counts as the rotation.
+	oldIP, ipErr := r.publicIP(ctx)
+	unknownIP := ipErr != nil
+	if unknownIP && r.log != nil {
+		r.log.Warn("Gluetun public IP unknown; rotating VPN without verification", "error", ipErr)
 	}
 	newIP = oldIP
 	for attempts = 1; attempts <= r.maxAttempts; attempts++ {
@@ -158,6 +162,9 @@ func (r *gluetunRotator) rotateUntilIPChanges(ctx context.Context) (oldIP, newIP
 		}
 		newIP, err = r.waitForPublicIP(ctx, oldIP)
 		if err != nil {
+			if unknownIP && ctx.Err() == nil {
+				return oldIP, "", attempts, nil
+			}
 			return oldIP, newIP, attempts, err
 		}
 		if newIP != oldIP {
