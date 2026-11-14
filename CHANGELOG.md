@@ -5,6 +5,12 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.308] - 2026-11-14
+
+### Added
+
+- Read-only Watchlist consistency report at `GET /api/stash/watchlist/report`. It compares JAVBeacon's Watchlist with the scenes carrying the configured StashApp Watchlist tag and lists releases missing the tag in Stash, tagged scenes whose release is not on the Watchlist, Watchlist releases with no linked scene yet, and tagged scenes with no JAVBeacon release. Counts are exact; lists are capped at 50. It never changes a release or a tag.
+
 ## [1.0.307] - 2026-11-05
 
 ### Fixed

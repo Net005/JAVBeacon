@@ -563,6 +563,14 @@ func (s *Server) routes() {
 		s.json(w, 200, x)
 	})
 	s.mux.HandleFunc("GET /api/stash/history", s.stashHistory)
+	s.mux.HandleFunc("GET /api/stash/watchlist/report", func(w http.ResponseWriter, r *http.Request) {
+		report, e := s.stash.WatchlistReport(r.Context())
+		if e != nil {
+			s.problem(w, 502, e.Error())
+			return
+		}
+		s.json(w, 200, report)
+	})
 	s.mux.HandleFunc("GET /api/stash/history/scenes/{sceneId}/cover", s.stashHistorySceneCover)
 	s.mux.HandleFunc("GET /api/discoveries", s.discoveries)
 	s.mux.HandleFunc("POST /api/discoveries/ollama/test", s.testDiscoveryOllama)
