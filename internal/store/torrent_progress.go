@@ -10,7 +10,7 @@ import (
 // UpdateTorrentProgress cannot resurrect removed downloads or overwrite work
 // being done by validation, fallback, or post-processing.
 func (s *SQLite) UpdateTorrentProgress(ctx context.Context, d domain.Download) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE downloads SET name=?,seed_ratio=?,progress=?,seeds=?,peers=?,eta_seconds=?,seen_complete=?,updated_at=? WHERE id=? AND torrent_hash=? AND transport<>'http' AND status IN ('downloading','completed')`, d.Name, d.SeedRatio, d.Progress, d.Seeds, d.Peers, d.ETASeconds, d.SeenComplete, time.Now().UTC(), d.ID, d.TorrentHash)
+	_, err := s.db.ExecContext(ctx, `UPDATE downloads SET name=?,seed_ratio=?,progress=?,seeds=?,peers=?,eta_seconds=?,seen_complete=?,updated_at=? WHERE id=? AND torrent_hash=? AND transport<>'http' AND status IN ('downloading','completed') AND (name IS DISTINCT FROM ? OR seed_ratio IS DISTINCT FROM ? OR progress IS DISTINCT FROM ? OR seeds IS DISTINCT FROM ? OR peers IS DISTINCT FROM ? OR eta_seconds IS DISTINCT FROM ? OR seen_complete IS DISTINCT FROM ?)`, d.Name, d.SeedRatio, d.Progress, d.Seeds, d.Peers, d.ETASeconds, d.SeenComplete, time.Now().UTC(), d.ID, d.TorrentHash, d.Name, d.SeedRatio, d.Progress, d.Seeds, d.Peers, d.ETASeconds, d.SeenComplete)
 	return err
 }
 
@@ -20,6 +20,6 @@ func (s *SQLite) SaveTorrentState(ctx context.Context, d domain.Download) error 
 	if len(d.Files) == 0 {
 		d.Files = []byte(`[]`)
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE downloads SET files=?,status=?,match_reason=?,qb_response=?,post_status=?,error=?,updated_at=? WHERE id=? AND torrent_hash=? AND transport<>'http' AND status IN ('downloading','completed')`, string(d.Files), d.Status, d.MatchReason, d.QBResponse, d.PostStatus, d.Error, time.Now().UTC(), d.ID, d.TorrentHash)
+	_, err := s.db.ExecContext(ctx, `UPDATE downloads SET files=?,status=?,match_reason=?,qb_response=?,post_status=?,error=?,updated_at=? WHERE id=? AND torrent_hash=? AND transport<>'http' AND status IN ('downloading','completed') AND (files IS DISTINCT FROM ? OR status IS DISTINCT FROM ? OR match_reason IS DISTINCT FROM ? OR qb_response IS DISTINCT FROM ? OR post_status IS DISTINCT FROM ? OR error IS DISTINCT FROM ?)`, string(d.Files), d.Status, d.MatchReason, d.QBResponse, d.PostStatus, d.Error, time.Now().UTC(), d.ID, d.TorrentHash, string(d.Files), d.Status, d.MatchReason, d.QBResponse, d.PostStatus, d.Error)
 	return err
 }

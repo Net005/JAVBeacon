@@ -239,7 +239,19 @@ func (s *Service) run(ctx context.Context) {
 		s.log.Warn("Stash playback-stats sync skipped", "url", url, "error", statsErr)
 		stats = nil
 	}
-	total, err := s.store.ReleasesCount(ctx, domain.ReleaseFilter{})
+	// Production stores can avoid the UI's full hydration and date/OFFSET
+	// traversal. Other Store implementations retain the legacy path.
+	narrow, useNarrow := s.store.(interface {
+		StashSyncSnapshot(context.Context, domain.ReleaseFilter) (int64, int, error)
+		StashSyncReleases(context.Context, domain.ReleaseFilter, int64, int64, int) ([]domain.Release, error)
+	})
+	var total int
+	var highWaterID int64
+	if useNarrow {
+		highWaterID, total, err = narrow.StashSyncSnapshot(ctx, domain.ReleaseFilter{})
+	} else {
+		total, err = s.store.ReleasesCount(ctx, domain.ReleaseFilter{})
+	}
 	if err != nil {
 		result.Error = err.Error()
 		return
@@ -254,8 +266,15 @@ func (s *Service) run(ctx context.Context) {
 			s.publishStatus(result)
 		}
 	}
+	var afterID int64
 	for offset := 0; ; offset += 500 {
-		releases, e := s.store.Releases(ctx, domain.ReleaseFilter{Limit: 500, Offset: offset})
+		var releases []domain.Release
+		var e error
+		if useNarrow {
+			releases, e = narrow.StashSyncReleases(ctx, domain.ReleaseFilter{}, afterID, highWaterID, 500)
+		} else {
+			releases, e = s.store.Releases(ctx, domain.ReleaseFilter{Limit: 500, Offset: offset})
+		}
 		if e != nil {
 			result.Error = e.Error()
 			return
@@ -267,7 +286,14 @@ func (s *Service) run(ctx context.Context) {
 			sceneID, local := ids[key]
 			if local {
 				result.Matched++
-				releaseByScene[sceneID] = release
+				// Legacy date DESC NULLS LAST, id DESC traversal overwrote
+				// the map with its last row. Choose that same oldest-date,
+				// lowest-ID representative explicitly, independent of keyset
+				// order. Missing dates are stored as empty strings (NOT NULL).
+				previous, exists := releaseByScene[sceneID]
+				if !exists || release.ReleaseDate < previous.ReleaseDate || (release.ReleaseDate == previous.ReleaseDate && release.ID < previous.ID) {
+					releaseByScene[sceneID] = release
+				}
 			}
 			if local != release.Local || sceneID != release.StashSceneID {
 				if e := s.store.SetStashState(ctx, release.ID, local, sceneID); e != nil {
@@ -396,6 +422,9 @@ func (s *Service) run(ctx context.Context) {
 		}
 		if len(releases) < 500 {
 			break
+		}
+		if useNarrow {
+			afterID = releases[len(releases)-1].ID
 		}
 	}
 	if stats != nil {

@@ -115,6 +115,21 @@ func ResolveReleaseIDs(ctx context.Context, st store.Store, filter domain.Releas
 	filter.HideMonitored = false
 	filter.SearchExpression = collectionSearchExpression(filter.SearchExpression)
 	filter.Limit = 500
+	filter.Offset = 0
+	// ReleaseIDs uses the same SQL predicates and ordering as Releases,
+	// including StashLinked's local and nonempty scene-ID requirements, but
+	// selects the entire membership without hydrating release metadata.
+	if selector, ok := st.(interface {
+		ReleaseIDs(context.Context, domain.ReleaseFilter) ([]int64, error)
+	}); ok {
+		selected, err := selector.ReleaseIDs(ctx, filter)
+		if err != nil {
+			return nil, err
+		}
+		return selected, nil
+	}
+	// Alternate stores may not offer ID-only selection. Keep their paged
+	// fallback and defensive membership check.
 	for offset := 0; ; offset += 500 {
 		filter.Offset = offset
 		rows, err := st.Releases(ctx, filter)

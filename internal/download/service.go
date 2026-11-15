@@ -339,7 +339,11 @@ func (s *Service) torrentHTTPFallbackDelay(ctx context.Context) time.Duration {
 	if err != nil {
 		return defaultTorrentHTTPFallbackDelay
 	}
-	delay, err := time.ParseDuration(strings.TrimSpace(settings["http_fallback_delay"]))
+	return parseTorrentHTTPFallbackDelay(settings["http_fallback_delay"])
+}
+
+func parseTorrentHTTPFallbackDelay(raw string) time.Duration {
+	delay, err := time.ParseDuration(strings.TrimSpace(raw))
 	if err != nil || delay <= 0 {
 		return defaultTorrentHTTPFallbackDelay
 	}
@@ -3823,8 +3827,9 @@ func (s *Service) pollTorrents(ctx context.Context) {
 	downloads = append(downloads, completed...)
 	minRatio, _ := strconv.ParseFloat(settings["minimum_seed_ratio"], 64)
 	rule := completedTorrentRule(settings["qb_completed_action"])
+	fallbackDelay := parseTorrentHTTPFallbackDelay(settings["http_fallback_delay"])
 	for _, d := range downloads {
-		s.safePollDownload(ctx, qb, d, torrents, minRatio, rule)
+		s.safePollDownload(ctx, qb, d, torrents, minRatio, rule, fallbackDelay)
 	}
 }
 
@@ -3857,13 +3862,13 @@ func (s *Service) logQBPollRecovery() {
 // an unusual pipeline config, ...) can't take down the rest of this tick's
 // batch - every other download still gets its qBittorrent status update
 // this cycle even if one row's processing panics.
-func (s *Service) safePollDownload(ctx context.Context, qb *QBClient, d domain.Download, torrents []Torrent, minRatio float64, rule string) {
+func (s *Service) safePollDownload(ctx context.Context, qb *QBClient, d domain.Download, torrents []Torrent, minRatio float64, rule string, fallbackDelay time.Duration) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.log.Error("qBittorrent poll panicked while processing one download; other downloads still updated this tick", "download_id", d.ID, "release_id", d.ReleaseID, "video_id", d.Query, "panic", r)
 		}
 	}()
-	s.pollDownload(ctx, qb, d, torrents, minRatio, rule)
+	s.pollDownload(ctx, qb, d, torrents, minRatio, rule, fallbackDelay)
 }
 
 func torrentHTTPFallbackReason(d domain.Download, torrent Torrent, now time.Time, fallbackDelay time.Duration) string {
@@ -3981,7 +3986,11 @@ func torrentCompletionState(state string) bool {
 	}
 }
 
-func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Download, torrents []Torrent, minRatio float64, rule string) {
+func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Download, torrents []Torrent, minRatio float64, rule string, fallbackDelays ...time.Duration) {
+	fallbackDelay := defaultTorrentHTTPFallbackDelay
+	if len(fallbackDelays) > 0 {
+		fallbackDelay = fallbackDelays[0]
+	}
 	torrents = s.latestTorrentSnapshot(torrents)
 	// Once our torrent is gone, the same hash re-added manually is not ours.
 	if d.Transport == "http" || d.TorrentHash == "" || downloadGoneFromQBHandled(d.PostStatus) {
@@ -3995,19 +4004,11 @@ func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Downl
 			continue
 		}
 		matched = true
-		fallbackReason := torrentHTTPFallbackReason(d, t, time.Now(), s.torrentHTTPFallbackDelay(ctx))
+		fallbackReason := torrentHTTPFallbackReason(d, t, time.Now(), fallbackDelay)
 		wasCompleted := d.Status == "completed"
-		d.TorrentHash = t.Hash
-		d.Name = t.Name
-		d.SeedRatio = t.Ratio
-		d.Progress = t.Progress
-		d.Seeds = t.Seeds
-		d.Peers = t.Peers
-		d.ETASeconds = t.ETA
-		d.SeenComplete = t.SeenComplete
-		if err := s.store.UpdateTorrentProgress(ctx, d); err != nil {
-			return
-		}
+		// Keep fresh telemetry in memory for validation, fallback and cleanup;
+		// only the independent fast poll persists progress.
+		applyTorrentProgress(&d, t)
 		isCompleteState := torrentCompletionState(t.State)
 		if fallbackReason != "" && s.httpFallbackDue(d.ID) {
 			d.PostStatus = "http_fallback_searching"
@@ -4056,8 +4057,8 @@ func (s *Service) pollDownload(ctx context.Context, qb *QBClient, d domain.Downl
 				// Our own background goroutine is still working on it -
 				// leave PostStatus as whatever it already is
 				// ("processing", set below the first time this was
-				// kicked off) and just let this tick's fresh qBittorrent
-				// fields above get saved as usual below.
+				// kicked off). Persist state only; the independent fast
+				// poll owns transfer telemetry.
 				_ = s.store.SaveTorrentState(ctx, d)
 				return
 			}

@@ -920,6 +920,13 @@ func TestPollTorrentsDoesNotBlockOnSlowCompletionPipeline(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("pollTorrents took %v - a completion pipeline step must run in the background, not block the poll tick", elapsed)
 	}
+	// Maintenance persists lifecycle state, while the independent fast poll
+	// must remain free to persist telemetry during the slow pipeline.
+	started = time.Now()
+	service.pollTorrentProgress(ctx)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("fast progress poll took %v while the completion pipeline was running", elapsed)
+	}
 	rows, err := st.Downloads(ctx, "completed")
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("rows=%+v err=%v, want the freshly-completed row persisted immediately even though its pipeline is still running", rows, err)

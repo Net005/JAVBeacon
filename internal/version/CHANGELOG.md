@@ -5,6 +5,15 @@ All notable user-facing changes to JAVBeacon are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and JAVBeacon uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.309] - 2026-11-15
+
+### Performance
+
+- Stash full synchronization uses a narrow state projection and bounded primary-key pages instead of loading display metadata, download aggregates, and progressively deeper offset pages. Preserve preferred filtering, Watchlist/playback behavior and duplicate-scene history selection.
+- Saved-filter collection membership uses ID-only selection where supported, avoiding full release hydration.
+- Torrent maintenance leaves telemetry persistence to the independent fast progress poller. Both progress and lifecycle-state writes skip unchanged values while preserving ownership and removal guards.
+- Torrent polling reuses its settings snapshot to calculate HTTP fallback delay once per batch, retaining fresh policy checks before fallback actions.
+
 ## [1.0.308] - 2026-11-14
 
 ### Added
